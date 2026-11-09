@@ -90,15 +90,15 @@ def test_browser_explicit_data_dir_and_collection_state(client, monkeypatch):
     seen = []
     module.status = lambda data_dir: dict(installed=True, running=False, message=str(data_dir))
     module.start = lambda data_dir: dict(installed=True, running=True, message="已启动")
-    def collect(query, location, limit, data_dir):
-        seen.append((query, data_dir))
+    def collect(source, query, location, limit, data_dir):
+        seen.append((source, query, data_dir))
         return dict(status="needs_login", message="请登录", jobs=[], evidence=[])
     module.collect = collect
     monkeypatch.setitem(sys.modules, "jobscope.browser", module)
     assert client.get("/api/browser/status").json()["installed"] is True
     response = client.post("/api/browser/collect", json=dict(query="Python"))
     assert response.json()["task"]["status"] == "needs_login"
-    assert seen[0][1] == client.app.state.repo.data_dir
+    assert seen[0][0] == "boss" and seen[0][2] == client.app.state.repo.data_dir
 
 
 def test_cross_origin_write_is_blocked(client):
@@ -110,6 +110,7 @@ def test_collection_persists_jobs_and_issuer_identity_without_query_alias(client
     import sys
     import types
     module = types.ModuleType("jobscope.connectors")
+    module.BROWSER_SOURCES = ('zhaopin', '51job')
     def collect(source, query, location, limit, *, cache_dir):
         if source == "cninfo":
             return dict(status="completed", message="公告元信息", jobs=[], evidence=[dict(title="年报", company="甲简称", text="公告索引", kind="disclosure_metadata", url="https://static.cninfo.com.cn/1.PDF")])
@@ -156,6 +157,7 @@ def test_collector_notes_preserved_and_cache_uses_data_dir(client, monkeypatch):
     import sys
     import types
     module = types.ModuleType("jobscope.connectors")
+    module.BROWSER_SOURCES = ('zhaopin', '51job')
     def collect(source, query, location, limit, *, cache_dir):
         assert cache_dir == client.app.state.repo.data_dir / "cache"
         return dict(status="completed", message="完成", jobs=[dict(title="开发", company="甲品牌", description="Python", url="https://example.com/j1")], evidence=[dict(title="开发", company="甲品牌", kind="job_posting", text="公司字段为招聘品牌，法定主体未核验", url="https://example.com/j1")])
@@ -172,3 +174,68 @@ def test_unknown_host_is_rejected_even_when_origin_matches(client):
     assert client.put("/api/resume", json=dict(text="Python", format="text"), headers={"host": "attacker.example", "origin": "http://attacker.example"}).status_code == 400
     assert client.get("/api/health", headers={"host": "localhost:5173"}).status_code == 200
     assert client.get("/api/health", headers={"host": "[::1]:8000"}).status_code == 200
+
+
+def test_sources_endpoint_describes_the_domestic_job_platforms(client):
+    sources = {item['id']: item for item in client.get('/api/sources').json()['sources']}
+    assert set(sources) >= {'boss', 'zhaopin', '51job', 'liepin', 'remotive', 'cninfo', 'user_import'}
+    assert sources['zhaopin']['transport_mode'] == 'browser_page'
+    assert sources['zhaopin']['browser_collectable'] is True
+    assert sources['51job']['browser_collectable'] is True
+    assert sources['liepin']['transport_mode'] == 'http_api'
+    assert sources['liepin']['browser_collectable'] is False
+    assert {'北京', '深圳', '西安'} <= set(sources['liepin']['cities'])
+    assert sources['cninfo']['kind'] == 'evidence' and sources['cninfo']['cities'] == []
+    assert all(item['name'] and item['description'] for item in sources.values())
+
+
+def test_collect_routes_browser_only_sources_into_the_page_session(client, monkeypatch):
+    import sys
+    import types
+    browser = types.ModuleType('jobscope.browser')
+    seen = []
+    def collect(source, query, location, limit, data_dir):
+        seen.append((source, query, location))
+        return dict(status='completed', message='智联搜索页已读取岗位', jobs=[dict(
+            title='Python工程师', company='甲有限公司', location='北京 海淀', external_id='CCL1234567890J1234567890',
+            url='https://www.zhaopin.com/jobdetail/CCL1234567890J1234567890.htm',
+            description='一、岗位职责', description_status='complete')], evidence=[])
+    browser.collect = collect
+    monkeypatch.setitem(sys.modules, 'jobscope.browser', browser)
+    result = client.post('/api/collect', json=dict(source='zhaopin', query='Python', location='北京')).json()
+    assert seen == [('zhaopin', 'Python', '北京')]
+    assert result['task']['status'] == 'completed'
+    job = result['jobs'][0]
+    assert job['source'] == 'zhaopin' and job['description_status'] == 'complete'
+    client.put('/api/resume', json=dict(text='一、岗位职责 Python', format='text'))
+    assert client.post('/api/analyze', json=dict(job_id=job['id'])).status_code == 200
+
+
+def test_browser_source_without_a_session_reports_login_not_zero_results(client):
+    result = client.post('/api/collect', json=dict(source='51job', query='Python')).json()
+    assert result['task']['status'] in ('needs_login', 'unsupported')
+    assert '浏览器' in result['task']['message']
+    assert result['jobs'] == []
+    assert client.get('/api/jobs').json()['total'] == 0
+
+
+def test_liepin_listing_waits_for_full_duties_before_analysis(client, monkeypatch):
+    import sys
+    import types
+    module = types.ModuleType('jobscope.connectors')
+    module.BROWSER_SOURCES = ('zhaopin', '51job')
+    def collect(source, query, location, limit, *, cache_dir):
+        return dict(status='completed', message='已读取猎聘检索列表', jobs=[dict(
+            title='后端工程师', company='甲公司', location='北京-昌平区', salary='15-25k',
+            external_id='86374907', url='https://www.liepin.com/job/1986374907.shtml',
+            description='仅搜索列表字段；完整岗位职责尚未读取。', description_status='listing')], evidence=[])
+    module.collect = collect
+    monkeypatch.setitem(sys.modules, 'jobscope.connectors', module)
+    job = client.post('/api/collect', json=dict(source='liepin', query='Python')).json()['jobs'][0]
+    client.put('/api/resume', json=dict(text='Python 后端项目', format='text'))
+    blocked = client.post('/api/analyze', json=dict(job_id=job['id']))
+    assert blocked.status_code == 409 and '完整岗位' in blocked.json()['detail']
+
+
+def test_browser_start_only_accepts_page_session_sources(client):
+    assert client.post('/api/browser/start?source=nobody').status_code == 400
