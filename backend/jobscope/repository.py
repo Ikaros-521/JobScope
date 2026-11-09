@@ -439,3 +439,23 @@ class Repository:
             item['stale'] = stale
             result.append(item)
         return result
+
+    def raw_signals(self, company_id):
+        # 排序要全序：同一 rule 可以有多条来自不同出处的信号，只按 rule 排时并列行的先后取决于查询计划，
+        # 那会让同一批输入算出不同的 input_hash。
+        with self.connection() as conn:
+            return [dict(row) for row in conn.execute('SELECT id,payload FROM company_signals WHERE company_id=? ORDER BY rule,id', (company_id,)).fetchall()]
+
+    def save_reliability(self, report):
+        with self.connection() as conn:
+            conn.execute('INSERT OR IGNORE INTO company_reliability VALUES (?,?,?,?)',
+                         (report['company_id'], report['input_hash'], report['computed_at'], json.dumps(report, ensure_ascii=False)))
+
+    def latest_reliability(self, company_id):
+        with self.connection() as conn:
+            row = conn.execute('SELECT payload FROM company_reliability WHERE company_id=? ORDER BY created_at DESC LIMIT 1', (company_id,)).fetchone()
+        return json.loads(row['payload']) if row else None
+
+    def reliability_history(self, company_id):
+        with self.connection() as conn:
+            return [json.loads(row['payload']) for row in conn.execute('SELECT payload FROM company_reliability WHERE company_id=? ORDER BY created_at', (company_id,)).fetchall()]
