@@ -5,14 +5,13 @@ import { Pagination, emptyPage } from './Pagination'
 import { EvidenceWorkspace } from './EvidenceWorkspace'
 import { EvidenceCard } from './EvidenceCard'
 import { DetailBatch } from './DetailBatch'
-import { ResearchTrace } from './ResearchTrace'
 import { ResearchIndex } from './ResearchIndex'
 import { AgentExtensions } from './AgentExtensions'
 import { ModelSettings } from './ModelSettings'
 import { ResumeImport } from './ResumeImport'
 import { navigateTabs } from './tabNavigation'
-import { GlobalChat } from './chat/GlobalChat'
-import type { Analysis, BrowserStatus, ChatMessage, ChatResult, Evidence, Job, PageInfo, Source, Task } from './api'
+import { ChatWorkspace } from './chat/ChatWorkspace'
+import type { Analysis, BrowserStatus, Evidence, Job, PageInfo, Source, Task } from './api'
 
 const sourceNames: Record<string, string> = { remotive: 'Remotive · 海外远程', boss: 'BOSS 直聘', cninfo: '巨潮资讯', user_import: '用户导入' }
 const statusNames: Record<string, string> = { completed: '已完成', success: '已完成', running: '采集中', pending: '等待中', failed: '失败', needs_login: '需要登录', needing_login: '需要登录', login_required: '需要登录', needs_verification: '需要验证', verification_required: '需要验证', requires_verification: '需要验证', unsupported: '暂不支持', available: '可用', ready: '可用', not_configured: '未配置', blocked: '访问受限', backoff: '退避等待' }
@@ -50,7 +49,6 @@ export default function App() {
   const [tasksInfo, setTasksInfo] = useState<PageInfo>(emptyPage)
   const jobFilters = useRef({ q: '', city: '' })
   const jobsRequest = useRef(0)
-  const jobConversation = useRef<string | null>(null)
   const [sources, setSources] = useState<Source[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [online, setOnline] = useState(false)
@@ -73,9 +71,6 @@ export default function App() {
   const [resumeSaved, setResumeSaved] = useState(false)
   const [browser, setBrowser] = useState<BrowserStatus | null>(null)
   const [modal, setModal] = useState<'job' | 'evidence' | null>(null)
-  const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [chatInput, setChatInput] = useState('')
-  const chatBottom = useRef<HTMLDivElement>(null)
   const detailRequest = useRef(0)
   const activeJobId = useRef<string | null>(null)
   const jobGeneration = useRef(0)
@@ -138,8 +133,7 @@ export default function App() {
     } catch (err) { if (token === detailRequest.current) setError((err as Error).message) }
     finally { if (token === detailRequest.current) setDetailLoading(false) }
   }, [])
-  function selectJob(id: string) { jobGeneration.current++; setChatInput(''); jobConversation.current = null; activeJobId.current = id; setSelectedId(id); setDetail(null); setAnalysis(null); setMessages([]); setTab('overview'); void loadDetail(id) }
-  useEffect(() => { chatBottom.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }) }, [messages])
+  function selectJob(id: string) { jobGeneration.current++; activeJobId.current = id; setSelectedId(id); setDetail(null); setAnalysis(null); setTab('overview'); void loadDetail(id) }
   async function perform(key: string, action: () => Promise<void>) {
     setBusy(key); setError(''); setNotice('')
     try { await action() } catch (err) { setError((err as Error).message) }
@@ -182,21 +176,6 @@ export default function App() {
     await perform('resume', async () => {
       const data = await api<{ revision: number }>('/resume', { method: 'PUT', body: JSON.stringify({ text: resumeText, format: resumeFormat }) })
       setResumeRevision(data.revision); setResumeSaved(true); setAnalysis(null); setNotice('简历已保存在本地。岗位适配分析将使用这个版本。')
-    })
-  }
-  async function sendChat(event: FormEvent) {
-    event.preventDefault()
-    if (!job || !chatInput.trim()) return
-    const message = chatInput.trim()
-    const jobId = job.id
-    const generation = jobGeneration.current
-    const previous = messages
-    setMessages([...previous, { role: 'user', content: message }]); setChatInput('')
-    await perform('chat', async () => {
-      try {
-        const result = await post<ChatResult>('/chat', { message, job_id: jobId, company: job.company, conversation_id: jobConversation.current })
-        if (generation === jobGeneration.current && jobId === activeJobId.current) { jobConversation.current = result.conversation_id; setMessages(current => [...current, { role: 'assistant', content: result.answer, mode: result.mode, citations: result.citations, trace: result.trace, metrics: result.metrics }]) }
-      } catch (err) { if (generation === jobGeneration.current && jobId === activeJobId.current) { setChatInput(message); setMessages(previous) } throw err }
     })
   }
   async function collectCompany() {
@@ -251,7 +230,7 @@ export default function App() {
       {notice && <div className="alert notice" role="status"><span>{notice}</span><button aria-label="关闭通知" onClick={() => setNotice('')}><Icon name="close" size={16} /></button></div>}
       <div hidden={view !== 'evidence'}><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} /></div>
 
-      {view === 'global' && <GlobalChat modelConfigured={modelConfigured} onManageExtensions={() => setView('extensions')} />}
+      {view === 'global' && <ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onManageExtensions={() => setView('extensions')} />}
 
       {view === 'jobs' && <>
         <section className="page-intro"><div><h1>岗位研究</h1><p>把岗位要求、公司证据和你的经历逐项核对</p></div><Button className="button secondary" onClick={() => openModal('job')}><Icon name="plus" size={17} />导入岗位</Button></section>
@@ -280,7 +259,7 @@ export default function App() {
                 {tab === 'analysis' && (!analysis ? <Empty title={busy === 'analyze' ? '正在对应岗位要求…' : '让经历与要求逐项对照'} icon="resume">{busy === 'analyze' ? '分析完成后，将展示匹配依据、未知项与面试核实问题。' : <>{resumeSaved ? '点击“评估适配”，查看有依据的匹配与缺口。' : <>先在<button className="inline-button" onClick={() => setView('resume')}>我的简历</button>保存个人经历，再生成适配分析。</>}分数仅供辅助比较，不代表录用概率。</>}</Empty> : <AnalysisView analysis={analysis} />)}
                 {tab === 'evidence' && <><div className="section-heading"><div><h3>证据与出处</h3></div><button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充资料</button></div>{evidenceTotal ? <JobEvidence key={job.id} jobId={job.id} /> : <Empty title="尚无证据资料">采集岗位或补充公司材料后，原文与来源会保存在这里。</Empty>}</>}
               </div>
-              <section className="chat-section"><div className="chat-heading"><h3><Icon name="chat" />围绕这份岗位提问</h3><span>{modelConfigured ? '基于当前岗位与公司资料' : '资料检索模式 · 未配置模型'}</span></div>{!modelConfigured && <p className="chat-mode-note">当前返回相关证据摘录；配置模型后可进行综合问答。</p>}{messages.length === 0 && <div className="chat-suggestions">{['这份岗位有哪些要求？', '公司有哪些可核实的信息？', '面试时还应该问清什么？'].map(text => <button key={text} onClick={() => setChatInput(text)}>{text}<Icon name="arrow" size={13} /></button>)}</div>}<div className="chat-messages" aria-live="polite">{messages.map((message, index) => <div className={`chat-message ${message.role}`} key={index}><span className="message-author">{message.role === 'user' ? '我' : message.mode === 'evidence_search' ? '资料检索' : '知根'}</span><div className="message-content">{message.content}</div>{message.role === 'assistant' && <ResearchTrace run={message.trace} metrics={message.metrics} />}{message.citations?.map(citation => <details className="citation" key={citation.id}><summary><span className="citation-number">↗</span>{citation.title}</summary><p>{citation.excerpt}</p><External url={citation.url}>原始来源</External></details>)}</div>)}{busy === 'chat' && <div className="chat-thinking"><span className="spinner" />正在查阅资料…</div>}<div ref={chatBottom} /></div><form className="chat-form" onSubmit={sendChat}><label className="sr-only" htmlFor="chat-input">围绕当前岗位提问</label><textarea id="chat-input" value={chatInput} onChange={event => setChatInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.form?.requestSubmit() } }} placeholder="围绕这个岗位提问…" rows={2} maxLength={8000} /><Button className="chat-send" aria-label="发送问题" busy={busy === 'chat'} disabled={!chatInput.trim() || Boolean(busy)}><Icon name="arrow" size={20} /></Button></form><div className="chat-footer">引用可以展开核实 · 没有证据的部分保持未知</div></section>
+              <section className="chat-section job-chat"><ChatWorkspace scope={{ kind: 'job', jobId: job.id, company: job.company, title: job.title }} modelConfigured={modelConfigured} /></section>
             </>}
           </section>
         </div>

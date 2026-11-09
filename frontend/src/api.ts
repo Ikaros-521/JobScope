@@ -39,14 +39,20 @@ export type StoredMessage = {
 export type ToolStep = { step: number; tool: string; duration_ms: number; label?: string; status?: string; arguments?: Record<string, unknown>; result_preview?: string; selected?: number; matched_jobs?: number; calls?: number }
 export type ApprovalRequest = { approval_id: string; tool: string; arguments: Record<string, unknown>; reason: string; run_id?: string }
 export type ChatRunStatus = { run_id: string; conversation_id: string; done: boolean; cancelled: boolean; awaiting_approval: boolean; pending_approval: ApprovalRequest | null }
+export type ChatScope = { kind: 'global' } | { kind: 'company'; company: string } | { kind: 'job'; jobId: string; company: string; title?: string }
 export type ConversationSummary = { id: string; title: string; mode: ChatMode; model: string; updated_at: string; message_count: number; preview: string }
-export type ConversationDetail = { id: string; title: string; mode: ChatMode; model: string; created_at: string; updated_at: string; messages: StoredMessage[]; active_run: ChatRunStatus | null }
+export type ConversationDetail = { id: string; scope: { kind: string; company?: string; job_id?: string }; title: string; mode: ChatMode; model: string; created_at: string; updated_at: string; messages: StoredMessage[]; active_run: ChatRunStatus | null }
 export type ChatRunStart = { run_id: string; conversation_id: string; user_message_id: string; title: string | null }
 export type ModelProvider = { mode: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model: string; key_set: boolean; source: string }
 export type Channel = { id: string; name: string; url: string; protocol: 'openai' | 'anthropic'; models: string[]; embeddings: string[] }
 export type RunEvent = { event: string; data: Record<string, unknown> }
 
-export function listConversations() { return api<{ conversations: ConversationSummary[] }>('/conversations') }
+export function listConversations(scope: ChatScope = { kind: 'global' }) {
+  const params = new URLSearchParams({ scope: scope.kind })
+  if (scope.kind === 'company') params.set('company', scope.company)
+  if (scope.kind === 'job') params.set('job_id', scope.jobId)
+  return api<{ conversations: ConversationSummary[] }>(`/conversations?${params}`)
+}
 export function getConversation(id: string) { return api<ConversationDetail>(`/conversations/${encodeURIComponent(id)}`) }
 export function patchConversation(id: string, body: { title?: string; mode?: ChatMode; model?: string }) {
   return api<ConversationSummary>(`/conversations/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) })
@@ -55,7 +61,7 @@ export function deleteConversation(id: string) { return api<{ ok: boolean }>(`/c
 export function deleteConversationMessage(conversationId: string, messageId: string) {
   return api<{ ok: boolean }>(`/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`, { method: 'DELETE' })
 }
-export function startChatRun(body: { message: string; conversation_id?: string; agent_mode?: ChatMode; model?: string; edit_message_id?: string }) {
+export function startChatRun(body: { message: string; conversation_id?: string; agent_mode?: ChatMode; model?: string; edit_message_id?: string; company?: string; job_id?: string }) {
   return post<ChatRunStart>('/chat/runs', body)
 }
 export function cancelChatRun(runId: string) { return post<ChatRunStatus>(`/chat/runs/${encodeURIComponent(runId)}/cancel`) }

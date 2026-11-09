@@ -3,7 +3,7 @@ import {
   approveChatRun, cancelChatRun, deleteConversation, deleteConversationMessage, getConversation,
   listConversations, openRunStream, patchConversation, startChatRun,
 } from '../api'
-import type { ApprovalRequest, ChatMode, ConversationSummary, StoredMessage, ToolStep } from '../api'
+import type { ApprovalRequest, ChatMode, ChatScope, ConversationSummary, StoredMessage, ToolStep } from '../api'
 
 export type RunState = {
   id: string
@@ -17,7 +17,14 @@ export type RunState = {
 
 export type ChatConversation = { id: string | null; title: string; mode: ChatMode; model: string }
 
-export function useChatRun() {
+function scopeMatches(stored: { kind: string; company?: string; job_id?: string } | undefined, scope: ChatScope) {
+  if (!stored) return false
+  if (scope.kind === 'global') return stored.kind === 'global'
+  if (scope.kind === 'company') return stored.kind === 'company' && stored.company === scope.company
+  return stored.kind === 'job' && stored.job_id === scope.jobId
+}
+
+export function useChatRun(scope: ChatScope = { kind: 'global' }) {
   const [sessions, setSessions] = useState<ConversationSummary[]>([])
   const [conversation, setConversation] = useState<ChatConversation>({ id: null, title: '新对话', mode: 'research', model: '' })
   const [messages, setMessages] = useState<StoredMessage[]>([])
@@ -27,6 +34,11 @@ export function useChatRun() {
   const runIdRef = useRef<string | null>(null)
   const conversationIdRef = useRef<string | null>(null)
   const reloadRef = useRef<(id: string | null) => Promise<void>>(async () => {})
+  const scopeRef = useRef(scope)
+  scopeRef.current = scope
+  const scopeKey = scope.kind === 'global' ? 'global' : scope.kind === 'job' ? `job:${scope.jobId}` : `company:${scope.company}`
+  const storageKeyRef = useRef('')
+  storageKeyRef.current = `jobscope-conversation:${scopeKey}`
 
   conversationIdRef.current = conversation.id
 
@@ -37,8 +49,10 @@ export function useChatRun() {
   }
 
   const refreshSessions = useCallback(async () => {
-    try { setSessions((await listConversations()).conversations) } catch { /* 会话列表失败不阻塞对话 */ }
-  }, [])
+    const current = scopeRef.current
+    if (current.kind === 'company' && !current.company) { setSessions([]); return }
+    try { setSessions((await listConversations(current)).conversations) } catch { /* 会话列表失败不阻塞对话 */ }
+  }, [scopeKey])
 
   useEffect(() => { void refreshSessions(); return closeStream }, [refreshSessions])
 
@@ -105,14 +119,19 @@ export function useChatRun() {
     try {
       const detail = await getConversation(conversationId)
       if (conversationIdRef.current !== conversationId) return
+      if (!scopeMatches(detail.scope, scopeRef.current)) {
+        sessionStorage.removeItem(storageKeyRef.current)
+        setError('该会话属于其他对话范围，已改为新会话')
+        return
+      }
       setMessages(detail.messages)
       setConversation(current => current.id === conversationId ? { ...current, title: detail.title, mode: detail.mode, model: detail.model } : current)
       if (detail.active_run && !detail.active_run.done && runIdRef.current !== detail.active_run.run_id) {
         attach(detail.active_run.run_id)
       }
-    } catch (err) { setError((err as Error).message) }
+    } catch (err) { sessionStorage.removeItem(storageKeyRef.current); setError((err as Error).message) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attach])
+  }, [attach, scopeKey])
 
   reloadRef.current = reload
 
@@ -121,13 +140,28 @@ export function useChatRun() {
     setError('')
     setRun(null)
     setMessages([])
+    if (id) sessionStorage.setItem(storageKeyRef.current, id)
+    else sessionStorage.removeItem(storageKeyRef.current)
     setConversation({ id, title: '新对话', mode: 'research', model: '' })
     if (id) await reload(id)
   }, [reload])
 
+  // 工作区卸载再挂载（切换页面或岗位）时接回上次会话；会话本身一直在服务端继续生成
+  const restoredRef = useRef(false)
+  useEffect(() => {
+    if (restoredRef.current) return
+    restoredRef.current = true
+    const saved = sessionStorage.getItem(storageKeyRef.current)
+    if (saved) void openConversation(saved)
+  }, [openConversation])
+
   const send = useCallback(async (text: string, options?: { editMessageId?: string }) => {
     const content = text.trim()
     if (!content || runIdRef.current) return false
+    const target = scopeRef.current
+    const company = target.kind === 'company' ? target.company : ''
+    const jobId = target.kind === 'job' ? target.jobId : ''
+    if (target.kind === 'company' && !company) return false
     setError('')
     const targetId = conversation.id
     const tempId = `tmp-${Date.now()}`
@@ -136,12 +170,15 @@ export function useChatRun() {
       const started = await startChatRun({
         message: content,
         conversation_id: targetId ?? undefined,
-        agent_mode: conversation.mode,
+        agent_mode: company || jobId ? 'research' : conversation.mode,
         model: conversation.model || undefined,
         edit_message_id: options?.editMessageId,
+        ...(company ? { company } : {}),
+        ...(jobId ? { job_id: jobId } : {}),
       })
       setConversation(current => ({ ...current, id: started.conversation_id, title: started.title || current.title }))
       conversationIdRef.current = started.conversation_id
+      sessionStorage.setItem(storageKeyRef.current, started.conversation_id)
       setMessages(current => {
         const withoutTemp = current.filter(item => item.id !== tempId)
         const entry: StoredMessage = { id: started.user_message_id, ts: '', role: 'user', content }

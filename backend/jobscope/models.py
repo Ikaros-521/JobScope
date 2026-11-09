@@ -89,6 +89,8 @@ class ChatRunInput(RequestModel):
     agent_mode: Literal['research', 'general'] = 'research'
     model: str = Field(default='', max_length=200)
     edit_message_id: str | None = Field(default=None, max_length=50)
+    company: str = Field(default='', max_length=300)
+    job_id: str | None = Field(default=None, max_length=100)
 
 
 class ConversationPatch(RequestModel):

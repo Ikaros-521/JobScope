@@ -43,6 +43,16 @@ def test_paginated_lists_and_filters(client):
     assert companies['total'] == 2
 
 
+def test_evidence_direct_search_covers_title_and_content(client):
+    seed(client)
+    assert client.get('/api/evidence', params={'q': '岗位职责3'}).json()['total'] == 1
+    assert client.get('/api/evidence', params={'q': 'python 03'}).json()['total'] == 1
+    assert client.get('/api/evidence', params={'q': 'Python 岗位职责3'}).json()['total'] == 1
+    assert client.get('/api/evidence', params={'q': 'Python 薪资'}).json()['total'] == 0
+    scoped = client.get('/api/evidence', params={'q': '岗位职责0', 'company': '甲公司'}).json()
+    assert scoped['total'] == 1 and scoped['evidence'][0]['company'] == '甲公司'
+
+
 def test_company_and_global_chat_and_bound_history(client, monkeypatch):
     repo = seed(client, 2)
     a = repo.save_evidence(dict(title='甲经营', company='甲公司', text='甲公司营业收入100，薪资10K'), 'user_import')

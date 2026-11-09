@@ -185,9 +185,10 @@ class Repository:
             if company is not None:
                 where.append('company=?')
                 params.append(company)
-            if q:
+            # 空格分词：每个词都要在标题或正文中出现，缺一词即排除。
+            for term in q.split():
                 where.append("instr(lower(json_extract(payload,'$.title') || ' ' || json_extract(payload,'$.text')),lower(?)) > 0")
-                params.append(q)
+                params.append(term)
             if job_id:
                 where.append("company=(SELECT json_extract(payload,'$.company') FROM jobs WHERE id=?)")
                 params.append(job_id)
@@ -282,26 +283,24 @@ class Repository:
             result.append(dict(id=row['id'], title=row['title'] or preview or '新对话', mode=row['mode'] or 'research', model=row['model'], updated_at=row['updated_at'], message_count=len(messages), preview=preview))
         return result
 
-    def get_conversation(self, conversation_id, scope):
-        encoded = json.dumps(scope, sort_keys=True, ensure_ascii=False)
+    def get_conversation(self, conversation_id, scope=None):
         with self.connection() as conn:
             row = conn.execute('SELECT * FROM conversations WHERE id=?', (conversation_id,)).fetchone()
-        if row is None or row['scope'] != encoded:
+        if row is None or (scope is not None and row['scope'] != json.dumps(scope, sort_keys=True, ensure_ascii=False)):
             raise ValueError('会话不存在或范围不匹配')
         messages = json.loads(row['messages'])
         if self._fill_message_ids(messages):
             with self.connection() as conn:
                 conn.execute('UPDATE conversations SET messages=? WHERE id=?', (json.dumps(messages, ensure_ascii=False), conversation_id))
-        return dict(id=row['id'], title=row['title'] or '新对话', mode=row['mode'] or 'research', model=row['model'], created_at=row['created_at'], updated_at=row['updated_at'], messages=messages)
+        return dict(id=row['id'], scope=json.loads(row['scope']), title=row['title'] or '新对话', mode=row['mode'] or 'research', model=row['model'], created_at=row['created_at'], updated_at=row['updated_at'], messages=messages)
 
-    def _conversation_row(self, conn, conversation_id, scope):
-        encoded = json.dumps(scope, sort_keys=True, ensure_ascii=False)
+    def _conversation_row(self, conn, conversation_id, scope=None):
         row = conn.execute('SELECT scope,title,messages FROM conversations WHERE id=?', (conversation_id,)).fetchone()
-        if row is None or row['scope'] != encoded:
+        if row is None or (scope is not None and row['scope'] != json.dumps(scope, sort_keys=True, ensure_ascii=False)):
             raise ValueError('会话不存在或范围不匹配')
         return row
 
-    def update_conversation(self, conversation_id, scope, *, title=None, mode=None, model=None):
+    def update_conversation(self, conversation_id, scope=None, *, title=None, mode=None, model=None):
         fields, values = [], []
         if title is not None:
             fields.append('title=?')
@@ -314,8 +313,9 @@ class Repository:
             values.append(model[:200])
         if not fields:
             return
+        clause = ' AND scope=?' if scope is not None else ''
         with self.connection() as conn:
-            cursor = conn.execute(f"UPDATE conversations SET {', '.join(fields)} WHERE id=? AND scope=?", values + [conversation_id, json.dumps(scope, sort_keys=True, ensure_ascii=False)])
+            cursor = conn.execute(f"UPDATE conversations SET {', '.join(fields)} WHERE id=?{clause}", values + [conversation_id] + ([json.dumps(scope, sort_keys=True, ensure_ascii=False)] if scope is not None else []))
             if cursor.rowcount == 0:
                 raise ValueError('会话不存在或范围不匹配')
 
@@ -329,9 +329,11 @@ class Repository:
             self._fill_message_ids(stored)
             conn.execute('UPDATE conversations SET title=?, messages=? WHERE id=?', (title[:100], json.dumps(stored, ensure_ascii=False), conversation_id))
 
-    def delete_conversation(self, conversation_id, scope):
+    def delete_conversation(self, conversation_id, scope=None):
+        clause = ' AND scope=?' if scope is not None else ''
+        values = [conversation_id] + ([json.dumps(scope, sort_keys=True, ensure_ascii=False)] if scope is not None else [])
         with self.connection() as conn:
-            cursor = conn.execute('DELETE FROM conversations WHERE id=? AND scope=?', (conversation_id, json.dumps(scope, sort_keys=True, ensure_ascii=False)))
+            cursor = conn.execute('DELETE FROM conversations WHERE id=?' + clause, values)
             if cursor.rowcount == 0:
                 raise ValueError('会话不存在或范围不匹配')
 

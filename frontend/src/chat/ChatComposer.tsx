@@ -3,7 +3,7 @@ import type { ChatMode } from '../api'
 
 export type EditingTarget = { id: string; original: string } | null
 
-export function ChatComposer({ input, onInputChange, mode, onModeChange, model, modelOptions, onModelChange, running, awaiting, onStop, onSend, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions }: {
+export function ChatComposer({ input, onInputChange, mode, onModeChange, model, modelOptions, onModelChange, running, awaiting, onStop, onSend, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, showMode = true, modeLabel = '公司资料研究', locked = '', scopeName = '全项目资料' }: {
   input: string
   onInputChange: (value: string) => void
   mode: ChatMode
@@ -20,7 +20,11 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
   onToggleReasoning: (value: boolean) => void
   editing: EditingTarget
   onCancelEdit: () => void
-  onManageExtensions: () => void
+  onManageExtensions?: () => void
+  showMode?: boolean
+  modeLabel?: string
+  locked?: string
+  scopeName?: string
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   useEffect(() => {
@@ -30,10 +34,12 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
     node.style.height = `${Math.min(200, Math.max(48, node.scrollHeight))}px`
   }, [input])
 
-  const blocked = awaiting || (mode === 'general' && !modelConfigured)
-  const placeholder = blocked
-    ? awaiting ? '等待工具确认后再继续对话…' : '通用 Agent 需要先在模型设置中配置对话模型'
-    : mode === 'general' ? '描述要完成的任务，Agent 会按需调用工具…' : '检索全项目资料，支持引用与出处…'
+  const blocked = Boolean(locked) || awaiting || (mode === 'general' && !modelConfigured)
+  const placeholder = locked
+    ? locked
+    : awaiting ? '等待工具确认后再继续对话…'
+      : mode === 'general' && !modelConfigured ? '通用 Agent 需要先在模型设置中配置对话模型'
+        : mode === 'general' ? '描述要完成的任务，Agent 会按需调用工具…' : `检索${scopeName}的资料，支持引用与出处…`
 
   function trySend() {
     if (running || blocked || !input.trim()) return
@@ -53,7 +59,7 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
         disabled={blocked}
         maxLength={8000}
         placeholder={placeholder}
-        aria-label="全局对话输入框"
+        aria-label={`围绕${scopeName}的对话输入框`}
         onChange={event => onInputChange(event.target.value)}
         onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); trySend() } }}
       />
@@ -62,10 +68,11 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
         : <button type="button" className="composer-send" onClick={trySend} disabled={blocked || !input.trim()} aria-label="发送消息">发送</button>}
     </div>
     <div className="composer-toolbar">
-      <div className="composer-mode" role="group" aria-label="工作模式">
+      {showMode && <div className="composer-mode" role="group" aria-label="工作模式">
         <button type="button" aria-pressed={mode === 'research'} onClick={() => onModeChange('research')} disabled={running || awaiting}>资料研究</button>
         <button type="button" aria-pressed={mode === 'general'} onClick={() => onModeChange('general')} disabled={running || awaiting} title={modelConfigured ? '通用 Agent · 工具调用 / MCP / Skills' : '需要先配置对话模型'}>通用 Agent</button>
-      </div>
+      </div>}
+      {!showMode && <span className="composer-scope-tag">{modeLabel}</span>}
       <label className="composer-model">
         <span>模型</span>
         <select value={model} onChange={event => onModelChange(event.target.value)} disabled={running || awaiting}>
@@ -78,7 +85,7 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
         <input type="checkbox" checked={showReasoning} onChange={event => onToggleReasoning(event.target.checked)} />
         <span>思维链</span>
       </label>
-      <button type="button" className="composer-extensions" onClick={onManageExtensions}>MCP 与 Skills</button>
+      {showMode && onManageExtensions && <button type="button" className="composer-extensions" onClick={onManageExtensions}>MCP 与 Skills</button>}
       <span className="composer-hint">Enter 发送 · Shift + Enter 换行{mode === 'general' ? ' · 外部工具按配置确认' : ' · 回答标注证据出处'}</span>
     </div>
   </div>

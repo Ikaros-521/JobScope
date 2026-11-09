@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { getChannels, getModelSettings } from '../api'
-import type { ChatMode, StoredMessage } from '../api'
+import type { ChatMode, ChatScope, StoredMessage } from '../api'
 import { ChatComposer } from './ChatComposer'
 import type { EditingTarget } from './ChatComposer'
 import { ChatMessageItem, ReasoningBlock } from './ChatMessageItem'
@@ -14,14 +14,21 @@ const SUGGESTIONS: Record<ChatMode, string[]> = {
   general: ['结合我的简历，制定 Agent 岗位面试计划', '检索 Python 岗位并比较薪资', '解释 MCP 与 Skills 的区别'],
 }
 
-export function GlobalChat({ modelConfigured, onManageExtensions }: { modelConfigured: boolean; onManageExtensions: () => void }) {
+const COMPANY_SUGGESTIONS = ['这家公司有哪些岗位要求？', '公司经营情况有哪些证据？', '薪资还有哪些口径需要核实？']
+const JOB_SUGGESTIONS = ['这份岗位有哪些要求？', '公司有哪些可核实的信息？', '面试时还应该问清什么？']
+
+export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { scope: ChatScope; modelConfigured: boolean; onManageExtensions?: () => void }) {
+  const isGlobal = scope.kind === 'global'
+  const isJob = scope.kind === 'job'
+  const company = scope.kind === 'company' ? scope.company.trim() : ''
+  const jobCompany = scope.kind === 'job' ? scope.company : ''
   const {
     sessions, conversation, messages, run, error,
     openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeMode, changeModel, clearError,
-  } = useChatRun()
+  } = useChatRun(scope)
   const [input, setInput] = useState('')
   const [editing, setEditing] = useState<EditingTarget>(null)
-  const [sessionsCollapsed, setSessionsCollapsed] = useState(false)
+  const [sessionsCollapsed, setSessionsCollapsed] = useState(isJob)
   const [modelOptions, setModelOptions] = useState<string[]>([])
   const [showReasoning, setShowReasoning] = useState(() => localStorage.getItem('jobscope-reasoning') !== 'off')
   const threadBottom = useRef<HTMLDivElement>(null)
@@ -46,6 +53,7 @@ export function GlobalChat({ modelConfigured, onManageExtensions }: { modelConfi
 
   const running = Boolean(run)
   const canMutate = conversation.id !== null && !running
+  const mode: ChatMode = isGlobal ? conversation.mode : 'research'
 
   function startEdit(message: StoredMessage) {
     setEditing({ id: message.id, original: message.content })
@@ -81,10 +89,21 @@ export function GlobalChat({ modelConfigured, onManageExtensions }: { modelConfi
 
   function toggleSessions() { setSessionsCollapsed(value => !value) }
 
-  return <div className={`chat-page ${sessionsCollapsed ? 'sessions-collapsed' : ''}`}>
+  const suggestions = isGlobal ? SUGGESTIONS[mode] : isJob ? JOB_SUGGESTIONS : COMPANY_SUGGESTIONS
+  const welcome = !isGlobal && !isJob && !company
+    ? { title: '先确认公司主体，再开始对话', text: '在上方输入资料库中的精确公司名称。对话只检索这一主体的岗位与公司资料，其他公司和全局对话历史不会进来。' }
+    : mode === 'general'
+      ? { title: '让工具参与完成任务', text: 'Agent 会按需检索项目、读取简历、加载 Skill 或调用 MCP；外部工具会先向你确认。' }
+      : isGlobal
+        ? { title: '从所有已保存资料中查找线索', text: '检索本项目保存的全部岗位和公司证据，回答会标注公司与出处。' }
+        : isJob
+          ? { title: '围绕这份岗位提问', text: '检索该岗位的职责原文、详情快照与同一公司的补充资料，回答标注出处；资料缺失的部分保持未知。' }
+          : { title: `围绕 ${company} 提问`, text: '询问招聘要求、公司披露、员工情况或仍待核实的问题；回答只引用该公司已保存的资料。' }
+
+  return <div className={`chat-page chat-${scope.kind} ${sessionsCollapsed ? 'sessions-collapsed' : ''}`}>
     <aside className="chat-sidebar">
       <div className="chat-sidebar-top">
-        <button type="button" className="button primary small chat-new-button" onClick={() => { void openConversation(null); cancelEdit() }} disabled={running}>
+        <button type="button" className="button primary small chat-new-button" onClick={() => { void openConversation(null); cancelEdit() }} disabled={running || (scope.kind === 'company' && !company)}>
           {sessionsCollapsed ? '＋' : '＋ 新对话'}
         </button>
         <button type="button" className="icon-button" aria-label={sessionsCollapsed ? '展开会话列表' : '收起会话列表'} onClick={toggleSessions}>
@@ -104,9 +123,11 @@ export function GlobalChat({ modelConfigured, onManageExtensions }: { modelConfi
     <section className="chat-main">
       <header className="chat-main-head">
         <div className="chat-main-title">
-          <h2>{conversation.title}</h2>
+          <h2>{isGlobal ? conversation.title : scope.kind === 'job' ? (scope.title || scope.company) : `${company || '未选定公司'} · 对话`}</h2>
           <span className="chat-main-sub">
-            {conversation.mode === 'general' ? '通用 Agent · 工具调用 / MCP / Skills' : '资料研究 · 检索与引用校验'}
+            {isGlobal
+              ? (mode === 'general' ? '通用 Agent · 工具调用 / MCP / Skills' : '资料研究 · 检索与引用校验')
+              : isJob ? '资料研究 · 只检索该岗位与同公司资料' : '资料研究 · 只检索该公司的已保存资料'}
             {conversation.model ? ` · ${conversation.model}` : ''}
           </span>
         </div>
@@ -115,13 +136,11 @@ export function GlobalChat({ modelConfigured, onManageExtensions }: { modelConfi
 
       <div className="chat-thread" aria-live="polite">
         {messages.length === 0 && !run && <div className="chat-welcome">
-          <h3>{conversation.mode === 'general' ? '让工具参与完成任务' : '从所有已保存资料中查找线索'}</h3>
-          <p>{conversation.mode === 'general'
-            ? 'Agent 会按需检索项目、读取简历、加载 Skill 或调用 MCP；外部工具会先向你确认。'
-            : '检索本项目保存的全部岗位和公司证据，回答会标注公司与出处。'}</p>
-          <div className="chat-suggestions">
-            {SUGGESTIONS[conversation.mode].map(text => <button key={text} type="button" onClick={() => { setInput(text); }}>{text}</button>)}
-          </div>
+          <h3>{welcome.title}</h3>
+          <p>{welcome.text}</p>
+          {(isGlobal || isJob || company) && <div className="chat-suggestions">
+            {suggestions.map(text => <button key={text} type="button" onClick={() => { setInput(text); }}>{text}</button>)}
+          </div>}
         </div>}
 
         {messages.map(message => <ChatMessageItem
@@ -167,7 +186,7 @@ export function GlobalChat({ modelConfigured, onManageExtensions }: { modelConfi
       <ChatComposer
         input={input}
         onInputChange={setInput}
-        mode={conversation.mode}
+        mode={mode}
         onModeChange={mode => void changeMode(mode)}
         model={conversation.model}
         modelOptions={modelOptions}
@@ -182,6 +201,10 @@ export function GlobalChat({ modelConfigured, onManageExtensions }: { modelConfi
         editing={editing}
         onCancelEdit={cancelEdit}
         onManageExtensions={onManageExtensions}
+        showMode={isGlobal}
+        modeLabel={isJob ? '岗位资料研究' : '公司资料研究'}
+        locked={isGlobal || isJob || company ? '' : '请先在上方确认公司主体'}
+        scopeName={isGlobal ? '全项目资料' : isJob ? `${jobCompany}的岗位资料` : company || '未选定公司'}
       />
     </section>
   </div>

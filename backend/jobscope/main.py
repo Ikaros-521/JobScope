@@ -238,6 +238,21 @@ def create_app(data_dir=None):
             raise HTTPException(404, "岗位不存在")
         return job
 
+    def chat_scope(kind, company='', job_id=None):
+        """Conversation scopes match the legacy /api/chat encoding, so history carries over."""
+        if kind == 'global':
+            return GLOBAL_SCOPE
+        if kind == 'company':
+            if not company.strip():
+                raise HTTPException(400, '公司对话需要先指定精确公司名称')
+            return dict(kind='company', company=company.strip())
+        if kind == 'job':
+            if not job_id:
+                raise HTTPException(400, '岗位对话需要先指定岗位')
+            job = get_job(job_id)
+            return dict(kind='job', job_id=job['id'], company=job['company'])
+        raise HTTPException(400, '暂不支持该对话范围')
+
     def load_module(name):
         try:
             return importlib.import_module("." + name, __package__)
@@ -442,9 +457,14 @@ def create_app(data_dir=None):
     def start_chat_run(data: ChatRunInput):
         if data.agent_mode == 'general' and not model_configured():
             raise HTTPException(400, '通用 Agent 需要先配置支持工具调用的对话模型。也可切回资料研究模式。')
+        scope = chat_scope('job' if data.job_id else ('company' if data.company.strip() else 'global'),
+                           data.company, data.job_id)
+        if data.agent_mode == 'general' and scope['kind'] != 'global':
+            raise HTTPException(400, '岗位与公司对话只检索本范围的已保存资料；通用 Agent 请在全局对话中使用。')
         try:
             return runs.start(message=data.message, conversation_id=data.conversation_id or None,
-                              mode=data.agent_mode, model=data.model, edit_message_id=data.edit_message_id)
+                              mode=data.agent_mode, model=data.model, edit_message_id=data.edit_message_id,
+                              scope=scope)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
 
@@ -479,15 +499,13 @@ def create_app(data_dir=None):
             raise HTTPException(409, str(exc)) from None
 
     @app.get('/api/conversations')
-    def list_conversations(scope: str = 'global'):
-        if scope != 'global':
-            raise HTTPException(400, '当前仅支持列出全局对话')
-        return dict(conversations=repo.list_conversations(GLOBAL_SCOPE))
+    def list_conversations(scope: str = 'global', company: str = Query('', max_length=300), job_id: str | None = Query(default=None, max_length=100)):
+        return dict(conversations=repo.list_conversations(chat_scope(scope, company, job_id)))
 
     @app.get('/api/conversations/{conversation_id}')
     def read_conversation(conversation_id: str):
         try:
-            conversation = repo.get_conversation(conversation_id, GLOBAL_SCOPE)
+            conversation = repo.get_conversation(conversation_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
         handle = runs.active_for_conversation(conversation_id)
@@ -497,8 +515,8 @@ def create_app(data_dir=None):
     @app.patch('/api/conversations/{conversation_id}')
     def patch_conversation(conversation_id: str, data: ConversationPatch):
         try:
-            repo.update_conversation(conversation_id, GLOBAL_SCOPE, title=data.title, mode=data.mode, model=data.model)
-            conversation = repo.get_conversation(conversation_id, GLOBAL_SCOPE)
+            repo.update_conversation(conversation_id, title=data.title, mode=data.mode, model=data.model)
+            conversation = repo.get_conversation(conversation_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
         conversation.pop('messages', None)
@@ -510,7 +528,7 @@ def create_app(data_dir=None):
         if handle:
             runs.cancel(handle.id)
         try:
-            repo.delete_conversation(conversation_id, GLOBAL_SCOPE)
+            repo.delete_conversation(conversation_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
         return dict(ok=True)
@@ -520,7 +538,7 @@ def create_app(data_dir=None):
         if runs.active_for_conversation(conversation_id):
             raise HTTPException(409, '会话正在生成中，请等待完成或先停止')
         try:
-            repo.delete_message(conversation_id, GLOBAL_SCOPE, message_id)
+            repo.delete_message(conversation_id, None, message_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
         return dict(ok=True)

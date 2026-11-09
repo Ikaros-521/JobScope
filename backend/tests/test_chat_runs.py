@@ -137,6 +137,50 @@ def test_run_lifecycle_and_conversation_crud_without_model(client):
     assert client.get(f"/api/conversations/{data['conversation_id']}").status_code == 404
 
 
+def test_job_scoped_run_continues_legacy_job_sessions(client):
+    repo = client.app.state.repo
+    job = repo.save_job(dict(title='Python 后端', company='甲公司', description='负责数据平台', external_id='j1', location='杭州'), 'user_import')
+    assert client.post('/api/chat', json={'job_id': job['id'], 'company': job['company'], 'message': '这份岗位有哪些要求？'}).status_code == 200
+    legacy = client.get('/api/conversations', params={'scope': 'job', 'job_id': job['id']}).json()['conversations']
+    assert len(legacy) == 1
+
+    started = client.post('/api/chat/runs', json={'message': '薪资口径呢？', 'job_id': job['id']}).json()
+    await_run(client, started['run_id'])
+    detail = client.get(f"/api/conversations/{started['conversation_id']}").json()
+    assert detail['scope'] == {'kind': 'job', 'job_id': job['id'], 'company': '甲公司'}
+    assert detail['id'] != legacy[0]['id']
+    continued = client.post('/api/chat/runs', json={'message': '继续追问', 'job_id': job['id'], 'conversation_id': legacy[0]['id']}).json()
+    await_run(client, continued['run_id'])
+    assert len(stored_messages(client, legacy[0]['id'])) == 4
+    assert len(client.get('/api/conversations', params={'scope': 'job', 'job_id': job['id']}).json()['conversations']) == 2
+    assert client.get('/api/conversations').json()['conversations'] == []
+    assert client.post('/api/chat/runs', json={'message': '问题', 'job_id': job['id'], 'agent_mode': 'general'}).status_code == 400
+    assert client.post('/api/chat/runs', json={'message': '问题', 'job_id': 'J-missing'}).status_code == 404
+    assert client.get('/api/conversations', params={'scope': 'job'}).status_code == 400
+
+
+def test_company_scoped_run_keeps_sessions_isolated(client):
+    repo = client.app.state.repo
+    repo.save_evidence(dict(title='甲公司经营', company='甲公司', text='甲公司营业收入100万元'), 'user_import')
+    repo.save_evidence(dict(title='乙公司经营', company='乙公司', text='乙公司营业收入90万元'), 'user_import')
+    assert client.post('/api/chat/runs', json={'message': '问题', 'agent_mode': 'general', 'company': '甲公司'}).status_code == 400
+    assert client.get('/api/conversations', params={'scope': 'company'}).status_code == 400
+
+    started = client.post('/api/chat/runs', json={'message': '甲公司收入如何？', 'company': '甲公司'}).json()
+    await_run(client, started['run_id'])
+    detail = client.get(f"/api/conversations/{started['conversation_id']}").json()
+    assert detail['scope'] == {'kind': 'company', 'company': '甲公司'}
+    assert detail['messages'][1]['mode'] == 'evidence_search'
+    assert detail['messages'][1]['trace']['scope'] == {'kind': 'company', 'company': '甲公司'}
+    company_sessions = client.get('/api/conversations', params={'scope': 'company', 'company': '甲公司'}).json()['conversations']
+    assert [item['id'] for item in company_sessions] == [started['conversation_id']]
+    assert client.get('/api/conversations', params={'scope': 'company', 'company': '乙公司'}).json()['conversations'] == []
+    assert client.get('/api/conversations').json()['conversations'] == []
+    assert client.patch(f"/api/conversations/{started['conversation_id']}", json={'title': '甲公司核查'}).json()['title'] == '甲公司核查'
+    assert client.delete(f"/api/conversations/{started['conversation_id']}").status_code == 200
+    assert client.get('/api/conversations', params={'scope': 'company', 'company': '甲公司'}).json()['conversations'] == []
+
+
 def test_edit_resend_truncates_history(client):
     first = client.post('/api/chat/runs', json={'message': '问题一'}).json()
     await_run(client, first['run_id'])

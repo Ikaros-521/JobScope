@@ -21,9 +21,10 @@ def sse_frame(event, data):
 
 
 class RunHandle:
-    def __init__(self, run_id, conversation_id, config):
+    def __init__(self, run_id, conversation_id, config, scope=GLOBAL_SCOPE):
         self.id = run_id
         self.conversation_id = conversation_id
+        self.scope = scope
         self.config = config
         self.created = time.time()
         self.events = []
@@ -86,22 +87,23 @@ class RunManager:
                         self._runs.pop(run_id, None)
             self._runs[handle.id] = handle
 
-    def start(self, *, message, conversation_id=None, mode='research', model='', edit_message_id=None):
+    def start(self, *, message, conversation_id=None, mode='research', model='', edit_message_id=None, scope=None):
         # The full settings map is required: worker threads read both llm and embedding targets from it.
         config = ModelSettings(self.repo).effective()
         if model:
             config = {**config, 'llm': {**config['llm'], 'model': model}}
+        scope = scope or GLOBAL_SCOPE
         title = None
         if conversation_id:
-            conversation = self.repo.get_conversation(conversation_id, GLOBAL_SCOPE)
-            history = self.repo.truncate_for_edit(conversation_id, GLOBAL_SCOPE, edit_message_id) if edit_message_id else conversation['messages']
+            conversation = self.repo.get_conversation(conversation_id, scope)
+            history = self.repo.truncate_for_edit(conversation_id, scope, edit_message_id) if edit_message_id else conversation['messages']
         else:
             if edit_message_id:
                 raise ValueError('新对话不能编辑历史消息')
-            conversation_id = self.repo.create_conversation(GLOBAL_SCOPE, mode=mode, model=model)
+            conversation_id = self.repo.create_conversation(scope, mode=mode, model=model)
             history = []
             title = message[:30]
-        handle = RunHandle('R-' + uuid.uuid4().hex, conversation_id, config)
+        handle = RunHandle('R-' + uuid.uuid4().hex, conversation_id, config, scope)
         with self._lock:
             blocker = self.active_for_conversation(conversation_id)
             if blocker:
@@ -109,7 +111,7 @@ class RunManager:
             self._runs[handle.id] = handle
         user_message = self.repo.append_messages(conversation_id, [dict(role='user', content=message)])[0]
         if title:
-            self.repo.ensure_title(conversation_id, GLOBAL_SCOPE, title)
+            self.repo.ensure_title(conversation_id, scope, title)
         handle.thread = threading.Thread(target=self._execute, args=(handle, message, history, mode), daemon=True)
         handle.push('start', dict(run_id=handle.id, conversation_id=conversation_id, user_message_id=user_message['id'], mode=mode))
         handle.thread.start()
@@ -188,7 +190,7 @@ class RunManager:
                     saved = self.repo.resume()
                     facts = parse_resume(saved['text'], saved['format']) if saved['text'].strip() else []
                     result = ResearchAgent(self.repo, synthesizer=answer_question).answer(
-                        message, GLOBAL_SCOPE, resume=facts, history=history,
+                        message, handle.scope, resume=facts, history=history,
                         on_event=lambda item: handle.push('step', item))
                     result.setdefault('conversation_id', handle.conversation_id)
             self._settle(handle, result, mode)
