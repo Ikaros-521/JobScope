@@ -47,6 +47,35 @@ export type ModelProvider = { mode: string; channel: string; protocol: 'openai' 
 export type Channel = { id: string; name: string; url: string; protocol: 'openai' | 'anthropic'; models: string[]; embeddings: string[] }
 export type RunEvent = { event: string; data: Record<string, unknown> }
 
+// 求职参考分析：字段口径以后端 reliability/models.py 与 main.py 的端点返回为准。
+export type ReliabilityFinding = {
+  text: string; rule: string; kind: 'assessment' | 'material';
+  // material 类的 score 恒为 null：那个数字量的是本项目存了几条材料，不是对公司的评价。
+  score: number | null; source_class: string; evidence_id: string
+}
+export type ReliabilityDimension = { dimension: string; label: string; score: number | null; confidence: number; findings: ReliabilityFinding[]; evidence_ids: string[]; missing: string[] }
+export type ReliabilityReport = {
+  company_id: string; company: string; nature: 'subjective_reference'; score: number | null;
+  // 顶层 confidence 是「按权重算出的维度覆盖度」，不是单维度的依据充分度，别和维度里那个混称。
+  confidence: number; summary: string; disclaimer: string; dimensions: ReliabilityDimension[];
+  rubric_version: string; wording_version: string; disclaimer_version: string; computed_at: string;
+  input_hash: string; evidence_ids: string[]; limitations: string[]
+}
+// 采集类端点的 status 词表（collectors/local）；抽取端点另有 skipped、degraded，所以这里不收成闭集。
+export type SignalActionResult = { status: string; message: string }
+export type SignalCollectResult = SignalActionResult & { signals: unknown[] }
+export type SignalExtractResult = SignalActionResult & { accepted: number; signals: unknown[]; evidence: number; task: Task }
+export type SignalSource = { name: string; tier: 'free' | 'paid'; transport: string; status: string; rules: string[]; description: string; mode: 'disabled' | 'enabled'; url?: string; updated_at?: string; key_set?: boolean }
+
+export function getReliability(company: string) { return api<{ report: ReliabilityReport | null }>(`/companies/${encodeURIComponent(company)}/reliability`) }
+export function computeReliability(company: string) { return post<ReliabilityReport>(`/companies/${encodeURIComponent(company)}/reliability`, { credit_code: '' }) }
+export function collectCompanySignals(company: string, source: string) { return post<SignalCollectResult>(`/companies/${encodeURIComponent(company)}/signals/collect`, { source }) }
+export function extractCompanySignals(company: string, limit = 12) { return post<SignalExtractResult>(`/companies/${encodeURIComponent(company)}/signals/extract`, { limit }) }
+export function listSignalSources() { return api<{ sources: Record<string, SignalSource> }>('/reliability/sources') }
+export function saveSignalSource(id: string, body: { mode: 'disabled' | 'enabled'; key?: string; url?: string }) {
+  return api<SignalSource>(`/reliability/sources/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) })
+}
+
 export function listConversations(scope: ChatScope = { kind: 'global' }) {
   const params = new URLSearchParams({ scope: scope.kind })
   if (scope.kind === 'company') params.set('company', scope.company)

@@ -279,6 +279,46 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .inline-empty { font-size: 13px; color: var(--muted); background: #fafafa; border: 1px solid var(--line); border-radius: 8px; padding: 16px; line-height: 1.9; margin: 16px 0 8px; }
 .company-evidence-list { display: grid; gap: 16px; padding: 16px 0; }
 .company-evidence-list > div { display: grid; gap: 4px; font-size: 13px; }
+/* 求职参考：视觉保持中性。只用 var(--green) 这一支强调色的深浅表示分数高低，
+   不引入红橙警示色，也不给任何维度加定性标签；没有分数时不画空环、不摆占位数字。 */
+.reliability-panel { margin-top: 24px; padding-top: 18px; border-top: 1px dashed var(--line); }
+.reliability-empty { display: grid; gap: 4px; margin-bottom: 16px; }
+.reliability-empty strong { font-size: 15px; color: #525252; }
+.reliability-score { display: grid; gap: 2px; margin-bottom: 16px; }
+.reliability-score strong { font-size: 28px; line-height: 1.2; }
+.reliability-score > span { color: var(--muted); font-size: 12px; line-height: 1.8; }
+.reliability-score > p { margin-top: 6px; color: #404040; overflow-wrap: anywhere; }
+.reliability-action { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-bottom: 14px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fafafa; font-size: 12px; color: #525252; line-height: 1.8; overflow-wrap: anywhere; }
+.reliability-action-status { color: var(--green); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.reliability-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.reliability-grid article { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); padding: 10px 12px; min-width: 0; }
+.reliability-grid header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); }
+.reliability-grid header b { font-size: 15px; line-height: 1.4; }
+.reliability-grid .tiny-label { display: block; margin-top: 6px; }
+.reliability-meter { height: 3px; margin: 8px 0; background: var(--line); border-radius: 2px; overflow: hidden; }
+.reliability-meter i { display: block; height: 100%; border-radius: 2px; }
+.reliability-grid ul { margin: 10px 0 0; padding-left: 16px; font-size: 12px; line-height: 1.75; }
+.reliability-grid li { margin-bottom: 10px; overflow-wrap: anywhere; }
+.reliability-finding-meta { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; margin-top: 2px; }
+.reliability-finding-score { font-size: 12px; }
+.reliability-evidence-link { font-size: 12px; color: var(--green); text-decoration: underline; min-height: 24px; padding: 0; justify-content: flex-start; overflow-wrap: anywhere; }
+.reliability-gaps { display: grid; gap: 2px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.8; overflow-wrap: anywhere; }
+.reliability-actions { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 14px; }
+.reliability-legal { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.8; }
+.reliability-legal ul { margin: 6px 0; padding-left: 18px; overflow-wrap: anywhere; }
+/* 付费来源设置：默认关闭，密钥只写不读，观感与 ModelSettings 的密钥字段一致。 */
+.signal-source-rows { display: grid; gap: 12px; }
+.signal-source-rows article { border: 1px solid var(--line); border-radius: 8px; background: #fafafa; padding: 12px 16px; min-width: 0; }
+.signal-source-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.signal-source-head > div { display: grid; gap: 2px; min-width: 0; }
+.signal-source-rows article > p { margin-top: 6px; }
+.signal-source-edit { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.signal-source-mode { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.signal-source-mode input { width: 16px; min-height: 16px; accent-color: var(--green); }
+.signal-source-key { display: grid; gap: 6px; flex: 1 1 260px; min-width: 0; font-size: 13px; color: #525252; }
+.signal-source-key input { width: 100%; }
+.signal-sources > .tiny-label { display: block; margin-top: 16px; }
+.evidence-focus > .evidence-card { border-color: var(--green); box-shadow: 0 0 0 1px var(--green); }
 .analysis-summary { display: grid; grid-template-columns: minmax(0, 1fr) minmax(168px, .7fr); gap: 24px; padding: 4px 0 20px; border-bottom: 1px solid var(--line); }
 .analysis-summary h3 { font-size: 16px; line-height: 1.7; margin-bottom: 16px; }
 .coverage-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 12px; color: #525252; line-height: 1.8; }
