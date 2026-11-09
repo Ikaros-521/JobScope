@@ -50,5 +50,11 @@ class ReliabilityService:
         return payload
 
     def latest(self, name, credit_code=''):
+        """会确保实体存在的读法：resolve 可能写出 companies 行，只读场景请用 peek()。"""
         company = self.repo.resolve_company(name, credit_code)
         return self.repo.latest_reliability(company['id'])
+
+    def peek(self, name, credit_code=''):
+        """没有副作用的读入口：公司不存在或从没算过都返回 None，不写任何一行。"""
+        company = self.repo.find_company(name, credit_code)
+        return None if company is None else self.repo.latest_reliability(company['id'])

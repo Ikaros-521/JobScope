@@ -331,8 +331,10 @@ def create_app(data_dir=None):
 
     # 求职参考分析。路径挂在 /api/companies/{company}/... 与 /api/reliability/... 之下，
     # 与上面的 /api/companies 列表端点按完整路径匹配，不受注册顺序影响。
-    # 参数化路径一律带长度上限，percent-decode 由 Starlette 完成，取值先过 resolve_company
-    # 的规范化再使用；出站 URL 由 collectors 用 urlencode 拼接，这里不存在原样插值。
+    # 参数化路径一律带长度上限，percent-decode 由 Starlette 完成，取值先过实体归一的规范化再使用：
+    # 写路径（POST 重算、POST 采集）用 resolve_company 确保实体存在，读路径（GET）用 find_company
+    # 同口径查找、查不到就是没有，绝不因为一次拼错的查询留下 companies 行；
+    # 出站 URL 由 collectors 用 urlencode 拼接，这里不存在原样插值。
     # reliability 子模块全部走函数级 import：包的 __init__ 保持零导入，浏览器与模型依赖
     # 就不会被打进不需要它们的请求路径。
 
@@ -362,7 +364,8 @@ def create_app(data_dir=None):
     def read_reliability(company: str = PathParam(min_length=1, max_length=300), credit_code: str = Query('', max_length=40)):
         from .reliability.service import ReliabilityService
         try:
-            return {'report': ReliabilityService(repo).latest(company, credit_code)}
+            # peek 而不是 latest：GET 是读操作，查一个拼错的名字不该写出 companies 行。
+            return {'report': ReliabilityService(repo).peek(company, credit_code)}
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 

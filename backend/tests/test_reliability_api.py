@@ -207,6 +207,27 @@ def test_collect_stores_the_page_the_signal_came_from(client, monkeypatch):
     assert stored['source'] == 'gsxt' and stored['kind'] == 'disclosure'
 
 
+def test_reading_a_report_does_not_leave_a_company_row_behind(client, tmp_path):
+    """GET 是读操作：查一个拼错的公司名必须在 companies 表里什么都不留。"""
+    def rows():
+        with Repository(tmp_path).connection() as conn:
+            return conn.execute('SELECT count(*) FROM companies').fetchone()[0]
+
+    assert rows() == 0
+    for name in ('拼错了的公搜', '甲公司'):
+        assert client.get(f'/api/companies/{name}/reliability').json() == {'report': None}
+    assert client.get('/api/companies/甲公司/reliability', params=dict(credit_code='91110000MA01ABCD7X')).json() == {'report': None}
+    assert rows() == 0
+    # 空白名同样只是 422，不写行。
+    assert client.get('/api/companies/%20/reliability').status_code == 422
+    assert rows() == 0
+    # POST 重算仍然创建实体，这是对的。
+    built = client.post('/api/companies/甲公司/reliability', json=dict()).json()
+    assert rows() == 1
+    assert client.get('/api/companies/甲公司/reliability').json()['report']['input_hash'] == built['input_hash']
+    assert rows() == 1
+
+
 def test_extract_without_a_model_skips_and_still_records_the_run(client):
     evidence = add_material(client)
     result = client.post('/api/companies/甲公司/signals/extract', json=dict())

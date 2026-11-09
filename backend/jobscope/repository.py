@@ -386,6 +386,21 @@ class Repository:
         # 空白一律删除而非压成空格：'A B' 与 'AB' 是同一家，留下空格就把同一个名字拆成两个实体。
         return re.sub(r'\s+', '', text)
 
+    def find_company(self, name, credit_code=''):
+        """Read-only twin of `resolve_company`: same normalisation, same strong key, no row written.
+
+        读路径写实体等于让一次拼错的查询在库里留下永久记录，所以这里只 SELECT：找不到就返回 None。
+        身份键的算法必须和 `resolve_company` 保持一致，否则同一个名字在读写两侧会指向两个实体。
+        """
+        cleaned = self.normalise_name(name)
+        if not cleaned:
+            raise ValueError('公司名称不能为空')
+        code = str(credit_code or '').strip().upper()
+        company_id = 'CO-' + digest(code or cleaned)[:24]
+        with self.connection() as conn:
+            row = conn.execute('SELECT payload FROM companies WHERE id=?', (company_id,)).fetchone()
+        return json.loads(row['payload']) if row else None
+
     def resolve_company(self, name, credit_code='', aliases=()):
         """Exact normalised match or credit code only; a wrong merge is worse than a miss."""
         cleaned = self.normalise_name(name)

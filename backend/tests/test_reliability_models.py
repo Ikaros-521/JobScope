@@ -88,3 +88,34 @@ def test_signals_past_their_ttl_are_reported_as_stale(tmp_path):
                                  evidence_id='E-2', observed_at='', collected_at=old))
     rows = repo.signals(company['id'], ttl_days={'insured_headcount_trend': 400})
     assert rows[0]['stale'] is True
+
+
+def company_rows(repo):
+    with repo.connection() as conn:
+        return conn.execute('SELECT count(*) FROM companies').fetchone()[0]
+
+
+def test_find_company_reads_the_same_identity_without_writing_a_row(tmp_path):
+    """读路径不许有副作用：查一个拼错的公司名不该留下一条垃圾实体。"""
+    repo = Repository(tmp_path)
+    assert repo.find_company('甲公司') is None
+    assert company_rows(repo) == 0
+    created = repo.resolve_company('甲公司', aliases=['  甲 集团 '])
+    found = repo.find_company('  甲 公司 ')
+    assert found['id'] == created['id'] and found['aliases'] == created['aliases']
+    assert company_rows(repo) == 1
+
+
+def test_find_company_uses_the_credit_code_as_the_strong_key_too(tmp_path):
+    # 与 resolve_company 同一套身份键规则：换了强键就是另一个实体，读不到也不该顺手建。
+    repo = Repository(tmp_path)
+    repo.resolve_company('甲公司')
+    assert repo.find_company('甲公司', credit_code='91110000MA01ABCD7X') is None
+    assert company_rows(repo) == 1
+
+
+def test_a_blank_name_fails_the_read_path_exactly_like_the_write_path(tmp_path):
+    repo = Repository(tmp_path)
+    with pytest.raises(ValueError):
+        repo.find_company('   ')
+    assert company_rows(repo) == 0

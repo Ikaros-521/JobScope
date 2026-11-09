@@ -159,3 +159,26 @@ def test_report_carries_the_three_versions_and_a_subjective_reference_label(tmp_
         RUBRIC_VERSION, wording.WORDING_VERSION, DISCLAIMER_VERSION)
     assert report['disclaimer'] == DISCLAIMER
     assert report['limitations'] and report['computed_at']
+
+
+def company_rows(repo):
+    with repo.connection() as conn:
+        return conn.execute('SELECT count(*) FROM companies').fetchone()[0]
+
+
+def test_peeking_a_report_leaves_no_company_behind(tmp_path):
+    """读入口必须无副作用：查一家没见过的公司不该写出实体。"""
+    repo, service = build(tmp_path)
+    assert service.peek('甲公司') is None
+    assert company_rows(repo) == 0
+    built = service.recompute('甲公司')
+    assert company_rows(repo) == 1
+    assert service.peek('  甲 公司 ')['input_hash'] == built['input_hash']
+    assert company_rows(repo) == 1
+
+
+def test_peeking_a_different_strong_key_finds_nothing_and_creates_nothing(tmp_path):
+    repo, service = build(tmp_path)
+    service.recompute('甲公司')
+    assert service.peek('甲公司', credit_code='91110000MA01ABCD7X') is None
+    assert company_rows(repo) == 1
