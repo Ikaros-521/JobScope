@@ -3,6 +3,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pytest
+
 from jobscope.repository import Repository
 
 
@@ -40,3 +42,23 @@ def test_spaces_are_noise_for_latin_names_too(tmp_path):
     # 删空白这个决定对中英文一致生效：Remotive 的海外公司名同样带多余空格。
     repo = Repository(tmp_path)
     assert repo.resolve_company('Automattic  Inc')['id'] == repo.resolve_company('Automattic Inc')['id']
+
+
+def test_signal_requires_evidence_and_rejects_unlisted_dimension():
+    from pydantic import ValidationError
+    from jobscope.reliability.models import SignalInput
+    base = dict(company_id='CO-x', dimension='stability', rule='insured_headcount_trend',
+                value={'before': 312, 'after': 240}, unit='人', source_class='official',
+                evidence_id='E-1', observed_at='2025-06-30', collected_at='2026-11-09T00:00:00+00:00')
+    assert SignalInput(**base).dimension == 'stability'
+    for field, bad in (('dimension', 'vibes'), ('source_class', 'rumour')):
+        with pytest.raises(ValidationError):
+            SignalInput(**{**base, field: bad})
+    with pytest.raises(ValidationError):
+        SignalInput(**{**base, 'evidence_id': ''})
+
+
+def test_employee_signals_cannot_stand_alone_as_negative():
+    from jobscope.reliability.models import can_stand_alone
+    assert can_stand_alone('employee') is False
+    assert can_stand_alone('official') is True
