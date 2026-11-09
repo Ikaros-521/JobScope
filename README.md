@@ -1,13 +1,14 @@
 # 知根 JobScope
 
-本地岗位情报工作台：采集岗位和公司公开资料，保存来源，再结合简历生成适配分析并围绕资料提问。独立应用位于本目录，与仓库原有 ResumeLoom Skill 通过 `facts.yaml` 连接。
+本地岗位情报工作台：采集岗位和公司公开资料，保存来源，再结合简历生成适配分析并围绕资料提问。仓库可独立运行，简历支持导入 ResumeLoom 的 `facts.yaml`。
 
 ## 安装与启动
 
 需要 Python 3.11+、Node.js 20+。在 Windows PowerShell 中运行：
 
 ```powershell
-cd E:\Github_Pro\ResumeLoom\jobscope
+git clone https://github.com/Ikaros-521/JobScope.git
+cd JobScope
 .\start.ps1 -Install -Browser
 ```
 
@@ -17,7 +18,7 @@ cd E:\Github_Pro\ResumeLoom\jobscope
 .\start.ps1
 ```
 
-打开 http://127.0.0.1:8765 。服务仅监听本机；不应将此个人版本直接暴露到公网。默认运行数据在 `jobscope/.data/`，包括数据库和独立浏览器配置，不提交 Git。
+打开 http://127.0.0.1:8765 。服务仅监听本机；不应将此个人版本直接暴露到公网。默认运行数据在 `.data/`，包括数据库和独立浏览器配置，不提交 Git。
 
 其他系统可手动启动：
 
