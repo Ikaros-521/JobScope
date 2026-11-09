@@ -135,7 +135,8 @@ def score(signals, stale_rules=()):
             confidence = round(min(1.0, weight_sum / len(ASSESSING_BY_DIMENSION[name])), 3)
         else:
             value, confidence = None, 0.0
-            if not ASSESSING_BY_DIMENSION[name] and observed:
+            if not ASSESSING_BY_DIMENSION[name]:
+                # 没有可评价的规则时也要留下可行动的说明，否则用户看到一个空白维度。
                 notes.setdefault(name, []).append('该维度还没有可评价的规则，下面只是已收集到的材料')
         collected = {item.rule for item in observed}
         gaps = [f'{rule}（尚无来源）' for rule in ASSESSING_BY_DIMENSION[name] if rule not in collected]

@@ -34,14 +34,30 @@ def test_a_company_without_signals_gets_no_number_but_still_lists_gaps(tmp_path)
     assert len(report['dimensions']) == 6
     assert all(item['score'] is None and item['confidence'] == 0 and not item['findings']
                for item in report['dimensions'])
-    # 缺口清单只可能由规则表推出来：P0 有 ASSESSMENT 规则的是 stability，它列出三条「尚无来源」；
-    # 其余维度一条可评价规则都没有，rubric-2 就没话可说（修正记录 #5/#8），service 不替它编文案。
+    # 每个维度都必须自己说清楚为什么没有分数：有评价规则的列「尚无来源」，一条评价规则都没有的说明还没接入来源。
     gaps = {item['dimension']: item['missing'] for item in report['dimensions']}
-    assert sorted(name for name, lines in gaps.items() if lines) == ['stability']
+    assert all(gaps[name] for name in gaps)
     assert [line.split('（')[0] for line in gaps['stability']] == sorted(
-        rule for rule, spec in RULES.items() if spec.dimension == 'stability')
+        rule for rule, spec in RULES.items() if spec.dimension == 'stability' and spec.kind == 'assessment')
     assert all('尚无来源' in line for line in gaps['stability'])
+    for name in ('pay', 'operations', 'people', 'professional', 'industry'):
+        assert any('可评价的规则' in line for line in gaps[name]), name
     assert report['disclaimer'] and report['nature'] == 'subjective_reference'
+
+
+def test_material_findings_persist_without_a_number(tmp_path):
+    # 「存了 4 份公告」里的 4 是我们手上有几条材料，露出 25.0 这种分数就会被读成对经营的评估。
+    repo, service = build(tmp_path)
+    company = repo.resolve_company('乙公司')
+    add(repo, company, 'disclosure_available', {'count': 4}, 'E-' + 'd' * 24)
+    add(repo, company, 'company_age', {'years': 8}, 'E-' + 'c' * 24)
+    report = service.recompute('乙公司')
+    assert dimension(report, 'operations')['score'] is None
+    assert [item['kind'] for item in dimension(report, 'operations')['findings']] == ['material']
+    assert dimension(report, 'operations')['findings'][0]['score'] is None
+    assert dimension(report, 'operations')['findings'][0]['text']
+    assert dimension(report, 'stability')['findings'][0]['kind'] == 'assessment'
+    assert dimension(report, 'stability')['findings'][0]['score'] == 80.0
 
 
 def test_recompute_is_idempotent_for_identical_inputs(tmp_path):

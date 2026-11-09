@@ -5,7 +5,15 @@ from ..repository import digest, now
 from . import wording
 from .models import (DISCLAIMER, DISCLAIMER_VERSION, DimensionScore, ReliabilityReport, ReportFinding,
                      SignalInput)
-from .rubric import RULES, RUBRIC_VERSION, score
+from .rubric import ASSESSMENT, RULES, RUBRIC_VERSION, score
+
+
+def _report_finding(item):
+    """material 类依据只出文字不出数字：那个数字量的是本项目的材料覆盖度。"""
+    kind = RULES[item.rule].kind
+    return ReportFinding(text=wording.render(item), rule=item.rule, kind=kind,
+                         score=item.score if kind == ASSESSMENT else None,
+                         source_class=item.source_class, evidence_id=item.evidence_id)
 
 
 class ReliabilityService:
@@ -25,9 +33,7 @@ class ReliabilityService:
         # 措辞在这里且只在这里渲染成句子；再算一次同样输入会得到同样的文字。
         dimensions = [DimensionScore(dimension=item.dimension, label=item.label, score=item.score,
                                      confidence=item.confidence,
-                                     findings=[ReportFinding(text=wording.render(finding), rule=finding.rule,
-                                                             score=finding.score, source_class=finding.source_class,
-                                                             evidence_id=finding.evidence_id) for finding in item.findings],
+                                     findings=[_report_finding(finding) for finding in item.findings],
                                      evidence_ids=item.evidence_ids, missing=item.missing) for item in result.dimensions]
         report = ReliabilityReport(
             company_id=company['id'], company=company['name'], score=result.score, confidence=result.confidence,

@@ -851,7 +851,10 @@ git commit -m "feat(reliability): template the wording and lint away assertive l
 7. `wording.py`（`WORDING_VERSION = 'wording-2'`）：区间文案重排，45-60 段从「出现了值得你重点核实的信号」改成「手上的材料方向不一致，请逐条对照下面的依据」——成立 2 年却在扩员的公司拿 55.6 分，旧文案会把它描述成有问题；只有 <45 段才要求用户重点核实。总分的百分比改称「维度覆盖 {n}%（按权重）」，因为它统计的是有权重依据的维度占比，和单维度的 `confidence` 不是一回事。`employee_review_sample` 模板去掉「样本较小」这种凭条数下的判断。
 8. **由此产生的产品形态**：P0 只有 `stability` 能被打分，所以默认展示是「无综合分 + 缺口清单 + 若干说明文字」。这是设计意图而不是缺陷，但 P1 必须给 `pay`/`operations`/`people` 补 ASSESSMENT 规则，否则这三个维度永远只是文字。
 
-对应提交：`ecd8200` `b66aa57` `0c91dd9` `edfe22d` `1e2b307` `a13f82e` `c9631c8` `2820ec4`。
+9. `ReportFinding` 增加 `kind: 'assessment'|'material'`，且 **material 类持久化时 `score` 一律为 `None`**。`RuleFinding.score` 仍在 rubric 内部用于加权，但 material 规则出到 API 的就是 null——「存了 4 份公告」换算出的 25.0 不是对经营的评价，露出数字等于撒谎。前端渲染 material 行时只画文字与出处，不画数字。
+10. 每个维度都必须自己解释为什么没有分数：有 ASSESSMENT 规则但缺数据的列「（尚无来源）」，一条 ASSESSMENT 规则都没有的列「该维度还没有可评价的规则，下面只是已收集到的材料」。空维度不再留空白 `missing`，否则用户不知道该补什么。
+
+对应提交：`ecd8200` `b66aa57` `0c91dd9` `edfe22d` `1e2b307` `a13f82e` `c9631c8` `2820ec4` `c5130a9` 加本次修正。
 
 ---
 

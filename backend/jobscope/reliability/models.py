@@ -43,7 +43,9 @@ class ReportFinding(BaseModel):
     model_config = ConfigDict(extra='forbid')
     text: str
     rule: str
-    score: float = Field(ge=0, le=100)
+    kind: Literal['assessment', 'material']
+    # material 类那个数字量的是「本项目存了几条材料」，一旦露出来就会被读成对公司的评价，所以只能为 None。
+    score: float | None = Field(default=None, ge=0, le=100)
     source_class: SourceClass
     evidence_id: str
 
