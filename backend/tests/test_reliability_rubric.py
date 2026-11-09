@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from jobscope.reliability.rubric import DIMENSIONS, RULES, score
+from jobscope.reliability.rubric import ASSESSMENT, DIMENSIONS, MATERIAL, RULES, score
 
 
 def sig(rule, value, source_class='official', evidence='E-1'):
@@ -13,11 +13,12 @@ def sig(rule, value, source_class='official', evidence='E-1'):
                        observed_at='', collected_at='2026-11-09T00:00:00+00:00')
 
 
-def test_every_rule_declares_a_dimension_and_ttl():
+def test_every_rule_declares_a_dimension_ttl_and_kind():
     for name, rule in RULES.items():
         assert rule.dimension in DIMENSIONS
         assert rule.ttl_days > 0
         assert rule.template
+        assert rule.kind in {ASSESSMENT, MATERIAL}
 
 
 def test_missing_rules_leave_the_dimension_unknown_instead_of_mid_range():
@@ -33,11 +34,27 @@ def test_absence_of_negative_signals_does_not_raise_the_score():
     assert bare.confidence == 0
 
 
-def test_weighted_dimensions_are_normalised_over_observed_data_only():
-    result = score([sig('company_age', {'years': 8}), sig('salary_quote_coverage', {'known': 9, 'total': 10})])
-    expected = (result.stability_score * DIMENSIONS['stability'].weight
-                + result.pay_score * DIMENSIONS['pay'].weight) / (DIMENSIONS['stability'].weight + DIMENSIONS['pay'].weight)
-    assert result.score == round(expected, 1)
+def test_overall_averages_only_dimensions_with_assessment_rules():
+    result = score([sig('company_age', {'years': 8}), sig('insured_headcount_trend', {'before': 312, 'after': 330})])
+    stability = next(item for item in result.dimensions if item.dimension == 'stability')
+    assert result.score == stability.score
+    assert result.confidence == round(DIMENSIONS['stability'].weight, 3)
+
+
+def test_material_rules_describe_coverage_without_producing_a_score():
+    # 「9/10 条岗位能解析出月薪」是本项目的数据覆盖度，不是对这家公司的薪资待遇。
+    result = score([sig('salary_quote_coverage', {'known': 9, 'total': 10})])
+    pay = next(item for item in result.dimensions if item.dimension == 'pay')
+    assert result.score is None and pay.score is None and pay.confidence == 0
+    assert [item.rule for item in pay.findings] == ['salary_quote_coverage']
+    assert any('可评价的规则' in line for line in pay.missing)
+
+
+def test_absence_of_court_records_is_not_read_as_a_compliment():
+    result = score([sig('company_age', {'years': 8}), sig('judicial_case_ratio', {'ratio': 0})])
+    stability = next(item for item in result.dimensions if item.dimension == 'stability')
+    assert [item.rule for item in stability.findings] == ['company_age']
+    assert any('judicial_case_ratio' in line for line in stability.missing)
 
 
 def test_employee_only_findings_cannot_settle_a_dimension():
