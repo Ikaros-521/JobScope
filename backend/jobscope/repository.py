@@ -2,7 +2,9 @@
 
 import hashlib
 import json
+import re
 import sqlite3
+import unicodedata
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -31,6 +33,9 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS reports (id TEXT PRIMARY KEY, job_id TEXT REFERENCES jobs(id), created_at TEXT NOT NULL, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, scope TEXT NOT NULL, messages TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, name TEXT NOT NULL, credit_code TEXT NOT NULL DEFAULT '', aliases TEXT NOT NULL DEFAULT '[]', payload TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS company_signals (id TEXT PRIMARY KEY, company_id TEXT NOT NULL REFERENCES companies(id), identity TEXT UNIQUE NOT NULL, rule TEXT NOT NULL, dimension TEXT NOT NULL, source_class TEXT NOT NULL, evidence_id TEXT NOT NULL, observed_at TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS company_reliability (company_id TEXT REFERENCES companies(id), input_hash TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(company_id, input_hash));
             """)
             self._migrate_conversations(conn)
             # A previous process can no longer complete its in-flight synchronous tasks.
@@ -373,3 +378,29 @@ class Repository:
             messages = messages[:index]
             conn.execute('UPDATE conversations SET messages=?, updated_at=? WHERE id=?', (json.dumps(messages, ensure_ascii=False), now(), conversation_id))
             return messages
+
+    @staticmethod
+    def normalise_name(name):
+        text = str(name or '').strip().replace('\u3000', ' ')
+        text = unicodedata.normalize('NFKC', text)
+        # 空白一律删除而非压成空格：'A B' 与 'AB' 是同一家，留下空格就把同一个名字拆成两个实体。
+        return re.sub(r'\s+', '', text)
+
+    def resolve_company(self, name, credit_code='', aliases=()):
+        """Exact normalised match or credit code only; a wrong merge is worse than a miss."""
+        cleaned = self.normalise_name(name)
+        if not cleaned:
+            raise ValueError('公司名称不能为空')
+        code = str(credit_code or '').strip().upper()
+        identity = code or cleaned
+        company_id = 'CO-' + digest(identity)[:24]
+        with self.connection() as conn:
+            row = conn.execute('SELECT payload FROM companies WHERE id=?', (company_id,)).fetchone()
+            known = json.loads(row['payload']) if row else dict(id=company_id, name=cleaned, credit_code=code, aliases=[], created_at=now())
+            merged = {str(a).strip() for a in [*known['aliases'], *aliases, cleaned] if str(a).strip()}
+            merged.discard(known['name'])
+            known['aliases'] = sorted(merged)
+            known['updated_at'] = now()
+            conn.execute('INSERT INTO companies VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,credit_code=excluded.credit_code,aliases=excluded.aliases,payload=excluded.payload,updated_at=excluded.updated_at',
+                         (company_id, known['name'], known['credit_code'], json.dumps(known['aliases'], ensure_ascii=False), json.dumps(known, ensure_ascii=False), known['updated_at']))
+            return known
