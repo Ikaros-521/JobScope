@@ -210,6 +210,119 @@ def test_collect_stores_the_page_the_signal_came_from(client, monkeypatch):
     assert stored['source'] == 'gsxt' and stored['kind'] == 'disclosure'
 
 
+# 付费接口的假响应：字段名来自 sources.SIGNAL_SOURCES['qcc']['fields'] 那份待校正映射。
+PAID_PAYLOAD = {'data': {'result': {'establish_date': '2015-04-01',
+                                    'insured_num': 240, 'insured_num_last': 312, 'case_num': 3}}}
+PAID_URL = 'https://api.vendor.example/v1/company'
+
+
+def enable_paid(client, monkeypatch, payload=PAID_PAYLOAD):
+    """启用付费来源并把取数接到假响应上：整个测试不落一次网络。"""
+    from jobscope.reliability.sources import PaidClient
+
+    monkeypatch.setattr(PaidClient, 'fetch', lambda self, company: payload)
+    result = client.put('/api/reliability/sources/qcc', json=dict(mode='enabled', key=SECRET, url=PAID_URL))
+    assert result.status_code == 200
+    return result
+
+
+def test_a_paid_source_without_opt_in_never_reaches_the_fetch_path(client, monkeypatch):
+    from jobscope.reliability import paid
+
+    def boom(*args, **kwargs):
+        raise AssertionError('未启用的付费来源不该进入取数路径')
+
+    monkeypatch.setattr(paid, 'collect', boom)
+    assert client.post('/api/companies/甲公司/signals/collect', json=dict(source='qcc')).status_code == 409
+
+
+def test_a_paid_source_marked_enabled_but_keyless_is_still_not_collected(client, tmp_path, monkeypatch):
+    """库里被手工写成 enabled 却没有密钥时，闸门照样拦住：取数路径一次都不能进。"""
+    from jobscope.reliability import paid
+    from jobscope.reliability.sources import PaidClient
+
+    def boom(*args, **kwargs):
+        raise AssertionError('没有密钥不该发起请求')
+
+    monkeypatch.setattr(PaidClient, 'fetch', boom)
+    monkeypatch.setattr(paid, 'collect', boom)
+    from jobscope.reliability.sources import SignalSourceStore
+    store = SignalSourceStore(Repository(tmp_path))  # 建表；写入用原始 SQL，绕开 save() 的密钥校验
+    with store.repo.connection() as conn:
+        conn.execute('INSERT OR REPLACE INTO signal_sources VALUES (?,?)',
+                     ('qcc', json.dumps(dict(mode='enabled', tier='paid', url=PAID_URL))))
+    result = client.post('/api/companies/甲公司/signals/collect', json=dict(source='qcc'))
+    assert result.status_code == 409 and '密钥' in result.json()['detail']
+
+
+def test_an_enabled_paid_source_collects_and_never_stores_the_key(client, monkeypatch, tmp_path):
+    from jobscope.reliability import collectors
+
+    def no_browser(*args, **kwargs):
+        raise AssertionError('付费来源不该走浏览器采集')
+
+    monkeypatch.setattr(collectors, 'collect', no_browser)
+    enable_paid(client, monkeypatch)
+    result = client.post('/api/companies/甲公司/signals/collect', json=dict(source='qcc'))
+    assert result.status_code == 200
+    body = result.json()
+    assert body['status'] == 'completed'
+    assert {item['rule'] for item in body['signals']} == {'company_age', 'insured_headcount_trend', 'judicial_case_ratio'}
+    assert all(item['source_class'] == 'paid_api' for item in body['signals'])
+    assert SECRET not in result.text
+    stored = client.get('/api/evidence', params=dict(company='甲公司'))
+    assert SECRET not in stored.text
+    for item in stored.json()['evidence']:
+        # 出处是配置里的接口地址本身：密钥走请求头，绝不进 URL、也不进证据正文。
+        assert item['url'] == PAID_URL and item['source'] == 'qcc'
+        assert item['kind'] == 'paid_api_record'
+    with Repository(tmp_path).connection() as conn:
+        rows = [row[0] for row in conn.execute('SELECT payload FROM evidence').fetchall()]
+    assert all(SECRET not in row for row in rows)
+
+
+def test_paid_signals_are_the_first_thing_that_can_actually_score_stability(client, monkeypatch):
+    enable_paid(client, monkeypatch)
+    client.post('/api/companies/甲公司/signals/collect', json=dict(source='qcc'))
+    report = client.post('/api/companies/甲公司/reliability', json=dict()).json()
+    stability = next(item for item in report['dimensions'] if item['dimension'] == 'stability')
+    assert stability['score'] is not None and report['score'] is not None
+    assert {item['source_class'] for item in stability['findings']} == {'paid_api'}
+    assert report['evidence_ids'] and stability['evidence_ids']
+
+
+def test_recollecting_the_same_paid_payload_does_not_grow_the_evidence_trail(client, monkeypatch):
+    enable_paid(client, monkeypatch)
+    first = client.post('/api/companies/甲公司/signals/collect', json=dict(source='qcc')).json()
+    total = client.get('/api/evidence', params=dict(company='甲公司')).json()['total']
+    second = client.post('/api/companies/甲公司/signals/collect', json=dict(source='qcc')).json()
+    assert client.get('/api/evidence', params=dict(company='甲公司')).json()['total'] == total
+    assert [item['evidence_id'] for item in second['signals']] == [item['evidence_id'] for item in first['signals']]
+
+
+def test_a_paid_response_that_is_not_an_object_is_reported_without_any_signal(client, monkeypatch):
+    enable_paid(client, monkeypatch, payload='网关返回了一段 HTML')
+    result = client.post('/api/companies/甲公司/signals/collect', json=dict(source='qcc')).json()
+    assert result['status'] == 'unsupported' and result['signals'] == []
+    assert result['message']
+    assert client.get('/api/evidence', params=dict(company='甲公司')).json()['total'] == 0
+
+
+def test_paid_records_are_not_fed_back_into_the_model_as_material(client, monkeypatch):
+    """付费接口原文是取数结果，不是给抽取器的材料：否则厂商字段会第二轮变成「证据」。"""
+    from jobscope.reliability import extract
+
+    def no_model(*args, **kwargs):
+        raise AssertionError('没有可抽取材料时不该调用模型')
+
+    monkeypatch.setattr(extract, 'extract', no_model)
+    enable_paid(client, monkeypatch)
+    client.post('/api/companies/甲公司/signals/collect', json=dict(source='qcc'))
+    result = client.post('/api/companies/甲公司/signals/extract', json=dict()).json()
+    assert result['status'] == 'skipped' and result['evidence'] == 0
+
+
+
 def test_reading_a_report_does_not_leave_a_company_row_behind(client, tmp_path):
     """GET 是读操作：查一个拼错的公司名必须在 companies 表里什么都不留。"""
     def rows():

@@ -1,10 +1,48 @@
-"""Signal sources. Paid tiers stay off until the user opts in; keys never echo back."""
+"""Signal sources. Paid tiers stay off until the user opts in; keys never echo back.
+
+诚实状态（与 `collectors.py` 对 gsxt 页面 URL 的处理同一口径）：下面 `PAID_FIELD_*` 里每一组
+候选字段名都是**按通用写法预置的假设**，本项目没有付费账号、没有核对过任何一家的响应结构，
+这些名字一个都不作数。用户要按自己采购到的接口文档逐行校正 `fields`（列表顺序就是取值优先级）。
+`reliability/paid.py` 只按这份表声明过的字段名取值：名字对不上就一条信号都不产出，
+绝不从别的数字里「挑一个像参保人数的」——把猜测包装成情报是这个功能最坏的失败模式。
+"""
 import json
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..repository import now
+
+# 槽位 → 该接口里对应字段的候选名。槽位名是 paid.py 与这份表之间的唯一契约（不许改），
+# 右边的名字才是留给你按文档改的部分。名字一律按「去掉大小写与 _ - / 空格后」精确匹配，
+# 不做任何模糊或子串匹配：`insured_num` 命中不了 `insured_num_by_year`。
+ESTABLISHED_DATE_FIELDS = ('establish_date', 'establish_time', 'established_date', 'start_date',
+                           'found_date', 'reg_date', '成立日期', '成立时间', '开业日期', '注册日期')
+INSURED_LATEST_FIELDS = ('insured_num_latest', 'insured_num', 'social_security_num', 'insurance_num',
+                         'latest_insured_num', '本期参保人数', '最新参保人数', '参保人数')
+INSURED_PREVIOUS_FIELDS = ('insured_num_last', 'insured_num_previous', 'social_security_num_last',
+                           'insurance_num_last', 'last_insured_num', '上期参保人数', '上年参保人数')
+CASE_COUNT_FIELDS = ('case_num', 'lawsuit_num', 'judicial_case_num', 'court_doc_num', 'risk_case_num',
+                     '涉诉数量', '案件数量', '裁判文书数量')
+CASE_RATIO_FIELDS = ('case_per_10k_insured', 'judicial_case_ratio', 'case_ratio',
+                     '每万人涉诉件数', '涉诉件数比率')
+
+# 一份表结构：规则名 → 若干「口径」，每条口径是一组槽位到候选名的映射；前面的口径先试。
+# judicial_case_ratio 给了两条：服务商直接给比率，或给涉诉数量 + 参保人数由本地换算。
+QCC_FIELDS = {
+    'company_age': ({'founded_date': ESTABLISHED_DATE_FIELDS},),
+    'insured_headcount_trend': ({'insured_latest': INSURED_LATEST_FIELDS,
+                                 'insured_previous': INSURED_PREVIOUS_FIELDS},),
+    'judicial_case_ratio': ({'ratio': CASE_RATIO_FIELDS},
+                            {'cases': CASE_COUNT_FIELDS, 'insured': INSURED_LATEST_FIELDS}),
+}
+TYC_FIELDS = {
+    'company_age': ({'founded_date': ESTABLISHED_DATE_FIELDS},),
+    'insured_headcount_trend': ({'insured_latest': INSURED_LATEST_FIELDS,
+                                 'insured_previous': INSURED_PREVIOUS_FIELDS},),
+    'judicial_case_ratio': ({'ratio': CASE_RATIO_FIELDS},
+                            {'cases': CASE_COUNT_FIELDS, 'insured': INSURED_LATEST_FIELDS}),
+}
 
 SIGNAL_SOURCES = {
     'gsxt': dict(name='国家企业信用信息公示系统', tier='free', transport='browser_page',
@@ -21,10 +59,13 @@ SIGNAL_SOURCES = {
                           description='不联网，使用本项目已有数据计算。默认启用。'),
     'qcc': dict(name='企查查开放平台', tier='paid', transport='http_api', status='opt_in',
                 rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio'],
-                description='需你自备企业、密钥与授权额度；JobScope 不代持密钥、不默认调用。'),
+                description='需你自备企业、密钥与授权额度；JobScope 不代持密钥、不默认调用。'
+                            '字段映射是按通用写法预置的假设，请照你采购的接口文档校正。',
+                fields=QCC_FIELDS),
     'tyc': dict(name='天眼查开放平台', tier='paid', transport='http_api', status='opt_in',
                 rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio'],
-                description='同上，接口口径与计费以服务商协议为准。'),
+                description='同上，接口口径与计费以服务商协议为准。字段映射同样待你按文档校正。',
+                fields=TYC_FIELDS),
 }
 # 默认零付费：这个元组之外没人需要记住哪些来源要花钱，enabled/client 都按 tier 走。
 PAID_SOURCES = tuple(item for item, spec in SIGNAL_SOURCES.items() if spec['tier'] == 'paid')
@@ -100,6 +141,13 @@ class PaidClient:
         return f'PaidClient({self.source_id}, key_set={bool(self.key)})'
 
     def fetch(self, company_name):
+        """一次 GET，密钥只进请求头。
+
+        诚实状态：能靠设置校正的只有 `fields` 里的字段名和这个接口地址；把公司名放在名为
+        `company` 的查询参数上、用 `Authorization: Bearer` 认证，同样是按通用写法预置的假设。
+        服务商要求 GET/POST 有别、或要签名（appId + timestamp + sign 一类）时，这里会 4xx，
+        `paid.collect()` 退成 failed 并原样带回原因——不会伪造任何信号。
+        """
         if not self.url:
             raise ValueError('付费来源未填写接口地址')
         import httpx

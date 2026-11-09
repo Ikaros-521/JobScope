@@ -339,11 +339,17 @@ def create_app(data_dir=None):
     # 就不会被打进不需要它们的请求路径。
 
     def company_materials(identity):
-        """该公司已保存的非岗位材料。名称按实体规范化比对，否则 '甲 公司' 存的证据永远配不上 '甲公司'。"""
+        """该公司已保存的非岗位材料。名称按实体规范化比对，否则 '甲 公司' 存的证据永远配不上 '甲公司'。
+
+        两类「自己写下的记录」都不算材料：本地计算记录会让计数随点击自增，付费接口原文则是
+        取数结果而不是证据来源，喂给抽取器等于让厂商字段第二轮变成「材料」。
+        """
         from .reliability.local import DERIVED_KIND
+        from .reliability.paid import PAID_KIND
         known = {identity['name'], *(identity.get('aliases') or [])}
         return [item for item in repo.evidence(include_job_postings=False)
-                if Repository.normalise_name(item['company']) in known and item['kind'] != DERIVED_KIND]
+                if Repository.normalise_name(item['company']) in known
+                and item['kind'] not in (DERIVED_KIND, PAID_KIND)]
 
     def company_identity(name, credit_code=''):
         """实体归一走 repository 的强键口径；service.company() 只接名称，这里还要带上信用代码。"""
@@ -372,32 +378,41 @@ def create_app(data_dir=None):
 
     @app.post('/api/companies/{company}/signals/collect')
     def collect_company_signals(data: SignalCollectInput, company: str = PathParam(min_length=1, max_length=300)):
-        from .reliability import collectors, local
+        from .reliability import collectors, local, paid
         from .reliability.models import SignalInput
         from .reliability.sources import SIGNAL_SOURCES, SignalSourceStore
         if data.source not in SIGNAL_SOURCES:
             raise HTTPException(400, '未登记的信号来源')
+        store = SignalSourceStore(repo)
         # 闸门语义取 sources.enabled：免费来源被手动关闭同样算关，付费来源还要存有密钥。
-        if not SignalSourceStore(repo).enabled(data.source):
+        if not store.enabled(data.source):
             if SIGNAL_SOURCES[data.source]['tier'] == 'paid':
                 raise HTTPException(409, '该付费来源尚未启用；请先在设置里填入你自己的密钥，JobScope 不代持密钥。')
             raise HTTPException(409, '该来源已在设置里关闭，请重新启用后再采集。')
         identity = company_identity(company, data.credit_code)
+        # 分派只看登记表里的 transport，三条取数通路互不越界：
+        # browser_page → 项目浏览器读公开页面；local → 只读本项目已存数据；
+        # http_api（只有付费来源用得上）→ 按声明式字段映射取数。
         # READERS 就是「由项目浏览器采集」的那一组来源；其余非本地来源连浏览器模块都不必导入，
         # 由 collectors 直接退成 unsupported，浏览器依赖因此不会进入不需要它的路径。
-        # 本地来源反过来完全不碰浏览器：它只读本项目的已存数据，也不限页数、不等间隔。
-        from_local = data.source in local.SOURCES
+        spec = SIGNAL_SOURCES[data.source]
+        from_local = spec['transport'] == 'local'
+        from_paid = spec['transport'] == 'http_api' and spec['tier'] == 'paid'
         if from_local:
+            # 本地来源反过来完全不碰浏览器：它只读本项目的已存数据，也不限页数、不等间隔。
             outcome = local.collect(data.source, identity['name'], repo=repo, identity=identity)
+        elif from_paid:
+            # client 由 store 把关：没启用或没密钥就是 None，paid 会退成 unsupported 而不发起请求。
+            outcome = paid.collect(data.source, identity['name'], client=store.client(data.source))
         else:
             browser_module = load_module('browser') if data.source in collectors.READERS else None
             outcome = collectors.collect(data.source, identity['name'], browser_module=browser_module, data_dir=data_dir)
         saved = []
         for item in outcome['signals']:
             # 每条信号先落成一条可溯源证据，再落成信号记录：证据仍是唯一的原始层。
-            # url 必须取采集器实际访问过的那个页面地址；出处缺失就等于法律兜底失效。
+            # url 必须取信号实际出自的那个地址：浏览器/付费接口用各自出处，本地计算没有出处就留空。
             evidence = repo.save_evidence(dict(title=f"{identity['name']} {item['rule']}", company=identity['name'],
-                                               kind=local.DERIVED_KIND if from_local else 'disclosure',
+                                               kind=local.DERIVED_KIND if from_local else (paid.PAID_KIND if from_paid else 'disclosure'),
                                                text=item.get('text') or json.dumps(item, sort_keys=True, ensure_ascii=False),
                                                url=item.get('url', ''), published_at=item.get('observed_at') or None), data.source)
             saved.append(repo.save_signal(SignalInput(

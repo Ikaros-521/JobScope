@@ -6,8 +6,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import pytest
 
+from jobscope.reliability import paid
 from jobscope.reliability.rubric import RULES
-from jobscope.reliability.sources import SIGNAL_SOURCES, SignalSourceStore, SignalSourceInput
+from jobscope.reliability.sources import PAID_SOURCES, SIGNAL_SOURCES, SignalSourceStore, SignalSourceInput
 from jobscope.repository import Repository
 
 
@@ -90,3 +91,42 @@ def test_every_registered_source_points_at_a_real_rubric_rule():
         assert spec['tier'] in {'free', 'paid'}, source_id
         assert spec['transport'] in {'browser_page', 'http_api', 'local'}, source_id
         assert set(spec['rules']) <= set(RULES), source_id
+
+
+def test_every_paid_source_declares_a_field_mapping_for_every_rule():
+    """付费来源必须自带 fields：没有声明表就没有取数通路，也不许在代码里写死厂商 schema。"""
+    for source_id, spec in SIGNAL_SOURCES.items():
+        if spec['tier'] != 'paid':
+            assert 'fields' not in spec, source_id
+            continue
+        assert set(spec['fields']) == set(spec['rules']), source_id
+        for rule, recipes in spec['fields'].items():
+            assert recipes and all(recipe for recipe in recipes), rule
+            for slots in recipes:
+                for name, candidates in slots.items():
+                    assert candidates and all(str(item).strip() for item in candidates), (source_id, rule, name)
+                    assert len(set(candidates)) == len(candidates), (source_id, rule, name)
+
+
+def test_both_paid_sources_keep_their_own_copy_of_the_mapping():
+    """两家随时会被用户按各自文档改成不一样，所以表必须各存一份而不是共享同一个对象。"""
+    first, second = (SIGNAL_SOURCES[item]['fields'] for item in PAID_SOURCES)
+    assert first.keys() == second.keys()
+    assert first is not second
+
+
+def test_the_paid_mapping_only_uses_slots_the_reader_understands():
+    """槽位名是 paid.py 与映射表之间唯一的契约：写错槽位必须在测试里红，而不是静默不取数。"""
+    for source_id in PAID_SOURCES:
+        for rule, recipes in SIGNAL_SOURCES[source_id]['fields'].items():
+            for slots in recipes:
+                assert slots and set(slots) <= paid.SLOTS, (source_id, rule, sorted(slots))
+
+
+def test_public_listing_shows_the_mapping_so_the_user_can_correct_it(store):
+    secret = 'sk-qcc-9d1c'
+    store.save('qcc', SignalSourceInput(mode='enabled', key=secret, url='https://api.qcc.example/v1'))
+    spec = store.public()['qcc']
+    assert 'establish_date' in json.dumps(spec['fields'], ensure_ascii=False)
+    assert secret not in json.dumps(spec, ensure_ascii=False)
+

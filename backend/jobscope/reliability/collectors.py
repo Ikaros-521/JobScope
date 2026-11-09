@@ -40,6 +40,15 @@ def _looks_blocked(html):
     return any(marker.lower() in text for marker in VERIFY_MARKERS)
 
 
+def years_since(founded):
+    """成立日期 → 多少年。全项目只有这一把尺子：`paid.py` 也算年数，用的就是这个函数。
+
+    写成 `round(days / 365.25, 1)` 而不是按年份相减：跨闰年的误差由 365.25 吸收，
+    而「今年减出生年」会把 2015-12-31 成立的公司在 2026-01-01 报成 11 年。
+    """
+    return round((datetime.now(timezone.utc) - founded).days / 365.25, 1)
+
+
 def _sleep(seconds):
     """页间停手；单独抽一个函数只为让测试能断言间隔确实发生，真实等待没有变化。"""
     time.sleep(seconds)
@@ -102,7 +111,7 @@ def _read_registration(tab, company):
     except ValueError:
         # 数字明显不是合法日期：页面结构和假设不一样，不能拿它换算年限。
         return None
-    years = round((datetime.now(timezone.utc) - founded).days / 365.25, 1)
+    years = years_since(founded)
     return _signal('company_age', {'years': years}, founded.date().isoformat(), url)
 
 

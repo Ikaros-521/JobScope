@@ -18,7 +18,8 @@ from ..analysis import parse_salary
 from ..repository import Repository, now
 from .rubric import RULES
 
-# 与 `sources.SIGNAL_SOURCES` 里 transport='local' 的来源键对齐；端点按这张表分派本地路径。
+# 与 `sources.SIGNAL_SOURCES` 里 transport='local' 的来源键对齐；端点按 transport 分派，
+# 这张表是本模块自己的第二道闸门：被直接调用时也只算这几个来源。
 SOURCES = ('jobscope_jobs',)
 # 公告类证据的 kind 沿用 `extract.KIND_TO_SOURCE_CLASS` 里已有的三个，不新造词。
 DISCLOSURE_KINDS = ('disclosure', 'disclosure_metadata', 'announcement')
