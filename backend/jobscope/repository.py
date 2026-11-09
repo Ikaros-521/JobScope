@@ -89,7 +89,7 @@ class Repository:
         key = item.get("external_id") or item.get("url") or json.dumps([item["title"], item["company"], item["location"]], ensure_ascii=False)
         item["id"] = "J-" + digest(source + ":" + str(key))[:24]
         previous = self.job(item["id"])
-        if source == 'boss' and previous and previous.get('description_status') == 'complete' and item.get('description_status') != 'complete':
+        if previous and previous.get('description_status') == 'complete' and item.get('description_status') != 'complete':
             for field in ('description', 'description_status', 'detail_collected_at', 'detail_source_url', 'detail_transport'):
                 if field in previous:
                     item[field] = previous[field]

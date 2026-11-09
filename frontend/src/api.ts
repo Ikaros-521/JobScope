@@ -4,7 +4,7 @@ export type Job = {
   description_status?: string; detail_collected_at?: string; detail_source_url?: string
 }
 export type Evidence = { id: string; title: string; url: string; source: string; kind: string; company: string; text: string; collected_at: string; published_at: string | null; content_hash: string }
-export type Source = { id: string; name: string; transport_mode: string; status: string; description: string }
+export type Source = { id: string; name: string; kind: string; transport_mode: string; status: string; description: string; cities: string[]; browser_collectable?: boolean }
 export type Task = { id: string; source: string; query: string; status: string; message: string; created_at: string; count: number; kind?: string; total?: number; processed?: number; failed?: number }
 export type PageInfo = { page: number; page_size: number; total: number; pages: number }
 export type ResearchRun = { id: string; status: string; strategy: string; duration_ms: number; context_characters: number; limits?: { context_characters: number }; scope: { kind: string; company?: string }; plan?: { query: string; planner: string; concepts: string[]; companies: string[] }; degraded: string[]; events: { step: number; tool: string; duration_ms: number; selected?: number; matched_jobs?: number; label?: string; status?: string }[] }

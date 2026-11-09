@@ -276,10 +276,11 @@ def create_app(data_dir=None):
     def run_collection(source, query, location, limit, use_browser=False):
         task = repo.create_task(source, query)
         try:
-            if use_browser:
-                result = load_module("browser").collect(query, location=location, limit=limit, data_dir=data_dir)
+            connectors = load_module("connectors")
+            if use_browser or source in connectors.BROWSER_SOURCES:
+                result = load_module("browser").collect(source, query, location=location, limit=limit, data_dir=data_dir)
             else:
-                result = load_module("connectors").collect(source, query, location=location, limit=limit, cache_dir=data_dir / "cache")
+                result = connectors.collect(source, query, location=location, limit=limit, cache_dir=data_dir / "cache")
             return persist_collection(task, result)
         except Exception:
             task.update(status="failed", message="采集未完成，请检查来源状态及本地依赖后重试")
@@ -292,12 +293,16 @@ def create_app(data_dir=None):
 
     @app.get("/api/sources")
     def sources():
+        connectors = load_module("connectors")
+        try:
+            collectable = set(load_module("browser").PAGES)
+        except HTTPException:
+            collectable = set()
         return {"sources": [
-            dict(id="boss", name="BOSS 直聘", transport_mode="http_api", status="needs_verification", description="国内岗位接口；未登录直调可能触发验证，可尝试专属浏览器会话。"),
-            dict(id="remotive", name="Remotive", transport_mode="http_api", status="available", description="公开远程岗位接口，主要为海外岗位；不是国内招聘数据源。"),
-            dict(id="cninfo", name="巨潮资讯", transport_mode="http_api", status="available", description="公司公告检索，只保存已读取的公告元信息，不代表已解析财报正文。"),
-            dict(id="user_import", name="手动导入", transport_mode="manual", status="available", description="用户提供的岗位或公司资料，保留用户材料来源标记。"),
-        ]}
+            dict(id=source, name=item['name'], kind=item['kind'], transport_mode=item['transport'],
+                 status=item['status'], description=item['description'],
+                 cities=list(item.get('codes') or []), browser_collectable=source in collectable)
+            for source, item in connectors.SOURCES.items()]}
 
     @app.post("/api/collect")
     def collect(data: CollectInput):
@@ -388,8 +393,10 @@ def create_app(data_dir=None):
     @app.post("/api/analyze")
     def analysis(data: AnalyzeInput):
         job = get_job(data.job_id)
-        if job['source'] == 'boss' and job.get('description_status') != 'complete':
-            raise HTTPException(409, '当前只有搜索列表摘要，请先读取完整岗位职责后再评估适配')
+        # 早期保存的 BOSS 岗位还没有正文标记，一律按列表摘要处理，避免用半截职责评估适配。
+        status = job.get('description_status')
+        if status == 'listing' or (job['source'] == 'boss' and status != 'complete'):
+            raise HTTPException(409, '当前只有搜索列表摘要，请先取得完整岗位职责后再评估适配')
         resume = repo.resume()
         if not resume["text"].strip():
             raise HTTPException(400, "请先保存简历或 facts.yaml")
@@ -615,9 +622,12 @@ def create_app(data_dir=None):
         return dict(task=task)
 
     @app.post("/api/browser/start")
-    def browser_start():
+    def browser_start(source: str = Query(default="boss", max_length=30)):
+        module = load_module("browser")
+        if source not in module.PAGES:
+            raise HTTPException(400, "该来源不由项目浏览器采集")
         try:
-            return load_module("browser").start(data_dir=data_dir)
+            return module.start(data_dir=data_dir, source=source)
         except HTTPException:
             raise
         except Exception as exc:
@@ -625,7 +635,7 @@ def create_app(data_dir=None):
 
     @app.post("/api/browser/collect")
     def browser_collect(data: BrowserCollectInput):
-        return run_collection("boss", data.query, data.location, data.limit, use_browser=True)
+        return run_collection(data.source, data.query, data.location, data.limit, use_browser=True)
 
     dist = root / "frontend" / "dist"
     if dist.is_dir():
