@@ -28,3 +28,15 @@ def test_similar_names_stay_separate_rather_than_fuzzy_merged(tmp_path):
     a = repo.resolve_company('杭州明日之星科技有限公司')
     b = repo.resolve_company('杭州明日之星电子商务有限责任公司')
     assert a['id'] != b['id']
+
+
+def test_aliases_are_stored_normalised(tmp_path):
+    repo = Repository(tmp_path)
+    company = repo.resolve_company('甲公司', aliases=['  甲 集团 '])
+    assert company['aliases'] == ['甲集团']
+
+
+def test_spaces_are_noise_for_latin_names_too(tmp_path):
+    # 删空白这个决定对中英文一致生效：Remotive 的海外公司名同样带多余空格。
+    repo = Repository(tmp_path)
+    assert repo.resolve_company('Automattic  Inc')['id'] == repo.resolve_company('Automattic Inc')['id']

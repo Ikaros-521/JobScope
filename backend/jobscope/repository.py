@@ -397,7 +397,7 @@ class Repository:
         with self.connection() as conn:
             row = conn.execute('SELECT payload FROM companies WHERE id=?', (company_id,)).fetchone()
             known = json.loads(row['payload']) if row else dict(id=company_id, name=cleaned, credit_code=code, aliases=[], created_at=now())
-            merged = {str(a).strip() for a in [*known['aliases'], *aliases, cleaned] if str(a).strip()}
+            merged = {self.normalise_name(a) for a in [*known['aliases'], *aliases, cleaned] if str(a).strip()}
             merged.discard(known['name'])
             known['aliases'] = sorted(merged)
             known['updated_at'] = now()
