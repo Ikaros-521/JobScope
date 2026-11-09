@@ -1,4 +1,4 @@
-"""Project-owned Chrome session, browser-triggered BOSS response collection."""
+"""Project-owned Chrome session; page-driven collection for sources that refuse direct requests."""
 from __future__ import annotations
 
 import importlib.util
@@ -6,13 +6,47 @@ import json
 import os
 import socket
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlencode
 
-from .connectors import CITY_CODES, DEFAULT_DATA, map_boss, result
+from .connectors import (DEFAULT_DATA, SOURCES, loads_payload, map_boss, map_job51,
+                         map_zhaopin, result)
 
 _lock = threading.Lock()
+
+# 搜索结果页把岗位放在页面自身的数据里，或只在通过校验的会话内返回；三种取法都是实测得到的。
+STATE_JS = ('return (() => { const state = window.__INITIAL_STATE__;'
+            ' return state && Array.isArray(state.positionList)'
+            ' ? {positionList: state.positionList, hasMore: state.hasMore,'
+            ' pageIndex: state.pageIndex, pageSize: state.pageSize} : null; })()')
+FETCH_JS = ("return (async () => { const r = await fetch(arguments[0],"
+            " {credentials: 'include', headers: {Accept: 'application/json'}});"
+            " const t = await r.text();"
+            " return {ok: r.ok, status: r.status, body: t.slice(0, 600000)}; })()")
+
+def _spec(source, **transport):
+    """登记表提供名称与城市码，这里只补充该来源在浏览器里的取数方式。"""
+    return dict(SOURCES[source], **transport)
+
+
+PAGES = {
+    'boss': _spec('boss', mode='listen', home='https://www.zhipin.com/web/geek/job',
+                  listen='wapi/zpgeek/search/joblist.json', size=30,
+                  mapper=map_boss, default='100010000',
+                  search=lambda query, code, size: 'https://www.zhipin.com/web/geek/job?' + urlencode({'query': query, 'city': code}),
+                  blocked='未收到岗位响应。请查看项目浏览器是否需要登录或人工验证；不会自动反复请求。'),
+    'zhaopin': _spec('zhaopin', mode='state', home='https://www.zhaopin.com/jobs/', size=20,
+                     mapper=map_zhaopin, default='',
+                     search=lambda query, code, size: 'https://www.zhaopin.com/jobs/?' + urlencode({'kw': query, 'jl': code}),
+                     blocked='搜索页未带出岗位数据；可能需要登录、人工验证，或页面结构已变化。'),
+    '51job': _spec('51job', mode='fetch', home='https://we.51job.com/pc/search', size=50,
+                   mapper=map_job51, default='000000',
+                   search=lambda query, code, size: 'https://we.51job.com/pc/search?' + urlencode({'keyword': query, 'searchType': '2', 'sortType': '0', 'jobArea': code}),
+                   api=lambda query, code, size: 'https://we.51job.com/api/job/search-pc?' + urlencode({'keyword': query, 'searchType': '2', 'sortType': '0', 'jobArea': code, 'pageNum': '1', 'pageSize': str(size)}),
+                   blocked='检索接口未在浏览器会话内返回结果；可能仍在脚本校验或需要重新登录。'),
+}
 
 
 @contextmanager
@@ -80,13 +114,14 @@ def _connection(data_dir=None):
 def status(data_dir=None):
     installed = _has_driver() and _chrome() is not None
     running = bool(_connection(data_dir)) if installed else False
-    message = '项目 Chrome 会话可连接，请确保已正常登录 BOSS。' if running else '尚未启动项目 Chrome。'
+    message = '项目 Chrome 会话可连接，请确保已在该窗口登录所需平台。' if running else '尚未启动项目 Chrome。'
     if not installed:
         message = '需要本机 Chrome 和可选依赖 DrissionPage；请按 README 安装浏览器依赖。'
     return {'installed': installed, 'running': running, 'message': message}
 
 
-def start(data_dir=None):
+def start(data_dir=None, source='boss'):
+    spec = PAGES.get(source) or PAGES['boss']
     if not _has_driver() or not _chrome():
         return status(data_dir)
     if not _lock.acquire(blocking=False):
@@ -108,24 +143,64 @@ def start(data_dir=None):
             browser = Chromium(options)
             (root / 'connection.json').write_text(json.dumps({'port': port}), encoding='utf-8')
             tab = browser.new_tab()
-            tab.get('https://www.zhipin.com/web/geek/job', timeout=20)
-            return {'installed': True, 'running': True, 'message': '项目 Chrome 已启动。请在该窗口手动登录并完成验证，然后回到应用采集。'}
+            tab.get(spec['home'], timeout=20)
+            return {'installed': True, 'running': True, 'message': f'项目 Chrome 已启动，当前打开 {spec["name"]}。请在该窗口手动登录并完成验证，然后回到应用采集。'}
     except Exception:
         return {'installed': True, 'running': False, 'message': '项目 Chrome 启动失败；请关闭占用同一配置目录的浏览器后重试。'}
     finally:
         _lock.release()
 
 
-def collect(query, location='', limit=20, data_dir=None):
-    if not _has_driver() or not _chrome():
-        return result('unsupported', status(data_dir)['message'])
+def _city_code(spec, city):
+    return spec['codes'].get(city, spec['default']) if city else spec['default']
+
+
+def _listen(tab, spec, query, code, size):
+    tab.listen.start(spec['listen'])
+    tab.get(spec['search'](query, code, size), timeout=25)
+    packet = tab.listen.wait(timeout=20, raise_err=False)
+    if not packet:
+        return None
+    return loads_payload(packet.response.body)
+
+
+def _page(tab, spec, query, code, size):
+    tab.get(spec['search'](query, code, size), timeout=30)
+    if spec['mode'] == 'state':
+        for _ in range(6):
+            payload = tab.run_js(STATE_JS)
+            if isinstance(payload, dict):
+                return payload
+            time.sleep(1)
+        return None
+    for _ in range(3):
+        answer = tab.run_js(FETCH_JS, spec['api'](query, code, size)) or {}
+        payload = loads_payload(answer.get('body'))
+        if payload is not None and (answer.get('ok') or answer.get('status') == 200):
+            return payload
+        time.sleep(2)
+    return None
+
+
+def collect(source='boss', query='', location='', limit=20, data_dir=None):
+    """Collect from the platform's own page; nothing here is replayed outside the user session."""
+    spec = PAGES.get(source)
+    if spec is None:
+        return result('unsupported', '该来源不由项目浏览器采集。')
     if not query or len(str(query)) > 200:
         return result('failed', '请输入不超过200字的关键词。')
-    if location and location not in CITY_CODES:
-        return result('unsupported', '浏览器采集暂支持常用城市名或留空，请使用北京、上海、广州、深圳、杭州、成都等。')
+    city = str(location or '').strip()[:40]
+    if city and city not in spec['codes']:
+        return result('unsupported', f'{spec["name"]}暂未映射该城市；可用{("、".join(spec["codes"]))}或留空。')
+    try:
+        size = max(1, min(int(limit), spec['size']))
+    except (TypeError, ValueError):
+        return result('failed', '采集数量必须是整数。')
+    if not _has_driver() or not _chrome():
+        return result('unsupported', status(data_dir)['message'])
     port = _connection(data_dir)
     if not port:
-        return result('needs_login', '请先启动项目浏览器并手动登录。')
+        return result('needs_login', f'请先启动项目浏览器并登录{spec["name"]}。')
     if not _lock.acquire(blocking=False):
         return result('backoff', '浏览器任务正在运行，请等待完成。')
     tab = None
@@ -134,23 +209,12 @@ def collect(query, location='', limit=20, data_dir=None):
         with session_lock(data_dir) as acquired:
             if not acquired:
                 return result('backoff', '另一个进程正在使用项目浏览器。')
-            browser = Chromium(f'127.0.0.1:{port}')
-            tab = browser.new_tab()
-            tab.listen.start('wapi/zpgeek/search/joblist.json')
-            url = 'https://www.zhipin.com/web/geek/job?' + urlencode({'query': str(query), 'city': CITY_CODES.get(location, '100010000')})
-            tab.get(url, timeout=25)
-            packet = tab.listen.wait(timeout=20, raise_err=False)
-            if not packet:
-                return result('needs_verification', '未收到岗位响应。请查看项目浏览器是否需要登录或人工验证；不会自动反复请求。')
-            data = packet.response.body
-            if isinstance(data, str):
-                if len(data) > 12 * 1024 * 1024:
-                    return result('failed', '岗位响应超过大小上限。')
-                data = json.loads(data)
-            if not isinstance(data, dict):
-                return result('failed', '浏览器未收到有效岗位 JSON。')
-            output = map_boss(data, max(1, min(int(limit), 30)))
-            output['message'] = '项目浏览器响应采集：' + output['message']
+            tab = Chromium(f'127.0.0.1:{port}').new_tab()
+            payload = _listen(tab, spec, query, _city_code(spec, city), size) if spec['mode'] == 'listen' else _page(tab, spec, query, _city_code(spec, city), size)
+            if not isinstance(payload, dict):
+                return result('needs_verification', spec['blocked'])
+            output = spec['mapper'](payload, size, city)
+            output['message'] = f'{spec["name"]}浏览器采集：' + output['message']
             return output
     except Exception:
         return result('failed', '浏览器采集失败；请确认项目会话仍在运行并已完成登录。')
