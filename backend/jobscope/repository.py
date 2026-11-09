@@ -222,6 +222,15 @@ class Repository:
             rows = conn.execute(sql + ' ORDER BY company LIMIT ? OFFSET ?', (q, page_size, (page - 1) * page_size)).fetchall()
         return dict(companies=[dict(r) for r in rows], total=total, pages=pages, page=page, page_size=page_size)
 
+    def locations(self, limit=40):
+        """按已保存岗位的地点原样统计，供地点框提示；Remotive 与手动导入存的是原文，不并入城市字典。"""
+        with self.connection() as conn:
+            rows = conn.execute("""SELECT json_extract(payload,'$.location') AS location, count(*) AS jobs FROM jobs
+                                   GROUP BY location
+                                   HAVING location NOT NULL AND location != '' AND length(location) <= 40
+                                   ORDER BY jobs DESC, location LIMIT ?""", (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
     def conversation(self, conversation_id, scope):
         encoded = json.dumps(scope, sort_keys=True, ensure_ascii=False)
         with self.connection() as conn:

@@ -320,6 +320,10 @@ def create_app(data_dir=None):
     def companies(q: str = Query('', max_length=300), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
         return repo.companies_page(q, page, page_size)
 
+    @app.get('/api/locations')
+    def locations(limit: int = Query(40, ge=1, le=100)):
+        return {'locations': repo.locations(limit)}
+
     @app.get("/api/jobs/{job_id}")
     def job_detail(job_id: str):
         job = get_job(job_id)

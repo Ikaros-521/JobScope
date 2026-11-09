@@ -239,3 +239,14 @@ def test_liepin_listing_waits_for_full_duties_before_analysis(client, monkeypatc
 
 def test_browser_start_only_accepts_page_session_sources(client):
     assert client.post('/api/browser/start?source=nobody').status_code == 400
+
+
+def test_locations_lists_saved_places_by_job_count(client):
+    for index in range(2):
+        client.post('/api/import/job', json=dict(title=f'后端工程师{index}', company='甲公司', description='Python', location='杭州'))
+    client.post('/api/import/job', json=dict(title='前端工程师', company='乙公司', description='React', location='北京-昌平区'))
+    client.post('/api/import/job', json=dict(title='无地点岗位', company='丙公司', description='Go', location=''))
+    items = client.get('/api/locations').json()['locations']
+    assert [(item['location'], item['jobs']) for item in items] == [('杭州', 2), ('北京-昌平区', 1)]
+    assert client.get('/api/locations?limit=1').json()['locations'] == [dict(location='杭州', jobs=2)]
+    assert client.get('/api/locations?limit=0').status_code == 422
