@@ -62,3 +62,29 @@ def test_employee_signals_cannot_stand_alone_as_negative():
     from jobscope.reliability.models import can_stand_alone
     assert can_stand_alone('employee') is False
     assert can_stand_alone('official') is True
+
+
+def test_same_signal_from_the_same_evidence_is_stored_once(tmp_path):
+    from jobscope.reliability.models import SignalInput
+    repo = Repository(tmp_path)
+    company = repo.resolve_company('甲公司')
+    payload = dict(company_id=company['id'], dimension='stability', rule='company_age',
+                   value={'years': 8}, unit='年', source_class='official', evidence_id='E-1',
+                   observed_at='', collected_at='2026-11-09T00:00:00+00:00')
+    first = repo.save_signal(SignalInput(**payload))
+    second = repo.save_signal(SignalInput(**payload))
+    assert first['id'] == second['id']
+    assert len(repo.signals(company['id'])) == 1
+
+
+def test_signals_past_their_ttl_are_reported_as_stale(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from jobscope.reliability.models import SignalInput
+    repo = Repository(tmp_path)
+    company = repo.resolve_company('甲公司')
+    old = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()
+    repo.save_signal(SignalInput(company_id=company['id'], dimension='operations', rule='insured_headcount_trend',
+                                 value={'before': 100, 'after': 90}, unit='人', source_class='official',
+                                 evidence_id='E-2', observed_at='', collected_at=old))
+    rows = repo.signals(company['id'], ttl_days={'insured_headcount_trend': 400})
+    assert rows[0]['stale'] is True

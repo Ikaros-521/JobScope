@@ -7,7 +7,7 @@ import sqlite3
 import unicodedata
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -404,3 +404,38 @@ class Repository:
             conn.execute('INSERT INTO companies VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,credit_code=excluded.credit_code,aliases=excluded.aliases,payload=excluded.payload,updated_at=excluded.updated_at',
                          (company_id, known['name'], known['credit_code'], json.dumps(known['aliases'], ensure_ascii=False), json.dumps(known, ensure_ascii=False), known['updated_at']))
             return known
+
+    def save_signal(self, signal):
+        item = signal.model_dump()
+        identity = digest(json.dumps([item['company_id'], item['rule'], item['evidence_id'],
+                                      item['observed_at'], json.dumps(item['value'], sort_keys=True, ensure_ascii=False)], ensure_ascii=False))
+        item.update(id='S-' + identity[:24], created_at=now())
+        with self.connection() as conn:
+            conn.execute('INSERT OR IGNORE INTO company_signals VALUES (?,?,?,?,?,?,?,?,?,?)',
+                         (item['id'], item['company_id'], identity, item['rule'], item['dimension'],
+                          item['source_class'], item['evidence_id'], item['observed_at'],
+                          json.dumps(item, ensure_ascii=False), item['created_at']))
+        return item
+
+    def signals(self, company_id, ttl_days=None):
+        """Latest collection per rule; TTL marks staleness instead of silently dropping data."""
+        with self.connection() as conn:
+            # collected_at 只存在 payload 里（建表脚本无此列），照 page() 的做法用 json_extract 排序。
+            rows = conn.execute("SELECT payload FROM company_signals WHERE company_id=? ORDER BY json_extract(payload,'$.collected_at') DESC, rowid DESC", (company_id,)).fetchall()
+        seen, result = set(), []
+        for row in rows:
+            item = json.loads(row['payload'])
+            if item['rule'] in seen:
+                continue
+            seen.add(item['rule'])
+            limit = (ttl_days or {}).get(item['rule'])
+            stale = True
+            if limit:
+                try:
+                    # 计划原文用 .days 取整，400 天 1 秒会被截成 400，边界上恰好漏报过期；改成整段时长比较（也是 timedelta 这个导入的用途）。
+                    stale = (datetime.now(timezone.utc) - datetime.fromisoformat(item['collected_at'])) > timedelta(days=limit)
+                except ValueError:
+                    stale = True
+            item['stale'] = stale
+            result.append(item)
+        return result
