@@ -17,7 +17,15 @@ DEFAULT_DATA = Path(__file__).resolve().parents[2] / '.data'
 MAX_BYTES = 12 * 1024 * 1024
 CACHE_SECONDS = 6 * 60 * 60
 _cache_lock = threading.Lock()
-CITY_CODES = {'北京': '101010100', '上海': '101020100', '广州': '101280100', '深圳': '101280600', '杭州': '101210100', '成都': '101270100', '武汉': '101200100', '南京': '101190100', '苏州': '101190400', '西安': '101110100', '全国': '100010000'}
+# 逐个回验过的城市码下限；数据文件缺失时采集也不能把这些城市退化成“未映射”。
+VERIFIED_BOSS_CITY_CODES = {'北京': '101010100', '上海': '101020100', '广州': '101280100', '深圳': '101280600', '杭州': '101210100', '成都': '101270100', '武汉': '101200100', '南京': '101190100', '苏州': '101190400', '西安': '101110100', '全国': '100010000'}
+# 平台自身的全量字典由 scripts/harvest_city_dictionary.py 抓回，落盘前必须逐条复现上面的下限。
+CITY_FILE = Path(__file__).resolve().parent / 'data' / 'cities.json'
+CITY_DICTIONARY = json.loads(CITY_FILE.read_text(encoding='utf-8')) if CITY_FILE.is_file() else {}
+CITY_CODES = dict(VERIFIED_BOSS_CITY_CODES, **((CITY_DICTIONARY.get('boss') or {}).get('cities') or {}))
+BOSS_HOT_CITIES = (CITY_DICTIONARY.get('boss') or {}).get('hot') or list(CITY_CODES)
+# 拼音取自 BOSS 城市字典（城市名是同一套中文写法，其他来源共用）。
+CITY_PINYIN = CITY_DICTIONARY.get('pinyin') or {}
 # 各平台城市码体系互不通用，以下取值均按该来源实际返回的工作城市逐个回验得到。
 ZHAOPIN_CITY_CODES = {'北京': '530', '上海': '538', '广州': '763', '深圳': '765', '杭州': '653', '成都': '801', '武汉': '736', '南京': '635', '苏州': '639', '西安': '854'}
 JOB51_CITY_CODES = {'北京': '010000', '上海': '020000', '广州': '030200', '深圳': '040000', '南京': '070200', '苏州': '070300', '杭州': '080200', '成都': '090200', '武汉': '180200', '西安': '200200', '全国': '000000'}
@@ -189,7 +197,7 @@ def map_boss(data, limit=20, city=''):
 
 def _boss(client, query, location, limit):
     if location and location not in CITY_CODES and not re.fullmatch(r'\d{9}', location):
-        return result('unsupported', '当前城市暂未映射；可用北京、上海、广州、深圳、杭州、成都、武汉、南京、苏州、西安或留空。')
+        return result('unsupported', f'当前城市暂未映射；可用{city_hint("boss")}或留空。')
     data = _json(client, 'GET', 'https://www.zhipin.com/wapi/zpgeek/search/joblist.json', params={'query': query, 'city': CITY_CODES.get(location, location or '100010000'), 'page': 1, 'pageSize': min(limit, 30)}, headers={'Referer': 'https://www.zhipin.com/web/geek/job'})
     return map_boss(data, limit)
 
@@ -321,7 +329,7 @@ def map_liepin(payload, limit=20, city=''):
 def _liepin(client, query, location, limit):
     code = LIEPIN_CITY_CODES.get(location or '全国', '' if not location else None)
     if code is None:
-        return result('unsupported', '当前城市暂未映射；可用北京、上海、广州、深圳、杭州、成都、武汉、南京、苏州、西安或留空。')
+        return result('unsupported', f'当前城市暂未映射；可用{city_hint("liepin")}或留空。')
     jobs, evidence, page, failure = [], [], 0, None
     while len(jobs) < limit and page < 3:
         body = {'data': {'mainSearchPcConditionForm': {
@@ -395,7 +403,7 @@ def _cninfo(client, query, limit):
 # 来源登记表：来源页、采集路由、浏览器通路及前端下拉共用同一份事实，平台名不再各处硬编码。
 SOURCES = {
     'boss': dict(name='BOSS 直聘', kind='jobs', transport='http_api', status='needs_verification',
-                 codes=CITY_CODES,
+                 codes=CITY_CODES, hot=BOSS_HOT_CITIES,
                  description='国内岗位接口；未登录直调可能触发验证，可尝试专属浏览器会话。'),
     'zhaopin': dict(name='智联招聘', kind='jobs', transport='browser_page', status='needs_verification',
                    codes=ZHAOPIN_CITY_CODES,
@@ -415,6 +423,13 @@ SOURCES = {
 }
 BROWSER_SOURCES = tuple(source for source, item in SOURCES.items() if item['transport'] == 'browser_page')
 HTTP_SOURCES = tuple(source for source, item in SOURCES.items() if item['transport'] == 'http_api')
+
+
+def city_hint(source):
+    """未映射提示列热门城市与总数；BOSS 有 374 个城市，全列会把任务说明撑到读不完。"""
+    item = SOURCES[source]
+    names = list(item.get('hot') or item['codes'])[:10]
+    return '、'.join(names) + (f' 等 {len(item["codes"])} 个城市' if len(item['codes']) > len(names) else '')
 
 
 def collect(source, query, location='', limit=20, *, client=None, cache_dir=None):

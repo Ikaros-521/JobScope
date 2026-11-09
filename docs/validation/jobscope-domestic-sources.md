@@ -18,6 +18,19 @@
 - 前程无忧 `jobArea`：北京 010000、上海 020000、广州 030200、深圳 040000、南京 070200、苏州 070300、杭州 080200、成都 090200、武汉 180200、西安 200200。省级码（如 030000、080000）会混返回其他城市，`030000`、`050000`、`100000`、`210000` 返回 0 条，因此采用回验过的城市级码并再按城市名复核。
 - 猎聘 `dq`：北京 010、上海 020、广州 050020、深圳 050090、杭州 070020、成都 280020、武汉 170020、南京 060020、苏州 060080、西安 270020；留空为全国。未映射城市返回“暂不支持”，不会静默改用其他城市。
 
+## 城市字典（同日补充，仅 BOSS 取到）
+
+地点提示要覆盖全国，码表必须来自平台自身，不能按经验填写。实测如下：
+
+- `https://www.zhipin.com/wapi/zpCommon/data/city.json`：HTTP 200、934,213 字节 JSON（浏览器 UA，普通 GET，未带 Cookie）。`zpData.cityList` 为 34 个省级条目，其下 373 个城市级条目全部是 9 位天气码、全部带 `pinyin`，城市名无重复；`zpData.hotCityList` 15 项（全国、北京、上海、广州、深圳、杭州、天津、西安、苏州、武汉、厦门、长沙、成都、郑州、重庆）。
+- 落盘前逐条比对上文已回验的 11 个码：复现 11、码不符 0、缺失 0，因此 `backend/jobscope/data/cities.json` 收录 374 个城市（含全国）用于 BOSS 采集。`scripts/harvest_city_dictionary.py` 可重跑，对不上就拒绝写入；它固定与 `VERIFIED_BOSS_CITY_CODES` 下限比对，不拿合并结果自证。
+- 首字母由抓取脚本用 pypinyin 生成，且只在整词读法与平台拼音一致时才采信：373 城中 321 城可首字母命中（佛山 `fs`、哈尔滨 `heb`），52 城不给快捷写法（如六安），仍可按汉字或整词拼音命中。pypinyin 只被抓取脚本使用，运行时依赖没有变化。
+- 智联、前程无忧、猎聘的城市表本次没有取到，因此这三家仍是逐个回验的 10 城，未做任何扩写：
+  - 智联 `https://www.zhaopin.com/jobs/?kw=Python&jl=530` 页面 297,651 字节，加其 8 个脚本包（最大 `chunk-vendors` 1,542,978 字节、`chunk-common` 413,568 字节）内均无 `jl` 城市码表；`cityList`、`careerArea` 字样在页面中出现 0 次。
+  - 前程无忧 `https://we.51job.com/pc/search?keyword=Python&jobArea=080200` 本机直连只有 7,987 字节 WAF 挑战页，其 10 个脚本包（含 `fccdn.51jobcdn.com/we/static/js/app-*.js`）无 `jobArea` 码表。
+  - 猎聘 `https://www.liepin.com/city-hangzhou/zhaopin/?key=Python`（2,824 字节）与首页（346,306 字节）加 10 个脚本包（含 3,260,593 字节 `common.js`）均无 `dq` 码表。
+  - 三家的字典预计要按既有做法在各自会话内取页面自身的数据（打开城市筛选、读同源响应），本次未做。
+
 ## 走不通的入口（保留以免重复踩）
 
 - `https://www.zhaopin.com/jobsearch/?keyword=Python&jl=530` → 302 回首页；搜索结果页实际是 `/jobs/?kw=&jl=`。
@@ -35,8 +48,9 @@
 ## 回归
 
 ```powershell
-cd E:\Github_Pro\ResumeLoom\jobscope
-.venv\Scripts\python.exe -m pytest backend/tests -q   # 220 passed
+cd E:\Github_Pro\JobScope
+.venv\Scripts\python.exe -m pytest backend/tests -q   # 224 passed
+.venv\Scripts\python.exe scripts\harvest_city_dictionary.py boss   # 11 项已回验码逐条复现后才落盘
 cd frontend
 npm run build                                          # tsc -b + vite build 通过
 ```

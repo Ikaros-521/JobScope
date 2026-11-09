@@ -186,7 +186,14 @@ def test_sources_endpoint_describes_the_domestic_job_platforms(client):
     assert sources['liepin']['browser_collectable'] is False
     assert {'北京', '深圳', '西安'} <= set(sources['liepin']['cities'])
     assert sources['cninfo']['kind'] == 'evidence' and sources['cninfo']['cities'] == []
+    assert len(sources['boss']['cities']) > 300, '地点提示要靠接口给出的城市字典，前端不该自带名单'
+    assert set(sources['boss']['hot']) <= set(sources['boss']['cities']) and sources['boss']['hot']
     assert all(item['name'] and item['description'] for item in sources.values())
+
+
+def test_cities_endpoint_serves_the_shared_pinyin_table(client):
+    pinyin = client.get('/api/cities').json()['pinyin']
+    assert pinyin['杭州'] == ['hangzhou', 'hz'] and len(pinyin) > 300
 
 
 def test_collect_routes_browser_only_sources_into_the_page_session(client, monkeypatch):

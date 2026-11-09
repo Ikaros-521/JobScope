@@ -301,8 +301,14 @@ def create_app(data_dir=None):
         return {"sources": [
             dict(id=source, name=item['name'], kind=item['kind'], transport_mode=item['transport'],
                  status=item['status'], description=item['description'],
-                 cities=list(item.get('codes') or []), browser_collectable=source in collectable)
+                 cities=list(item.get('codes') or []), hot=list(item.get('hot') or []),
+                 browser_collectable=source in collectable)
             for source, item in connectors.SOURCES.items()]}
+
+    @app.get('/api/cities')
+    def cities():
+        # 拼音是城市名的属性，不是来源的属性，所以整表共用一份。
+        return {'pinyin': getattr(load_module('connectors'), 'CITY_PINYIN', {})}
 
     @app.post("/api/collect")
     def collect(data: CollectInput):

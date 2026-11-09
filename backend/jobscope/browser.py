@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlencode
 
-from .connectors import (DEFAULT_DATA, SOURCES, loads_payload, map_boss, map_job51,
+from .connectors import (DEFAULT_DATA, SOURCES, city_hint, loads_payload, map_boss, map_job51,
                          map_zhaopin, result)
 
 _lock = threading.Lock()
@@ -191,7 +191,7 @@ def collect(source='boss', query='', location='', limit=20, data_dir=None):
         return result('failed', '请输入不超过200字的关键词。')
     city = str(location or '').strip()[:40]
     if city and city not in spec['codes']:
-        return result('unsupported', f'{spec["name"]}暂未映射该城市；可用{("、".join(spec["codes"]))}或留空。')
+        return result('unsupported', f'{spec["name"]}暂未映射该城市；可用{city_hint(source)}或留空。')
     try:
         size = max(1, min(int(limit), spec['size']))
     except (TypeError, ValueError):

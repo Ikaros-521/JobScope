@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -383,3 +384,26 @@ def test_registry_cities_cover_the_platform_urls():
         assert all(str(code) for code in module.SOURCES[source]['codes'].values())
     assert module.SOURCES['liepin']['transport'] == 'http_api'
     assert module.SOURCES['zhaopin']['transport'] == module.SOURCES['51job']['transport'] == 'browser_page'
+
+
+def test_boss_uses_the_platform_city_dictionary():
+    module = connectors()
+    assert len(module.CITY_CODES) > 300, 'BOSS 应带上平台自身的全量城市字典，而不是十来个城市'
+    assert re.fullmatch(r'\d{9}', module.CITY_CODES['佛山'])
+    # 平台全量字典必须逐条复现已回验的下限，否则码制对不上就是采错城市。
+    for name, code in module.VERIFIED_BOSS_CITY_CODES.items():
+        assert module.CITY_CODES[name] == code
+    hot = module.SOURCES['boss']['hot']
+    # 全国是平台字典里的伪城市，没有拼音条目；其余热门城市都要能按拼音命中。
+    assert set(hot) <= set(module.CITY_CODES) and all(name in module.CITY_PINYIN for name in hot if name != '全国')
+    assert len(module.CITY_PINYIN) > 300
+    assert module.CITY_PINYIN['佛山'] == ['foshan', 'fs']
+
+
+def test_unmapped_city_lists_hot_cities_instead_of_the_whole_dictionary():
+    module = connectors()
+    calls = []
+    client = client_for(lambda request: calls.append(request) or httpx.Response(200, json={'code': 0, 'zpData': {'jobList': []}}))
+    output = module.collect('boss', 'Python', '不存在的城市', client=client)
+    assert output['status'] == 'unsupported' and calls == []
+    assert re.search(r'等 \d+ 个城市', output['message']) and len(output['message']) < 120
