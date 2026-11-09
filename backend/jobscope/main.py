@@ -386,9 +386,10 @@ def create_app(data_dir=None):
         saved = []
         for item in outcome['signals']:
             # 每条信号先落成一条可溯源证据，再落成信号记录：证据仍是唯一的原始层。
+            # url 必须取采集器实际访问过的那个页面地址；出处缺失就等于法律兜底失效。
             evidence = repo.save_evidence(dict(title=f"{identity['name']} {item['rule']}", company=identity['name'],
                                                kind='disclosure', text=json.dumps(item, sort_keys=True, ensure_ascii=False),
-                                               url='', published_at=item.get('observed_at') or None), data.source)
+                                               url=item.get('url', ''), published_at=item.get('observed_at') or None), data.source)
             saved.append(repo.save_signal(SignalInput(
                 company_id=identity['id'], dimension=item['dimension'], rule=item['rule'], value=item['value'],
                 unit=item.get('unit', ''), source_class=item['source_class'], evidence_id=evidence['id'],

@@ -145,6 +145,25 @@ def test_collect_reports_an_honest_status_without_touching_the_network(client):
     assert local['status'] == 'unsupported'
 
 
+def test_collect_stores_the_page_the_signal_came_from(client, monkeypatch):
+    """出处缺失等于法律兜底失效：落 evidence 时用的必须是采集器实际访问过的那个 URL。"""
+    from jobscope.reliability import collectors
+    visited = 'https://www.gsxt.gov.cn/index.html?keyword=%E7%94%B2%E5%85%AC%E5%8F%B8'
+
+    def fake_collect(source, company, **kwargs):
+        return dict(status='completed', message='采集完成。', signals=[dict(
+            rule='company_age', dimension='stability', value={'years': 8.0}, unit='年',
+            source_class='official', observed_at='2015-04-01', url=visited, source=source)])
+
+    monkeypatch.setattr(collectors, 'collect', fake_collect)
+    result = client.post('/api/companies/甲公司/signals/collect', json=dict(source='gsxt')).json()
+    signal = result['signals'][0]
+    stored = client.get('/api/evidence', params=dict(company='甲公司')).json()['evidence'][0]
+    assert signal['evidence_id'] == stored['id']
+    assert stored['url'] == visited
+    assert stored['source'] == 'gsxt' and stored['kind'] == 'disclosure'
+
+
 def test_extract_without_a_model_skips_and_still_records_the_run(client):
     evidence = add_material(client)
     result = client.post('/api/companies/甲公司/signals/extract', json=dict())

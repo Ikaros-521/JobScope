@@ -117,6 +117,29 @@ def test_captcha_page_stops_without_retrying():
     assert len(tab.visited) == 1
 
 
+def test_the_readers_hand_back_the_page_they_actually_visited():
+    """出处 URL 是这个功能规避法律风险的核心手段：读不到 URL 就等于兜底失效。"""
+    tab = FakeTab(REGISTRATION_HTML)
+    result = collectors._read_registration(tab, '甲公司')
+    assert result['url'] == tab.visited[0]
+    assert result['url'].startswith(collectors.GSXT_ORIGIN) and 'keyword=' in result['url']
+    reports = FakeTab(REPORTS_HTML)
+    assert collectors._read_annual_report(reports, '甲公司')['url'] == reports.visited[0]
+
+
+def test_a_blocked_page_yields_no_signal_and_therefore_no_url():
+    """验证页给不出可解析数字，也就没有出处可言：不能返回一个带空 URL 的半条信号。"""
+    assert collectors._read_registration(FakeTab(CAPTCHA_HTML), '甲公司') is None
+    assert collectors._read_annual_report(FakeTab(CAPTCHA_HTML), '甲公司') is None
+
+
+def test_collection_passes_the_visited_urls_through_to_every_signal(monkeypatch):
+    tab, browser, slept = drive(monkeypatch, BOTH_HTML)
+    outcome = collectors.collect('gsxt', '甲公司', browser_module=browser)
+    assert [item['url'] for item in outcome['signals']] == tab.visited
+    assert len(tab.visited) == 2 and all(item['url'] for item in outcome['signals'])
+
+
 def test_collection_is_bounded_by_pages_and_never_replays_requests():
     assert collectors.MAX_PAGES <= 5 and collectors.PAGE_DELAY >= 2
 

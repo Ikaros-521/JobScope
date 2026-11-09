@@ -45,13 +45,17 @@ def _sleep(seconds):
     time.sleep(seconds)
 
 
-def _signal(rule, value, observed_at=''):
-    """维度与单位取自 rubric，避免采集器和规则表两处漂移；字段名对齐 models.SignalInput。"""
+def _signal(rule, value, observed_at='', url=''):
+    """维度与单位取自 rubric，避免采集器和规则表两处漂移；字段名对齐 models.SignalInput。
+
+    `url` 是这条信号的出处，命名沿用证据层的同名字段：法律红线要求「每条依据都标出来源与
+    抓取时间」，所以读不到实际访问地址的信号一律不许带空出处往下落库。
+    """
     spec = RULES.get(rule)
     if spec is None or not isinstance(value, dict) or not value:
         return None
     return dict(rule=rule, dimension=spec.dimension, value=value, unit=spec.unit,
-                source_class='official', observed_at=observed_at)
+                source_class='official', observed_at=observed_at, url=url)
 
 
 def _outcome(status, message, signals=()):
@@ -85,7 +89,8 @@ def _html_of(tab):
 
 def _read_registration(tab, company):
     """成立日期 → company_age（年）。页面没有这个数字就什么都不返回。"""
-    tab.get(GSXT_ORIGIN + REGISTRATION_PATH + '?' + urlencode({'keyword': company}), timeout=PAGE_TIMEOUT)
+    url = GSXT_ORIGIN + REGISTRATION_PATH + '?' + urlencode({'keyword': company})
+    tab.get(url, timeout=PAGE_TIMEOUT)
     html = tab.html or ''
     if _looks_blocked(html):
         return None
@@ -98,12 +103,13 @@ def _read_registration(tab, company):
         # 数字明显不是合法日期：页面结构和假设不一样，不能拿它换算年限。
         return None
     years = round((datetime.now(timezone.utc) - founded).days / 365.25, 1)
-    return _signal('company_age', {'years': years}, founded.date().isoformat())
+    return _signal('company_age', {'years': years}, founded.date().isoformat(), url)
 
 
 def _read_annual_report(tab, company):
     """年报参保人数 → insured_headcount_trend 的两端。少于两期就无法构成趋势。"""
-    tab.get(GSXT_ORIGIN + ANNUAL_REPORT_PATH + '?' + urlencode({'keyword': company}), timeout=PAGE_TIMEOUT)
+    url = GSXT_ORIGIN + ANNUAL_REPORT_PATH + '?' + urlencode({'keyword': company})
+    tab.get(url, timeout=PAGE_TIMEOUT)
     html = tab.html or ''
     if _looks_blocked(html):
         return None
@@ -113,7 +119,7 @@ def _read_annual_report(tab, company):
     # 假设 3（最需要实测校正的一条）：公示系统把年报由新到旧排列，所以 counts[0] 是最近一期（after）、
     # counts[1] 是上一期（before）。实测时若页面其实由旧到新，必须交换两端——否则趋势会把扩员读成裁员。
     # observed_at 留空：本期还没有把握把页面上的「XXXX年度报告」和这两个数字逐行配对，不猜。
-    return _signal('insured_headcount_trend', {'before': counts[1], 'after': counts[0]})
+    return _signal('insured_headcount_trend', {'before': counts[1], 'after': counts[0]}, url=url)
 
 
 # 来源键与 `reliability/sources.py` 的 SIGNAL_SOURCES 对齐；这里刻意不导入那个模块，
@@ -159,6 +165,7 @@ def collect(source_id, company, *, browser_module, data_dir=None, on_status=None
                 blocked = _looks_blocked(_html_of(tab))
                 break
             item['source'] = source_id
+            # 出处 URL 原样透传给调用方：端点落证据时用的就是这个值，这里不兜底成空串。
             signals.append(item)
         if not blocked:
             # 干净收尾才关标签页；停在验证页时把页面留在前台交给用户处理。
