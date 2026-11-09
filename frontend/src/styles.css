@@ -834,7 +834,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .composer-model { display: inline-flex; align-items: center; gap: 6px; color: #525252; }
 .composer-model select { min-height: 32px; font-size: 12px; padding: 4px 8px; border-radius: 8px; max-width: 220px; }
 .composer-switch { display: inline-flex; align-items: center; gap: 8px; color: #525252; cursor: pointer; }
-.composer-switch input { appearance: none; width: 34px; height: 18px; border-radius: 999px; background: #d4d4d4; position: relative; cursor: pointer; margin: 0; transition: background .15s ease; min-width: 34px; min-height: 18px; }
+.composer-switch input { appearance: none; width: 34px; height: 18px; border: 0; padding: 0; border-radius: 999px; background: #d4d4d4; position: relative; cursor: pointer; margin: 0; transition: background .15s ease; min-width: 34px; min-height: 18px; }
 .composer-switch input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s ease; }
 .composer-switch input:checked { background: var(--green); }
 .composer-switch input:checked::after { left: 18px; }
