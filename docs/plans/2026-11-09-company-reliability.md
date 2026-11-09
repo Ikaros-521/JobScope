@@ -838,6 +838,23 @@ git commit -m "feat(reliability): template the wording and lint away assertive l
 
 ---
 
+## 实施修正记录（Task 1-5 已落地，后面按这个现状写代码）
+
+实施时相对上文任务正文做了 8 处修正，都已提交并有测试兜住。**Task 6 起以下面的现状为准，不要照着上文任务正文里的旧写法实现。**
+
+1. `repository.normalise_name()` **删除**所有空白而不是压成单个空格（中英文一致，Remotive 的海外公司名同样带多余空格）；否则 `'  明日    之星 '` 与 `'明日之星'` 会分裂成两个实体。别名在写入前同样走 `normalise_name`。
+2. `resolve_company()` 的别名只在第二次调用时才出现在返回值里，测试断言看的是第二次调用的返回（`again['aliases']`），不是首次。
+3. `SignalInput.evidence_id` 的 `min_length` 是 **1** 不是 4：测试与占位场景用 `'E-1'` 这类短编号，真实编号仍是 `E-` + 24 位摘要。
+4. `repository.signals()` 按 `json_extract(payload,'$.collected_at')` 排序（`collected_at` 不是表列）；TTL 判定用 `datetime - datetime > timedelta(days=limit)`，用 `.days` 取整会让 400 天 1 秒在 400 天阈值上漏报过期。
+5. **`rubric.py` 引入规则分类**（`RUBRIC_VERSION = 'rubric-2'`）：`kind=ASSESSMENT` 才有资格产出维度分，`kind=MATERIAL` 只产出说明文字。当前 `salary_quote_coverage`、`employee_review_sample`、`disclosure_available` 是 MATERIAL——它们衡量的是本项目手上有多少材料，把「9/10 条岗位能解析出月薪」算成薪资待遇 90 分，用户读到的是「这家薪资给得好」，属于静默谎言。
+6. 维度 `confidence` 的分母改成**该维度 ASSESSMENT 规则的条数**；没有 ASSESSMENT 规则可算时 `score=None`、`confidence=0`，并在 `missing` 里显式写「该维度还没有可评价的规则，下面只是已收集到的材料」。`judicial_case_ratio` 在 `ratio` 为 0 时 scorer 返回 `None`（检索不到案件可能是覆盖面不够，不是正面结论），落到 `missing` 而不是给满分。
+7. `wording.py`（`WORDING_VERSION = 'wording-2'`）：区间文案重排，45-60 段从「出现了值得你重点核实的信号」改成「手上的材料方向不一致，请逐条对照下面的依据」——成立 2 年却在扩员的公司拿 55.6 分，旧文案会把它描述成有问题；只有 <45 段才要求用户重点核实。总分的百分比改称「维度覆盖 {n}%（按权重）」，因为它统计的是有权重依据的维度占比，和单维度的 `confidence` 不是一回事。`employee_review_sample` 模板去掉「样本较小」这种凭条数下的判断。
+8. **由此产生的产品形态**：P0 只有 `stability` 能被打分，所以默认展示是「无综合分 + 缺口清单 + 若干说明文字」。这是设计意图而不是缺陷，但 P1 必须给 `pay`/`operations`/`people` 补 ASSESSMENT 规则，否则这三个维度永远只是文字。
+
+对应提交：`ecd8200` `b66aa57` `0c91dd9` `edfe22d` `1e2b307` `a13f82e` `c9631c8` `2820ec4`。
+
+---
+
 ## Task 6: 编排服务与幂等落库
 
 **Files:**
