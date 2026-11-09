@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.11 / FastAPI / Pydantic v2 / SQLite（payload-json 表风格）/ pytest；采集复用 DrissionPage + 本机 Chrome 会话；前端 React 19 + TypeScript 5.8。
 
+**状态：Task 1-12 全部交付完成。** 分支 `codex/company-reliability`（worktree `E:\Github_Pro\JobScope-reliability`），全量后端 395 passed，前端构建通过。各任务落地时相对本文的偏差记在下面三段「实施修正记录」里，**读本文实现后续工作前必须先读那三段**，正文里有几处写法已被推翻。尚未合回 `main`，等用户点名。
+
 ---
 
 ## 工作目录（先读这段）
@@ -1959,6 +1961,25 @@ git commit -m "docs(reliability): record the design, live checks and legal bound
 - [ ] **Step 5: 发布相关的收尾（等用户点名）**
 
 代码与文档此刻都已经在 JobScope 独立仓库里，不需要跨仓库同步。剩下的都是对外可见动作：是否 `git push origin main`、是否打 tag 发版、是否把设计文档摘一份进 ResumeLoom 的 `docs/`（那边不再跟踪 `jobscope/` 代码，只存文档）。这些一律等用户明确说「推」或「发版」再做，不顺手 push。
+
+---
+
+## 实施修正记录（Task 10-12 已落地，功能交付完成）
+
+对应提交：`371150e`（API）、`7678947`（本地覆盖度幂等）、`81525eb`（前端面板+来源设置）、`0a39a58`（付费字段映射）、`9b98099`（前端小修）、`5985f57`（红线测试）、`8eb5229` + `a0e6432`（文档与 README）。
+
+1. **端点比计划多一个**：`POST /api/companies/{company}/signals/extract`。没有它，用户手动导入的公告永远不会变成信号，整个功能只剩还没实测的浏览器采集。它把每次运行的结构化 status 与被拒原因记进现有 `tasks` 表（`kind='reliability_extract'`，raw 原文截断留档），复用采集记录面板显示，不新建表。
+2. **读路径不再建实体**：`GET /api/companies/{c}/reliability` 走只读查找（`repository` 的 peek 口径 + `ReliabilityService.peek_report`），查一个拼错的公司名不再留下垃圾 companies 行。POST 重算仍然创建实体。
+3. **`jobscope_jobs` 走 `reliability/local.py`**：`salary_quote_coverage` 用 `analysis.parse_salary()` 且只认 `currency == 'CNY'`（年薪/时薪/外币不计入已知），`disclosure_available` 数公告类证据。两者都是 `MATERIAL`，只出文字不出分数。
+4. **派生记录用独立 kind，不进材料池**：本地计算落 `local_computation`，付费接口原文落 `paid_api_record`，两者都被 `company_materials()` 排除。否则本地计数会把自己数进去（点一次涨一次），厂商原文还会二次进抽取器变成第二批「材料」。
+5. **本地口径正文不写计算时间**：证据身份含内容哈希，正文带时刻会让每次点击都新增一份证据和一条信号，`input_hash` 随之每次变化、`company_reliability` 历史无限累积。时间只留在信号的 `collected_at`。
+6. **采集信号必须带出处 URL**：`collectors` 的 `_read_*` 返回实际访问过的页面地址，端点落证据时用它；`years_since()` 由 collectors 与 paid 共用，年限换算只有一把尺子。出处缺失等于法律兜底失效。
+7. **付费来源是声明式字段映射**（`reliability/paid.py`）：`SIGNAL_SOURCES[source]['fields']` 列出每条规则的候选字段名，取不到就逐条点名「未取到 X：候选 y、z 不存在」，**绝不默认 0、绝不猜**。初始映射表全部标注为待用户按采购文档校正的假设。响应不是对象 → `unsupported`；是对象但字段对不上 → `partial`；请求失败/无地址 → `failed`。
+8. **已知未接线的部分**：`PaidClient` 写死了查询参数名 `company` 与 `Authorization: Bearer`，而企查查/天眼查这类厂商通常要求签名认证——真接需要再加认证方式配置项。`credit_china`、`court_records` 登记了规则但没有 reader，点击即 `unsupported`。本机没有 DrissionPage 与可读的 Chrome 会话，浏览器通路至今无法实测。
+9. **前端**：`CompanyReference.tsx` 挂在岗位详情「公司情报」区，无分数时不画空环，`material` 行只出文字与出处；免责声明与 `limitations` 常驻而非折叠；配色中性无红橙警示；切岗位清空报告。`App.tsx` 的来源设置块可启停付费来源并填密钥与接口地址，密钥只回 `已设置`。`opt_in`/`skipped`/`degraded` 已补进状态词表。
+10. **红线测试**（`test_reliability_boundaries.py`，16 条）：无 share/rank/public 路由、对外表面积必须恰好是那五个路径、报告必带主观参考声明、任何响应不回显密钥、付费默认关、每条依据必带出处且 material 必无数字、模型层只有 `extract` 能碰且 `extract` 不许碰措辞、分数只能由 rubric 铸造、极端取值下禁用词触不到、模型层拒答时分数仍可复现。
+11. **P0 的真实能力边界**：只有 `stability` 能被打分，且它的三条规则里两条来自尚未实测的 gsxt，所以当前实际能稳定产出的是「本地覆盖度说明 + 缺口清单」，第一个真实外部分数要等人工实测。**这是交付状态，不是缺陷**；P1 要给 `pay`/`operations`/`people` 补 ASSESSMENT 规则。
+12. 全量后端 395 passed（基线 224），`npx tsc --noEmit` 与 `npm run build` 通过。
 
 ---
 
