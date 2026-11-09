@@ -1,4 +1,6 @@
 """Shared OpenAI Chat Completions / Anthropic Messages transport."""
+import sys
+import traceback
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
@@ -247,7 +249,7 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, ti
                                     on_reasoning(delta[key])
                         for item in delta.get('tool_calls') or []:
                             index = item.get('index', 0)
-                            slot = openai_calls.setdefault(index, dict(id='', function=dict(name='', arguments='')))
+                            slot = openai_calls.setdefault(index, dict(id='', type='function', function=dict(name='', arguments='')))
                             if isinstance(item.get('id'), str):
                                 slot['id'] = item['id']
                             function = item.get('function') or {}
@@ -256,6 +258,7 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, ti
                             if isinstance(function.get('arguments'), str):
                                 slot['function']['arguments'] += function['arguments']
     except (httpx.HTTPError, json.JSONDecodeError, ValueError, KeyError, TypeError, IndexError):
+        traceback.print_exc(file=sys.stderr)
         raise ValueError('Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。') from None
     if protocol == 'anthropic':
         for slot in anthropic_tools.values():

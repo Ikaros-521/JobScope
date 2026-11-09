@@ -50,6 +50,22 @@ def get_model_config(target='llm'):
     return (_active.get() or environment())[target].copy()
 
 
+class use_config:
+    """Bind model config for the current thread (background run workers have no request context)."""
+
+    def __init__(self, config):
+        self._config = config
+        self._token = None
+
+    def __enter__(self):
+        self._token = _active.set(self._config)
+        return self._config
+
+    def __exit__(self, *exc_info):
+        _active.reset(self._token)
+        return False
+
+
 class ModelSettings:
     def __init__(self, repo):
         self.repo = repo

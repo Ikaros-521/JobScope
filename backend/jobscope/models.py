@@ -81,3 +81,17 @@ class ChatInput(RequestModel):
     scope: Literal['scoped', 'global'] = 'scoped'
     agent_mode: Literal['research', 'general'] = 'research'
     conversation_id: str | None = Field(default=None, max_length=100)
+
+
+class ChatRunInput(RequestModel):
+    message: str = Field(min_length=1, max_length=12000)
+    conversation_id: str | None = Field(default=None, max_length=100)
+    agent_mode: Literal['research', 'general'] = 'research'
+    model: str = Field(default='', max_length=200)
+    edit_message_id: str | None = Field(default=None, max_length=50)
+
+
+class ConversationPatch(RequestModel):
+    title: str | None = Field(default=None, min_length=1, max_length=100)
+    mode: Literal['research', 'general'] | None = None
+    model: str | None = Field(default=None, max_length=200)

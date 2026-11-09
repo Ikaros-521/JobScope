@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { api, post, readable, plain, date, safeUrl } from './api'
 import { Pagination, emptyPage } from './Pagination'
-import { ScopedChat } from './ScopedChat'
 import { EvidenceWorkspace } from './EvidenceWorkspace'
 import { EvidenceCard } from './EvidenceCard'
 import { DetailBatch } from './DetailBatch'
@@ -12,6 +11,7 @@ import { AgentExtensions } from './AgentExtensions'
 import { ModelSettings } from './ModelSettings'
 import { ResumeImport } from './ResumeImport'
 import { navigateTabs } from './tabNavigation'
+import { GlobalChat } from './chat/GlobalChat'
 import type { Analysis, BrowserStatus, ChatMessage, ChatResult, Evidence, Job, PageInfo, Source, Task } from './api'
 
 const sourceNames: Record<string, string> = { remotive: 'Remotive · 海外远程', boss: 'BOSS 直聘', cninfo: '巨潮资讯', user_import: '用户导入' }
@@ -251,7 +251,7 @@ export default function App() {
       {notice && <div className="alert notice" role="status"><span>{notice}</span><button aria-label="关闭通知" onClick={() => setNotice('')}><Icon name="close" size={16} /></button></div>}
       <div hidden={view !== 'evidence'}><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} /></div>
 
-      <div hidden={view !== 'global'}><section className="page-intro"><div><h1>全局对话</h1><p>检索全项目资料，或使用 MCP 与 Skills 完成多步任务</p></div></section><ScopedChat global modelConfigured={modelConfigured} onManageExtensions={() => setView('extensions')} /></div>
+      {view === 'global' && <GlobalChat modelConfigured={modelConfigured} onManageExtensions={() => setView('extensions')} />}
 
       {view === 'jobs' && <>
         <section className="page-intro"><div><h1>岗位研究</h1><p>把岗位要求、公司证据和你的经历逐项核对</p></div><Button className="button secondary" onClick={() => openModal('job')}><Icon name="plus" size={17} />导入岗位</Button></section>

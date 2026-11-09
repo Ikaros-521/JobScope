@@ -29,6 +29,53 @@ export type MarketMcp = { id: string; name: string; icon: string; category: stri
 export type MarketSkill = { id: string; name: string; title?: string; icon: string; category: string; desc?: string; content?: string; installed?: boolean; repo?: string; path?: string; official?: boolean; stars?: number }
 export type MarketPayload = { curated_mcp: MarketMcp[]; curated_skills: MarketSkill[]; online: { skills: MarketSkill[]; mcp: MarketMcp[]; fetched_at?: number } | null; fetched_at: number | null }
 
+// 全局对话：run-based 流式会话
+export type ChatMode = 'research' | 'general'
+export type StoredMessage = {
+  id: string; ts: string; role: 'user' | 'assistant'; content: string;
+  reasoning?: string; mode?: string; interrupted?: boolean;
+  citations?: Citation[]; trace?: ResearchRun; metrics?: SalaryMetrics | null
+}
+export type ToolStep = { step: number; tool: string; duration_ms: number; label?: string; status?: string; arguments?: Record<string, unknown>; result_preview?: string; selected?: number; matched_jobs?: number; calls?: number }
+export type ApprovalRequest = { approval_id: string; tool: string; arguments: Record<string, unknown>; reason: string; run_id?: string }
+export type ChatRunStatus = { run_id: string; conversation_id: string; done: boolean; cancelled: boolean; awaiting_approval: boolean; pending_approval: ApprovalRequest | null }
+export type ConversationSummary = { id: string; title: string; mode: ChatMode; model: string; updated_at: string; message_count: number; preview: string }
+export type ConversationDetail = { id: string; title: string; mode: ChatMode; model: string; created_at: string; updated_at: string; messages: StoredMessage[]; active_run: ChatRunStatus | null }
+export type ChatRunStart = { run_id: string; conversation_id: string; user_message_id: string; title: string | null }
+export type ModelProvider = { mode: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model: string; key_set: boolean; source: string }
+export type Channel = { id: string; name: string; url: string; protocol: 'openai' | 'anthropic'; models: string[]; embeddings: string[] }
+export type RunEvent = { event: string; data: Record<string, unknown> }
+
+export function listConversations() { return api<{ conversations: ConversationSummary[] }>('/conversations') }
+export function getConversation(id: string) { return api<ConversationDetail>(`/conversations/${encodeURIComponent(id)}`) }
+export function patchConversation(id: string, body: { title?: string; mode?: ChatMode; model?: string }) {
+  return api<ConversationSummary>(`/conversations/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) })
+}
+export function deleteConversation(id: string) { return api<{ ok: boolean }>(`/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+export function deleteConversationMessage(conversationId: string, messageId: string) {
+  return api<{ ok: boolean }>(`/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`, { method: 'DELETE' })
+}
+export function startChatRun(body: { message: string; conversation_id?: string; agent_mode?: ChatMode; model?: string; edit_message_id?: string }) {
+  return post<ChatRunStart>('/chat/runs', body)
+}
+export function cancelChatRun(runId: string) { return post<ChatRunStatus>(`/chat/runs/${encodeURIComponent(runId)}/cancel`) }
+export function approveChatRun(runId: string, approved: boolean, approvalId: string) {
+  return post<ChatRunStatus>(`/chat/runs/${encodeURIComponent(runId)}/approval`, { approved, approval_id: approvalId })
+}
+export function getModelSettings() { return api<Record<'llm' | 'embedding', ModelProvider>>('/settings/models') }
+export function getChannels() { return api<{ channels: Channel[] }>('/settings/channels') }
+
+const STREAM_EVENTS = ['start', 'resumed', 'step', 'delta', 'reasoning_delta', 'approval_required', 'done', 'error', 'cancelled', 'end'] as const
+export function openRunStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
+  const source = new EventSource(`/api/chat/runs/${encodeURIComponent(runId)}/stream`)
+  for (const name of STREAM_EVENTS) {
+    source.addEventListener(name, event => {
+      try { onEvent(name, JSON.parse((event as MessageEvent).data)) } catch { /* 跳过无法解析的帧 */ }
+    })
+  }
+  return source
+}
+
 export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...options?.headers } })
   return readResponse<T>(response)

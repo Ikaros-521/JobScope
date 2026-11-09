@@ -9,13 +9,14 @@ from urllib.parse import quote, urlsplit
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from .analysis import analyze, parse_resume
 from .chat import answer_question, model_configured
-from .models import AnalyzeInput, BrowserCollectInput, ChatInput, CollectInput, DetailBatchInput, EvidenceInput, IndexInput, JobInput, ResumeInput
+from .chat_runs import GLOBAL_SCOPE, RunManager
+from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobInput, ResumeInput
 from .repository import Repository
 from .settings import ModelSettings, ModelSettingsInput, ConnectionInput, _active
 
@@ -27,6 +28,7 @@ def create_app(data_dir=None):
     app = FastAPI(title="知根 JobScope", docs_url="/api/docs", redoc_url=None)
     app.state.repo = repo
     settings = ModelSettings(repo)
+    runs = RunManager(repo)
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
 
@@ -435,6 +437,93 @@ def create_app(data_dir=None):
         if run is None:
             raise HTTPException(404, '研究运行不存在')
         return run
+
+    @app.post('/api/chat/runs')
+    def start_chat_run(data: ChatRunInput):
+        if data.agent_mode == 'general' and not model_configured():
+            raise HTTPException(400, '通用 Agent 需要先配置支持工具调用的对话模型。也可切回资料研究模式。')
+        try:
+            return runs.start(message=data.message, conversation_id=data.conversation_id or None,
+                              mode=data.agent_mode, model=data.model, edit_message_id=data.edit_message_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.get('/api/chat/runs/{run_id}')
+    def chat_run_status(run_id: str):
+        handle = runs.get(run_id)
+        if handle is None:
+            raise HTTPException(404, '运行不存在或已结束')
+        return handle.snapshot()
+
+    @app.get('/api/chat/runs/{run_id}/stream')
+    def chat_run_stream(run_id: str):
+        try:
+            generator = runs.stream(run_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return StreamingResponse(generator(), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+    @app.post('/api/chat/runs/{run_id}/cancel')
+    def cancel_chat_run(run_id: str):
+        try:
+            return runs.cancel(run_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+
+    @app.post('/api/chat/runs/{run_id}/approval')
+    def approve_chat_run(run_id: str, data: ApprovalInput):
+        try:
+            return runs.approve(run_id, data.approved, data.approval_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.get('/api/conversations')
+    def list_conversations(scope: str = 'global'):
+        if scope != 'global':
+            raise HTTPException(400, '当前仅支持列出全局对话')
+        return dict(conversations=repo.list_conversations(GLOBAL_SCOPE))
+
+    @app.get('/api/conversations/{conversation_id}')
+    def read_conversation(conversation_id: str):
+        try:
+            conversation = repo.get_conversation(conversation_id, GLOBAL_SCOPE)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        handle = runs.active_for_conversation(conversation_id)
+        conversation['active_run'] = handle.snapshot() if handle else None
+        return conversation
+
+    @app.patch('/api/conversations/{conversation_id}')
+    def patch_conversation(conversation_id: str, data: ConversationPatch):
+        try:
+            repo.update_conversation(conversation_id, GLOBAL_SCOPE, title=data.title, mode=data.mode, model=data.model)
+            conversation = repo.get_conversation(conversation_id, GLOBAL_SCOPE)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        conversation.pop('messages', None)
+        return conversation
+
+    @app.delete('/api/conversations/{conversation_id}')
+    def delete_conversation(conversation_id: str):
+        handle = runs.active_for_conversation(conversation_id)
+        if handle:
+            runs.cancel(handle.id)
+        try:
+            repo.delete_conversation(conversation_id, GLOBAL_SCOPE)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return dict(ok=True)
+
+    @app.delete('/api/conversations/{conversation_id}/messages/{message_id}')
+    def delete_conversation_message(conversation_id: str, message_id: str):
+        if runs.active_for_conversation(conversation_id):
+            raise HTTPException(409, '会话正在生成中，请等待完成或先停止')
+        try:
+            repo.delete_message(conversation_id, GLOBAL_SCOPE, message_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return dict(ok=True)
 
     @app.get('/api/research/index')
     def research_index_status():

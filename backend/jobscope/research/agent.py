@@ -27,15 +27,18 @@ class ResearchAgent:
         with self.repo.connection() as c:
             c.execute('INSERT OR REPLACE INTO research_runs VALUES (?,?,?)', (run['id'], json.dumps(run, ensure_ascii=False), run['created_at']))
 
-    def answer(self, message, scope, resume=None, history=None):
+    def answer(self, message, scope, resume=None, history=None, on_event=None):
         start = time.perf_counter()
         run = dict(id='R-' + uuid.uuid4().hex, status='running', scope=scope, question=message,
                    created_at=now(), events=[], limits=dict(max_retrieval_calls=2, max_salary_calls=1, max_model_calls=2, context_characters=24000))
         self._save(run)
         def event(tool, started, **data):
-            run['events'].append(dict(step=len(run['events']) + 1, tool=tool,
-                                      duration_ms=round((time.perf_counter() - started) * 1000, 2), **data))
+            item = dict(step=len(run['events']) + 1, tool=tool,
+                        duration_ms=round((time.perf_counter() - started) * 1000, 2), **data)
+            run['events'].append(item)
             self._save(run)
+            if on_event:
+                on_event(item)
         try:
             t = time.perf_counter()
             synced = self.index.sync()
