@@ -1587,6 +1587,18 @@ git commit -m "feat(reliability): extract numeric signals from evidence with raw
 
 ---
 
+## 实施修正记录（Task 7-9 已落地）
+
+对应提交：`f74392c`（sources）、`9989b0c`（extract）、`7e9635a`（collectors）。Task 10 起以下面为准。
+
+- **`sources.enabled(source_id)` 是 Task 10 的闸门语义**：免费来源被手动关闭后同样返回 False（不是「免费=永远开」），付费来源必须 `mode='enabled'` **且**存有密钥才算启用。换地址要求重填密钥的判断照 `ModelSettings` 收紧为「已有密钥且地址确实变了」，否则会误拦「先填地址再填密钥」的正常操作顺序。`public()` 的返回里没有 `key` 字段本身，只有 `key_set`。
+- **`extract.py` 的系统提示词不能用 `str.format`**：模板里含 `{"signals":...}` 这样的 JSON 字面量，format 会抛 `KeyError`，已改成 `replace('{rules}', ...)`；规则清单由 `rubric.RULES` 自动生成并带上 `dimension=` 与单位，避免手写清单和规则表漂移。
+- **抽取是 fail-closed 的**：模型多塞 `score`/`grade`/`rating`/`verdict` 之类字段会让整批结果作废并留 raw；`value` 里只保留数字（字符串与布尔一律剔除，剔空则丢弃该条）；网络异常归 `status='failed'`；拒绝原因超过 5 条时补「另有 N 条被丢弃」；`KIND_TO_SOURCE_CLASS` 决定证据 `kind` 映射到哪个 `source_class`，员工自述与媒体映射成 `employee`/`media`，因此天然不能单独结算维度。
+- **`collectors.py` 里 gsxt 的两个 URL、两处正则和 `VERIFY_MARKERS` 词表全是未实测假设**（已写进模块 docstring，实测通过前 `sources.py` 里 `gsxt` 的 status 必须保持 `needs_verification`）。最高风险项是**年报「由新到旧」的排序假设**：如果实际相反，`before`/`after` 必须交换，否则趋势会把扩员读成萎缩。另外 `READERS` 目前只登记了 gsxt，`credit_china` / `court_records` 会退 `unsupported`；被验证或登录墙挡住时**不关标签页**，干净收尾才关。
+- P0 现状下能被 ASSESSMENT 打分的只有 `stability`，而它的三条规则里有两条来自还没实测的 gsxt——所以真实数据目前基本只会出「无综合分 + 缺口清单」，这是预期状态，不是缺陷。**第一个真实可用的分数要等 Task 8 Step 5 的人工实测。**
+
+---
+
 ## Task 10: API 端点与请求契约
 
 **Files:**
