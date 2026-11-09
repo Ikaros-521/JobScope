@@ -368,7 +368,7 @@ def create_app(data_dir=None):
 
     @app.post('/api/companies/{company}/signals/collect')
     def collect_company_signals(data: SignalCollectInput, company: str = PathParam(min_length=1, max_length=300)):
-        from .reliability import collectors
+        from .reliability import collectors, local
         from .reliability.models import SignalInput
         from .reliability.sources import SIGNAL_SOURCES, SignalSourceStore
         if data.source not in SIGNAL_SOURCES:
@@ -379,21 +379,27 @@ def create_app(data_dir=None):
                 raise HTTPException(409, '该付费来源尚未启用；请先在设置里填入你自己的密钥，JobScope 不代持密钥。')
             raise HTTPException(409, '该来源已在设置里关闭，请重新启用后再采集。')
         identity = company_identity(company, data.credit_code)
-        # READERS 就是「由项目浏览器采集」的那一组来源；其余来源连浏览器模块都不必导入，
+        # READERS 就是「由项目浏览器采集」的那一组来源；其余非本地来源连浏览器模块都不必导入，
         # 由 collectors 直接退成 unsupported，浏览器依赖因此不会进入不需要它的路径。
-        browser_module = load_module('browser') if data.source in collectors.READERS else None
-        outcome = collectors.collect(data.source, identity['name'], browser_module=browser_module, data_dir=data_dir)
+        # 本地来源反过来完全不碰浏览器：它只读本项目的已存数据，也不限页数、不等间隔。
+        from_local = data.source in local.SOURCES
+        if from_local:
+            outcome = local.collect(data.source, identity['name'], repo=repo, identity=identity)
+        else:
+            browser_module = load_module('browser') if data.source in collectors.READERS else None
+            outcome = collectors.collect(data.source, identity['name'], browser_module=browser_module, data_dir=data_dir)
         saved = []
         for item in outcome['signals']:
             # 每条信号先落成一条可溯源证据，再落成信号记录：证据仍是唯一的原始层。
             # url 必须取采集器实际访问过的那个页面地址；出处缺失就等于法律兜底失效。
             evidence = repo.save_evidence(dict(title=f"{identity['name']} {item['rule']}", company=identity['name'],
-                                               kind='disclosure', text=json.dumps(item, sort_keys=True, ensure_ascii=False),
+                                               kind=local.DERIVED_KIND if from_local else 'disclosure',
+                                               text=item.get('text') or json.dumps(item, sort_keys=True, ensure_ascii=False),
                                                url=item.get('url', ''), published_at=item.get('observed_at') or None), data.source)
             saved.append(repo.save_signal(SignalInput(
                 company_id=identity['id'], dimension=item['dimension'], rule=item['rule'], value=item['value'],
                 unit=item.get('unit', ''), source_class=item['source_class'], evidence_id=evidence['id'],
-                observed_at=item.get('observed_at', ''), collected_at=now())))
+                observed_at=item.get('observed_at', ''), collected_at=item.get('collected_at') or now())))
         return dict(status=outcome['status'], message=outcome['message'], signals=saved)
 
     @app.post('/api/companies/{company}/signals/extract')

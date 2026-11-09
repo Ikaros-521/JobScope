@@ -6,8 +6,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from contextlib import contextmanager
 
-from jobscope.reliability import collectors
+from jobscope.reliability import collectors, local
 from jobscope.reliability.models import SignalInput
+from jobscope.repository import Repository
 
 # 两个来源页各自能解析出数字的 HTML；真实页面结构未实测，正则假设写在 collectors 的注释里。
 REGISTRATION_HTML = '<td>成立日期 2015-04-01</td><td>注册资本 1000万元人民币</td>'
@@ -219,3 +220,79 @@ def test_a_tab_that_dies_mid_collection_is_reported_not_raised(monkeypatch):
     outcome = collectors.collect('gsxt', '甲公司', browser_module=browser)
     assert outcome['status'] == 'partial' and outcome['signals'] == []
     assert len(tab.visited) == 1
+
+
+class ForbiddenBrowser:
+    """本地来源的哨兵：碰一下浏览器模块就立刻失败，连属性名都不许读。"""
+
+    def __getattr__(self, name):
+        raise AssertionError(f'本地来源不该触碰浏览器模块：{name}')
+
+
+def store(tmp_path, jobs=(), materials=(), company='甲公司'):
+    """按现有仓储契约塞几条已存数据，让本地来源有东西可算。"""
+    repo = Repository(tmp_path)
+    for index, salary in enumerate(jobs):
+        repo.save_job(dict(title=f'岗位{index}', company=company, description='负责服务端开发',
+                           location='北京', salary=salary, url=f'https://jobs.example.com/{index}'), 'test_jobs')
+    for index, kind in enumerate(materials):
+        repo.save_evidence(dict(title=f'材料{index}', company=company, kind=kind,
+                                text='2024 年度报告：参保人数由 312 人变为 240 人'), 'user_import')
+    repo.save_job(dict(title='别家的岗位', company='乙公司', description='负责别的', location='上海',
+                       salary='30k-50k', url='https://jobs.example.com/other'), 'test_jobs')
+    return repo, repo.resolve_company(company)
+
+
+def test_the_local_reader_counts_saved_jobs_and_their_parsable_salary_quotes(tmp_path):
+    # 三条不计入已知的报价各走一条 parse_salary 的退出口径：年薪、外币、时薪。
+    repo, identity = store(tmp_path, jobs=['20-35K'] * 9 + ['3-5万/年', 'USD 4-6k', '150-200元/小时'])
+    outcome = local.collect('jobscope_jobs', identity['name'], repo=repo, identity=identity)
+    assert outcome['status'] == 'completed'
+    coverage = next(item for item in outcome['signals'] if item['rule'] == 'salary_quote_coverage')
+    # 年薪、时薪与外币报价在 parse_salary 里 currency 不是 CNY，按口径不计入已知。
+    assert coverage['value'] == {'known': 9, 'total': 12}
+    assert coverage['dimension'] == 'pay' and coverage['unit'] == '%'
+
+
+def test_the_local_reader_is_honest_about_being_local(tmp_path):
+    repo, identity = store(tmp_path, jobs=['20-35K'])
+    outcome = local.collect('jobscope_jobs', identity['name'], repo=repo, identity=identity)
+    assert '由本项目已保存数据计算' in outcome['message'] and '不访问网络' in outcome['message']
+    for item in outcome['signals']:
+        # platform 类、没有外部出处、没有观察时间：这三样凑在一起才是「不是外部来源」的诚实标记。
+        assert item['source_class'] == 'platform'
+        assert item['url'] == '' and item['observed_at'] == ''
+        assert item['collected_at'] and item['source'] == 'jobscope_jobs'
+
+
+def test_a_company_with_nothing_stored_computes_zeros_instead_of_nothing(tmp_path):
+    repo = Repository(tmp_path)
+    identity = repo.resolve_company('甲公司')
+    outcome = local.collect('jobscope_jobs', identity['name'], repo=repo, identity=identity)
+    assert outcome['status'] == 'completed'
+    assert {item['rule']: item['value'] for item in outcome['signals']} == {
+        'salary_quote_coverage': {'known': 0, 'total': 0}, 'disclosure_available': {'count': 0}}
+
+
+def test_the_local_reader_counts_only_announcement_like_evidence(tmp_path):
+    repo, identity = store(tmp_path, materials=['disclosure', 'disclosure_metadata', 'announcement',
+                                                'employee_statement', 'media_report', 'user_material'])
+    outcome = local.collect('jobscope_jobs', identity['name'], repo=repo, identity=identity)
+    disclosure = next(item for item in outcome['signals'] if item['rule'] == 'disclosure_available')
+    # 三条公告类证据；岗位报价的证据是 job_posting 类，同样不算公告。
+    assert disclosure['value'] == {'count': 3}
+    assert disclosure['dimension'] == 'operations' and disclosure['unit'] == '份'
+
+
+def test_the_local_reader_never_touches_the_browser_module(tmp_path):
+    repo, identity = store(tmp_path, jobs=['20-35K'])
+    outcome = local.collect('jobscope_jobs', identity['name'], repo=repo, identity=identity,
+                            browser_module=ForbiddenBrowser(), data_dir=tmp_path)
+    assert outcome['status'] == 'completed' and len(outcome['signals']) == 2
+
+
+def test_a_source_without_a_local_reader_is_still_reported_as_unsupported(tmp_path):
+    repo, identity = store(tmp_path, jobs=['20-35K'])
+    for source in ('gsxt', 'credit_china', 'qcc'):
+        outcome = local.collect(source, identity['name'], repo=repo, identity=identity)
+        assert outcome['status'] == 'unsupported' and outcome['signals'] == []

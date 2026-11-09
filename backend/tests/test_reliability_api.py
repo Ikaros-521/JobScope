@@ -141,8 +141,51 @@ def test_collect_reports_an_honest_status_without_touching_the_network(client):
     # 本机有没有装 DrissionPage / 有没有项目 Chrome 会话，两种真实结果都可能出现。
     assert browser['status'] in {'needs_login', 'unsupported'}
     assert browser['signals'] == [] and browser['message']
+    # 本地来源登记着两条规则，就必须真的算出东西，不能一直退成 unsupported。
     local = client.post('/api/companies/甲公司/signals/collect', json=dict(source='jobscope_jobs')).json()
-    assert local['status'] == 'unsupported'
+    assert local['status'] == 'completed'
+    assert {item['rule'] for item in local['signals']} == {'salary_quote_coverage', 'disclosure_available'}
+    assert '不访问网络' in local['message']
+
+
+def test_local_collection_is_traceable_and_never_needs_the_browser(client, tmp_path, monkeypatch):
+    from jobscope.reliability import collectors
+
+    def boom(*args, **kwargs):
+        raise AssertionError('jobscope_jobs 不该走浏览器采集路径')
+
+    monkeypatch.setattr(collectors, 'collect', boom)
+    repo = Repository(tmp_path)
+    repo.save_job(dict(title='后端工程师', company='甲公司', description='负责服务端开发', location='北京',
+                       salary='20-35K', url='https://jobs.example.com/1'), 'test_jobs')
+    repo.save_job(dict(title='架构师', company='甲公司', description='负责架构', location='北京',
+                       salary='年薪 60 万元', url='https://jobs.example.com/2'), 'test_jobs')
+    repo.save_evidence(dict(title='2024 年度报告', company='甲公司', kind='disclosure',
+                            text='参保人数 240 人', url='https://example.com/nbgs'), 'user_import')
+
+    def coverage(signals, rule):
+        return next(item for item in signals if item['rule'] == rule)
+
+    first = client.post('/api/companies/甲公司/signals/collect', json=dict(source='jobscope_jobs')).json()
+    salary = coverage(first['signals'], 'salary_quote_coverage')
+    assert salary['value'] == {'known': 1, 'total': 2} and salary['source_class'] == 'platform'
+    stored = {item['id']: item for item in client.get('/api/evidence', params=dict(company='甲公司')).json()['evidence']}
+    # 口径与时间必须落在证据正文里，出处标成本地来源，URL 留空——它不是外部页面。
+    evidence = stored[salary['evidence_id']]
+    assert evidence['url'] == '' and evidence['source'] == 'jobscope_jobs'
+    assert 'salary_quote_coverage' in evidence['text'] and '不访问网络' in evidence['text']
+    assert salary['collected_at'] and salary['evidence_id'] == evidence['id']
+    # 自己写下的口径记录不能被自己再数一遍：按钮点第二次，公告计数不许 +1。
+    second = client.post('/api/companies/甲公司/signals/collect', json=dict(source='jobscope_jobs')).json()
+    assert coverage(second['signals'], 'disclosure_available')['value'] == {'count': 1}
+    assert coverage(second['signals'], 'salary_quote_coverage')['value'] == {'known': 1, 'total': 2}
+    # 两条都是 material：有了 reader 也不许冒出分数。
+    report = client.post('/api/companies/甲公司/reliability', json=dict()).json()
+    for dimension in ('pay', 'operations'):
+        line = next(item for item in report['dimensions'] if item['dimension'] == dimension)
+        assert line['score'] is None and line['confidence'] == 0
+        assert [item['kind'] for item in line['findings']] == ['material']
+        assert [item['score'] for item in line['findings']] == [None]
 
 
 def test_collect_stores_the_page_the_signal_came_from(client, monkeypatch):
