@@ -1,4 +1,8 @@
-"""Validated public request contracts; no credential input is accepted here."""
+"""Validated public request contracts.
+
+Credential fields are write-only: they are accepted here, stored locally and never
+echoed back by any read endpoint (see `/api/reliability/sources`).
+"""
 
 from typing import Literal
 from urllib.parse import urlsplit
@@ -98,3 +102,26 @@ class ConversationPatch(RequestModel):
     title: str | None = Field(default=None, min_length=1, max_length=100)
     mode: Literal['research', 'general'] | None = None
     model: str | None = Field(default=None, max_length=200)
+
+
+class ReliabilityInput(RequestModel):
+    # 统一社会信用代码是实体归一的强键；留空时按规范化名称匹配，绝不模糊合并。
+    credit_code: str = Field(default='', max_length=40)
+
+
+class SignalCollectInput(RequestModel):
+    source: str = Field(min_length=2, max_length=40)
+    credit_code: str = Field(default='', max_length=40)
+
+
+class SignalExtractInput(RequestModel):
+    limit: int = Field(default=12, ge=1, le=40)
+    max_tokens: int = Field(default=1200, ge=256, le=4000)
+    credit_code: str = Field(default='', max_length=40)
+
+
+class SignalSourceInput(RequestModel):
+    """Paid tiers stay opt-in; `key` is accepted on write only and never returned."""
+    mode: Literal['disabled', 'enabled']
+    key: str = Field(default='', max_length=4000)
+    url: str = Field(default='', max_length=2000)

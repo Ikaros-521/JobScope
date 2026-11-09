@@ -1,6 +1,7 @@
 """Local FastAPI service. Run on 127.0.0.1; API never accepts cookies."""
 
 import importlib
+import json
 import os
 import threading
 from pathlib import Path
@@ -8,6 +9,8 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
+# 名字避让：上面的 Path 是 pathlib.Path，路径参数用别名取，两者不能共用一个名字。
+from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,8 +19,8 @@ from starlette.concurrency import run_in_threadpool
 from .analysis import analyze, parse_resume
 from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
-from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobInput, ResumeInput
-from .repository import Repository
+from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobInput, ReliabilityInput, ResumeInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
+from .repository import Repository, now
 from .settings import ModelSettings, ModelSettingsInput, ConnectionInput, _active
 
 
@@ -325,6 +328,114 @@ def create_app(data_dir=None):
     @app.get('/api/companies')
     def companies(q: str = Query('', max_length=300), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
         return repo.companies_page(q, page, page_size)
+
+    # 求职参考分析。路径挂在 /api/companies/{company}/... 与 /api/reliability/... 之下，
+    # 与上面的 /api/companies 列表端点按完整路径匹配，不受注册顺序影响。
+    # 参数化路径一律带长度上限，percent-decode 由 Starlette 完成，取值先过 resolve_company
+    # 的规范化再使用；出站 URL 由 collectors 用 urlencode 拼接，这里不存在原样插值。
+    # reliability 子模块全部走函数级 import：包的 __init__ 保持零导入，浏览器与模型依赖
+    # 就不会被打进不需要它们的请求路径。
+
+    def company_materials(identity):
+        """该公司已保存的非岗位材料。名称按实体规范化比对，否则 '甲 公司' 存的证据永远配不上 '甲公司'。"""
+        known = {identity['name'], *(identity.get('aliases') or [])}
+        return [item for item in repo.evidence(include_job_postings=False)
+                if Repository.normalise_name(item['company']) in known]
+
+    def company_identity(name, credit_code=''):
+        """实体归一走 repository 的强键口径；service.company() 只接名称，这里还要带上信用代码。"""
+        try:
+            return repo.resolve_company(name, credit_code)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post('/api/companies/{company}/reliability')
+    def recompute_reliability(company: str = PathParam(min_length=1, max_length=300), data: ReliabilityInput | None = None):
+        from .reliability.service import ReliabilityService
+        try:
+            return ReliabilityService(repo).recompute(company, data.credit_code if data else '')
+        except ValueError as exc:
+            # reliability 层抛的 ValueError 都是写给用户看的中文说明（空公司名、措辞命中禁用词）。
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get('/api/companies/{company}/reliability')
+    def read_reliability(company: str = PathParam(min_length=1, max_length=300), credit_code: str = Query('', max_length=40)):
+        from .reliability.service import ReliabilityService
+        try:
+            return {'report': ReliabilityService(repo).latest(company, credit_code)}
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post('/api/companies/{company}/signals/collect')
+    def collect_company_signals(data: SignalCollectInput, company: str = PathParam(min_length=1, max_length=300)):
+        from .reliability import collectors
+        from .reliability.models import SignalInput
+        from .reliability.sources import SIGNAL_SOURCES, SignalSourceStore
+        if data.source not in SIGNAL_SOURCES:
+            raise HTTPException(400, '未登记的信号来源')
+        # 闸门语义取 sources.enabled：免费来源被手动关闭同样算关，付费来源还要存有密钥。
+        if not SignalSourceStore(repo).enabled(data.source):
+            if SIGNAL_SOURCES[data.source]['tier'] == 'paid':
+                raise HTTPException(409, '该付费来源尚未启用；请先在设置里填入你自己的密钥，JobScope 不代持密钥。')
+            raise HTTPException(409, '该来源已在设置里关闭，请重新启用后再采集。')
+        identity = company_identity(company, data.credit_code)
+        # READERS 就是「由项目浏览器采集」的那一组来源；其余来源连浏览器模块都不必导入，
+        # 由 collectors 直接退成 unsupported，浏览器依赖因此不会进入不需要它的路径。
+        browser_module = load_module('browser') if data.source in collectors.READERS else None
+        outcome = collectors.collect(data.source, identity['name'], browser_module=browser_module, data_dir=data_dir)
+        saved = []
+        for item in outcome['signals']:
+            # 每条信号先落成一条可溯源证据，再落成信号记录：证据仍是唯一的原始层。
+            evidence = repo.save_evidence(dict(title=f"{identity['name']} {item['rule']}", company=identity['name'],
+                                               kind='disclosure', text=json.dumps(item, sort_keys=True, ensure_ascii=False),
+                                               url='', published_at=item.get('observed_at') or None), data.source)
+            saved.append(repo.save_signal(SignalInput(
+                company_id=identity['id'], dimension=item['dimension'], rule=item['rule'], value=item['value'],
+                unit=item.get('unit', ''), source_class=item['source_class'], evidence_id=evidence['id'],
+                observed_at=item.get('observed_at', ''), collected_at=now())))
+        return dict(status=outcome['status'], message=outcome['message'], signals=saved)
+
+    @app.post('/api/companies/{company}/signals/extract')
+    def extract_company_signals(data: SignalExtractInput, company: str = PathParam(min_length=1, max_length=300)):
+        """把已存材料喂给抽取器：手动导入的公告与材料不会自己变成信号。"""
+        from .reliability import extract
+        from .reliability.models import SignalInput
+        from .reliability.rubric import RULES
+        identity = company_identity(company, data.credit_code)
+        materials = [item for item in company_materials(identity) if item['text'].strip()][:data.limit]
+        outcome = extract.extract(identity['name'], materials, max_tokens=data.max_tokens) if materials \
+            else dict(status='skipped', message='该公司还没有可抽取的非岗位材料。', signals=[], raw='')
+        task = repo.create_task('reliability_extract', identity['name'])
+        kinds = {item['id']: item['kind'] for item in materials}
+        saved = []
+        for item in outcome['signals']:
+            spec = RULES[item.rule]
+            saved.append(repo.save_signal(SignalInput(
+                company_id=identity['id'], dimension=item.dimension, rule=item.rule, value=item.value,
+                unit=spec.unit, source_class=extract.KIND_TO_SOURCE_CLASS.get(kinds.get(item.evidence_id, ''), 'user_material'),
+                evidence_id=item.evidence_id, observed_at='', collected_at=now())))
+        # 结构化状态与 raw 原文一起进 tasks，前端才显示得出真实状态、事后也查得到模型说了什么。
+        task.update(kind='reliability_extract', status=outcome['status'], message=outcome['message'],
+                    count=len(saved), raw=str(outcome['raw'])[:4000])
+        repo.update_task(task)
+        return dict(status=outcome['status'], message=outcome['message'], accepted=len(saved),
+                    signals=saved, evidence=len(materials), task=task)
+
+    @app.get('/api/reliability/sources')
+    def reliability_sources():
+        from .reliability.sources import SignalSourceStore
+        return {'sources': SignalSourceStore(repo).public()}
+
+    @app.put('/api/reliability/sources/{source_id}')
+    def save_reliability_source(data: SignalSourceInput, source_id: str = PathParam(min_length=2, max_length=40)):
+        from .reliability.sources import SIGNAL_SOURCES, SignalSourceInput as SourceSettings, SignalSourceStore
+        if source_id not in SIGNAL_SOURCES:
+            raise HTTPException(404, '未登记的信号来源')
+        try:
+            # 公开契约收下密钥，转成 reliability 层的设置对象；store.public() 只回 key_set 布尔。
+            return SignalSourceStore(repo).save(source_id, SourceSettings(mode=data.mode, key=data.key, url=data.url))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.get('/api/locations')
     def locations(limit: int = Query(40, ge=1, le=100)):
