@@ -135,3 +135,10 @@ npm run build
 **Skills**：支持粘贴 SKILL.md、上传 .zip 压缩包或选择本地文件夹导入多文件 Skill。SKILL.md 须有 YAML name/description，可选 category/author/keywords/icon 元数据；文本资源（≤20 个文件、单个 ≤60000 字符）随 Skill 保存，Agent 通过 `skill_resource` 工具按清单分页读取；脚本文件仅登记路径，不执行、不保存内容。同名重新导入会覆盖旧版本，导出为 .zip（含 SKILL.md、文本资源与清单，不含脚本内容）。
 
 执行过程展示工具动作、耗时、失败和引用。每次最多8轮模型调用、12次工具、48000字符工具结果，达到上限后停止。MCP结果不会自动写入公司证据库。凭证保存在本机数据库且不加密，页面不回读；本地MCP进程具有当前系统用户权限。MCP 暂不提供 OAuth 交互与自定义 cwd/timeout 字段，导入时会明确提示。
+
+## 开源协议与商业授权
+
+本项目采用双重许可模式（Dual-Licensing），全文见 [LICENSE](LICENSE)。
+
+- **开源使用（GNU AGPLv3）**：遵循 [GNU Affero General Public License v3.0](LICENSE)，可免费使用、复制、修改和分发。按 AGPLv3 条款，基于本项目衍生、修改、集成或通过计算机网络提供服务的软件系统，必须以相同的 AGPLv3 协议向公众开放其全部源代码。
+- **商业闭源授权（Commercial License）**：希望用于闭源商业产品、进行专有分发、不愿公开自身衍生系统的源代码，或无法遵守 AGPLv3 开源义务的，须向版权所有者购买商业授权。商务合作请联系 `327209194@qq.com`，版权所有者 `Ikaros-521`。
