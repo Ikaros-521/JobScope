@@ -170,13 +170,16 @@ def test_local_collection_is_traceable_and_never_needs_the_browser(client, tmp_p
     salary = coverage(first['signals'], 'salary_quote_coverage')
     assert salary['value'] == {'known': 1, 'total': 2} and salary['source_class'] == 'platform'
     stored = {item['id']: item for item in client.get('/api/evidence', params=dict(company='甲公司')).json()['evidence']}
-    # 口径与时间必须落在证据正文里，出处标成本地来源，URL 留空——它不是外部页面。
+    # 口径必须落在证据正文里，但正文不带计算时刻：证据身份含内容哈希，带上时间每次点击都会多生一份记录。
     evidence = stored[salary['evidence_id']]
     assert evidence['url'] == '' and evidence['source'] == 'jobscope_jobs'
     assert 'salary_quote_coverage' in evidence['text'] and '不访问网络' in evidence['text']
     assert salary['collected_at'] and salary['evidence_id'] == evidence['id']
-    # 自己写下的口径记录不能被自己再数一遍：按钮点第二次，公告计数不许 +1。
+    # 自己写下的口径记录不能被自己再数一遍：按钮点第二次，公告计数不许 +1，证据与信号条数也不许增长。
+    before = client.get('/api/evidence', params=dict(company='甲公司')).json()['total']
     second = client.post('/api/companies/甲公司/signals/collect', json=dict(source='jobscope_jobs')).json()
+    assert client.get('/api/evidence', params=dict(company='甲公司')).json()['total'] == before
+    assert second['signals'][0]['evidence_id'] == salary['evidence_id']
     assert coverage(second['signals'], 'disclosure_available')['value'] == {'count': 1}
     assert coverage(second['signals'], 'salary_quote_coverage')['value'] == {'known': 1, 'total': 2}
     # 两条都是 material：有了 reader 也不许冒出分数。

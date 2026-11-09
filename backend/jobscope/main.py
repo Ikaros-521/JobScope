@@ -340,9 +340,10 @@ def create_app(data_dir=None):
 
     def company_materials(identity):
         """该公司已保存的非岗位材料。名称按实体规范化比对，否则 '甲 公司' 存的证据永远配不上 '甲公司'。"""
+        from .reliability.local import DERIVED_KIND
         known = {identity['name'], *(identity.get('aliases') or [])}
         return [item for item in repo.evidence(include_job_postings=False)
-                if Repository.normalise_name(item['company']) in known]
+                if Repository.normalise_name(item['company']) in known and item['kind'] != DERIVED_KIND]
 
     def company_identity(name, credit_code=''):
         """实体归一走 repository 的强键口径；service.company() 只接名称，这里还要带上信用代码。"""
