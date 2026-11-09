@@ -18,7 +18,7 @@ import { ChatWorkspace } from './chat/ChatWorkspace'
 import type { Analysis, BrowserStatus, Evidence, Job, PageInfo, ReliabilityReport, Source, Task } from './api'
 
 const transportNames: Record<string, string> = { http_api: '接口', browser_page: '需浏览器', manual: '手动' }
-const statusNames: Record<string, string> = { completed: '已完成', success: '已完成', running: '采集中', pending: '等待中', failed: '失败', needs_login: '需要登录', needing_login: '需要登录', login_required: '需要登录', needs_verification: '需要验证', verification_required: '需要验证', requires_verification: '需要验证', unsupported: '暂不支持', available: '可用', ready: '可用', not_configured: '未配置', blocked: '访问受限', backoff: '退避等待' }
+const statusNames: Record<string, string> = { completed: '已完成', success: '已完成', running: '采集中', pending: '等待中', failed: '失败', needs_login: '需要登录', needing_login: '需要登录', login_required: '需要登录', needs_verification: '需要验证', verification_required: '需要验证', requires_verification: '需要验证', unsupported: '暂不支持', available: '可用', ready: '可用', not_configured: '未配置', blocked: '访问受限', backoff: '退避等待', opt_in: '需你自行开启', skipped: '已跳过', degraded: '已降级留档' }
 const dimensionNames: Record<string, string> = { skill: '技能', skills: '技能', experience: '经历与职责', domain: '行业与业务', industry: '行业与业务', preference: '求职偏好', preferences: '求职偏好' }
 const requirementNames: Record<string, string> = { met: '满足', matched: '满足', satisfied: '满足', partial: '部分满足', not_met: '未满足', unmet: '未满足', missing: '未满足', unknown: '待确认', confirmed: '满足' }
 function needsFullJd(job: Job) {
@@ -369,14 +369,15 @@ function AnalysisList({ title, items }: { title: string; items: string[] }) { re
 // 关闭开关只是让后端不再调用该来源，已存的密钥仍留在库里（后端语义是关了就不调用，不是删除）。
 function SignalSourceSettings() {
   const [sources, setSources] = useState<Record<string, SignalSource> | null>(null)
-  const [drafts, setDrafts] = useState<Record<string, { mode: 'disabled' | 'enabled'; key: string }>>({})
+  const [drafts, setDrafts] = useState<Record<string, { mode: 'disabled' | 'enabled'; key: string; url: string }>>({})
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
   const [feedback, setFeedback] = useState<Record<string, string>>({})
   const load = useCallback(async () => {
     const data = await listSignalSources()
     setSources(data.sources)
-    setDrafts(Object.fromEntries(Object.entries(data.sources).map(([id, item]) => [id, { mode: item.mode, key: '' }])))
+    // 地址不是秘密，照常回填好让你看清现在连的是哪个端点；密钥永远只留 key_set 这个布尔。
+    setDrafts(Object.fromEntries(Object.entries(data.sources).map(([id, item]) => [id, { mode: item.mode, key: '', url: item.url || '' }])))
   }, [])
   useEffect(() => { void load().catch(err => setError((err as Error).message)) }, [load])
   async function save(id: string) {
@@ -385,9 +386,10 @@ function SignalSourceSettings() {
     try {
       const draft = drafts[id]
       // key 留空即「不改密钥」，由后端沿用已存的那一条；这里不把原文读回来，也就没有回显一说。
-      const result = await saveSignalSource(id, { mode: draft.mode, key: draft.key })
+      // 地址改了又留空密钥时，后端会拒绝保存并要你重填密钥——这条约束在这里原样交给它。
+      const result = await saveSignalSource(id, { mode: draft.mode, key: draft.key, url: draft.url })
       setSources(current => current ? { ...current, [id]: result } : current)
-      setDrafts(current => ({ ...current, [id]: { mode: result.mode, key: '' } }))
+      setDrafts(current => ({ ...current, [id]: { mode: result.mode, key: '', url: result.url || '' } }))
       setFeedback(current => ({ ...current, [id]: result.mode === 'enabled'
         ? '已保存，采集时才会使用该来源。'
         : '已关闭调用；已保存的密钥留在本机数据库里，重新启用即可继续使用。' }))
@@ -406,12 +408,15 @@ function SignalSourceSettings() {
         {draft && <div className="signal-source-edit">
           <label className="signal-source-mode"><input type="checkbox" checked={draft.mode === 'enabled'} disabled={Boolean(busy)} onChange={event => setDrafts(current => ({ ...current, [id]: { ...current[id], mode: event.target.checked ? 'enabled' as const : 'disabled' as const } }))} />启用该来源</label>
           {item.tier === 'paid' && <label className="signal-source-key"><span>API 密钥 <span className="muted">{item.key_set ? '· 已设置，留空则保留' : '· 填写你自己的密钥'}</span></span><input type={'pass' + 'word'} autoComplete={'off'} spellCheck={false} maxLength={4000} value={draft.key} disabled={Boolean(busy)} onChange={event => setDrafts(current => ({ ...current, [id]: { ...current[id], key: event.target.value } }))} placeholder={item.key_set ? '已设置，页面不读取原文' : '填写密钥'} /></label>}
-          <Button className="button secondary small" busy={busy === id} disabled={!draft || (draft.mode === item.mode && !draft.key)} onClick={() => void save(id)}>保存设置</Button>
+          {/* 接口地址不是秘密：与密钥输入同样的观感，但照常回填，好让你看清现在连的是哪个端点。 */}
+          {item.tier === 'paid' && <label className="signal-source-key"><span>接口地址 <span className="muted">· 服务商给的取数地址，不要把密钥写进地址</span></span><input type="text" autoComplete={'off'} spellCheck={false} maxLength={2000} value={draft.url} disabled={Boolean(busy)} onChange={event => setDrafts(current => ({ ...current, [id]: { ...current[id], url: event.target.value } }))} placeholder="https://… 例如 /v1/company/profile" /></label>}
+          {item.tier === 'paid' && item.key_set && draft.url !== (item.url || '') && !draft.key && <p className="tiny-label">改了地址就得重填密钥，否则后端会拒绝这次保存。</p>}
+          <Button className="button secondary small" busy={busy === id} disabled={!draft || (draft.mode === item.mode && !draft.key && draft.url === (item.url || ''))} onClick={() => void save(id)}>保存设置</Button>
         </div>}
         {feedback[id] && <p className="tiny-label" role="status">{feedback[id]}</p>}
       </article>
     })}</div>}
-    <p className="tiny-label">密钥保存在本机数据库中，不加密，页面不会读回密钥原文；关闭开关只是停止调用，不会删除已保存的密钥。</p>
+    <p className="tiny-label">密钥保存在本机数据库中，不加密，页面不会读回密钥原文；关闭开关只是停止调用，不会删除已保存的密钥。付费来源取哪个数字由后端那份按通用写法预置的字段映射决定，尚未对照任何服务商文档核实：采集回来的说明会点名每条规则试过的字段名，请照你采购的接口文档校正。</p>
   </section>
 }
 
