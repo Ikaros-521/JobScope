@@ -1,0 +1,43 @@
+{
+  "version": "research-gold-2",
+  "provenance": "人工编写的合成中文招聘研究样例；仅验证检索行为，不代表真实用户或模型回答质量。与默认工作库隔离。",
+  "documents": [
+    {"key":"salary_a","title":"技术团队说明","company":"北辰科技","text":"薪酬待遇：研发月薪20-30K，固定13薪。","kind":"company_statement"},
+    {"key":"salary_b","title":"招聘补充说明","company":"南屿科技","text":"薪资范围：研发月薪25-40K，年终奖金视绩效决定。","kind":"company_statement"},
+    {"key":"staff_a","title":"年度报告第八节","company":"北辰科技","text":"【第 8 页】在职人员共1200人，研发人员占比60%。","kind":"disclosure"},
+    {"key":"staff_b","title":"团队介绍","company":"南屿科技","text":"员工总数80人，团队以算法研究和工程研发为主。","kind":"company_statement"},
+    {"key":"finance_a","title":"年度财务报告","company":"北辰科技","text":"2025年营业收入12亿元，同比增加18%；净利润为8000万元。","kind":"disclosure"},
+    {"key":"finance_b","title":"季度财务披露","company":"南屿科技","text":"2026年第一季度营收9000万元，净利润500万元，现金流为正。","kind":"disclosure"},
+    {"key":"rag_a","title":"平台研发工程师","company":"北辰科技","text":"负责检索增强生成系统、知识库和向量检索服务建设，评估召回率及引用准确性。","kind":"job_posting"},
+    {"key":"rag_b","title":"后端研发","company":"南屿科技","text":"负责RAG应用与Python服务开发，使用检索评测及分块策略优化知识问答。","kind":"job_posting"},
+    {"key":"agent_a","title":"应用开发工程师","company":"北辰科技","text":"构建智能体工具调用系统，维护function calling协议与任务执行状态。","kind":"job_posting"},
+    {"key":"agent_b","title":"AI工程师","company":"南屿科技","text":"开发Agent应用，管理工具权限、重试、预算和可追踪执行记录。","kind":"job_posting"},
+    {"key":"leave","title":"工作安排","company":"北辰科技","text":"员工享有带薪休假三十天，周末双休。","kind":"company_statement"},
+    {"key":"subsidiary","title":"福利公告","company":"北辰科技子公司","text":"工资90K，员工总数9人，独立招聘主体。","kind":"company_statement"}
+  ],
+  "distractors": 30,
+  "cases": [
+    {"id":"wage_synonym","question":"北辰科技工资怎么样","scope":{"kind":"company","company":"北辰科技"},"relevant":["salary_a"]},
+    {"id":"compensation_en","question":"compensation","scope":{"kind":"company","company":"北辰科技"},"relevant":["salary_a"]},
+    {"id":"salary_global","question":"比较两家公司的工资待遇","scope":{"kind":"global"},"relevant":["salary_a","salary_b"]},
+    {"id":"headcount_synonym","question":"北辰科技员工人数","scope":{"kind":"company","company":"北辰科技"},"relevant":["staff_a"]},
+    {"id":"headcount_en","question":"headcount","scope":{"kind":"company","company":"北辰科技"},"relevant":["staff_a"]},
+    {"id":"employee_direct","question":"员工总数","scope":{"kind":"company","company":"南屿科技"},"relevant":["staff_b"]},
+    {"id":"finance_direct","question":"营业收入和净利润","scope":{"kind":"company","company":"北辰科技"},"relevant":["finance_a"]},
+    {"id":"finance_synonym","question":"公司业绩怎么样","scope":{"kind":"company","company":"北辰科技"},"relevant":["finance_a"]},
+    {"id":"finance_b","question":"现金流","scope":{"kind":"company","company":"南屿科技"},"relevant":["finance_b"]},
+    {"id":"rag_synonym","question":"RAG岗位","scope":{"kind":"company","company":"北辰科技"},"relevant":["rag_a"]},
+    {"id":"rag_reverse","question":"知识库检索增强岗位","scope":{"kind":"company","company":"南屿科技"},"relevant":["rag_b"]},
+    {"id":"agent_synonym","question":"Agent工程师","scope":{"kind":"company","company":"北辰科技"},"relevant":["agent_a"]},
+    {"id":"agent_reverse","question":"智能体工具调用","scope":{"kind":"company","company":"南屿科技"},"relevant":["agent_b"]},
+    {"id":"leave","question":"带薪休假","scope":{"kind":"company","company":"北辰科技"},"relevant":["leave"]},
+    {"id":"followup_company","question":"那南屿科技呢","history":[{"role":"user","content":"北辰科技工资怎么样"}],"scope":{"kind":"global"},"relevant":["salary_b"]},
+    {"id":"scope_subsidiary","question":"工资","scope":{"kind":"company","company":"北辰科技子公司"},"relevant":["subsidiary"]},
+    {"id":"negative_quantum","question":"量子纠缠拓扑","scope":{"kind":"global"},"relevant":[]},
+    {"id":"negative_biology","question":"蛋白质折叠","scope":{"kind":"company","company":"北辰科技"},"relevant":[]},
+    {"id":"unknown_brand","question":"腾讯工资怎么样","scope":{"kind":"global"},"relevant":[]},
+    {"id":"unknown_mixed_entity","question":"比较北辰科技和字节工资","scope":{"kind":"global"},"relevant":[]},
+    {"id":"annual_followup","question":"那南屿科技呢","history":[{"role":"user","content":"北辰科技年薪超过50万"}],"scope":{"kind":"global"},"relevant":[]},
+    {"id":"generic_saved_group","question":"那先比较已保存公司的工资呢","scope":{"kind":"global"},"relevant":["salary_a","salary_b"]}
+  ]
+}
