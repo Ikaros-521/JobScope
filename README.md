@@ -107,7 +107,7 @@ pip install -r requirements-research.txt
 .venv\Scripts\python.exe evals\run.py --dense --check
 ```
 
-报告写入 `output/research-evaluation*.json`，评测数据库与真实库隔离。合成集评测检索与范围，不评价生成回答质量。架构、面试演示与已知边界见[工程讲解](../docs/proposals/jobscope-agent-interview.md)，实测结果见[升级验证记录](../docs/validation/jobscope-research-agent.md)。
+报告写入 `output/research-evaluation*.json`，评测数据库与真实库隔离。合成集评测检索与范围，不评价生成回答质量。架构、面试演示与已知边界见[工程讲解](docs/proposals/jobscope-agent-interview.md)，实测结果见[升级验证记录](docs/validation/jobscope-research-agent.md)。
 
 ## 验证命令
 
@@ -117,9 +117,9 @@ cd frontend
 npm run build
 ```
 
-真实来源的验证记录见 [在线验证记录](../docs/validation/jobscope-live.md) 和 [国内三平台采集验证](../docs/validation/jobscope-domestic-sources.md)（含各平台城市码的逐个回验结果与走不通的入口清单）。UI 集成验收使用独立临时数据目录，虚构材料仅用于测试，不进入默认工作数据库。
+真实来源的验证记录见 [在线验证记录](docs/validation/jobscope-live.md) 和 [国内三平台采集验证](docs/validation/jobscope-domestic-sources.md)（含各平台城市码的逐个回验结果与走不通的入口清单）。UI 集成验收使用独立临时数据目录，虚构材料仅用于测试，不进入默认工作数据库。
 
-首版不包含自动投递、员工评价平台接入、自动定时刷新或云端多人权限系统。BOSS 完整 JD 已通过已登录会话实际读取验证；智联招聘、前程无忧、猎聘的采集按 2026-11-09 的实测通路实现，猎聘列表不含岗位职责，完整职责读取仍只覆盖 BOSS。站点结构变化或岗位下架仍可能导致读取失败。岗位与实际薪资样本缺失时直接显示未知，发展判断需要原始证据支持。分页、范围隔离与完整 JD 的验收记录见 [本次验证记录](../docs/validation/jobscope-scopes-pagination.md)。
+首版不包含自动投递、员工评价平台接入、自动定时刷新或云端多人权限系统。BOSS 完整 JD 已通过已登录会话实际读取验证；智联招聘、前程无忧、猎聘的采集按 2026-11-09 的实测通路实现，猎聘列表不含岗位职责，完整职责读取仍只覆盖 BOSS。站点结构变化或岗位下架仍可能导致读取失败。岗位与实际薪资样本缺失时直接显示未知，发展判断需要原始证据支持。分页、范围隔离与完整 JD 的验收记录见 [本次验证记录](docs/validation/jobscope-scopes-pagination.md)。
 
 
 ### 全局通用 Agent、MCP 和 Skills
