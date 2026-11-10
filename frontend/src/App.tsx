@@ -46,6 +46,9 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
     check: <path d="m5 12 4 4L19 6" />,
     settings: <><path d="M4 7h16M4 17h16" /><circle cx="9" cy="7" r="3" fill="currentColor" /><circle cx="15" cy="17" r="3" fill="currentColor" /></>,
     close: <path d="m6 6 12 12M18 6 6 18" />,
+    menu: <path d="M4 6h16M4 12h16M4 18h16" />,
+    filter: <><path d="M4 7h16M7 12h10M10 17h4" /></>,
+    chevron: <path d="m9 5 7 7-7 7" />,
     book: <><path d="M12 5C8 2 3 3 3 3v16s5-1 9 2c4-3 9-2 9-2V3s-5-1-9 2ZM12 5v16" /></>,
     globe: <><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><path d="M3 12h18" /></>,
   }
@@ -58,6 +61,7 @@ function External({ url, children }: { url: string; children: ReactNode }) { con
 
 export default function App() {
   const [view, setView] = useState<'jobs' | 'resume' | 'sources' | 'evidence' | 'global' | 'settings' | 'extensions'>('jobs')
+  const [navigationOpen, setNavigationOpen] = useState(false)
   const [jobs, setJobs] = useState<Job[]>([])
   const [jobsInfo, setJobsInfo] = useState<PageInfo>(emptyPage)
   const [jobsTotal, setJobsTotal] = useState(0)
@@ -86,6 +90,7 @@ export default function App() {
   const [confirmDelete, setConfirmDelete] = useState<{ ids: string[]; label: string } | null>(null)
   const [detail, setDetail] = useState<{ job: Job; evidence: Evidence[]; company_evidence: Evidence[]; evidence_total: number } | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const scrollToSelectedDetail = useRef(false)
   const [tab, setTab] = useState<'overview' | 'analysis' | 'evidence'>('overview')
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [reliability, setReliability] = useState<ReliabilityReport | null>(null)
@@ -180,7 +185,20 @@ export default function App() {
     } catch (err) { if (token === detailRequest.current) toast((err as Error).message, 'error') }
     finally { if (token === detailRequest.current) setDetailLoading(false) }
   }, [])
-  function selectJob(id: string) { jobGeneration.current++; activeJobId.current = id; setSelectedId(id); setDetail(null); setAnalysis(null); setReliability(null); setReliabilityHistory(null); setReliabilityAction(null); setEvidenceFocus(''); setDescExpanded(false); setCompanyPage(0); setTab('overview'); document.querySelector('.detail-panel')?.scrollTo({ top: 0 }); void loadDetail(id) }
+  function selectJob(id: string) {
+    jobGeneration.current++; activeJobId.current = id; setSelectedId(id); setDetail(null); setAnalysis(null); setReliability(null); setReliabilityHistory(null); setReliabilityAction(null); setEvidenceFocus(''); setDescExpanded(false); setCompanyPage(0); setTab('overview')
+    const panel = document.querySelector<HTMLElement>('.detail-panel')
+    panel?.scrollTo({ top: 0 })
+    scrollToSelectedDetail.current = window.matchMedia('(max-width: 1040px)').matches
+    void loadDetail(id)
+  }
+  useEffect(() => {
+    if (!scrollToSelectedDetail.current) return
+    const panel = document.querySelector<HTMLElement>('.detail-panel')
+    panel?.scrollIntoView({ block: 'start' })
+    panel?.focus({ preventScroll: true })
+    if (!detailLoading) scrollToSelectedDetail.current = false
+  }, [selectedId, detailLoading])
   function openReferenceEvidence(evidenceId: string) { setEvidenceFocus(evidenceId); setTab('evidence') }
   async function recomputeReference() {
     if (!job) return
@@ -358,16 +376,27 @@ export default function App() {
   const browserSources = sources.filter(item => item.browser_collectable)
   const browserSourceItem = browserSources.find(item => item.id === browserSource)
   const browserCities = browserSourceItem?.cities || []
+  const hasArchiveFilters = Object.values(jobFilters.current).some(Boolean)
+  const extraFilterCount = [archiveDraft.source, archiveDraft.location, archiveDraft.salaryMin || archiveDraft.salaryMax].filter(Boolean).length
+  function clearArchiveFilters() {
+    const cleared = { q: '', source: '', location: '', salaryMin: '', salaryMax: '' }
+    setArchiveDraft(cleared)
+    document.querySelector<HTMLInputElement>('.job-archive-filters .search-input input')?.focus({ preventScroll: true })
+    void perform('filter', async () => { await loadJobs(cleared, 1) })
+  }
 
   return <div className="app-shell">
-    <aside className="sidebar">
+    <a className="skip-link" href="#workspace-main">跳到工作区</a>
+    <aside className={`sidebar${navigationOpen ? ' nav-open' : ''}`}>
       <a className="brand" href="#" onClick={event => { event.preventDefault(); setView('jobs') }}><span className="brand-symbol" aria-hidden="true"><i /><i /></span><span>知根<span className="brand-english">JobScope</span></span></a>
-      <div className="sidebar-caption">求职调查档案</div>
-      <nav aria-label="主导航">
+      <button className="mobile-nav-toggle" aria-expanded={navigationOpen} aria-controls="workspace-navigation" onClick={() => setNavigationOpen(value => !value)}><Icon name={navigationOpen ? 'close' : 'menu'} />{navigationOpen ? '收起导航' : '工作区导航'}</button>
+      <nav id="workspace-navigation" aria-label="主导航" onClick={event => { if ((event.target as HTMLElement).closest('button')) { setNavigationOpen(false); if (window.matchMedia('(max-width: 800px)').matches) document.getElementById('workspace-main')?.focus() } }}>
+        <div className="sidebar-caption">研究工作区</div>
         <button aria-current={view === 'jobs' ? 'page' : undefined} className={view === 'jobs' ? 'active' : ''} onClick={() => setView('jobs')}><Icon name="jobs" />岗位研究<span className="nav-count">{jobsTotal}</span></button>
         <button aria-current={view === 'resume' ? 'page' : undefined} className={view === 'resume' ? 'active' : ''} onClick={() => setView('resume')}><Icon name="resume" />我的简历{resumeSaved && <span className="nav-dot" />}</button>
         <button aria-current={view === 'evidence' ? 'page' : undefined} className={view === 'evidence' ? 'active' : ''} onClick={() => setView('evidence')}><Icon name="book" />公司资料库</button>
         <button aria-current={view === 'global' ? 'page' : undefined} className={view === 'global' ? 'active' : ''} onClick={() => setView('global')}><Icon name="chat" />全局对话</button>
+        <div className="sidebar-caption nav-settings-caption">工作区管理</div>
         <button aria-current={view === 'sources' ? 'page' : undefined} className={view === 'sources' ? 'active' : ''} onClick={() => setView('sources')}><Icon name="source" />数据与采集</button>
         <button aria-current={view === 'extensions' ? 'page' : undefined} className={view === 'extensions' ? 'active' : ''} onClick={() => setView('extensions')}><Icon name="settings" />Agent 扩展</button>
         <button aria-current={view === 'settings' ? 'page' : undefined} className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}><Icon name="settings" />模型设置</button>
@@ -376,7 +405,7 @@ export default function App() {
       <div className="sidebar-bottom"><span className={`connection-dot ${online ? 'connected' : ''}`} />{online ? '本地工作区已连接' : '等待本地服务'}<span className="version">v0.1</span></div>
     </aside>
 
-    <main className={view === 'jobs' ? 'main main-workbench' : 'main'}>
+    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' ? 'main main-workbench' : 'main'}>
       <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'resume' ? '我的简历' : view === 'evidence' ? '公司资料库' : view === 'global' ? '全局对话' : view === 'extensions' ? 'Agent 扩展' : view === 'settings' ? '模型设置' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
       <div hidden={view !== 'evidence'}><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} /></div>
 
@@ -384,31 +413,40 @@ export default function App() {
 
       {view === 'jobs' && <>
         <section className="page-intro"><div><h1>岗位研究</h1><p>把岗位要求、公司证据和你的经历逐项核对</p></div><Button className="button secondary" onClick={() => openModal('job')}><Icon name="plus" size={17} />导入岗位</Button></section>
-        <section className="search-section" aria-label="岗位检索">
+        <section className="search-section" aria-labelledby="collect-heading">
+          <div className="search-section-heading"><h2 id="collect-heading"><Icon name="globe" size={16} />发现新岗位</h2><span>从外部来源采集，保存到本地档案</span><button className="text-button" onClick={() => setView('sources')}>管理数据源<Icon name="arrow" size={13} /></button></div>
           <form className="search-form" onSubmit={collect}>
-            <label className="search-input"><Icon name="search" /><span className="sr-only">岗位关键词</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索岗位、技能或公司" required maxLength={200} /></label>
-            <label className="location-input"><Icon name="pin" size={18} /><CityInput label="工作地点" cities={selectedSource?.cities || []} hot={selectedSource?.hot || []} pinyin={cityPinyin} locations={locations} value={location} onChange={setLocation} placeholder="不限地点" maxLength={100} /></label>
-            <label className="source-select"><span className="sr-only">岗位数据源</span><select value={source} onChange={event => setSource(event.target.value)}>{jobSources.map(item => <option key={item.id} value={item.id}>{item.name} · {transportNames[item.transport_mode] || item.transport_mode}</option>)}</select></label>
-            <label className="collect-limit"><span className="sr-only">采集数量</span><input type="number" min={1} max={1000} value={collectLimit} onChange={event => setCollectLimit(Math.max(1, Math.min(1000, Number(event.target.value) || 20)))} inputMode="numeric" aria-label="采集数量" /></label>
+            <label className="collect-field collect-keyword"><span>岗位关键词</span><span className="collect-control"><Icon name="search" size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="岗位、技能或公司" required maxLength={200} /></span></label>
+            <div className="collect-field collect-location"><label htmlFor="collect-location">工作地点</label><div className="collect-control"><Icon name="pin" size={17} /><CityInput id="collect-location" cities={selectedSource?.cities || []} hot={selectedSource?.hot || []} pinyin={cityPinyin} locations={locations} value={location} onChange={setLocation} placeholder="不限地点" maxLength={100} /></div></div>
+            <label className="collect-field collect-source"><span>岗位数据源</span><select value={source} onChange={event => setSource(event.target.value)}>{jobSources.map(item => <option key={item.id} value={item.id}>{item.name} · {transportNames[item.transport_mode] || item.transport_mode}</option>)}</select></label>
+            <label className="collect-field collect-count"><span>采集数量</span><span className="collect-control"><input type="number" min={1} max={1000} value={collectLimit} onChange={event => setCollectLimit(Math.max(1, Math.min(1000, Number(event.target.value) || 20)))} inputMode="numeric" aria-label="采集数量" /><span>条</span></span></label>
             <Button className="button primary" type="submit" busy={busy === 'collect'} disabled={Boolean(busy)}>检索岗位<Icon name="arrow" size={17} /></Button>
           </form>
-          <div className="search-footnote"><span><span className="small-dot" />{selectedSource?.description || '选择来源后点击检索；标注“需浏览器”的来源会在项目 Chrome 内取数'}</span><button onClick={() => setView('sources')}>管理数据源<Icon name="arrow" size={13} /></button></div>
+          <div className="search-footnote"><span><span className="small-dot" />{selectedSource?.description || '标注“需浏览器”的来源，需要先在项目 Chrome 中登录。'}</span></div>
         </section>
 
         <div className="research-layout">
-          <section className="job-list-panel"><div className="panel-title"><h2>岗位档案 <span>{jobsInfo.total}</span></h2>{selectedIds.size > 0 && <span className="muted body-small">已选 {selectedIds.size}</span>}{jobs.length > 0 && <div className="job-select-bar"><label className="agent-checkbox"><input type="checkbox" checked={allPageSelected} onChange={togglePageSelection} />本页全选</label><button className="text-button" disabled={Boolean(busy)} onClick={() => void selectAllFiltered()}>选筛选全部 {jobsInfo.total} 条</button>{selectedIds.size > 0 && <><Button className="button secondary small" disabled={Boolean(busy)} onClick={openBatchEditForSelection}>批量编辑</Button><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => askDelete([...selectedIds], `已选的 ${selectedIds.size} 份岗位档案`)}>删除</Button><button className="text-button" onClick={() => setSelectedIds(new Set())}>取消选择</button></>}</div>}</div>
+          <section className="job-list-panel" aria-labelledby="archive-heading"><div className="panel-title"><h2 id="archive-heading">岗位档案 <span>{jobsInfo.total.toLocaleString()}</span></h2>{hasArchiveFilters ? <button className="text-button archive-reset" disabled={Boolean(busy)} onClick={clearArchiveFilters}>清除筛选</button> : <span className="archive-scope">本地资料库</span>}</div>
             <form className="job-archive-filters" aria-label="岗位档案筛选" onSubmit={event => { event.preventDefault(); void perform('filter', async () => { await loadJobs({ ...archiveDraft }, 1) }) }}>
-              <label className="search-input"><Icon name="search" /><span className="sr-only">档案关键词</span><input value={archiveDraft.q} onChange={event => setArchiveDraft({ ...archiveDraft, q: event.target.value })} placeholder="岗位、公司或描述" maxLength={300} /></label>
-              <label className="source-select"><span className="sr-only">信息源</span><select value={archiveDraft.source} onChange={event => setArchiveDraft({ ...archiveDraft, source: event.target.value })}><option value="">全部来源</option>{jobSources.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}<option value="user_import">用户导入</option></select></label>
-              <CityInput label="地点" cities={[]} hot={[]} pinyin={cityPinyin} locations={locations} value={archiveDraft.location} onChange={value => setArchiveDraft({ ...archiveDraft, location: value })} placeholder="不限地点" maxLength={100} />
-              <div className="salary-range"><input aria-label="月薪下限" type="number" min={0} step="0.5" placeholder="最低" inputMode="decimal" value={archiveDraft.salaryMin} onChange={event => setArchiveDraft({ ...archiveDraft, salaryMin: event.target.value })} /><span>–</span><input aria-label="月薪上限" type="number" min={0} step="0.5" placeholder="最高" inputMode="decimal" value={archiveDraft.salaryMax} onChange={event => setArchiveDraft({ ...archiveDraft, salaryMax: event.target.value })} /><span className="salary-unit">K/月</span></div>
-              <div className="filter-actions"><Button className="button secondary small" type="submit" busy={busy === 'filter'} disabled={Boolean(busy)}>筛选</Button><button type="button" className="text-button" onClick={() => { const cleared = { q: '', source: '', location: '', salaryMin: '', salaryMax: '' }; setArchiveDraft(cleared); void perform('filter', async () => { await loadJobs(cleared, 1) }) }}>清除</button></div>
+              <label className="search-input"><Icon name="search" size={16} /><span className="sr-only">档案关键词</span><input value={archiveDraft.q} onChange={event => setArchiveDraft({ ...archiveDraft, q: event.target.value })} placeholder="在已存档案中搜索" maxLength={300} /></label>
+              <Button className="button secondary small archive-submit" type="submit" busy={busy === 'filter'} disabled={Boolean(busy)}>筛选</Button>
+              <details className="archive-filter-options">
+                <summary><Icon name="filter" size={16} />筛选条件{extraFilterCount > 0 && <span className="filter-count">{extraFilterCount}</span>}<Icon name="chevron" size={14} /></summary>
+                <div className="archive-filter-fields">
+                  <label className="archive-field"><span>信息源</span><select value={archiveDraft.source} onChange={event => setArchiveDraft({ ...archiveDraft, source: event.target.value })}><option value="">全部来源</option>{jobSources.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}<option value="user_import">用户导入</option></select></label>
+                  <div className="archive-field"><label htmlFor="archive-location">地点</label><CityInput id="archive-location" cities={[]} hot={[]} pinyin={cityPinyin} locations={locations} value={archiveDraft.location} onChange={value => setArchiveDraft({ ...archiveDraft, location: value })} placeholder="不限地点" maxLength={100} /></div>
+                  <div className="archive-field archive-salary"><span>月薪范围 <span className="muted">· K/月</span></span><div className="salary-range"><input aria-label="月薪下限" type="number" min={0} step="0.5" placeholder="最低" inputMode="decimal" value={archiveDraft.salaryMin} onChange={event => setArchiveDraft({ ...archiveDraft, salaryMin: event.target.value })} /><span>–</span><input aria-label="月薪上限" type="number" min={0} step="0.5" placeholder="最高" inputMode="decimal" value={archiveDraft.salaryMax} onChange={event => setArchiveDraft({ ...archiveDraft, salaryMax: event.target.value })} /></div></div>
+                </div>
+                <div className="filter-actions"><span>仅筛选本地档案</span><button type="button" className="text-button" disabled={Boolean(busy)} onClick={clearArchiveFilters}>清除</button><Button className="button secondary small" type="submit" busy={busy === 'filter'} disabled={Boolean(busy)}>应用条件</Button></div>
+              </details>
             </form>
-            {loading ? <div className="loading-state"><span className="spinner" />正在连接资料库…</div> : jobs.length === 0 ? <Empty title="从一个机会开始" icon="search">检索真实岗位，或导入你正在考虑的职位。采集后的岗位会保存在这里。</Empty> : <div className="job-list">{jobs.map(item => <div className={`job-card ${selectedId === item.id ? 'selected' : ''}${selectedIds.has(item.id) ? ' checked' : ''}`} key={item.id}><label className="job-card-check"><input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => toggleJobSelection(item.id)} /><span className="sr-only">选择该岗位</span></label><button className="job-card-body" onClick={() => selectJob(item.id)} title={`${item.title} · ${item.company}`}><h3>{item.title}</h3><div className="job-card-meta"><span className="job-salary">{item.salary || '薪资未披露'}</span><span className="job-location"><Icon name="pin" size={12} />{item.location || '地点待确认'}</span>{(item.tags || []).slice(0, 1).map(tag => <span className="job-tags" key={tag}><span>{tag}</span></span>)}</div><div className="job-card-bottom"><span className="job-company">{item.company}</span><span>{sourceNames[item.source] || item.source}</span><time>{date(item.updated_at)}</time></div></button></div>)}</div>}
+            {jobs.length > 0 && <div className="job-select-bar"><label className="agent-checkbox"><input type="checkbox" checked={allPageSelected} onChange={togglePageSelection} />本页全选</label><button className="text-button" disabled={Boolean(busy)} onClick={() => void selectAllFiltered()}>选择全部 {jobsInfo.total} 条</button>{selectedIds.size > 0 && <div className="selection-actions"><span>已选 {selectedIds.size} 项</span><Button className="button secondary small" disabled={Boolean(busy)} onClick={openBatchEditForSelection}>编辑</Button><Button className="button secondary small danger-text" disabled={Boolean(busy)} onClick={() => askDelete([...selectedIds], `已选的 ${selectedIds.size} 份岗位档案`)}>删除</Button><button className="text-button" onClick={() => setSelectedIds(new Set())}>取消</button></div>}</div>}
+            {loading ? <div className="loading-state"><span className="spinner" />正在连接资料库…</div> : jobs.length === 0 ? <Empty title={hasArchiveFilters ? '没有符合条件的岗位' : '从一个机会开始'} icon="search">{hasArchiveFilters ? <>试试其他关键词，或<button className="inline-button" disabled={Boolean(busy)} onClick={clearArchiveFilters}>清除筛选</button>查看全部档案。</> : '检索真实岗位，或导入你正在考虑的职位。采集后的岗位会保存在这里。'}</Empty> : <div className="job-list">{jobs.map(item => <div className={`job-card ${selectedId === item.id ? 'selected' : ''}${selectedIds.has(item.id) ? ' checked' : ''}`} key={item.id}><label className="job-card-check"><input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => toggleJobSelection(item.id)} /><span className="sr-only">选择岗位：{item.title} · {item.company}</span></label><button className="job-card-body" aria-pressed={selectedId === item.id} onClick={() => selectJob(item.id)} title={`${item.title} · ${item.company}`}><h3>{item.title}</h3><span className="job-company">{item.company}</span><div className="job-card-meta"><span className="job-salary">{item.salary || '薪资未披露'}</span><span className="job-location"><Icon name="pin" size={12} />{item.location || '地点待确认'}</span>{(item.tags || []).slice(0, 1).map(tag => <span className="job-tags" key={tag}><span>{tag}</span></span>)}</div><div className="job-card-bottom"><span className="job-source">{sourceNames[item.source] || item.source}</span><time>{date(item.updated_at)}</time></div></button></div>)}</div>}
             <Pagination info={jobsInfo} label="岗位档案" busy={Boolean(busy)} onPage={page => void perform('page-jobs', async () => { await loadJobs(undefined, page) })} /><div className="list-bottom">资料以采集时的页面为准，投递前请再次核实。</div>
           </section>
 
-          <section className="detail-panel">
+          <section className="detail-panel" aria-label="岗位详情" tabIndex={-1}>
+            {selectedId && <button className="mobile-back text-button" onClick={() => { document.querySelector('.job-list-panel')?.scrollIntoView({ block: 'start' }); document.querySelector<HTMLElement>('.job-card-body[aria-pressed="true"]')?.focus({ preventScroll: true }) }}><Icon name="arrow" size={16} />返回岗位列表</button>}
             {detailLoading ? <div className="loading-state"><span className="spinner" />正在读取岗位档案…</div> : !job ? <div className="welcome-panel"><div className="welcome-heading"><Icon name="book" /><span>岗位调查档案</span></div><h2>先选一份岗位，再逐项核对</h2><p>检索岗位或导入已有 JD。选择左侧档案，查看要求、公司资料与简历依据。</p><div className="welcome-checklist"><div><span>01</span><section><h3>岗位要求</h3><p>职责、技能、地点和薪酬口径</p></section></div><div><span>02</span><section><h3>公司证据</h3><p>资料原文、披露主体和发布时间</p></section></div><div><span>03</span><section><h3>个人适配</h3><p>已有依据、硬性条件与待核实项</p></section></div></div><Button className="button secondary" onClick={() => openModal('job')}><Icon name="plus" />导入已有岗位</Button><div className="welcome-source-note">每份资料都保留出处，缺少证据时保持未知</div></div> : <>
               <div className="detail-heading"><div className="detail-kicker"><span>{sourceNames[job.source] || job.source}</span><External url={job.url}>查看原始岗位</External></div><h2>{job.title}</h2><div className="detail-company">{job.company}<span>·</span><Icon name="pin" size={14} />{job.location || '地点待确认'}</div><div className="detail-heading-bottom"><strong>{job.salary || '薪资未披露'}</strong><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => openBatchEdit([job])}>编辑档案</Button><Button className="button secondary small" busy={busy === 'analyze'} disabled={Boolean(busy) || needsFullJd(job)} onClick={() => void analyze()}><Icon name="check" size={16} />评估适配</Button></div></div>
               <div className="jd-state"><div><strong>{job.description_status === 'complete' ? '完整JD已保存' : needsFullJd(job) ? '仅列表摘要 · 待补全' : '岗位材料已保存'}</strong><p>{job.detail_collected_at ? `正文读取于 ${date(job.detail_collected_at)}` : needsFullJd(job) ? ((job.source === 'boss' || job.source === 'zhaopin') ? '需要完整职责与任职要求，才能评估是否适合投递' : '该平台列表未给出完整职责，可在岗位档案补充后再评估') : '请核对岗位材料完整性及原始出处'}</p></div>{(job.source === 'boss' || job.source === 'zhaopin') && <Button className="button secondary small" busy={busy === 'job-detail'} disabled={Boolean(busy)} onClick={() => void perform('job-detail', async () => { const id = job.id, generation = jobGeneration.current; const result = await post<{ task: Task; job: Job }>(`/jobs/${encodeURIComponent(id)}/detail`); toast(result.task.message); await Promise.all([generation === jobGeneration.current ? loadDetail(id) : Promise.resolve(), loadJobs(), refreshMetadata()]); if (generation === jobGeneration.current) setAnalysis(null) })}>{job.description_status === 'complete' ? '更新完整职责' : '读取完整职责'}</Button>}</div><div className="detail-tabs" role="tablist" aria-label="岗位档案内容" onKeyDown={navigateTabs}>{(['overview', 'analysis', 'evidence'] as const).map(item => <button key={item} id={`job-${item}-tab`} role="tab" aria-controls="job-detail-panel" tabIndex={tab === item ? 0 : -1} aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item === 'overview' ? '岗位与公司' : item === 'analysis' ? '适配分析' : '证据资料'}{item === 'evidence' && <span>{evidenceTotal}</span>}</button>)}</div>
