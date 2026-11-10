@@ -26,6 +26,7 @@ export function ResumeImport({ disabled, hasText, onApply }: { disabled: boolean
   }
   return <section className="resume-import" aria-label="导入简历文件" aria-busy={busy}>
     <div className={`resume-dropzone ${dragging ? 'dragging' : ''}`} onDragOver={event => { event.preventDefault(); if (!disabled && !busy) setDragging(true) }} onDragLeave={() => setDragging(false)} onDrop={event => { event.preventDefault(); setDragging(false); void extract(Array.from(event.dataTransfer.files)) }}>
+      <span className="dropzone-icon" aria-hidden="true"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" focusable="false"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6M12 17v-6m0 0-3 3m3-3 3 3" /></svg></span>
       <div><h3>从文件开始</h3><p>拖入 PDF 或 Word .docx，自动提取文字</p><span>也支持 TXT、Markdown、facts.yaml · 单文件不超过 10 MB</span></div>
       <button className="button secondary" type="button" disabled={disabled || busy} onClick={() => input.current?.click()}>{busy && <span className="spinner" />}{busy ? '正在提取文字…' : '选择简历文件'}</button>
       <input ref={input} className="sr-only" type="file" tabIndex={-1} accept=".pdf,.docx,.txt,.md,.yaml,.yml" aria-label="简历文件" disabled={disabled || busy} onChange={event => { const files = Array.from(event.target.files || []); event.target.value = ''; if (files.length) void extract(files) }} />
