@@ -117,6 +117,100 @@ def test_browser_missing_dependency_is_explicit(tmp_path, monkeypatch):
     assert browser.collect('boss', '')['status'] == 'failed'
 
 
+class FakeStateTab:
+    """返回预置的后续页数据（pages[0] 即 pageIndex=2），记录每次调用参数。"""
+
+    def __init__(self, api_pages):
+        self.api_pages = api_pages
+        self.calls = []
+
+    def get(self, url, timeout=0):
+        return None
+
+    def run_js(self, script, *args):
+        self.calls.append(args)
+        page = args[2]
+        if isinstance(page, int) and 2 <= page <= len(self.api_pages) + 1:
+            return self.api_pages[page - 2]
+        return None
+
+
+def state_page(seed, count=20, **extra):
+    items = [{'number': f'CCL{seed}J{seed}{i:02d}', 'name': f'岗位{seed}-{i}'} for i in range(count)]
+    return {'positionList': items, 'hasMore': True, 'pageIndex': seed, 'pageSize': 20, **extra}
+
+
+def api_page(seed, count=20, end=False, verify=0):
+    items = [{'number': f'CC{seed}J{seed}{i:02d}', 'name': f'接口{seed}-{i}'} for i in range(count)]
+    return {'positionList': items, 'isEndPage': 1 if end else 0, 'isVerification': verify, 'total': 1000}
+
+
+def zhaopin_spec():
+    from jobscope import browser
+    return browser.PAGES['zhaopin']
+
+
+def test_state_pagination_merges_pages_until_limit():
+    from jobscope.browser import _extend_state_pages
+    tab = FakeStateTab([api_page(2), api_page(3, end=True)])
+    payload, pages_read, note = _extend_state_pages(tab, zhaopin_spec(), state_page(1), 'Python', '530', 60)
+    assert pages_read == 3 and note == ''
+    assert len(payload['positionList']) == 60
+    assert payload['hasMore'] is False
+    assert [call[2] for call in tab.calls] == [2, 3]
+
+
+def test_state_pagination_stops_at_requested_size():
+    from jobscope.browser import _extend_state_pages
+    tab = FakeStateTab([api_page(2), api_page(3)])
+    payload, pages_read, note = _extend_state_pages(tab, zhaopin_spec(), state_page(1), 'Python', '530', 30)
+    assert pages_read == 2 and len(payload['positionList']) == 40
+    assert tab.calls[0][2] == 2 and len(tab.calls) == 1
+
+
+def test_state_pagination_keeps_first_page_on_failure_or_verification():
+    from jobscope.browser import _extend_state_pages
+    empty = FakeStateTab([api_page(2, count=0)])
+    payload, pages_read, note = _extend_state_pages(empty, zhaopin_spec(), state_page(1), 'Python', '530', 60)
+    assert pages_read == 1 and len(payload['positionList']) == 20
+    assert '后续页未返回数据' in note
+    blocked = FakeStateTab([api_page(2, verify=1)])
+    payload, pages_read, note = _extend_state_pages(blocked, zhaopin_spec(), state_page(1), 'Python', '530', 60)
+    assert pages_read == 1 and '人工验证' in note
+
+
+def test_zhaopin_collect_ceiling_follows_page_count(tmp_path, monkeypatch):
+    from jobscope import browser
+    seen = {}
+    monkeypatch.setattr(browser, '_has_driver', lambda: True)
+    monkeypatch.setattr(browser, '_chrome', lambda: 'chrome')
+    monkeypatch.setattr(browser, '_connection', lambda data_dir=None: 1234)
+    class Lock:
+        def __enter__(self): return True
+        def __exit__(self, *args): return False
+    class FakeLock:
+        def acquire(self, blocking=False): return True
+        def release(self): pass
+    monkeypatch.setattr(browser, 'session_lock', lambda data_dir=None: Lock())
+    monkeypatch.setattr(browser, '_lock', FakeLock())
+    class FakeChromium:
+        def __init__(self, endpoint): pass
+        def new_tab(self):
+            tab = FakeStateTab([api_page(2, end=True)])
+            def run_js(script, *args):
+                if 'INITIAL_STATE' in script:
+                    return state_page(1)
+                seen['page'] = args
+                return api_page(2, end=True)
+            tab.run_js = run_js
+            return tab
+    monkeypatch.setattr('DrissionPage.Chromium', FakeChromium)
+    output = browser.collect('zhaopin', 'python', location='北京', limit=50, data_dir=tmp_path)
+    assert output['status'] == 'completed'
+    assert '已翻页读取 2 页' in output['message']
+    assert seen['page'] == ('python', '530', 2)
+
+
 def test_rate_limit_is_not_retried():
     module = connectors()
     calls = []
@@ -224,6 +318,18 @@ def test_zhaopin_drops_foreign_city_and_unsafe_links():
         zhaopin_position(number='CCL2222222222J22222222222', positionUrl='http://127.0.0.1/private'),
     ]}, 20, '北京')
     assert output['jobs'] == []
+
+
+def test_zhaopin_api_pages_normalize_jobs_host_to_detail_url():
+    module = connectors()
+    number = 'CCL1485438180J40885185714'
+    # 翻页接口的链接是 http://jobs.zhaopin.com/<编号>.htm；编号一致时归一成已登记详情形态。
+    matched = zhaopin_position(number=number, positionUrl=f'http://jobs.zhaopin.com/{number}.htm', jobDescription='')
+    mismatched = zhaopin_position(number='CCL9999999999J99999999999',
+                                  positionUrl='http://jobs.zhaopin.com/CCL1485438180J40885185714.htm', jobDescription='')
+    output = module.map_zhaopin({'positionList': [matched, mismatched]}, 20, '北京')
+    assert output['jobs'][0]['url'] == f'https://www.zhaopin.com/jobdetail/{number}.htm'
+    assert len(output['jobs']) == 1
 
 
 def job51_item(**changes):

@@ -56,6 +56,13 @@
 - 环境插曲：本机 Chrome 在运行中自动升级（157.0.8103.38→39），升级未完成使 `chrome.exe` 出现并行配置错误（WinError 14001），项目 Chrome 会话假死；用同目录 `new_chrome.exe` 替换后恢复，项目配置目录及登录态不受影响。
 - 前程无忧检索接口的 `jobDescribe` 是否同样截断本次未测（库中无 51job 样本），不下结论。
 
+## 2026-11-10 补充：智联搜索页翻页实测
+
+- `https://www.zhaopin.com/jobs/?kw=Python&jl=530` 是 SSR 首屏直出 20 条的分栏页：URL `p=2` 参数无效（state `pageIndex` 仍为 1），页面无分页控件、列表容器不可滚动，窗口滚动只追加推荐模块，`positionList` 不增长。
+- 翻页走页面自身的检索接口：会话内 `POST https://fe-api.zhaopin.com/c/i/search/positions`，JSON 体传 `S_SOU_FULL_INDEX`（关键词）、`S_SOU_WORK_CITY`（城市码）、`pageIndex`、`pageSize: 20`，页面请求里带的 `at`/`rt` 令牌实测可以不带；响应 `data.list` 每页 20 条、`isEndPage` 到尾页置 1、`isVerification` 非零表示要求验证。第 2、3 页实测各返回 20 条不同岗位。
+- 注意该接口的岗位链接是 `http://jobs.zhaopin.com/<编号>.htm`（http 且非登记域名），编号与链接一致时归一成已回验的 `https://www.zhaopin.com/jobdetail/<编号>.htm` 再保存；`data.list` 条目不含 `jobDescription`，正文仍按详情页补读。
+- 智联浏览器采集已按此实现 3 页翻页（上限 60 条，按用户请求数量封顶），本机实测请求 50 条返回 50 条、3 页全部命中。
+
 ## 回归
 
 ```powershell

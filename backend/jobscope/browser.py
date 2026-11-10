@@ -25,6 +25,22 @@ FETCH_JS = ("return (async () => { const r = await fetch(arguments[0],"
             " {credentials: 'include', headers: {Accept: 'application/json'}});"
             " const t = await r.text();"
             " return {ok: r.ok, status: r.status, body: t.slice(0, 600000)}; })()")
+# 智联搜索页首屏岗位由 SSR 直出，后续页走页面自己的检索接口；实测在会话内
+# 直接 POST /c/i/search/positions 传 pageIndex 即可翻页，无需额外令牌。
+ZHAOPIN_PAGE_JS = ("return (async () => { const body = {S_SOU_FULL_INDEX: arguments[0],"
+                   " S_SOU_WORK_CITY: arguments[1], order: 0, pageSize: 20, pageIndex: arguments[2],"
+                   " eventScenario: 'pcSearchedSouSearch', anonymous: 0, clickFilterBlackCompany: false,"
+                   " platform: 13, version: '0.0.0'};"
+                   " const r = await fetch('https://fe-api.zhaopin.com/c/i/search/positions?platform=13&version=0.0.0',"
+                   " {method: 'POST', credentials: 'include',"
+                   " headers: {'Content-Type': 'application/json', Accept: 'application/json, text/plain, */*'},"
+                   " body: JSON.stringify(body)});"
+                   " const t = await r.text();"
+                   " let payload = null;"
+                   " try { payload = JSON.parse(t); } catch (e) { return null; }"
+                   " const d = (payload && payload.data) || {};"
+                   " return {positionList: Array.isArray(d.list) ? d.list : null, isEndPage: d.isEndPage,"
+                   " isVerification: d.isVerification, total: d.count}; })()")
 
 def _spec(source, **transport):
     """登记表提供名称与城市码，这里只补充该来源在浏览器里的取数方式。"""
@@ -37,7 +53,7 @@ PAGES = {
                   mapper=map_boss, default='100010000',
                   search=lambda query, code, size: 'https://www.zhipin.com/web/geek/job?' + urlencode({'query': query, 'city': code}),
                   blocked='未收到岗位响应。请查看项目浏览器是否需要登录或人工验证；不会自动反复请求。'),
-    'zhaopin': _spec('zhaopin', mode='state', home='https://www.zhaopin.com/jobs/', size=20,
+    'zhaopin': _spec('zhaopin', mode='state', home='https://www.zhaopin.com/jobs/', size=20, pages=3,
                      mapper=map_zhaopin, default='',
                      search=lambda query, code, size: 'https://www.zhaopin.com/jobs/?' + urlencode({'kw': query, 'jl': code}),
                      blocked='搜索页未带出岗位数据；可能需要登录、人工验证，或页面结构已变化。'),
@@ -182,6 +198,33 @@ def _page(tab, spec, query, code, size):
     return None
 
 
+def _extend_state_pages(tab, spec, payload, query, code, size):
+    """state 模式首屏只渲染一页；后续页向页面自己的检索接口按 pageIndex 续读。
+
+    返回 (payload, 已读页数, 提示)。任何一页失败都保留已读到的内容，不算采集失败。
+    """
+    pages = int(spec.get('pages', 1))
+    if pages <= 1 or not isinstance(payload.get('positionList'), list):
+        return payload, 1, ''
+    items = list(payload['positionList'])
+    pages_read = 1
+    note = ''
+    for page in range(2, pages + 1):
+        if len(items) >= size or payload.get('hasMore') is False:
+            break
+        more = tab.run_js(ZHAOPIN_PAGE_JS, query, code, page)
+        if not isinstance(more, dict) or not isinstance(more.get('positionList'), list) or not more['positionList']:
+            note = '；后续页未返回数据，已停止翻页'
+            break
+        if more.get('isVerification'):
+            note = '；后续页要求人工验证，已停止翻页'
+            break
+        items.extend(more['positionList'])
+        pages_read += 1
+        payload = {**payload, 'positionList': items, 'hasMore': more.get('isEndPage') == 0}
+    return payload, pages_read, note
+
+
 def collect(source='boss', query='', location='', limit=20, data_dir=None):
     """Collect from the platform's own page; nothing here is replayed outside the user session."""
     spec = PAGES.get(source)
@@ -193,7 +236,7 @@ def collect(source='boss', query='', location='', limit=20, data_dir=None):
     if city and city not in spec['codes']:
         return result('unsupported', f'{spec["name"]}暂未映射该城市；可用{city_hint(source)}或留空。')
     try:
-        size = max(1, min(int(limit), spec['size']))
+        size = max(1, min(int(limit), spec['size'] * int(spec.get('pages', 1))))
     except (TypeError, ValueError):
         return result('failed', '采集数量必须是整数。')
     if not _has_driver() or not _chrome():
@@ -213,8 +256,16 @@ def collect(source='boss', query='', location='', limit=20, data_dir=None):
             payload = _listen(tab, spec, query, _city_code(spec, city), size) if spec['mode'] == 'listen' else _page(tab, spec, query, _city_code(spec, city), size)
             if not isinstance(payload, dict):
                 return result('needs_verification', spec['blocked'])
+            payload, pages_read, page_note = _extend_state_pages(tab, spec, payload, query, _city_code(spec, city), size)
             output = spec['mapper'](payload, size, city)
-            output['message'] = f'{spec["name"]}浏览器采集：' + output['message']
+            extras = []
+            if pages_read > 1:
+                extras.append(f'已翻页读取 {pages_read} 页')
+            if page_note:
+                extras.append(page_note.lstrip('；'))
+            base = output['message'].rstrip('。')
+            suffix = '；' + '；'.join(extras) + '。' if extras else '。'
+            output['message'] = f'{spec["name"]}浏览器采集：' + base + suffix
             return output
     except Exception:
         return result('failed', '浏览器采集失败；请确认项目会话仍在运行并已完成登录。')

@@ -214,6 +214,18 @@ def _push(job, note, jobs, evidence, seen, limit, city=''):
     return len(jobs) >= limit
 
 
+def _zhaopin_detail_url(item):
+    """翻页接口返回 http://jobs.zhaopin.com/<编号>.htm；编号与平台链接一致时，
+    归一成详情通路登记的 www 详情形态，否则拒绝。"""
+    number = str(item.get('number') or '')
+    if not re.fullmatch(r'[A-Za-z0-9]{8,40}', number):
+        return ''
+    path = urlparse(str(item.get('positionUrl') or '')).path
+    if not path.endswith(f'/{number}.htm'):
+        return ''
+    return f'https://www.zhaopin.com/jobdetail/{number}.htm'
+
+
 def map_zhaopin(state, limit=20, city=''):
     """智联岗位随搜索页 HTML 一起返回；纯 HTTP 直连会被来源指纹校验拦下。"""
     if not isinstance(state, dict):
@@ -242,7 +254,8 @@ def map_zhaopin(state, limit=20, city=''):
                'company': plain(item.get('companyName')),
                'location': ' '.join(x for x in (plain(item.get('workCity')), plain(item.get('cityDistrict'))) if x),
                'salary': plain(item.get('salary60')),
-               'url': _safe_url(item.get('positionUrl'), 'www.zhaopin.com'), 'source': 'zhaopin',
+               'url': _safe_url(item.get('positionUrl'), 'www.zhaopin.com') or _zhaopin_detail_url(item),
+               'source': 'zhaopin',
                'description': '\n'.join(description + (['', duties, '以上为搜索页摘要，来源已截断；完整岗位职责尚未读取。']
                                                         if duties else ['、'.join(tags), '仅搜索列表字段；完整岗位职责尚未读取。'])),
                'evidence_ids': [], 'tags': tags[:30], 'published_at': _published(item.get('publishTime'))}
