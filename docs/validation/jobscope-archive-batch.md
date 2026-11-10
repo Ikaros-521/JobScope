@@ -45,6 +45,16 @@ npm run build                                          # tsc -b + vite build 通
 
 注意：boss（listen 模式单页 30）与 51job（fetch 模式单页 50）的既有单页封顶不变——扩这两家需要新写各自的翻页逻辑，本次未做；设置超过其上限的数量时仍按原行为只采到单页封顶值。
 
+## 2026-11-10 补充：BOSS 滚动翻页与前程无忧接口翻页
+
+用户要求 boss 与 51job 也具备大量采集能力。实现沿智联的扩展器模式，`collect()` 按 mode 分发到三个 `_extend_*`：
+
+- **boss（listen 模式）**：`pages=34`（30×34≈1000）。首包收到后循环向下滚动（`window.scrollTo` 到文档底部），`tab.listen.wait` 收下一页 `joblist.json`，按 `encryptJobId` 去重合并进 `zpData.jobList`；滚动后 10 秒无响应、响应无岗位或无新岗位即停，保留已读内容不算失败。
+- **51job（fetch 模式）**：`pages=20`（50×20=1000）。同一检索接口 `pageNum` 递增续读（`pageSize` 固定 50，不把 limit 塞进单次请求），按 `jobId` 去重合并进 `resultbody.job.items`；每页失败补试一次。
+- **加固**：`_page` fetch 分支收紧验收——200 且可 parse 不再直接算成功（风控校验页也可能是 JSON），必须 `status='1'` 且带岗位列表，否则 2 秒后重试（最多 3 次）。首次实测 51job 因此返回过"0 条+翻页即停"，加固后同一参数成功。
+
+验证：单测 67 passed（新增两源的分页合并/超时停/去重用例 + 封顶断言）；真实采集 boss Python/杭州 limit=60 → completed 60 条、翻 4 页；51job Python/杭州 limit=100 → completed 100 条、翻 2 页。档案里留有这批测试数据（boss 60、51job 100），不需要可批量筛选删除。
+
 ## 边界与未测
 
 - 大批量（几百条）的真实删除只在单测里跑过（HTTP 层 1000 条上限校验），真实档案上的多量大删由用户自行操作，路径与自测相同。

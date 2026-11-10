@@ -155,14 +155,123 @@ def test_zhaopin_page_cap_covers_one_thousand():
     assert spec['size'] * spec['pages'] == 1000
 
 
-def test_state_pagination_merges_pages_until_limit():
-    from jobscope.browser import _extend_state_pages
-    tab = FakeStateTab([api_page(2), api_page(3, end=True)])
-    payload, pages_read, note = _extend_state_pages(tab, zhaopin_spec(), state_page(1), 'Python', '530', 60)
+def test_boss_and_51job_page_caps_cover_one_thousand():
+    from jobscope import browser
+    boss = browser.PAGES['boss']
+    assert boss['size'] * boss['pages'] >= 1000
+    job51 = browser.PAGES['51job']
+    assert job51['size'] * job51['pages'] >= 1000
+
+
+class FakeListenTab:
+    """scrollTo 后依次吐出预置响应包（packets[0] 即第 2 页），记录滚动次数。"""
+
+    def __init__(self, packets):
+        self.packets = list(packets)
+        self.scrolls = 0
+        self.listen = self
+
+    def run_js(self, script, *args):
+        self.scrolls += 1
+        return None
+
+    def wait(self, timeout=0, raise_err=False):
+        if not self.packets:
+            return None
+        body = self.packets.pop(0)
+        return type('Packet', (), {'response': type('Resp', (), {'body': body})()})()
+
+
+def boss_page(seed, count=30):
+    items = [{'encryptJobId': f'B{seed}J{i:03d}', 'jobName': f'岗位{seed}-{i}'} for i in range(count)]
+    return json.dumps({'code': 0, 'zpData': {'jobList': items}})
+
+
+def test_listen_pagination_merges_pages_until_limit():
+    from jobscope.browser import _extend_listen_pages
+    from jobscope import browser
+    spec = browser.PAGES['boss']
+    tab = FakeListenTab([boss_page(2), boss_page(3)])
+    payload, pages_read, note = _extend_listen_pages(tab, spec, json.loads(boss_page(1)), 'Python', '100010000', 90)
     assert pages_read == 3 and note == ''
-    assert len(payload['positionList']) == 60
-    assert payload['hasMore'] is False
-    assert [call[2] for call in tab.calls] == [2, 3]
+    assert len(payload['zpData']['jobList']) == 90
+    assert tab.scrolls == 2
+
+
+def test_listen_pagination_stops_when_scroll_yields_no_response():
+    from jobscope.browser import _extend_listen_pages
+    from jobscope import browser
+    spec = browser.PAGES['boss']
+    tab = FakeListenTab([])
+    payload, pages_read, note = _extend_listen_pages(tab, spec, json.loads(boss_page(1)), 'Python', '100010000', 90)
+    assert pages_read == 1 and len(payload['zpData']['jobList']) == 30
+    assert '未收到下一页响应' in note
+
+
+def test_listen_pagination_dedupes_repeated_jobs():
+    from jobscope.browser import _extend_listen_pages
+    from jobscope import browser
+    spec = browser.PAGES['boss']
+    first = json.loads(boss_page(1))
+    tab = FakeListenTab([json.dumps(first)])  # 第二页返回与首页完全相同的岗位
+    payload, pages_read, note = _extend_listen_pages(tab, spec, first, 'Python', '100010000', 90)
+    assert pages_read == 1 and len(payload['zpData']['jobList']) == 30
+    assert '没有新岗位' in note
+
+
+class FakeFetchTab:
+    """按 URL 里的 pageNum 返回预置响应体；未登记的页返回 500。"""
+
+    def __init__(self, pages):
+        self.pages = pages
+        self.urls = []
+
+    def run_js(self, script, *args):
+        url = args[0]
+        self.urls.append(url)
+        page = int(url.split('pageNum=')[1].split('&')[0])
+        body = self.pages.get(page)
+        if body is None:
+            return {'ok': False, 'status': 500, 'body': ''}
+        return {'ok': True, 'status': 200, 'body': json.dumps(body)}
+
+
+def fetch_page(seed, count=50, status='1'):
+    items = [{'jobId': f'J{seed}{i:03d}', 'jobName': f'岗位{seed}-{i}'} for i in range(count)]
+    return {'status': status, 'message': 'ok', 'resultbody': {'job': {'items': items}}}
+
+
+def test_fetch_pagination_merges_pages_until_limit():
+    from jobscope.browser import _extend_fetch_pages
+    from jobscope import browser
+    spec = browser.PAGES['51job']
+    tab = FakeFetchTab({2: fetch_page(2), 3: fetch_page(3)})
+    payload, pages_read, note = _extend_fetch_pages(tab, spec, fetch_page(1), 'Python', '000000', 120)
+    assert pages_read == 3 and note == ''
+    # 整页合并会越过请求数量（50×3=150），最终入库由 mapper 按 limit 截断。
+    assert len(payload['resultbody']['job']['items']) == 150
+    assert 'pageNum=2' in tab.urls[0] and 'pageNum=3' in tab.urls[1]
+
+
+def test_fetch_pagination_keeps_first_page_on_error():
+    from jobscope.browser import _extend_fetch_pages
+    from jobscope import browser
+    spec = browser.PAGES['51job']
+    tab = FakeFetchTab({})
+    payload, pages_read, note = _extend_fetch_pages(tab, spec, fetch_page(1), 'Python', '000000', 120)
+    assert pages_read == 1 and len(payload['resultbody']['job']['items']) == 50
+    assert '后续页未返回岗位' in note
+
+
+def test_fetch_pagination_dedupes_repeated_jobs():
+    from jobscope.browser import _extend_fetch_pages
+    from jobscope import browser
+    spec = browser.PAGES['51job']
+    first = fetch_page(1)
+    tab = FakeFetchTab({2: first})  # 第二页返回与首页完全相同的岗位
+    payload, pages_read, note = _extend_fetch_pages(tab, spec, first, 'Python', '000000', 120)
+    assert pages_read == 1 and len(payload['resultbody']['job']['items']) == 50
+    assert '没有新岗位' in note
 
 
 def test_state_pagination_stops_at_requested_size():

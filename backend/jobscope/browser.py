@@ -49,7 +49,7 @@ def _spec(source, **transport):
 
 PAGES = {
     'boss': _spec('boss', mode='listen', home='https://www.zhipin.com/web/geek/job',
-                  listen='wapi/zpgeek/search/joblist.json', size=30,
+                  listen='wapi/zpgeek/search/joblist.json', size=30, pages=34,
                   mapper=map_boss, default='100010000',
                   search=lambda query, code, size: 'https://www.zhipin.com/web/geek/job?' + urlencode({'query': query, 'city': code}),
                   blocked='未收到岗位响应。请查看项目浏览器是否需要登录或人工验证；不会自动反复请求。'),
@@ -57,7 +57,7 @@ PAGES = {
                      mapper=map_zhaopin, default='',
                      search=lambda query, code, size: 'https://www.zhaopin.com/jobs/?' + urlencode({'kw': query, 'jl': code}),
                      blocked='搜索页未带出岗位数据；可能需要登录、人工验证，或页面结构已变化。'),
-    '51job': _spec('51job', mode='fetch', home='https://we.51job.com/pc/search', size=50,
+    '51job': _spec('51job', mode='fetch', home='https://we.51job.com/pc/search', size=50, pages=20,
                    mapper=map_job51, default='000000',
                    search=lambda query, code, size: 'https://we.51job.com/pc/search?' + urlencode({'keyword': query, 'searchType': '2', 'sortType': '0', 'jobArea': code}),
                    api=lambda query, code, size: 'https://we.51job.com/api/job/search-pc?' + urlencode({'keyword': query, 'searchType': '2', 'sortType': '0', 'jobArea': code, 'pageNum': '1', 'pageSize': str(size)}),
@@ -180,6 +180,10 @@ def _listen(tab, spec, query, code, size):
     return loads_payload(packet.response.body)
 
 
+def _job51_items(payload):
+    return (((payload or {}).get('resultbody') or {}).get('job') or {}).get('items')
+
+
 def _page(tab, spec, query, code, size):
     tab.get(spec['search'](query, code, size), timeout=30)
     if spec['mode'] == 'state':
@@ -190,9 +194,11 @@ def _page(tab, spec, query, code, size):
             time.sleep(1)
         return None
     for _ in range(3):
-        answer = tab.run_js(FETCH_JS, spec['api'](query, code, size)) or {}
+        # pageSize 固定用登记值；大数量靠 pageNum 翻页，不把 limit 塞进单次请求。
+        answer = tab.run_js(FETCH_JS, spec['api'](query, code, spec['size'])) or {}
         payload = loads_payload(answer.get('body'))
-        if payload is not None and (answer.get('ok') or answer.get('status') == 200):
+        # 200 且能 parse 不等于有效数据：风控校验页也可能是 JSON。必须 status=1 且带岗位列表。
+        if str((payload or {}).get('status')) == '1' and isinstance(_job51_items(payload), list):
             return payload
         time.sleep(2)
     return None
@@ -232,6 +238,116 @@ def _extend_state_pages(tab, spec, payload, query, code, size, progress=None):
     return payload, pages_read, note
 
 
+def _extend_listen_pages(tab, spec, payload, query, code, size, progress=None):
+    """listen 模式首屏一包；BOSS 结果页向下滚动会触发下一页 joblist.json，边滚边收包合并。
+
+    返回 (payload, 已读页数, 提示)。滚动后超时、响应异常或没有新岗位都保留已读内容，不算采集失败。
+    """
+    pages = int(spec.get('pages', 1))
+    items = ((payload or {}).get('zpData') or {}).get('jobList')
+    if pages <= 1 or not isinstance(items, list):
+        return payload, 1, ''
+    seen, merged = set(), list(items)
+    for item in items:
+        if isinstance(item, dict):
+            seen.add(str(item.get('encryptJobId') or ''))
+    pages_read = 1
+    note = ''
+    for page in range(2, pages + 1):
+        if len(merged) >= size:
+            break
+        # 滚到底部触发下一页；响应间隔留出时间，避免高频连击触发来源风控。
+        tab.run_js('window.scrollTo(0, document.documentElement.scrollHeight)')
+        packet = tab.listen.wait(timeout=10, raise_err=False)
+        if not packet:
+            note = '；滚动后未收到下一页响应，已停止翻页'
+            break
+        more = loads_payload(packet.response.body)
+        new_items = ((more or {}).get('zpData') or {}).get('jobList') if isinstance(more, dict) else None
+        if not isinstance(new_items, list) or not new_items:
+            note = '；下一页未返回岗位，已停止翻页'
+            break
+        fresh = 0
+        for item in new_items:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get('encryptJobId') or '')
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+            fresh += 1
+        if not fresh:
+            note = '；下一页没有新岗位，已停止翻页'
+            break
+        pages_read = page
+        payload = {**payload, 'zpData': {**payload.get('zpData', {}), 'jobList': merged}}
+        if progress:
+            try:
+                progress(len(merged), pages_read)
+            except Exception:
+                pass
+        time.sleep(0.5)
+    return payload, pages_read, note
+
+
+def _extend_fetch_pages(tab, spec, payload, query, code, size, progress=None):
+    """fetch 模式首屏一包；前程无忧同一检索接口按 pageNum 续读并合并。
+
+    返回 (payload, 已读页数, 提示)。接口失败、状态异常或没有新岗位都保留已读内容，不算采集失败。
+    """
+    pages = int(spec.get('pages', 1))
+    items = _job51_items(payload)
+    if pages <= 1 or not items:
+        return payload, 1, ''
+    seen, merged = set(), list(items)
+    for item in items:
+        if isinstance(item, dict):
+            seen.add(str(item.get('jobId') or ''))
+    pages_read = 1
+    note = ''
+    base_url = spec['api'](query, code, spec['size'])
+    for page in range(2, pages + 1):
+        if len(merged) >= size:
+            break
+        # 页与页之间留出间隔，避免高频连击触发来源风控；风控校验页会挤掉个别响应，失败再补一次。
+        time.sleep(0.5)
+        new_items = None
+        for attempt in range(2):
+            if attempt:
+                time.sleep(2)
+            answer = tab.run_js(FETCH_JS, base_url.replace('pageNum=1', f'pageNum={page}')) or {}
+            more = loads_payload(answer.get('body'))
+            candidate = _job51_items(more) if isinstance(more, dict) else None
+            if str((more or {}).get('status')) == '1' and isinstance(candidate, list) and candidate:
+                new_items = candidate
+                break
+        if not new_items:
+            note = '；后续页未返回岗位，已停止翻页'
+            break
+        fresh = 0
+        for item in new_items:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get('jobId') or '')
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(item)
+            fresh += 1
+        if not fresh:
+            note = '；下一页没有新岗位，已停止翻页'
+            break
+        pages_read = page
+        payload = {**payload, 'resultbody': {**payload.get('resultbody', {}), 'job': {**(payload.get('resultbody') or {}).get('job', {}), 'items': merged}}}
+        if progress:
+            try:
+                progress(len(merged), pages_read)
+            except Exception:
+                pass
+    return payload, pages_read, note
+
+
 def collect(source='boss', query='', location='', limit=20, data_dir=None, progress=None):
     """Collect from the platform's own page; nothing here is replayed outside the user session."""
     spec = PAGES.get(source)
@@ -263,7 +379,8 @@ def collect(source='boss', query='', location='', limit=20, data_dir=None, progr
             payload = _listen(tab, spec, query, _city_code(spec, city), size) if spec['mode'] == 'listen' else _page(tab, spec, query, _city_code(spec, city), size)
             if not isinstance(payload, dict):
                 return result('needs_verification', spec['blocked'])
-            payload, pages_read, page_note = _extend_state_pages(tab, spec, payload, query, _city_code(spec, city), size, progress)
+            extend = {'state': _extend_state_pages, 'listen': _extend_listen_pages, 'fetch': _extend_fetch_pages}[spec['mode']]
+            payload, pages_read, page_note = extend(tab, spec, payload, query, _city_code(spec, city), size, progress)
             output = spec['mapper'](payload, size, city)
             extras = []
             if pages_read > 1:
