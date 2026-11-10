@@ -292,6 +292,13 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .reliability-action-status { color: var(--green); font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .reliability-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
 .reliability-grid article { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); padding: 10px 12px; min-width: 0; }
+/* 维度卡片是可展开的 details：摘要行等价于旧 article 的 header，展开后才看每条依据与缺口。 */
+.reliability-grid details.reliability-dimension { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); padding: 10px 12px; min-width: 0; }
+.reliability-dimension summary { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); cursor: pointer; list-style: none; }
+.reliability-dimension summary::-webkit-details-marker { display: none; }
+.reliability-dimension summary::after { content: '展开'; font-size: 11px; color: var(--muted); }
+.reliability-dimension[open] summary::after { content: '收起'; }
+.reliability-dimension summary b { font-size: 15px; line-height: 1.4; }
 .reliability-grid header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); }
 .reliability-grid header b { font-size: 15px; line-height: 1.4; }
 .reliability-grid .tiny-label { display: block; margin-top: 6px; }
@@ -303,9 +310,21 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .reliability-finding-score { font-size: 12px; }
 .reliability-evidence-link { font-size: 12px; color: var(--green); text-decoration: underline; min-height: 24px; padding: 0; justify-content: flex-start; overflow-wrap: anywhere; }
 .reliability-gaps { display: grid; gap: 2px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.8; overflow-wrap: anywhere; }
+/* 每条缺口自带行动入口：按钮保持文字链观感，不给「缺数据」任何警示色。 */
+.reliability-gap { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 8px; }
+.reliability-gap .text-button { font-size: 12px; min-height: 24px; padding: 0; }
+.reliability-gap-title { margin-bottom: 4px; }
 .reliability-actions { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 14px; }
 .reliability-legal { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.8; }
 .reliability-legal ul { margin: 6px 0; padding-left: 18px; overflow-wrap: anywhere; }
+/* 单公司历史趋势：只对比这家公司自己的快照；分数低同样不标红。 */
+.reliability-trend { margin-top: 10px; font-size: 12px; }
+.reliability-trend summary { cursor: pointer; color: #404040; }
+.reliability-trend-items { margin: 8px 0; padding-left: 18px; display: grid; gap: 4px; }
+.reliability-trend-items li { overflow-wrap: anywhere; }
+.reliability-trend-items b { font-weight: 600; margin: 0 6px; }
+.reliability-trend-diff { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.reliability-trend-diff ul { margin: 4px 0 0; padding-left: 18px; }
 /* 付费来源设置：默认关闭，密钥只写不读，观感与 ModelSettings 的密钥字段一致。 */
 .signal-source-rows { display: grid; gap: 12px; }
 .signal-source-rows article { border: 1px solid var(--line); border-radius: 8px; background: #fafafa; padding: 12px 16px; min-width: 0; }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { api, post, readable, plain, date, safeUrl, computeReliability, collectCompanySignals, extractCompanySignals, getReliability, listSignalSources, saveSignalSource } from './api'
+import { api, post, readable, plain, date, safeUrl, computeReliability, collectCompanySignals, extractCompanySignals, getReliability, getReliabilityHistory, listSignalSources, saveSignalSource } from './api'
 import type { SignalSource } from './api'
 import { Pagination, emptyPage } from './Pagination'
 import { EvidenceWorkspace } from './EvidenceWorkspace'
@@ -15,7 +15,7 @@ import { CompanyReference } from './CompanyReference'
 import { ResumeImport } from './ResumeImport'
 import { navigateTabs } from './tabNavigation'
 import { ChatWorkspace } from './chat/ChatWorkspace'
-import type { Analysis, BrowserStatus, Evidence, Job, PageInfo, ReliabilityReport, Source, Task } from './api'
+import type { Analysis, BrowserStatus, Evidence, Job, PageInfo, ReliabilityHistory, ReliabilityReport, Source, Task } from './api'
 
 const transportNames: Record<string, string> = { http_api: '接口', browser_page: '需浏览器', manual: '手动' }
 const statusNames: Record<string, string> = { completed: '已完成', success: '已完成', running: '采集中', pending: '等待中', failed: '失败', needs_login: '需要登录', needing_login: '需要登录', login_required: '需要登录', needs_verification: '需要验证', verification_required: '需要验证', requires_verification: '需要验证', unsupported: '暂不支持', available: '可用', ready: '可用', not_configured: '未配置', blocked: '访问受限', backoff: '退避等待', opt_in: '需你自行开启', skipped: '已跳过', degraded: '已降级留档' }
@@ -76,6 +76,7 @@ export default function App() {
   const [tab, setTab] = useState<'overview' | 'analysis' | 'evidence'>('overview')
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [reliability, setReliability] = useState<ReliabilityReport | null>(null)
+  const [reliabilityHistory, setReliabilityHistory] = useState<ReliabilityHistory | null>(null)
   const [reliabilityAction, setReliabilityAction] = useState<{ label: string; status: string; message: string } | null>(null)
   const [evidenceFocus, setEvidenceFocus] = useState('')
   const [resumeText, setResumeText] = useState('')
@@ -150,23 +151,30 @@ export default function App() {
         setDetail(data)
         // 先清空上一家的报告，再读这一家的：GET 走后端的 peek，查不到也只是不显示，不会写出 companies 行。
         setReliability(null)
+        setReliabilityHistory(null)
         setReliabilityAction(null)
         const company = data.job.company
         getReliability(company).then(result => {
           if (token === detailRequest.current && data.job.id === activeJobId.current) setReliability(result.report)
         }).catch(() => { /* 没有生成过参考时这里什么都不显示 */ })
+        getReliabilityHistory(company).then(result => {
+          if (token === detailRequest.current && data.job.id === activeJobId.current) setReliabilityHistory(result.history)
+        }).catch(() => { /* 没有历史快照时趋势区不显示 */ })
       }
     } catch (err) { if (token === detailRequest.current) setError((err as Error).message) }
     finally { if (token === detailRequest.current) setDetailLoading(false) }
   }, [])
-  function selectJob(id: string) { jobGeneration.current++; activeJobId.current = id; setSelectedId(id); setDetail(null); setAnalysis(null); setReliability(null); setReliabilityAction(null); setEvidenceFocus(''); setTab('overview'); void loadDetail(id) }
+  function selectJob(id: string) { jobGeneration.current++; activeJobId.current = id; setSelectedId(id); setDetail(null); setAnalysis(null); setReliability(null); setReliabilityHistory(null); setReliabilityAction(null); setEvidenceFocus(''); setTab('overview'); void loadDetail(id) }
   function openReferenceEvidence(evidenceId: string) { setEvidenceFocus(evidenceId); setTab('evidence') }
   async function recomputeReference() {
     if (!job) return
     const company = job.company, id = job.id, generation = jobGeneration.current
     await perform('reliability', async () => {
       const result = await computeReliability(company)
-      if (generation === jobGeneration.current && id === activeJobId.current) { setReliability(result); setReliabilityAction(null) }
+      if (generation === jobGeneration.current && id === activeJobId.current) {
+        setReliability(result); setReliabilityAction(null)
+        setReliabilityHistory((await getReliabilityHistory(company)).history)
+      }
     })
   }
   async function runReferenceAction(kind: 'coverage' | 'extract') {
@@ -176,10 +184,11 @@ export default function App() {
     await perform('reliability', async () => {
       // 采集与抽取的 status、message 一律照后端原文显示，不改写、不美化。
       const result = kind === 'coverage' ? await collectCompanySignals(company, 'jobscope_jobs') : await extractCompanySignals(company)
-      if (generation !== jobGeneration.current || id !== activeJobId.current) return
+      if (generation !== jobGeneration.current || id === activeJobId.current) return
       setReliabilityAction({ label, status: result.status, message: result.message })
       if (kind === 'extract' && result.status === 'skipped') return
       setReliability(await computeReliability(company))
+      setReliabilityHistory((await getReliabilityHistory(company)).history)
     })
   }
   async function perform(key: string, action: () => Promise<void>) {
@@ -308,7 +317,7 @@ export default function App() {
               <div className="detail-heading"><div className="detail-kicker"><span>{sourceNames[job.source] || job.source}</span><External url={job.url}>查看原始岗位</External></div><h2>{job.title}</h2><div className="detail-company">{job.company}<span>·</span><Icon name="pin" size={14} />{job.location || '地点待确认'}</div><div className="detail-heading-bottom"><strong>{job.salary || '薪资未披露'}</strong><Button className="button secondary small" busy={busy === 'analyze'} disabled={Boolean(busy) || needsFullJd(job)} onClick={() => void analyze()}><Icon name="check" size={16} />评估适配</Button></div></div>
               <div className="jd-state"><div><strong>{job.description_status === 'complete' ? '完整JD已保存' : needsFullJd(job) ? '仅列表摘要 · 待补全' : '岗位材料已保存'}</strong><p>{job.detail_collected_at ? `正文读取于 ${date(job.detail_collected_at)}` : needsFullJd(job) ? (job.source === 'boss' ? '需要完整职责与任职要求，才能评估是否适合投递' : '该平台列表未给出完整职责，可在岗位档案补充后再评估') : '请核对岗位材料完整性及原始出处'}</p></div>{job.source === 'boss' && <Button className="button secondary small" busy={busy === 'job-detail'} disabled={Boolean(busy)} onClick={() => void perform('job-detail', async () => { const id = job.id, generation = jobGeneration.current; const result = await post<{ task: Task; job: Job }>(`/jobs/${encodeURIComponent(id)}/detail`); setNotice(result.task.message); await Promise.all([generation === jobGeneration.current ? loadDetail(id) : Promise.resolve(), loadJobs(), refreshMetadata()]); if (generation === jobGeneration.current) setAnalysis(null) })}>{job.description_status === 'complete' ? '更新完整职责' : '读取完整职责'}</Button>}</div><div className="detail-tabs" role="tablist" aria-label="岗位档案内容" onKeyDown={navigateTabs}>{(['overview', 'analysis', 'evidence'] as const).map(item => <button key={item} id={`job-${item}-tab`} role="tab" aria-controls="job-detail-panel" tabIndex={tab === item ? 0 : -1} aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item === 'overview' ? '岗位与公司' : item === 'analysis' ? '适配分析' : '证据资料'}{item === 'evidence' && <span>{evidenceTotal}</span>}</button>)}</div>
               <div id="job-detail-panel" className="detail-content" role="tabpanel" aria-labelledby={`job-${tab}-tab`}>
-                {tab === 'overview' && <><div className="section-label"><span className="label-line" />岗位描述</div><div className="description-text">{plain(job.description) || '尚无岗位描述，请补充原始岗位资料。'}</div><div className="company-section"><div className="section-heading"><div><span className="section-label">公司情报</span><h3>了解 {job.company}</h3></div><Button className="button secondary small" busy={busy === 'company'} disabled={Boolean(busy)} onClick={() => void collectCompany()}>检索公告<Icon name="arrow" size={14} /></Button></div><p className="muted body-small">从公开公告开始核实经营信息。公告标题与元信息不等于财报正文或业绩结论。</p>{detail.company_evidence?.length ? <div className="company-evidence-list">{detail.company_evidence.slice(0, 4).map(e => <div key={e.id}><span className="tiny-label">{date(e.published_at)}</span><External url={e.url}>{e.title}</External></div>)}</div> : <div className="inline-empty">尚未收集到该公司的资料。你可以检索公开公告，或补充已有材料。</div>}<button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充公司资料</button><CompanyReference report={reliability} busy={busy === 'reliability'} action={reliabilityAction} onCompute={() => void recomputeReference()} onCoverage={() => void runReferenceAction('coverage')} onExtract={() => void runReferenceAction('extract')} onOpenEvidence={openReferenceEvidence} /></div></>}
+                {tab === 'overview' && <><div className="section-label"><span className="label-line" />岗位描述</div><div className="description-text">{plain(job.description) || '尚无岗位描述，请补充原始岗位资料。'}</div><div className="company-section"><div className="section-heading"><div><span className="section-label">公司情报</span><h3>了解 {job.company}</h3></div><Button className="button secondary small" busy={busy === 'company'} disabled={Boolean(busy)} onClick={() => void collectCompany()}>检索公告<Icon name="arrow" size={14} /></Button></div><p className="muted body-small">从公开公告开始核实经营信息。公告标题与元信息不等于财报正文或业绩结论。</p>{detail.company_evidence?.length ? <div className="company-evidence-list">{detail.company_evidence.slice(0, 4).map(e => <div key={e.id}><span className="tiny-label">{date(e.published_at)}</span><External url={e.url}>{e.title}</External></div>)}</div> : <div className="inline-empty">尚未收集到该公司的资料。你可以检索公开公告，或补充已有材料。</div>}<button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充公司资料</button><CompanyReference report={reliability} history={reliabilityHistory} busy={busy === 'reliability'} action={reliabilityAction} onCompute={() => void recomputeReference()} onCoverage={() => void runReferenceAction('coverage')} onExtract={() => void runReferenceAction('extract')} onOpenEvidence={openReferenceEvidence} onOpenEvidenceModal={() => openModal('evidence')} /></div></>}
                 {tab === 'analysis' && (!analysis ? <Empty title={busy === 'analyze' ? '正在对应岗位要求…' : '让经历与要求逐项对照'} icon="resume">{busy === 'analyze' ? '分析完成后，将展示匹配依据、未知项与面试核实问题。' : <>{resumeSaved ? '点击“评估适配”，查看有依据的匹配与缺口。' : <>先在<button className="inline-button" onClick={() => setView('resume')}>我的简历</button>保存个人经历，再生成适配分析。</>}分数仅供辅助比较，不代表录用概率。</>}</Empty> : <AnalysisView analysis={analysis} />)}
                 {tab === 'evidence' && <><div className="section-heading"><div><h3>证据与出处</h3></div><button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充资料</button></div>{evidenceTotal ? <JobEvidence key={job.id} jobId={job.id} focus={evidenceFocus} /> : <Empty title="尚无证据资料">采集岗位或补充公司材料后，原文与来源会保存在这里。</Empty>}</>}
               </div>

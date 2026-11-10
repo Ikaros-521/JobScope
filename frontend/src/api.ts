@@ -51,7 +51,9 @@ export type RunEvent = { event: string; data: Record<string, unknown> }
 export type ReliabilityFinding = {
   text: string; rule: string; kind: 'assessment' | 'material';
   // material 类的 score 恒为 null：那个数字量的是本项目存了几条材料，不是对公司的评价。
-  score: number | null; source_class: string; evidence_id: string
+  score: number | null; source_class: string; evidence_id: string;
+  // 信号本身的采集时刻；过期判定发生在重算时，过期依据会落进 missing 不进 findings。
+  collected_at?: string
 }
 export type ReliabilityDimension = { dimension: string; label: string; score: number | null; confidence: number; findings: ReliabilityFinding[]; evidence_ids: string[]; missing: string[] }
 export type ReliabilityReport = {
@@ -61,6 +63,18 @@ export type ReliabilityReport = {
   rubric_version: string; wording_version: string; disclaimer_version: string; computed_at: string;
   input_hash: string; evidence_ids: string[]; limitations: string[]
 }
+// 单公司历史趋势：只对比这家公司自己的相邻两次快照，没有任何跨公司对照。
+export type ReliabilitySnapshot = {
+  computed_at: string; input_hash: string; score: number | null; confidence: number;
+  dimensions: Record<string, number | null>; rules: Record<string, number | null>
+}
+export type ReliabilityDiff = {
+  before: string; after: string; score_before: number | null; score: number | null;
+  rules: { rule: string; before: number | null; after: number | null }[];
+  // material 的 score 恒为 null，它的「变化」只能体现为登记出现/消失，不带任何数字。
+  materials: { rule: string; appeared: boolean }[]
+}
+export type ReliabilityHistory = { company: string; company_id: string; items: ReliabilitySnapshot[]; diffs: ReliabilityDiff[] }
 // 采集类端点的 status 词表（collectors/local）；抽取端点另有 skipped、degraded，所以这里不收成闭集。
 export type SignalActionResult = { status: string; message: string }
 export type SignalCollectResult = SignalActionResult & { signals: unknown[] }
@@ -68,6 +82,7 @@ export type SignalExtractResult = SignalActionResult & { accepted: number; signa
 export type SignalSource = { name: string; tier: 'free' | 'paid'; transport: string; status: string; rules: string[]; description: string; mode: 'disabled' | 'enabled'; url?: string; updated_at?: string; key_set?: boolean }
 
 export function getReliability(company: string) { return api<{ report: ReliabilityReport | null }>(`/companies/${encodeURIComponent(company)}/reliability`) }
+export function getReliabilityHistory(company: string) { return api<{ history: ReliabilityHistory | null }>(`/companies/${encodeURIComponent(company)}/reliability/history`) }
 export function computeReliability(company: string) { return post<ReliabilityReport>(`/companies/${encodeURIComponent(company)}/reliability`, { credit_code: '' }) }
 export function collectCompanySignals(company: string, source: string) { return post<SignalCollectResult>(`/companies/${encodeURIComponent(company)}/signals/collect`, { source }) }
 export function extractCompanySignals(company: string, limit = 12) { return post<SignalExtractResult>(`/companies/${encodeURIComponent(company)}/signals/extract`, { limit }) }
