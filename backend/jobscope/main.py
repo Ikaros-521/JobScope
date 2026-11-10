@@ -351,6 +351,21 @@ def create_app(data_dir=None):
                 if Repository.normalise_name(item['company']) in known
                 and item['kind'] not in (DERIVED_KIND, PAID_KIND)]
 
+    def company_jd_materials(identity):
+        """完整 JD 的岗位证据（P1 起 team_size_statement 要从岗位描述里抽「团队 N 人」）。
+
+        只有 description_status == 'complete' 的岗位进材料：半截 JD 不能用来评估，这是 P0
+        在 /api/analyze 里就立过的规矩。证据行仍是 save_job 落的那条真实 job_posting 记录，
+        evidence_id 可回查原文；列表摘要与别家公司照样不进。
+        """
+        known = {identity['name'], *(identity.get('aliases') or [])}
+        complete = [item for item in repo.jobs()
+                    if Repository.normalise_name(item['company']) in known
+                    and item.get('description_status') == 'complete']
+        wanted = {evidence_id for job in complete for evidence_id in job.get('evidence_ids', [])}
+        return [item for item in repo.evidence(include_job_postings=True)
+                if item['kind'] == 'job_posting' and item['id'] in wanted and item['text'].strip()]
+
     def company_identity(name, credit_code=''):
         """实体归一走 repository 的强键口径；service.company() 只接名称，这里还要带上信用代码。"""
         try:
@@ -373,6 +388,16 @@ def create_app(data_dir=None):
         try:
             # peek 而不是 latest：GET 是读操作，查一个拼错的名字不该写出 companies 行。
             return {'report': ReliabilityService(repo).peek(company, credit_code)}
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get('/api/companies/{company}/reliability/history')
+    def company_reliability_history(company: str = PathParam(min_length=1, max_length=300), credit_code: str = Query('', max_length=40)):
+        """单公司的历史快照与相邻差分。路径只收一个公司：趋势永远只对比这家公司自己的历史，
+        没有任何跨公司对比、排名或榜单的入口（红线测试钉住这一点）。"""
+        from .reliability.service import ReliabilityService
+        try:
+            return {'history': ReliabilityService(repo).history(company, credit_code)}
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from exc
 
@@ -428,23 +453,39 @@ def create_app(data_dir=None):
         from .reliability.models import SignalInput
         from .reliability.rubric import RULES
         identity = company_identity(company, data.credit_code)
-        materials = [item for item in company_materials(identity) if item['text'].strip()][:data.limit]
+        # 非岗位材料 + 完整 JD 的岗位证据，按证据编号去重后一起进抽取器；只有完整职责可被评估。
+        materials = {item['id']: item for item in [*company_materials(identity), *company_jd_materials(identity)]
+                     if item['text'].strip()}
+        materials = list(materials.values())[:data.limit]
         outcome = extract.extract(identity['name'], materials, max_tokens=data.max_tokens) if materials \
             else dict(status='skipped', message='该公司还没有可抽取的非岗位材料。', signals=[], raw='')
         task = repo.create_task('reliability_extract', identity['name'])
         kinds = {item['id']: item['kind'] for item in materials}
+        # team_size_statement 的多条原始自述在这里聚合成一条信号：中位数与相容数由代码算，
+        # 模型只交原始数字；repository.signals() 每条规则只留最新一条，聚合必须发生在落库前。
+        from .reliability.extract import aggregate_team_size
+        size_signals = [item for item in outcome['signals'] if item.rule == 'team_size_statement']
+        other_signals = [item for item in outcome['signals'] if item.rule != 'team_size_statement']
+        merged, participants = aggregate_team_size(size_signals)
+        aggregation_note = ''
+        if merged is not None:
+            aggregation_note = (f'team_size_statement 由 {len(participants)} 条自述聚合（中位数与相容数由代码计算，'
+                                f'锚条编号 {merged.evidence_id}，参与编号：{"、".join(participants)}）。')
         saved = []
-        for item in outcome['signals']:
+        # 聚合成功 → 只落合并后的一条；不足两条时原始自述照常落库（闸门会在报告里解释为什么不出分）。
+        for item in ([*other_signals, merged] if merged is not None else outcome['signals']):
             spec = RULES[item.rule]
             saved.append(repo.save_signal(SignalInput(
                 company_id=identity['id'], dimension=item.dimension, rule=item.rule, value=item.value,
                 unit=spec.unit, source_class=extract.KIND_TO_SOURCE_CLASS.get(kinds.get(item.evidence_id, ''), 'user_material'),
                 evidence_id=item.evidence_id, observed_at='', collected_at=now())))
         # 结构化状态与 raw 原文一起进 tasks，前端才显示得出真实状态、事后也查得到模型说了什么。
-        task.update(kind='reliability_extract', status=outcome['status'], message=outcome['message'],
+        # 聚合说明也写进任务：未成为锚条的参与编号在这里留档，出处链才查得回去。
+        message = outcome['message'] + aggregation_note
+        task.update(kind='reliability_extract', status=outcome['status'], message=message,
                     count=len(saved), raw=str(outcome['raw'])[:4000])
         repo.update_task(task)
-        return dict(status=outcome['status'], message=outcome['message'], accepted=len(saved),
+        return dict(status=outcome['status'], message=message, accepted=len(saved),
                     signals=saved, evidence=len(materials), task=task)
 
     @app.get('/api/reliability/sources')

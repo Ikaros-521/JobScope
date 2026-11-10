@@ -270,8 +270,10 @@ def test_a_company_with_nothing_stored_computes_zeros_instead_of_nothing(tmp_pat
     identity = repo.resolve_company('甲公司')
     outcome = local.collect('jobscope_jobs', identity['name'], repo=repo, identity=identity)
     assert outcome['status'] == 'completed'
+    # 没有岗位就没有 R1/R2 的统计量（pay/jd 不产出信号）；材料计数类照常出全零。
     assert {item['rule']: item['value'] for item in outcome['signals']} == {
-        'salary_quote_coverage': {'known': 0, 'total': 0}, 'disclosure_available': {'count': 0}}
+        'salary_quote_coverage': {'known': 0, 'total': 0}, 'disclosure_available': {'count': 0},
+        'industry_media_count': {'count': 0}}
 
 
 def test_the_local_reader_counts_only_announcement_like_evidence(tmp_path):
@@ -284,11 +286,36 @@ def test_the_local_reader_counts_only_announcement_like_evidence(tmp_path):
     assert disclosure['dimension'] == 'operations' and disclosure['unit'] == '份'
 
 
+def test_the_industry_counter_only_takes_media_and_announcement_kinds(tmp_path):
+    # R6 是 industry 维度唯一的材料登记：公司自己的披露（disclosure）不算行业媒体面。
+    repo, identity = store(tmp_path, materials=['media_report', 'announcement', 'announcement', 'disclosure'])
+    outcome = local.collect('jobscope_jobs', identity['name'], repo=repo, identity=identity)
+    media = next(item for item in outcome['signals'] if item['rule'] == 'industry_media_count')
+    assert media['value'] == {'count': 3}
+    assert media['dimension'] == 'industry' and media['source_class'] == 'platform'
+
+
+def test_the_pay_rule_carries_both_sides_of_the_city_sample(tmp_path):
+    # 甲 4 条北京报价；乙的岗位在上海，不进北京样本——城市归一宁可漏并不可错并。
+    repo, identity = store(tmp_path, jobs=['20-35K'] * 4)
+    outcome = local.collect('jobscope_jobs', identity['name'], repo=repo, identity=identity)
+    pay = next(item for item in outcome['signals'] if item['rule'] == 'pay_vs_city_median')
+    assert pay['dimension'] == 'pay' and pay['unit'] == '元'
+    assert pay['value']['company_jobs'] == 4 and pay['value']['city_jobs'] == 4
+    assert pay['value']['company_median'] == 27500.0 and pay['value']['ratio'] == 1.0
+    # 样本闸门不在采集层判：计数如实落库，出不出分由 rubric 说清原因。
+    assert pay['value']['city_jobs'] < 20
+
+
 def test_the_local_reader_never_touches_the_browser_module(tmp_path):
     repo, identity = store(tmp_path, jobs=['20-35K'])
     outcome = local.collect('jobscope_jobs', identity['name'], repo=repo, identity=identity,
                             browser_module=ForbiddenBrowser(), data_dir=tmp_path)
-    assert outcome['status'] == 'completed' and len(outcome['signals']) == 2
+    # 覆盖度两条 + 同城报价对比 + 描述具体程度 + 行业媒体计数：全部纯本地，浏览器模块碰都不许碰。
+    assert outcome['status'] == 'completed' and len(outcome['signals']) == 5
+    assert {item['rule'] for item in outcome['signals']} == {
+        'salary_quote_coverage', 'disclosure_available', 'pay_vs_city_median', 'jd_specificity',
+        'industry_media_count'}
 
 
 def test_a_source_without_a_local_reader_is_still_reported_as_unsupported(tmp_path):

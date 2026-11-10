@@ -57,7 +57,17 @@ def add_all_kinds(tmp_path, company='甲公司'):
              ('judicial_case_ratio', {'ratio': 12.5}, 'E-' + 'c' * 24, 'official'),
              ('salary_quote_coverage', {'known': 9, 'total': 10}, 'E-' + 'd' * 24, 'platform'),
              ('disclosure_available', {'count': 4}, 'E-' + 'e' * 24, 'official'),
-             ('employee_review_sample', {'samples': 3}, 'E-' + 'f' * 24, 'employee')]
+             ('employee_review_sample', {'samples': 3}, 'E-' + 'f' * 24, 'employee'),
+             ('pay_vs_city_median', {'company_median': 20000, 'city_median': 18000, 'ratio': 1.11,
+                                     'company_jobs': 5, 'city_jobs': 30}, 'E-' + '1' * 24, 'platform'),
+             ('jd_specificity', {'jobs': 4, 'chars_mean': 350.0, 'items_mean': 6.0,
+                                 'skills_mean': 5.0, 'quantified_share': 0.25}, 'E-' + '2' * 24, 'platform'),
+             ('team_size_statement', {'median_size': 30.0, 'statements': 3, 'compatible': 3},
+              'E-' + '3' * 24, 'platform'),
+             ('disclosure_revenue_trend', {'current': 120000000, 'previous': 100000000},
+              'E-' + '4' * 24, 'official'),
+             ('disclosure_headcount_trend', {'current': 240, 'previous': 260}, 'E-' + '5' * 24, 'official'),
+             ('industry_media_count', {'count': 2}, 'E-' + '6' * 24, 'platform')]
     for rule, value, evidence_id, source_class in seeds:
         add_signal(tmp_path, company, rule, value, evidence_id, source_class)
     return [item[2] for item in seeds]
@@ -116,8 +126,9 @@ def test_app_exposes_no_sharing_ranking_or_public_route(tmp_path):
     assert offenders == []
 
 
-def test_reliability_surface_is_exactly_the_five_local_paths(tmp_path):
-    """本功能对外只有这五个路径；多一条都得先过法律红线这条关。"""
+def test_reliability_surface_is_exactly_the_six_local_paths(tmp_path):
+    """本功能对外只有这六个路径；多一条都得先过法律红线这条关。
+    history 也只收一个公司：单公司趋势是允许的，任何跨公司对比都没有入口。"""
     app = create_app(tmp_path / 'boundary_surface')
     surface = {}
     for route in app.routes:
@@ -125,12 +136,14 @@ def test_reliability_surface_is_exactly_the_five_local_paths(tmp_path):
         if 'reliability' in path or '/signals/' in path:
             surface.setdefault(path, set()).update(getattr(route, 'methods', set()))
     assert set(surface) == {'/api/companies/{company}/reliability',
+                            '/api/companies/{company}/reliability/history',
                             '/api/companies/{company}/signals/collect',
                             '/api/companies/{company}/signals/extract',
                             '/api/reliability/sources',
                             '/api/reliability/sources/{source_id}'}
     # 读只有 GET、写只有 POST/PUT：没有删除类动词，也没有对外匿名访问的入口。
     assert surface['/api/companies/{company}/reliability'] == {'GET', 'POST'}
+    assert surface['/api/companies/{company}/reliability/history'] == {'GET'}
     assert surface['/api/companies/{company}/signals/collect'] == {'POST'}
     assert surface['/api/companies/{company}/signals/extract'] == {'POST'}
     assert surface['/api/reliability/sources'] == {'GET'}
@@ -228,12 +241,13 @@ def test_every_finding_cites_evidence_and_material_never_shows_a_number(client, 
         # 序列化后必须是 null：字段被省略或写成 0 都会被前端读成一个数字。
         assert '"score":null' in json.dumps(report, ensure_ascii=False, separators=(',', ':'))
         for item in items:
-            assert set(item) == {'text', 'rule', 'kind', 'score', 'source_class', 'evidence_id'}
+            assert set(item) == {'text', 'rule', 'kind', 'score', 'source_class', 'evidence_id', 'collected_at'}
 
     # 逐条 material 规则单独建报告：覆盖率数字外露就是这条红线的事故现场。
     samples = {'salary_quote_coverage': {'known': 9, 'total': 10},
                'disclosure_available': {'count': 4},
-               'employee_review_sample': {'samples': 3}}
+               'employee_review_sample': {'samples': 3},
+               'industry_media_count': {'count': 2}}
     materials = {name for name, spec in rubric.RULES.items() if spec.kind == rubric.MATERIAL}
     assert materials <= set(samples), '新增了 material 规则却没给它一个取值样本'
     for rule in sorted(materials):
@@ -329,6 +343,29 @@ def test_scores_are_reproducible_with_the_model_layer_refusing_to_answer(tmp_pat
     assert expected.score is not None, '样本里该有能算分的依据，否则这条复现断言是空转'
     assert [line['score'] for line in report['dimensions']] == [item.score for item in expected.dimensions]
     assert [line['confidence'] for line in report['dimensions']] == [item.confidence for item in expected.dimensions]
+
+
+# --- 单公司趋势：history 的 diff 只归因这家公司自己的两次快照 ---
+
+def test_the_trend_only_compares_one_company_with_itself(tmp_path):
+    repo = Repository(tmp_path)
+    service = ReliabilityService(repo)
+    add_signal(tmp_path, '甲公司', 'company_age', {'years': 8}, 'E-' + 'a' * 24)
+    service.recompute('甲公司')
+    add_signal(tmp_path, '甲公司', 'pay_vs_city_median', {'company_median': 20000, 'city_median': 18000,
+                                                          'ratio': 1.11, 'company_jobs': 5, 'city_jobs': 30},
+               'E-' + 'b' * 24)
+    service.recompute('甲公司')
+    add_signal(tmp_path, '乙公司', 'company_age', {'years': 2}, 'E-' + 'c' * 24)
+    service.recompute('乙公司')
+    history = service.history('甲公司')
+    assert history['company'] == '甲公司' and len(history['items']) == 2
+    # 分数变化精确归因：company_age 两次都是 80 不列，pay_vs_city_median 从无到 80 才列。
+    changed = [item['rule'] for diff in history['diffs'] for item in diff['rules']]
+    assert changed == ['pay_vs_city_median']
+    # 乙公司的任何一次计算都不出现在甲的趋势里：没有跨公司对照，也没有可以排名的形状。
+    assert all('乙' not in json.dumps(item, ensure_ascii=False)
+               for item in history['items'] + history['diffs'])
 
 
 # --- 禁用词表对所有在册规则生效 ---

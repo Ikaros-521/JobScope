@@ -16,6 +16,14 @@ VALUES = {
     'salary_quote_coverage': {'known': 9, 'total': 10},
     'employee_review_sample': {'samples': 3, 'negative': 3},
     'disclosure_available': {'count': 2},
+    'pay_vs_city_median': {'company_median': 20000, 'city_median': 18000, 'ratio': 1.11,
+                           'company_jobs': 5, 'city_jobs': 30},
+    'jd_specificity': {'jobs': 4, 'chars_mean': 350.0, 'items_mean': 6.0, 'skills_mean': 5.0,
+                       'quantified_share': 0.25},
+    'team_size_statement': {'median_size': 30.0, 'statements': 3, 'compatible': 3},
+    'disclosure_revenue_trend': {'current': 120000000, 'previous': 100000000},
+    'disclosure_headcount_trend': {'current': 240, 'previous': 260},
+    'industry_media_count': {'count': 3},
 }
 
 
@@ -95,3 +103,45 @@ def test_sample_count_never_carries_a_size_judgement():
     for samples in (1, 3, 10 ** 6):
         text = render(next(iter(score([sig('employee_review_sample', {'samples': samples})]).findings)))
         assert '样本较小' not in text and str(samples) in text
+
+
+def test_pay_template_declares_its_caliber():
+    text = render(next(iter(score([sig('pay_vs_city_median', VALUES['pay_vs_city_median'])]).findings)))
+    # 规格要求的口径声明必须逐字在句子里：报价对比、非到手薪资、不含奖金股票、样本口径。
+    assert '报价的对比' in text and '不是实际到手薪资' in text
+    assert '不含奖金与股票' in text and '同城样本也不等于同职级同技能样本' in text
+    assert '20000' in text and '18000' in text and lint(text) == []
+
+
+def test_jd_specificity_template_measures_clarity_not_strength():
+    text = render(next(iter(score([sig('jd_specificity', VALUES['jd_specificity'])]).findings)))
+    # 这条量的是「把要做什么讲清楚没有」，模板必须把「不代表技术实力」写死。
+    assert '讲得有多具体' in text and '不代表公司技术实力' in text and lint(text) == []
+
+
+def test_team_size_template_states_company_caliber_and_refuses_a_verdict():
+    text = render(next(iter(score([sig('team_size_statement', VALUES['team_size_statement'])]).findings)))
+    # 规格写死的口径：公司口径自述、未见独立核实、只说明一致度，不评价规模好坏、不说明氛围。
+    assert '公司口径' in text and '未见独立核实' in text
+    assert '不评价规模好坏' in text and '不说明团队氛围' in text
+    assert '30' in text and '3' in text and lint(text) == []
+
+
+def test_headcount_trend_template_is_the_fixed_wording_and_never_mentions_layoffs():
+    text = render(next(iter(score([sig('disclosure_headcount_trend', VALUES['disclosure_headcount_trend'])]).findings)))
+    # 规格钉死的写法；「裁员」「裁撤」都在禁用词表里，lint 过不了就出不了报告。
+    assert '公告口径在职员工数由 260 变为 240' in text
+    assert '不据此判断招聘冻结' in text
+    assert '裁员' not in text and '裁撤' not in text and lint(text) == []
+
+
+def test_revenue_trend_template_states_both_periods_without_a_conclusion():
+    text = render(next(iter(score([sig('disclosure_revenue_trend', VALUES['disclosure_revenue_trend'])]).findings)))
+    assert '本期营业收入或营收数字为 120000000' in text and '上一期为 100000000' in text
+    assert '不推断经营好坏' in text and lint(text) == []
+
+
+def test_industry_media_count_is_a_material_statement_not_a_verdict():
+    text = render(next(iter(score([sig('industry_media_count', VALUES['industry_media_count'])]).findings)))
+    # industry 维度 P1 不出分：这句话的作用是「有材料但无可评价依据」，不是任何评价。
+    assert '3' in text and '没有可评价行业前景的依据' in text and lint(text) == []

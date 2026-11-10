@@ -1,6 +1,7 @@
 """Evidence text in, validated numeric signals out. Anything else is dropped and logged."""
 import json
 import re
+import statistics
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -15,6 +16,7 @@ SYSTEM = '''你在为本地求职参考工具 JobScope 把证据正文里的数�
 rule 只能取下面列出的规则名，dimension 必须与括号里登记的维度逐字一致：
 {rules}
 value 只放材料里明确写出的数字：不要放文字描述，不要放 true/false，不要放你的推断。
+同一规则标注「必须来自同一份材料」的几个数字必须取自同一份材料，禁止跨材料或跨年份拼接两个时期的数字。
 不要输出分数、等级、评价或建议；分数由本项目的固定规则计算，不归你管。出现 score、grade、rating、verdict 之类字段会让整批结果作废。
 材料里没有写明数字的信息一律省略；宁可少返回，不要补全，不要换算，不要因为规则名听起来合适就编造数值。
 evidence_id 必须逐字使用材料里给出的编号之一；对不上就删掉那一条，不要新编编号。
@@ -35,7 +37,14 @@ class ExtractInput(BaseModel):
 
 
 def rule_table():
-    return '\n'.join(f'- {name}（dimension={spec.dimension}，单位={spec.unit}）' for name, spec in sorted(RULES.items()))
+    """规则清单由 rubric.RULES 自动生成；value 字段名与取数约束写在各规则的 extract_hint 里。"""
+    lines = []
+    for name, spec in sorted(RULES.items()):
+        line = f'- {name}（dimension={spec.dimension}，单位={spec.unit}'
+        if spec.extract_hint:
+            line += f'；{spec.extract_hint}'
+        lines.append(line + '）')
+    return '\n'.join(lines)
 
 
 def prompt_text():
@@ -117,3 +126,77 @@ def extract(company, evidence, *, max_tokens=1200, timeout=45):
 KIND_TO_SOURCE_CLASS = {'disclosure': 'official', 'disclosure_metadata': 'official', 'announcement': 'official',
                         'company_statement': 'user_material', 'employee_statement': 'employee',
                         'media_report': 'media', 'user_material': 'user_material', 'job_posting': 'platform'}
+
+# 团队规模自述的聚合在代码里做（模型只交原始数字）。repository.signals() 每条规则只保留最新一条，
+# rubric 拿不到多条同规则信号，所以「中位数与相容数」必须在落库前合成一条 value。
+TEAM_SIZE_RULE = 'team_size_statement'
+# 两条点值自述的相容阈值：45/30=1.5 算同一规模的两种说法，30 与 3000 才算互相矛盾。
+# 区间自述不走这条阈值：5000-10000 人是大型公司完全正常的写法，区间宽度本身永不扣分。
+POINT_RATIO_TOLERANCE = 2.5
+# 精确求「最大相互兼容子集」用位掩码枚举，自述条数超过这个上限就退成贪心（真实数据远够不到）。
+EXACT_AGGREGATE_LIMIT = 12
+
+
+def _size_intervals(signals):
+    """每条自述变成一个区间：给了范围（5000-10000 人）用原文区间；只给一个数就按点值处理。"""
+    intervals = []
+    for item in signals:
+        size = item.value.get('size')
+        if not isinstance(size, (int, float)) or isinstance(size, bool) or size <= 0:
+            continue
+        top = item.value.get('size_max')
+        if not isinstance(top, (int, float)) or isinstance(top, bool) or top < size:
+            top = size
+        intervals.append((float(size), float(top), item.evidence_id))
+    return intervals
+
+
+def _compatible(a, b):
+    """点值看点值倍数；只要有一方是区间就按「在实际范围内」的原文口径判相交。"""
+    low_a, high_a = a[0], a[1]
+    low_b, high_b = b[0], b[1]
+    if low_a == high_a and low_b == high_b:
+        return max(low_a, low_b) / min(low_a, low_b) <= POINT_RATIO_TOLERANCE
+    return low_a <= high_b and low_b <= high_a
+
+
+def _largest_compatible_group(intervals, median_size):
+    """最大相互兼容自述子集的条数：两两相容的最大子集。"""
+    n = len(intervals)
+    if n <= EXACT_AGGREGATE_LIMIT:
+        best = 0
+        for mask in range(1 << n):
+            members = [index for index in range(n) if mask >> index & 1]
+            if len(members) <= best:
+                continue
+            if all(_compatible(intervals[a], intervals[b])
+                   for a in members for b in members if a < b):
+                best = len(members)
+        return best
+    # 超过上限时从最接近中位数的一条出发贪心扩展：确定性、可解释，不再追求精确最大团。
+    ordered = sorted(intervals, key=lambda item: abs((item[0] + item[1]) / 2 - median_size))
+    group = [ordered[0]]
+    for item in ordered[1:]:
+        if all(_compatible(item, kept) for kept in group):
+            group.append(item)
+    return len(group)
+
+
+def aggregate_team_size(signals):
+    """同批抽出的多条团队规模自述 → 一条 {median_size, statements, compatible}。
+
+    一致性按「区间相容」判定，与规模大小完全无关：一条自述给出 5000-10000 人、另一条给出
+    约 8000 人，8000 落在实际范围内，两条相容，谁都不扣分。返回 (合并 RawSignal 或 None,
+    参与的证据编号列表)；锚条取区间中点最接近中位数的那条，其余编号由调用方写进任务说明留档。
+    """
+    intervals = _size_intervals(signals)
+    if len(intervals) < 2:
+        # 不足两条不成一致性判断：单条原样保留（value 里没有 statements 字段，闸门会解释原因）。
+        return None, [item[2] for item in intervals]
+    median_size = round(statistics.median([(low + high) / 2 for low, high, _ in intervals]), 1)
+    compatible = _largest_compatible_group(intervals, median_size)
+    anchor = min(intervals, key=lambda item: abs((item[0] + item[1]) / 2 - median_size))
+    merged = RawSignal(rule=TEAM_SIZE_RULE, dimension=RULES[TEAM_SIZE_RULE].dimension,
+                       value={'median_size': median_size, 'statements': len(intervals), 'compatible': compatible},
+                       evidence_id=anchor[2])
+    return merged, [item[2] for item in intervals]

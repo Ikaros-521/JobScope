@@ -99,3 +99,50 @@ def test_the_prompt_forbids_scores_and_names_every_registered_rule():
     assert '分数' in prompt and '不要' in prompt
     for rule in extract.RULES:
         assert rule in prompt
+
+
+def test_the_prompt_binds_trend_fields_to_one_material():
+    prompt = extract.prompt_text()
+    # P1 的跨材料拼接防线：同一规则的两个时期数字必须来自同一份材料。
+    assert '必须来自同一份材料' in prompt
+    assert '跨材料或跨年份拼接' in prompt
+
+
+def test_the_prompt_carries_the_value_field_hints_of_the_extracted_rules():
+    prompt = extract.prompt_text()
+    # R3/R4/R5 的 value 字段名进规则清单：模型必须按字段名交数字，聚合由代码完成。
+    assert '{"size": 数字}' in prompt and '"size_max"' in prompt
+    assert '{"current": 本期数字, "previous": 上期数字}' in prompt
+    assert '不要自己算中位数' in prompt
+
+
+def size_signal(value, evidence):
+    return extract.RawSignal(rule='team_size_statement', dimension='people', value=dict(value), evidence_id=evidence)
+
+
+def test_team_size_aggregation_keeps_a_normal_range_consistent():
+    # 一条自述写「5000-10000 人」、另一条写「约 8000 人」：8000 落在实际范围内，两条相容，谁都不扣分。
+    merged, participants = extract.aggregate_team_size([
+        size_signal({'size': 5000, 'size_max': 10000}, 'E-range'),
+        size_signal({'size': 8000}, 'E-point')])
+    # 中位数取自述区间中点（7500）与点值（8000）的中位数；锚条在并列时取列表里靠前的一条。
+    assert merged.value == {'median_size': 7750.0, 'statements': 2, 'compatible': 2}
+    assert merged.evidence_id == 'E-range' and sorted(participants) == ['E-point', 'E-range']
+
+
+def test_team_size_aggregation_flags_real_contradictions_only():
+    # 30 与 45 是同一规模的两种说法；30 与 3000 才是互相矛盾。
+    agree, _ = extract.aggregate_team_size([size_signal({'size': 30}, 'E-1'), size_signal({'size': 45}, 'E-2')])
+    assert agree.value['compatible'] == 2
+    conflict, _ = extract.aggregate_team_size([size_signal({'size': 30}, 'E-1'), size_signal({'size': 3000}, 'E-2')])
+    assert conflict.value['compatible'] == 1 and conflict.value['statements'] == 2
+
+
+def test_team_size_aggregation_needs_two_valid_statements():
+    single, participants = extract.aggregate_team_size([size_signal({'size': 30}, 'E-1')])
+    assert single is None and participants == ['E-1']
+    # 非法数字（0、布尔、负数）不进聚合：四条里只剩一条有效自述，构不成一致性判断。
+    merged, participants = extract.aggregate_team_size([
+        size_signal({'size': 0}, 'E-1'), size_signal({'size': True}, 'E-2'),
+        size_signal({'size': -5}, 'E-3'), size_signal({'size': 40}, 'E-4')])
+    assert merged is None and participants == ['E-4']

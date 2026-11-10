@@ -40,8 +40,10 @@ def test_a_company_without_signals_gets_no_number_but_still_lists_gaps(tmp_path)
     assert [line.split('（')[0] for line in gaps['stability']] == sorted(
         rule for rule, spec in RULES.items() if spec.dimension == 'stability' and spec.kind == 'assessment')
     assert all('尚无来源' in line for line in gaps['stability'])
-    for name in ('pay', 'operations', 'people', 'professional', 'industry'):
-        assert any('可评价的规则' in line for line in gaps[name]), name
+    # P1 起除 industry 外都有评价规则：缺口是「尚无来源」；industry 仍只有材料登记，说明还没有可评价的规则。
+    for name in ('pay', 'operations', 'people', 'professional'):
+        assert any('尚无来源' in line for line in gaps[name]), name
+    assert any('可评价的规则' in line for line in gaps['industry'])
     assert report['disclaimer'] and report['nature'] == 'subjective_reference'
 
 
@@ -58,6 +60,7 @@ def test_material_findings_persist_without_a_number(tmp_path):
     assert dimension(report, 'operations')['findings'][0]['text']
     assert dimension(report, 'stability')['findings'][0]['kind'] == 'assessment'
     assert dimension(report, 'stability')['findings'][0]['score'] == 80.0
+    assert any('尚无来源' in line for line in dimension(report, 'operations')['missing'])
 
 
 def test_recompute_is_idempotent_for_identical_inputs(tmp_path):
@@ -131,7 +134,7 @@ def test_a_material_rule_describes_coverage_without_producing_a_score(tmp_path):
     assert pay['score'] is None and pay['confidence'] == 0
     assert pay['findings'][0]['text'] == '该公司已保存岗位中 9/10 条能解析出人民币月薪区间，其余报价口径不支持。'
     assert pay['findings'][0]['evidence_id'] == evidence
-    assert any('可评价的规则' in line for line in pay['missing'])
+    assert any('pay_vs_city_median' in line and '尚无来源' in line for line in pay['missing'])
     assert report['summary'] == '可纳入计算的公开依据不足，暂不给出综合参考分。补齐下方缺口后重新计算。'
 
 

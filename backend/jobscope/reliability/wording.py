@@ -1,6 +1,6 @@
 """All outward-facing sentences come from here. Numbers and sources, never verdicts."""
 
-WORDING_VERSION = 'wording-2'
+WORDING_VERSION = 'wording-3'
 
 # 这些词把「可核实的数字」升级成了对他人商誉的断言，任何模板产出命中即视为缺陷。
 BANNED = ('欠薪', '拖欠工资', '黑心', '血汗', '骗子', '诈骗', '皮包公司', '跑路', '老赖', '倒闭',
@@ -24,6 +24,17 @@ TEMPLATES = {
     # 条数多不代表可信，也不代表少；样本量大小的评价需要口径，模板里不许凭空断言。
     'employee_review_sample': '收集到 {samples} 条员工自述材料，属个人经历陈述。',
     'disclosure_available': '已保存 {count} 份公开公告元信息，正文是否已解析以出处标记为准。',
+    # R1 的口径声明必须留在句子里：报价对比不是到手薪资，同城样本也不等于同职级同技能样本。
+    'pay_vs_city_median': '本公司 {company_jobs} 条已存岗位的可解析人民币月薪报价中位数约 {company_median} 元，同城 {city_jobs} 条已存岗位的中位数约 {city_median} 元（比值 {ratio}）；这是招聘平台报价的对比，不是实际到手薪资，不含奖金与股票，同城样本也不等于同职级同技能样本。',
+    # R2 衡量的是「把要做什么讲清楚没有」，模板必须把这条边界写死，不许滑成「技术强不强」。
+    'jd_specificity': '该公司 {jobs} 条完整岗位描述平均 {chars_mean} 字，职责或要求条目平均 {items_mean} 条，可识别技术栈平均 {skills_mean} 项，含量化结果的条目占比 {quantified_share}；这衡量岗位描述把要做什么讲得有多具体，不代表公司技术实力。',
+    # R3 只说明规模与自述一致度：公司口径、未见独立核实、不评价规模好坏、不说明氛围，四个边界都写进句子。
+    'team_size_statement': '岗位与公司自述材料给出的团队规模中位数约 {median_size} 人（{statements} 条自述中 {compatible} 条相互兼容）；规模属公司口径的自述，未见独立核实，分数量的是这些自述之间是否一致，不评价规模好坏，也不说明团队氛围。',
+    # R4/R5 的数字带着公告自己的口径（万元/亿元等），模板不添单位后缀；R5 严禁出现「裁员」「裁撤」。
+    'disclosure_revenue_trend': '同一份公告里本期营业收入或营收数字为 {current}、上一期为 {previous}；同比由固定规则换算，营收变动有多种成因，本工具不推断经营好坏。',
+    'disclosure_headcount_trend': '公告口径在职员工数由 {previous} 变为 {current}；人数变动有多种成因，本工具不推断经营好坏，也不据此判断招聘冻结。',
+    # R6 只是材料计数：industry 维度没有可评价依据，这句话的作用是把「什么都没有」变成「有材料但评不了」。
+    'industry_media_count': '已保存 {count} 条该公司相关的行业与媒体材料（媒体报道、公告）；本工具没有可评价行业前景的依据，这些材料只作背景阅读。',
 }
 
 

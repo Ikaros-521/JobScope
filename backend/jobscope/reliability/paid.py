@@ -29,7 +29,9 @@ from .rubric import RULES
 from .sources import SIGNAL_SOURCES
 
 # 槽位词表：这份表之外的槽位名一律算映射写错（`test_reliability_sources` 会红，不会静默不取数）。
-SLOTS = frozenset({'founded_date', 'insured_latest', 'insured_previous', 'ratio', 'cases', 'insured'})
+SLOTS = frozenset({'founded_date', 'insured_latest', 'insured_previous', 'ratio', 'cases', 'insured',
+                   'company_median', 'city_median', 'company_jobs', 'city_jobs',
+                   'current', 'previous'})
 DATE_SLOTS = frozenset({'founded_date'})
 # 付费取数落成证据时的 kind。既不能是公告类（否则 `local.disclosure_available` 会把接口记录
 # 数成一份公告，计数随点击无限膨胀），也不该进抽取器的材料（否则厂商字段会第二轮变成模型输入）。
@@ -185,6 +187,27 @@ def _from_slots(rule, resolved):
                     note=f'judicial_case_ratio 口径：分子=涉诉数量字段 {cases_name}（{cases} 件），'
                          f'分母=参保人数字段 {insured_name}（{insured} 人），'
                          f'按 件 ÷ 人 × {PER_WAN} 换算为 {ratio} {RULES[rule].unit}'), ''
+    if rule == 'pay_vs_city_median':
+        # 四个槽位缺一不可：只有中位数没有样本数，样本闸门就无从成立，映射不算配置成功。
+        median_name, company_median = resolved['company_median']
+        city_name, city_median = resolved['city_median']
+        jobs_name, company_jobs = resolved['company_jobs']
+        city_jobs_name, city_jobs = resolved['city_jobs']
+        ratio = round(company_median / city_median, 3) if city_median > 0 else 0
+        return dict(value={'company_median': company_median, 'city_median': city_median, 'ratio': ratio,
+                           'company_jobs': company_jobs, 'city_jobs': city_jobs}, observed_at='',
+                    note=f'pay_vs_city_median 口径：本公司中位数取字段 {median_name}={company_median}、'
+                         f'城市中位数取字段 {city_name}={city_median}，样本数取 {jobs_name}={company_jobs}、'
+                         f'{city_jobs_name}={city_jobs}；这是该接口声明的薪资统计口径，'
+                         '样本闸门仍由固定规则判断，样本不够就不出分'), ''
+    if rule in ('disclosure_revenue_trend', 'disclosure_headcount_trend'):
+        # 两个时期都取自同一次接口响应；「同一份材料」约束由映射表声明，接口口径是否真的同源请照文档核对。
+        current_name, current = resolved['current']
+        previous_name, previous = resolved['previous']
+        return dict(value={'current': current, 'previous': previous}, observed_at='',
+                    note=f'{rule} 口径：本期取字段 {current_name}={current}、上期取字段 {previous_name}={previous}，'
+                         '两个数字来自同一次接口响应；数字自带公告/接口的口径（万元、亿元、人数），'
+                         '本模块不换算、不补单位'), ''
     return None, f'本模块没有 {rule} 的取数写法（映射表里出现这条规则等于多写了配置）'
 
 

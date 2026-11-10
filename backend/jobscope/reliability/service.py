@@ -13,7 +13,8 @@ def _report_finding(item):
     kind = RULES[item.rule].kind
     return ReportFinding(text=wording.render(item), rule=item.rule, kind=kind,
                          score=item.score if kind == ASSESSMENT else None,
-                         source_class=item.source_class, evidence_id=item.evidence_id)
+                         source_class=item.source_class, evidence_id=item.evidence_id,
+                         collected_at=item.collected_at)
 
 
 class ReliabilityService:
@@ -58,3 +59,44 @@ class ReliabilityService:
         """没有副作用的读入口：公司不存在或从没算过都返回 None，不写任何一行。"""
         company = self.repo.find_company(name, credit_code)
         return None if company is None else self.repo.latest_reliability(company['id'])
+
+    def history(self, name, credit_code=''):
+        """单公司历史快照与相邻差分。只对比**同一家公司自己**的两次计算：没有跨公司对比、
+        没有排名、没有红黑榜——这个边界钉在红线测试里，diff 的输入永远来自同一个 company_id。"""
+        company = self.repo.find_company(name, credit_code)
+        if company is None:
+            return None
+        snapshots = self.repo.reliability_history(company['id'])
+        if not snapshots:
+            return None
+        items = [_snapshot_summary(item) for item in snapshots]
+        return dict(company=company['name'], company_id=company['id'], items=items,
+                    diffs=[snapshot_diff(before, after) for before, after in zip(items, items[1:])])
+
+
+def _snapshot_summary(report):
+    """快照的紧凑视图：分数、覆盖度、各维度分、每条 assessment 规则的分数，以及 material 登记名单。
+    material 的 score 恒为 None，所以它的「变化」只能体现在名单出现/消失上，绝不借用数字。"""
+    return dict(computed_at=report['computed_at'], input_hash=report['input_hash'],
+                score=report['score'], confidence=report['confidence'],
+                dimensions={item['dimension']: item['score'] for item in report['dimensions']},
+                rules={item['rule']: item['score'] for line in report['dimensions']
+                       for item in line['findings'] if item['score'] is not None},
+                materials=sorted(item['rule'] for line in report['dimensions']
+                                 for item in line['findings'] if item['score'] is None))
+
+
+def snapshot_diff(before, after):
+    """把两次快照之间的变化归因到具体规则：assessment 看分数变化，material 看登记出现/消失。
+    规则没变就不列；diff 的输入永远来自同一家公司的相邻两次快照。"""
+    changed = []
+    for rule in sorted(set(before['rules']) | set(after['rules'])):
+        old, new = before['rules'].get(rule), after['rules'].get(rule)
+        if old != new:
+            changed.append(dict(rule=rule, before=old, after=new))
+    appeared = sorted(set(after['materials']) - set(before['materials']))
+    disappeared = sorted(set(before['materials']) - set(after['materials']))
+    return dict(before=before['computed_at'], after=after['computed_at'],
+                score_before=before['score'], score=after['score'], rules=changed,
+                materials=[dict(rule=name, appeared=True) for name in appeared]
+                          + [dict(rule=name, appeared=False) for name in disappeared])

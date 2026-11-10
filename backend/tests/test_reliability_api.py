@@ -40,13 +40,13 @@ def mock_model(monkeypatch, content, calls=None):
     monkeypatch.setattr(httpx.Client, 'post', post)
 
 
-def add_signal(tmp_path, rule, value, evidence_id, source_class='official'):
+def add_signal(tmp_path, rule, value, evidence_id, source_class='official', company='甲公司'):
     """信号只能由采集或抽取产生；这条辅助函数直接按契约落库，好让端点层读到有依据的报告。"""
     from jobscope.reliability.models import SignalInput
     from jobscope.reliability.rubric import RULES
     repo = Repository(tmp_path)
-    company = repo.resolve_company('甲公司')
-    return repo.save_signal(SignalInput(company_id=company['id'], dimension=RULES[rule].dimension, rule=rule,
+    identity = repo.resolve_company(company)
+    return repo.save_signal(SignalInput(company_id=identity['id'], dimension=RULES[rule].dimension, rule=rule,
                                         value=value, unit=RULES[rule].unit, source_class=source_class,
                                         evidence_id=evidence_id, observed_at='',
                                         collected_at='2026-11-09T00:00:00+00:00'))
@@ -141,10 +141,12 @@ def test_collect_reports_an_honest_status_without_touching_the_network(client):
     # 本机有没有装 DrissionPage / 有没有项目 Chrome 会话，两种真实结果都可能出现。
     assert browser['status'] in {'needs_login', 'unsupported'}
     assert browser['signals'] == [] and browser['message']
-    # 本地来源登记着两条规则，就必须真的算出东西，不能一直退成 unsupported。
+    # 本地来源登记着五条规则，就必须真的算出东西，不能一直退成 unsupported。
+    # 这家测试公司还没有已存岗位：R1/R2 连统计量都构不成，材料计数类照常出数。
     local = client.post('/api/companies/甲公司/signals/collect', json=dict(source='jobscope_jobs')).json()
     assert local['status'] == 'completed'
-    assert {item['rule'] for item in local['signals']} == {'salary_quote_coverage', 'disclosure_available'}
+    assert {item['rule'] for item in local['signals']} == {
+        'salary_quote_coverage', 'disclosure_available', 'industry_media_count'}
     assert '不访问网络' in local['message']
 
 
@@ -212,7 +214,11 @@ def test_collect_stores_the_page_the_signal_came_from(client, monkeypatch):
 
 # 付费接口的假响应：字段名来自 sources.SIGNAL_SOURCES['qcc']['fields'] 那份待校正映射。
 PAID_PAYLOAD = {'data': {'result': {'establish_date': '2015-04-01',
-                                    'insured_num': 240, 'insured_num_last': 312, 'case_num': 3}}}
+                                    'insured_num': 240, 'insured_num_last': 312, 'case_num': 3,
+                                    'avg_salary': 20000, 'city_avg_salary': 16000,
+                                    'salary_sample_num': 5, 'city_job_num': 40,
+                                    'revenue_current': 120000000, 'revenue_previous': 100000000,
+                                    'employee_num': 240, 'employee_num_previous': 260}}}
 PAID_URL = 'https://api.vendor.example/v1/company'
 
 
@@ -267,7 +273,9 @@ def test_an_enabled_paid_source_collects_and_never_stores_the_key(client, monkey
     assert result.status_code == 200
     body = result.json()
     assert body['status'] == 'completed'
-    assert {item['rule'] for item in body['signals']} == {'company_age', 'insured_headcount_trend', 'judicial_case_ratio'}
+    assert {item['rule'] for item in body['signals']} == {
+        'company_age', 'insured_headcount_trend', 'judicial_case_ratio',
+        'pay_vs_city_median', 'disclosure_revenue_trend', 'disclosure_headcount_trend'}
     assert all(item['source_class'] == 'paid_api' for item in body['signals'])
     assert SECRET not in result.text
     stored = client.get('/api/evidence', params=dict(company='甲公司'))
@@ -323,6 +331,138 @@ def test_paid_records_are_not_fed_back_into_the_model_as_material(client, monkey
 
 
 
+def test_twelve_local_jobs_score_pay_and_professional_offline(client, tmp_path):
+    """P1 验收：12 条已存岗位（≥3 完整 JD、≥8 同城可解析报价），不联网、不配模型，
+    只跑本地采集与重算，pay 与 professional 必须出分，综合覆盖度显著高于 P0 的 0.22。"""
+    full_jd = ('岗位职责：\n负责核心服务开发，支撑日活 500 万的业务\n'
+               '任职要求：\n3 年以上 Python 后端经验，熟悉 MySQL、Redis 与 Kubernetes')
+    repo = Repository(tmp_path)
+    for index in range(8):
+        repo.save_job(dict(title=f'后端工程师{index}', company='甲公司', location='北京',
+                           salary='35-45K', description=full_jd, url=f'https://jobs.example.com/{index}',
+                           description_status='complete'), 'test_jobs')
+    repo.save_job(dict(title='架构师', company='甲公司', location='北京', salary='年薪 80 万元',
+                       description=full_jd, url='https://jobs.example.com/9', description_status='complete'), 'test_jobs')
+    for index in range(3):
+        repo.save_job(dict(title=f'产品经理{index}', company='甲公司', location='北京', salary='面议',
+                           description=full_jd, url=f'https://jobs.example.com/p{index}',
+                           description_status='listing'), 'test_jobs')
+    for index in range(7):
+        repo.save_job(dict(title=f'测试工程师{index}', company='乙公司', location='北京',
+                           salary='15-25K', description='负责测试', url=f'https://jobs.example.com/t{index}',
+                           description_status='listing'), 'test_jobs')
+    for index in range(7):
+        repo.save_job(dict(title=f'运维工程师{index}', company='乙公司', location='北京',
+                           salary='25-35K', description='负责运维', url=f'https://jobs.example.com/o{index}',
+                           description_status='listing'), 'test_jobs')
+
+    collected = client.post('/api/companies/甲公司/signals/collect', json=dict(source='jobscope_jobs')).json()
+    assert collected['status'] == 'completed'
+    assert {item['rule'] for item in collected['signals']} == {
+        'salary_quote_coverage', 'disclosure_available', 'pay_vs_city_median', 'jd_specificity',
+        'industry_media_count'}
+    pay_signal = next(item for item in collected['signals'] if item['rule'] == 'pay_vs_city_median')
+    assert pay_signal['value'] == {'company_median': 40000.0, 'city_median': 30000.0, 'ratio': 1.333,
+                                   'company_jobs': 8, 'city_jobs': 22}
+
+    report = client.post('/api/companies/甲公司/reliability', json=dict()).json()
+    dimensions = {item['dimension']: item for item in report['dimensions']}
+    assert dimensions['pay']['score'] == 95.0          # 比值 1.333 ≥ 1.2
+    assert dimensions['professional']['score'] is not None
+    for name in ('stability', 'people', 'operations', 'industry'):
+        assert dimensions[name]['score'] is None, name
+    assert dimensions['industry']['findings'][0]['rule'] == 'industry_media_count'
+    assert dimensions['industry']['findings'][0]['kind'] == 'material'
+    # 覆盖度 = pay(0.20) + professional(0.12) 的权重和，显著高于 P0 只有 stability 时的 0.22。
+    assert report['confidence'] == 0.32 and report['score'] is not None
+    assert '"score":null' in client.get('/api/companies/甲公司/reliability').text
+    # 幂等：同一输入重复重算 input_hash 不变（P0 修过的行为不许退化）。
+    first_hash = report['input_hash']
+    assert client.post('/api/companies/甲公司/reliability', json=dict()).json()['input_hash'] == first_hash
+    again = client.post('/api/companies/甲公司/signals/collect', json=dict(source='jobscope_jobs')).json()
+    assert [item['evidence_id'] for item in again['signals']] == [item['evidence_id'] for item in collected['signals']]
+
+
+def test_history_endpoint_serves_one_company_trend_only(client, tmp_path):
+    """单公司历史趋势：diff 只归因到这家公司自己两次快照之间变了的规则，读路径不写任何行。"""
+    assert client.get('/api/companies/甲公司/reliability/history').json() == {'history': None}
+    add_signal(tmp_path, 'company_age', {'years': 8}, 'E-' + 'a' * 24)
+    client.post('/api/companies/甲公司/reliability', json=dict())
+    add_signal(tmp_path, 'pay_vs_city_median', {'company_median': 20000, 'city_median': 18000, 'ratio': 1.11,
+                                                'company_jobs': 5, 'city_jobs': 30}, 'E-' + 'b' * 24)
+    add_signal(tmp_path, 'disclosure_available', {'count': 3}, 'E-' + 'c' * 24, source_class='official')
+    client.post('/api/companies/甲公司/reliability', json=dict())
+    history = client.get('/api/companies/甲公司/reliability/history').json()['history']
+    assert history['company'] == '甲公司' and len(history['items']) == 2
+    # assessment 的分数变化归因到规则；material 只报登记出现，不带任何数字。
+    diff = history['diffs'][0]
+    assert [item['rule'] for item in diff['rules']] == ['pay_vs_city_median']
+    assert diff['rules'][0]['before'] is None and diff['rules'][0]['after'] == 80.0
+    assert [item['rule'] for item in diff['materials']] == ['disclosure_available']
+    assert diff['materials'][0]['appeared'] is True
+    # 再加一家公司：乙的任何东西都不出现在甲的趋势里——趋势只对比同一家公司自己。
+    add_signal(tmp_path, 'company_age', {'years': 2}, 'E-' + 'd' * 24, company='乙公司')
+    client.post('/api/companies/乙公司/reliability', json=dict())
+    other = client.get('/api/companies/乙公司/reliability/history').json()['history']
+    assert other['company'] == '乙公司' and len(other['items']) == 1 and other['diffs'] == []
+    assert '乙' not in json.dumps(history, ensure_ascii=False)
+    # 读路径不写行：两次 GET 之后 companies 表里只有那两家真实重算过的公司。
+    assert client.get('/api/companies/没有的公司/reliability/history').json() == {'history': None}
+    with Repository(tmp_path).connection() as conn:
+        assert conn.execute('SELECT count(*) FROM companies').fetchone()[0] == 2
+
+
+def test_extracted_team_size_statements_aggregate_into_one_signal(client, tmp_path, monkeypatch):
+    """模型逐条材料交原始数字，聚合在代码里完成：两条相容自述 → 一条 median/statements/compatible 信号。"""
+    model_on(monkeypatch)
+    first = client.post('/api/evidence', json=dict(title='岗位描述', company='甲公司', kind='company_statement',
+                                                   text='团队规模 30 人，后端组 12 人')).json()['evidence']
+    second = client.post('/api/evidence', json=dict(title='公司介绍', company='甲公司', kind='company_statement',
+                                                    text='我们是一支约 45 人的团队')).json()['evidence']
+    content = json.dumps(dict(signals=[
+        dict(rule='team_size_statement', dimension='people', value={'size': 30}, evidence_id=first['id']),
+        dict(rule='team_size_statement', dimension='people', value={'size': 45}, evidence_id=second['id']),
+    ]), ensure_ascii=False)
+    mock_model(monkeypatch, content)
+    result = client.post('/api/companies/甲公司/signals/extract', json=dict()).json()
+    assert result['status'] == 'completed' and result['accepted'] == 1
+    saved = result['signals'][0]
+    assert saved['value'] == {'median_size': 37.5, 'statements': 2, 'compatible': 2}
+    # 锚条与参与编号都留在任务说明里：出处链查得回去。
+    assert first['id'] in result['message'] and second['id'] in result['message']
+    report = client.post('/api/companies/甲公司/reliability', json=dict()).json()
+    people = next(item for item in report['dimensions'] if item['dimension'] == 'people')
+    assert people['score'] == 90.0 and people['findings'][0]['evidence_id'] in (first['id'], second['id'])
+    assert '相互兼容' in people['findings'][0]['text']
+
+
+def test_complete_job_descriptions_enter_the_extractor_but_summaries_do_not(client, tmp_path, monkeypatch):
+    """R3 的「团队 N 人」写在岗位描述里：完整 JD 的岗位证据进材料，列表摘要仍然不进。"""
+    model_on(monkeypatch)
+    repo = Repository(tmp_path)
+    repo.save_job(dict(title='后端工程师', company='甲公司', description='岗位职责：\n负责核心服务开发，团队 500 人',
+                       location='北京', salary='20-35K', url='https://jobs.example.com/1',
+                       description_status='complete'), 'test_jobs')
+    repo.save_job(dict(title='客服专员', company='甲公司', description='客服',
+                       location='北京', salary='8-12K', url='https://jobs.example.com/2',
+                       description_status='listing'), 'test_jobs')
+    jd_evidence = next(item for item in repo.evidence(include_job_postings=True)
+                       if item['kind'] == 'job_posting' and '团队 500 人' in item['text'])
+    summary_evidence = next(item for item in repo.evidence(include_job_postings=True)
+                            if item['kind'] == 'job_posting' and '团队 500 人' not in item['text'])
+    content = json.dumps(dict(signals=[
+        dict(rule='team_size_statement', dimension='people', value={'size': 500}, evidence_id=jd_evidence['id']),
+        dict(rule='team_size_statement', dimension='people', value={'size': 3}, evidence_id=summary_evidence['id']),
+    ]), ensure_ascii=False)
+    mock_model(monkeypatch, content)
+    result = client.post('/api/companies/甲公司/signals/extract', json=dict()).json()
+    assert result['evidence'] == 1 and result['status'] == 'completed'
+    # 摘要那一条被整批校验拒掉：evidence_id 不在传入材料里；完整 JD 那条只有一份自述，不成聚合、原样入库。
+    assert '不在传入的证据里' in result['message']
+    assert result['accepted'] == 1
+    saved = result['signals'][0]
+    assert saved['value'] == {'size': 500}
+    assert saved['source_class'] == 'platform' and saved['evidence_id'] == jd_evidence['id']
 def test_reading_a_report_does_not_leave_a_company_row_behind(client, tmp_path):
     """GET 是读操作：查一个拼错的公司名必须在 companies 表里什么都不留。"""
     def rows():

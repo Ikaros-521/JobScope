@@ -36,6 +36,9 @@ class RuleFinding(BaseModel):
     evidence_id: str
     source_class: SourceClass
     weight: float = Field(gt=0, le=1)
+    # 信号本身的采集时刻：过期判定发生在重算时，过期信号进 missing 不进 findings，这里只是把
+    # 「这条依据是什么时候采的」随句子一起持久化，前端展开维度时才能显示计算时间。
+    collected_at: str = Field(default='', max_length=40)
 
 
 class ReportFinding(BaseModel):
@@ -48,6 +51,7 @@ class ReportFinding(BaseModel):
     score: float | None = Field(default=None, ge=0, le=100)
     source_class: SourceClass
     evidence_id: str
+    collected_at: str = Field(default='', max_length=40)
 
 
 class DimensionScore(BaseModel):

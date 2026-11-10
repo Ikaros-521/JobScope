@@ -20,11 +20,20 @@ ENDPOINT = 'https://api.vendor.example/v1/company'
 KEY = 'sk-paid-abcdef-123456'
 
 # 一份「映射里所有字段都齐全」的假响应。外层刻意套 data/result，验证取值不依赖厂商的嵌套结构。
+# 字段名全部取自 sources.SIGNAL_SOURCES['qcc']['fields'] 里的第一候选，不是任何真实厂商的 schema。
 FULL = {'data': {'result': {
     'establish_date': '2015-04-01',
     'insured_num': 240,
     'insured_num_last': 312,
     'case_num': 3,
+    'avg_salary': 20000,
+    'city_avg_salary': 16000,
+    'salary_sample_num': 5,
+    'city_job_num': 40,
+    'revenue_current': 120000000,
+    'revenue_previous': 100000000,
+    'employee_num': 240,
+    'employee_num_previous': 260,
 }}}
 # `None` 本身是要测的一种响应（不是对象），所以「没传响应」得用另一个哨兵值。
 MISSING = object()
@@ -68,15 +77,21 @@ def run(payload=MISSING, *, error=None, client=None, source='qcc', company='甲�
     return outcome, {item['rule']: item for item in outcome['signals']}
 
 
-def test_a_response_with_every_mapped_field_yields_all_three_rules():
+def test_a_response_with_every_mapped_field_yields_all_mapped_rules():
     outcome, by_rule = run()
     assert outcome['status'] == 'completed'
-    assert set(by_rule) == {'company_age', 'insured_headcount_trend', 'judicial_case_ratio'}
+    assert set(by_rule) == {'company_age', 'insured_headcount_trend', 'judicial_case_ratio',
+                            'pay_vs_city_median', 'disclosure_revenue_trend', 'disclosure_headcount_trend'}
     expected = collectors.years_since(datetime(2015, 4, 1, tzinfo=timezone.utc))
     assert by_rule['company_age']['value'] == {'years': expected}
     assert by_rule['insured_headcount_trend']['value'] == {'before': 312, 'after': 240}
     # 件/万人：3 件 / 240 人 × 10000。分子分母都是声明过的字段，不是挑出来的数字。
     assert by_rule['judicial_case_ratio']['value'] == {'ratio': 125.0}
+    # P1 三条新规则的取值：槽位全对上才产出，比值由代码换算、两端数字不换算不补单位。
+    assert by_rule['pay_vs_city_median']['value'] == {
+        'company_median': 20000, 'city_median': 16000, 'ratio': 1.25, 'company_jobs': 5, 'city_jobs': 40}
+    assert by_rule['disclosure_revenue_trend']['value'] == {'current': 120000000, 'previous': 100000000}
+    assert by_rule['disclosure_headcount_trend']['value'] == {'current': 240, 'previous': 260}
 
 
 def test_paid_signals_carry_the_rubric_unit_and_a_traceable_source():

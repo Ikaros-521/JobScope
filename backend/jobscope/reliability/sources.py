@@ -26,6 +26,17 @@ CASE_COUNT_FIELDS = ('case_num', 'lawsuit_num', 'judicial_case_num', 'court_doc_
                      '涉诉数量', '案件数量', '裁判文书数量')
 CASE_RATIO_FIELDS = ('case_per_10k_insured', 'judicial_case_ratio', 'case_ratio',
                      '每万人涉诉件数', '涉诉件数比率')
+# P1 新增三组映射，全部是同一性质的假设：没对照过任何厂商文档，等用户按采购文档逐行校正。
+# 薪资中位数：四个槽位必须同时命中才产出（缺计数就过不了样本闸门，宁缺勿猜）。
+COMPANY_MEDIAN_FIELDS = ('avg_salary', 'salary_avg', 'average_salary', 'median_salary', '平均月薪', '薪资中位数')
+CITY_MEDIAN_FIELDS = ('city_avg_salary', 'city_salary_avg', 'city_median_salary', '城市平均薪资', '城市薪资中位数')
+COMPANY_JOB_COUNT_FIELDS = ('salary_sample_num', 'job_num', 'salary_job_count', '薪资样本数', '职位数量')
+CITY_JOB_COUNT_FIELDS = ('city_job_num', 'city_sample_num', 'city_salary_job_count', '城市职位数量')
+# 营收与在职人数的「本期/上期」两端：槽位名是 paid.py 与这份表之间的契约。
+REVENUE_CURRENT_FIELDS = ('revenue_current', 'income_current', 'operating_revenue', '营业收入', '本期营业收入')
+REVENUE_PREVIOUS_FIELDS = ('revenue_previous', 'income_previous', 'last_year_revenue', '上年营业收入', '上期营业收入')
+HEADCOUNT_CURRENT_FIELDS = ('employee_num', 'staff_num', 'employee_count', '在职人数', '员工人数')
+HEADCOUNT_PREVIOUS_FIELDS = ('employee_num_previous', 'staff_num_last', 'employee_num_last', '上年在职人数', '上期员工人数')
 
 # 一份表结构：规则名 → 若干「口径」，每条口径是一组槽位到候选名的映射；前面的口径先试。
 # judicial_case_ratio 给了两条：服务商直接给比率，或给涉诉数量 + 参保人数由本地换算。
@@ -35,6 +46,10 @@ QCC_FIELDS = {
                                  'insured_previous': INSURED_PREVIOUS_FIELDS},),
     'judicial_case_ratio': ({'ratio': CASE_RATIO_FIELDS},
                             {'cases': CASE_COUNT_FIELDS, 'insured': INSURED_LATEST_FIELDS}),
+    'pay_vs_city_median': ({'company_median': COMPANY_MEDIAN_FIELDS, 'city_median': CITY_MEDIAN_FIELDS,
+                            'company_jobs': COMPANY_JOB_COUNT_FIELDS, 'city_jobs': CITY_JOB_COUNT_FIELDS},),
+    'disclosure_revenue_trend': ({'current': REVENUE_CURRENT_FIELDS, 'previous': REVENUE_PREVIOUS_FIELDS},),
+    'disclosure_headcount_trend': ({'current': HEADCOUNT_CURRENT_FIELDS, 'previous': HEADCOUNT_PREVIOUS_FIELDS},),
 }
 TYC_FIELDS = {
     'company_age': ({'founded_date': ESTABLISHED_DATE_FIELDS},),
@@ -42,6 +57,10 @@ TYC_FIELDS = {
                                  'insured_previous': INSURED_PREVIOUS_FIELDS},),
     'judicial_case_ratio': ({'ratio': CASE_RATIO_FIELDS},
                             {'cases': CASE_COUNT_FIELDS, 'insured': INSURED_LATEST_FIELDS}),
+    'pay_vs_city_median': ({'company_median': COMPANY_MEDIAN_FIELDS, 'city_median': CITY_MEDIAN_FIELDS,
+                            'company_jobs': COMPANY_JOB_COUNT_FIELDS, 'city_jobs': CITY_JOB_COUNT_FIELDS},),
+    'disclosure_revenue_trend': ({'current': REVENUE_CURRENT_FIELDS, 'previous': REVENUE_PREVIOUS_FIELDS},),
+    'disclosure_headcount_trend': ({'current': HEADCOUNT_CURRENT_FIELDS, 'previous': HEADCOUNT_PREVIOUS_FIELDS},),
 }
 
 SIGNAL_SOURCES = {
@@ -55,15 +74,19 @@ SIGNAL_SOURCES = {
                           status='needs_verification', rules=['judicial_case_ratio'],
                           description='公开裁判文书检索；只登记数量与案号，不转述内容。'),
     'jobscope_jobs': dict(name='已保存岗位与证据', tier='free', transport='local',
-                          status='available', rules=['salary_quote_coverage', 'disclosure_available'],
+                          status='available',
+                          rules=['salary_quote_coverage', 'disclosure_available', 'pay_vs_city_median',
+                                 'jd_specificity', 'industry_media_count'],
                           description='不联网，使用本项目已有数据计算。默认启用。'),
     'qcc': dict(name='企查查开放平台', tier='paid', transport='http_api', status='opt_in',
-                rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio'],
+                rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio',
+                       'pay_vs_city_median', 'disclosure_revenue_trend', 'disclosure_headcount_trend'],
                 description='需你自备企业、密钥与授权额度；JobScope 不代持密钥、不默认调用。'
                             '字段映射是按通用写法预置的假设，请照你采购的接口文档校正。',
                 fields=QCC_FIELDS),
     'tyc': dict(name='天眼查开放平台', tier='paid', transport='http_api', status='opt_in',
-                rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio'],
+                rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio',
+                       'pay_vs_city_median', 'disclosure_revenue_trend', 'disclosure_headcount_trend'],
                 description='同上，接口口径与计费以服务商协议为准。字段映射同样待你按文档校正。',
                 fields=TYC_FIELDS),
 }
