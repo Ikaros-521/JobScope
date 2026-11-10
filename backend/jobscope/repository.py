@@ -39,12 +39,28 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS company_reliability (company_id TEXT REFERENCES companies(id), input_hash TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(company_id, input_hash));
             """)
             self._migrate_conversations(conn)
+            self._backfill_salary_numbers(conn)
             # A previous process can no longer complete its in-flight synchronous tasks.
             for row in conn.execute("SELECT id,payload FROM tasks").fetchall():
                 task = json.loads(row["payload"])
                 if task["status"] == "running":
                     task.update(status="failed", message="上次进程中断，请重新采集")
                     conn.execute("UPDATE tasks SET payload=? WHERE id=?", (json.dumps(task, ensure_ascii=False), row["id"]))
+
+    @staticmethod
+    def _salary_numbers(text):
+        # 延迟导入：repository 是最底层，analysis 面向模型侧且会继续演化。
+        from .analysis import parse_salary
+        parsed = parse_salary(text or '')
+        return {'salary_monthly_min': parsed['monthly_min'], 'salary_monthly_max': parsed['monthly_max'], 'salary_parsed': True}
+
+    def _backfill_salary_numbers(self, conn):
+        """老档案只有薪资原文；薪资区间筛选需要每月数值，启动时补算一次。"""
+        rows = conn.execute("SELECT id, payload FROM jobs WHERE json_extract(payload,'$.salary_parsed') IS NULL AND trim(coalesce(json_extract(payload,'$.salary'),'')) != ''").fetchall()
+        for row in rows:
+            item = json.loads(row['payload'])
+            item.update(self._salary_numbers(item.get('salary')))
+            conn.execute('UPDATE jobs SET payload=? WHERE id=?', (json.dumps(item, ensure_ascii=False), row['id']))
 
     def _migrate_conversations(self, conn):
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(conversations)')}
@@ -94,6 +110,7 @@ class Repository:
 
     def save_job(self, data, source):
         item = {"title": "", "company": "", "description": "", "location": "", "salary": "", "url": "", "tags": [], **data}
+        item.update(self._salary_numbers(item["salary"]))
         key = item.get("external_id") or item.get("url") or json.dumps([item["title"], item["company"], item["location"]], ensure_ascii=False)
         item["id"] = "J-" + digest(source + ":" + str(key))[:24]
         previous = self.job(item["id"])
@@ -179,18 +196,92 @@ class Repository:
         with self.connection() as conn:
             return [json.loads(row[0]) for row in conn.execute("SELECT payload FROM tasks ORDER BY rowid DESC LIMIT 100")]
 
-    def page(self, resource, page=1, page_size=20, q='', location='', company=None, job_id=None,
-             linked_job_id=None, include_job_postings=True):
+    @staticmethod
+    def _job_filters(q='', location='', source='', salary_min=None, salary_max=None):
+        """薪资区间按重叠判定：只要岗位月薪范围与给定区间有交集就算命中，面议/年薪等无法解析的岗位自然落选。"""
+        where, params = [], []
+        if q:
+            where.append("instr(lower(json_extract(payload,'$.title') || ' ' || json_extract(payload,'$.company') || ' ' || json_extract(payload,'$.description')),lower(?)) > 0")
+            params.append(q)
+        if location:
+            where.append("instr(lower(json_extract(payload,'$.location')),lower(?)) > 0")
+            params.append(location)
+        if source:
+            where.append("json_extract(payload,'$.source')=?")
+            params.append(source)
+        if salary_min is not None:
+            where.append("json_extract(payload,'$.salary_monthly_max')>=?")
+            params.append(salary_min)
+        if salary_max is not None:
+            where.append("json_extract(payload,'$.salary_monthly_min')<=?")
+            params.append(salary_max)
+        return where, params
+
+    def job_ids(self, q='', location='', source='', salary_min=None, salary_max=None, limit=20000):
+        """供“选择筛选结果全部”：同一套筛选条件返回全部命中 id。"""
+        where, params = self._job_filters(q, location, source, salary_min, salary_max)
+        clause = ' WHERE ' + ' AND '.join(where) if where else ''
+        with self.connection() as conn:
+            total = conn.execute('SELECT count(*) FROM jobs' + clause, params).fetchone()[0]
+            rows = conn.execute('SELECT id FROM jobs' + clause + ' ORDER BY updated_at DESC, id DESC LIMIT ?', [*params, limit]).fetchall()
+        return [row['id'] for row in rows], total
+
+    def update_jobs(self, ids, patch):
+        """批量规范化字段（地点/薪资/标签）。原位改 payload：id 不重排、不新增证据快照。"""
+        fields = {key: patch[key] for key in ('location', 'salary', 'tags') if key in patch}
+        if not fields:
+            return 0
+        updated = 0
+        for job_id in ids:
+            item = self.job(job_id)
+            if item is None:
+                continue
+            item.update(fields)
+            if 'salary' in fields:
+                item.update(self._salary_numbers(item['salary']))
+            item['evidence_ids'] = []
+            with self.connection() as conn:
+                conn.execute('UPDATE jobs SET payload=?, updated_at=? WHERE id=?', (json.dumps(item, ensure_ascii=False), now(), job_id))
+            updated += 1
+        return updated
+
+    def delete_jobs(self, ids):
+        """连同岗位的专属证据、报告与岗位对话一并删除；多岗位共享的公司证据保留。"""
+        ids = list(dict.fromkeys(ids))
+        if not ids:
+            return 0
+        marks = ','.join('?' for _ in ids)
+        with self.connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            existing = [row['id'] for row in conn.execute(f'SELECT id FROM jobs WHERE id IN ({marks})', ids).fetchall()]
+            if not existing:
+                return 0
+            marks = ','.join('?' for _ in existing)
+            exclusive = [row['evidence_id'] for row in conn.execute(
+                f'SELECT evidence_id FROM job_evidence WHERE job_id IN ({marks}) '
+                f'EXCEPT SELECT evidence_id FROM job_evidence WHERE job_id NOT IN ({marks})', existing + existing).fetchall()]
+            conn.execute(f'DELETE FROM job_evidence WHERE job_id IN ({marks})', existing)
+            conn.execute(f'DELETE FROM reports WHERE job_id IN ({marks})', existing)
+            if exclusive:
+                marks_e = ','.join('?' for _ in exclusive)
+                conn.execute(f'DELETE FROM evidence WHERE id IN ({marks_e})', exclusive)
+            for row in conn.execute('SELECT id, scope FROM conversations').fetchall():
+                try:
+                    scope = json.loads(row['scope'])
+                except ValueError:
+                    continue
+                if isinstance(scope, dict) and scope.get('kind') == 'job' and scope.get('job_id') in existing:
+                    conn.execute('DELETE FROM conversations WHERE id=?', (row['id'],))
+            cursor = conn.execute(f'DELETE FROM jobs WHERE id IN ({marks})', existing)
+            return cursor.rowcount
+
+    def page(self, resource, page=1, page_size=20, q='', location='', source='', salary_min=None, salary_max=None,
+             company=None, job_id=None, linked_job_id=None, include_job_postings=True):
         """Bounded SQL queries; filters run before count and pagination."""
         where, params = [], []
         if resource == 'jobs':
             table, order = 'jobs', 'updated_at DESC, id DESC'
-            if q:
-                where.append("instr(lower(json_extract(payload,'$.title') || ' ' || json_extract(payload,'$.company') || ' ' || json_extract(payload,'$.description')),lower(?)) > 0")
-                params.append(q)
-            if location:
-                where.append("instr(lower(json_extract(payload,'$.location')),lower(?)) > 0")
-                params.append(location)
+            where, params = self._job_filters(q, location, source, salary_min, salary_max)
         elif resource == 'evidence':
             table, order = 'evidence', 'rowid DESC'
             if not include_job_postings:

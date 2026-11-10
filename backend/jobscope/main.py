@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from .analysis import analyze, parse_resume
 from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
-from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobInput, ReliabilityInput, ResumeInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
+from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ReliabilityInput, ResumeInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
 from .repository import Repository, now
 from .settings import ModelSettings, ModelSettingsInput, ConnectionInput, _active
 
@@ -350,8 +350,25 @@ def create_app(data_dir=None):
         return {"task": task}
 
     @app.get("/api/jobs")
-    def jobs(q: str = Query(default="", max_length=300), location: str = Query(default="", max_length=300), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
-        return repo.page('jobs', page, page_size, q=q, location=location)
+    def jobs(q: str = Query(default="", max_length=300), location: str = Query(default="", max_length=300), source: str = Query(default="", max_length=100),
+             salary_min: float | None = Query(default=None, ge=0), salary_max: float | None = Query(default=None, ge=0),
+             page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+        return repo.page('jobs', page, page_size, q=q, location=location, source=source, salary_min=salary_min, salary_max=salary_max)
+
+    @app.get("/api/jobs/ids")
+    def job_ids(q: str = Query(default="", max_length=300), location: str = Query(default="", max_length=300), source: str = Query(default="", max_length=100),
+                salary_min: float | None = Query(default=None, ge=0), salary_max: float | None = Query(default=None, ge=0)):
+        ids, total = repo.job_ids(q=q, location=location, source=source, salary_min=salary_min, salary_max=salary_max)
+        return {"ids": ids, "total": total}
+
+    @app.patch("/api/jobs")
+    def batch_update_jobs(data: JobBatchUpdate):
+        patch = {key: value for key, value in data.model_dump(exclude_none=True).items() if key != 'ids'}
+        return {"updated": repo.update_jobs(data.ids, patch)}
+
+    @app.post("/api/jobs/batch-delete")
+    def batch_delete_jobs(data: JobBatchDelete):
+        return {"deleted": repo.delete_jobs(data.ids)}
 
     @app.get('/api/companies')
     def companies(q: str = Query('', max_length=300), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):

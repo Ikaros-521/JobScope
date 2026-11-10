@@ -4,7 +4,7 @@ Credential fields are write-only: they are accepted here, stored locally and nev
 echoed back by any read endpoint (see `/api/reliability/sources`).
 """
 
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -67,6 +67,18 @@ class AnalyzeInput(RequestModel):
 
 class DetailBatchInput(RequestModel):
     limit: int = Field(default=500, ge=1, le=500)
+
+
+class JobBatchUpdate(RequestModel):
+    """批量规范化字段：缺省的字段保持不变，显式传空串视为清空。"""
+    ids: list[str] = Field(min_length=1, max_length=1000)
+    location: str | None = Field(default=None, max_length=300)
+    salary: str | None = Field(default=None, max_length=300)
+    tags: list[Annotated[str, Field(max_length=100)]] | None = Field(default=None, max_length=50)
+
+
+class JobBatchDelete(RequestModel):
+    ids: list[str] = Field(min_length=1, max_length=1000)
 
 
 class IndexInput(RequestModel):
