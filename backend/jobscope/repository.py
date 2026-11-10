@@ -2,10 +2,12 @@
 
 import hashlib
 import json
+import re
 import sqlite3
+import unicodedata
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -31,6 +33,9 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS tasks (id TEXT PRIMARY KEY, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS reports (id TEXT PRIMARY KEY, job_id TEXT REFERENCES jobs(id), created_at TEXT NOT NULL, payload TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS conversations (id TEXT PRIMARY KEY, scope TEXT NOT NULL, messages TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, name TEXT NOT NULL, credit_code TEXT NOT NULL DEFAULT '', aliases TEXT NOT NULL DEFAULT '[]', payload TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS company_signals (id TEXT PRIMARY KEY, company_id TEXT NOT NULL REFERENCES companies(id), identity TEXT UNIQUE NOT NULL, rule TEXT NOT NULL, dimension TEXT NOT NULL, source_class TEXT NOT NULL, evidence_id TEXT NOT NULL, observed_at TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS company_reliability (company_id TEXT REFERENCES companies(id), input_hash TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(company_id, input_hash));
             """)
             self._migrate_conversations(conn)
             # A previous process can no longer complete its in-flight synchronous tasks.
@@ -373,3 +378,99 @@ class Repository:
             messages = messages[:index]
             conn.execute('UPDATE conversations SET messages=?, updated_at=? WHERE id=?', (json.dumps(messages, ensure_ascii=False), now(), conversation_id))
             return messages
+
+    @staticmethod
+    def normalise_name(name):
+        text = str(name or '').strip().replace('\u3000', ' ')
+        text = unicodedata.normalize('NFKC', text)
+        # 空白一律删除而非压成空格：'A B' 与 'AB' 是同一家，留下空格就把同一个名字拆成两个实体。
+        return re.sub(r'\s+', '', text)
+
+    def find_company(self, name, credit_code=''):
+        """Read-only twin of `resolve_company`: same normalisation, same strong key, no row written.
+
+        读路径写实体等于让一次拼错的查询在库里留下永久记录，所以这里只 SELECT：找不到就返回 None。
+        身份键的算法必须和 `resolve_company` 保持一致，否则同一个名字在读写两侧会指向两个实体。
+        """
+        cleaned = self.normalise_name(name)
+        if not cleaned:
+            raise ValueError('公司名称不能为空')
+        code = str(credit_code or '').strip().upper()
+        company_id = 'CO-' + digest(code or cleaned)[:24]
+        with self.connection() as conn:
+            row = conn.execute('SELECT payload FROM companies WHERE id=?', (company_id,)).fetchone()
+        return json.loads(row['payload']) if row else None
+
+    def resolve_company(self, name, credit_code='', aliases=()):
+        """Exact normalised match or credit code only; a wrong merge is worse than a miss."""
+        cleaned = self.normalise_name(name)
+        if not cleaned:
+            raise ValueError('公司名称不能为空')
+        code = str(credit_code or '').strip().upper()
+        identity = code or cleaned
+        company_id = 'CO-' + digest(identity)[:24]
+        with self.connection() as conn:
+            row = conn.execute('SELECT payload FROM companies WHERE id=?', (company_id,)).fetchone()
+            known = json.loads(row['payload']) if row else dict(id=company_id, name=cleaned, credit_code=code, aliases=[], created_at=now())
+            merged = {self.normalise_name(a) for a in [*known['aliases'], *aliases, cleaned] if str(a).strip()}
+            merged.discard(known['name'])
+            known['aliases'] = sorted(merged)
+            known['updated_at'] = now()
+            conn.execute('INSERT INTO companies VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,credit_code=excluded.credit_code,aliases=excluded.aliases,payload=excluded.payload,updated_at=excluded.updated_at',
+                         (company_id, known['name'], known['credit_code'], json.dumps(known['aliases'], ensure_ascii=False), json.dumps(known, ensure_ascii=False), known['updated_at']))
+            return known
+
+    def save_signal(self, signal):
+        item = signal.model_dump()
+        identity = digest(json.dumps([item['company_id'], item['rule'], item['evidence_id'],
+                                      item['observed_at'], json.dumps(item['value'], sort_keys=True, ensure_ascii=False)], ensure_ascii=False))
+        item.update(id='S-' + identity[:24], created_at=now())
+        with self.connection() as conn:
+            conn.execute('INSERT OR IGNORE INTO company_signals VALUES (?,?,?,?,?,?,?,?,?,?)',
+                         (item['id'], item['company_id'], identity, item['rule'], item['dimension'],
+                          item['source_class'], item['evidence_id'], item['observed_at'],
+                          json.dumps(item, ensure_ascii=False), item['created_at']))
+        return item
+
+    def signals(self, company_id, ttl_days=None):
+        """Latest collection per rule; TTL marks staleness instead of silently dropping data."""
+        with self.connection() as conn:
+            # collected_at 只存在 payload 里（建表脚本无此列），照 page() 的做法用 json_extract 排序。
+            rows = conn.execute("SELECT payload FROM company_signals WHERE company_id=? ORDER BY json_extract(payload,'$.collected_at') DESC, rowid DESC", (company_id,)).fetchall()
+        seen, result = set(), []
+        for row in rows:
+            item = json.loads(row['payload'])
+            if item['rule'] in seen:
+                continue
+            seen.add(item['rule'])
+            limit = (ttl_days or {}).get(item['rule'])
+            stale = True
+            if limit:
+                try:
+                    # 计划原文用 .days 取整，400 天 1 秒会被截成 400，边界上恰好漏报过期；改成整段时长比较（也是 timedelta 这个导入的用途）。
+                    stale = (datetime.now(timezone.utc) - datetime.fromisoformat(item['collected_at'])) > timedelta(days=limit)
+                except ValueError:
+                    stale = True
+            item['stale'] = stale
+            result.append(item)
+        return result
+
+    def raw_signals(self, company_id):
+        # 排序要全序：同一 rule 可以有多条来自不同出处的信号，只按 rule 排时并列行的先后取决于查询计划，
+        # 那会让同一批输入算出不同的 input_hash。
+        with self.connection() as conn:
+            return [dict(row) for row in conn.execute('SELECT id,payload FROM company_signals WHERE company_id=? ORDER BY rule,id', (company_id,)).fetchall()]
+
+    def save_reliability(self, report):
+        with self.connection() as conn:
+            conn.execute('INSERT OR IGNORE INTO company_reliability VALUES (?,?,?,?)',
+                         (report['company_id'], report['input_hash'], report['computed_at'], json.dumps(report, ensure_ascii=False)))
+
+    def latest_reliability(self, company_id):
+        with self.connection() as conn:
+            row = conn.execute('SELECT payload FROM company_reliability WHERE company_id=? ORDER BY created_at DESC LIMIT 1', (company_id,)).fetchone()
+        return json.loads(row['payload']) if row else None
+
+    def reliability_history(self, company_id):
+        with self.connection() as conn:
+            return [json.loads(row['payload']) for row in conn.execute('SELECT payload FROM company_reliability WHERE company_id=? ORDER BY created_at', (company_id,)).fetchall()]

@@ -1,6 +1,7 @@
 """Local FastAPI service. Run on 127.0.0.1; API never accepts cookies."""
 
 import importlib
+import json
 import os
 import threading
 from pathlib import Path
@@ -8,6 +9,8 @@ from urllib.parse import quote, urlsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
+# 名字避让：上面的 Path 是 pathlib.Path，路径参数用别名取，两者不能共用一个名字。
+from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -16,8 +19,8 @@ from starlette.concurrency import run_in_threadpool
 from .analysis import analyze, parse_resume
 from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
-from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobInput, ResumeInput
-from .repository import Repository
+from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobInput, ReliabilityInput, ResumeInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
+from .repository import Repository, now
 from .settings import ModelSettings, ModelSettingsInput, ConnectionInput, _active
 
 
@@ -325,6 +328,181 @@ def create_app(data_dir=None):
     @app.get('/api/companies')
     def companies(q: str = Query('', max_length=300), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
         return repo.companies_page(q, page, page_size)
+
+    # 求职参考分析。路径挂在 /api/companies/{company}/... 与 /api/reliability/... 之下，
+    # 与上面的 /api/companies 列表端点按完整路径匹配，不受注册顺序影响。
+    # 参数化路径一律带长度上限，percent-decode 由 Starlette 完成，取值先过实体归一的规范化再使用：
+    # 写路径（POST 重算、POST 采集）用 resolve_company 确保实体存在，读路径（GET）用 find_company
+    # 同口径查找、查不到就是没有，绝不因为一次拼错的查询留下 companies 行；
+    # 出站 URL 由 collectors 用 urlencode 拼接，这里不存在原样插值。
+    # reliability 子模块全部走函数级 import：包的 __init__ 保持零导入，浏览器与模型依赖
+    # 就不会被打进不需要它们的请求路径。
+
+    def company_materials(identity):
+        """该公司已保存的非岗位材料。名称按实体规范化比对，否则 '甲 公司' 存的证据永远配不上 '甲公司'。
+
+        两类「自己写下的记录」都不算材料：本地计算记录会让计数随点击自增，付费接口原文则是
+        取数结果而不是证据来源，喂给抽取器等于让厂商字段第二轮变成「材料」。
+        """
+        from .reliability.local import DERIVED_KIND
+        from .reliability.paid import PAID_KIND
+        known = {identity['name'], *(identity.get('aliases') or [])}
+        return [item for item in repo.evidence(include_job_postings=False)
+                if Repository.normalise_name(item['company']) in known
+                and item['kind'] not in (DERIVED_KIND, PAID_KIND)]
+
+    def company_jd_materials(identity):
+        """完整 JD 的岗位证据（P1 起 team_size_statement 要从岗位描述里抽「团队 N 人」）。
+
+        只有 description_status == 'complete' 的岗位进材料：半截 JD 不能用来评估，这是 P0
+        在 /api/analyze 里就立过的规矩。证据行仍是 save_job 落的那条真实 job_posting 记录，
+        evidence_id 可回查原文；列表摘要与别家公司照样不进。
+        """
+        known = {identity['name'], *(identity.get('aliases') or [])}
+        complete = [item for item in repo.jobs()
+                    if Repository.normalise_name(item['company']) in known
+                    and item.get('description_status') == 'complete']
+        wanted = {evidence_id for job in complete for evidence_id in job.get('evidence_ids', [])}
+        return [item for item in repo.evidence(include_job_postings=True)
+                if item['kind'] == 'job_posting' and item['id'] in wanted and item['text'].strip()]
+
+    def company_identity(name, credit_code=''):
+        """实体归一走 repository 的强键口径；service.company() 只接名称，这里还要带上信用代码。"""
+        try:
+            return repo.resolve_company(name, credit_code)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post('/api/companies/{company}/reliability')
+    def recompute_reliability(company: str = PathParam(min_length=1, max_length=300), data: ReliabilityInput | None = None):
+        from .reliability.service import ReliabilityService
+        try:
+            return ReliabilityService(repo).recompute(company, data.credit_code if data else '')
+        except ValueError as exc:
+            # reliability 层抛的 ValueError 都是写给用户看的中文说明（空公司名、措辞命中禁用词）。
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get('/api/companies/{company}/reliability')
+    def read_reliability(company: str = PathParam(min_length=1, max_length=300), credit_code: str = Query('', max_length=40)):
+        from .reliability.service import ReliabilityService
+        try:
+            # peek 而不是 latest：GET 是读操作，查一个拼错的名字不该写出 companies 行。
+            return {'report': ReliabilityService(repo).peek(company, credit_code)}
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.get('/api/companies/{company}/reliability/history')
+    def company_reliability_history(company: str = PathParam(min_length=1, max_length=300), credit_code: str = Query('', max_length=40)):
+        """单公司的历史快照与相邻差分。路径只收一个公司：趋势永远只对比这家公司自己的历史，
+        没有任何跨公司对比、排名或榜单的入口（红线测试钉住这一点）。"""
+        from .reliability.service import ReliabilityService
+        try:
+            return {'history': ReliabilityService(repo).history(company, credit_code)}
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
+    @app.post('/api/companies/{company}/signals/collect')
+    def collect_company_signals(data: SignalCollectInput, company: str = PathParam(min_length=1, max_length=300)):
+        from .reliability import collectors, local, paid
+        from .reliability.models import SignalInput
+        from .reliability.sources import SIGNAL_SOURCES, SignalSourceStore
+        if data.source not in SIGNAL_SOURCES:
+            raise HTTPException(400, '未登记的信号来源')
+        store = SignalSourceStore(repo)
+        # 闸门语义取 sources.enabled：免费来源被手动关闭同样算关，付费来源还要存有密钥。
+        if not store.enabled(data.source):
+            if SIGNAL_SOURCES[data.source]['tier'] == 'paid':
+                raise HTTPException(409, '该付费来源尚未启用；请先在设置里填入你自己的密钥，JobScope 不代持密钥。')
+            raise HTTPException(409, '该来源已在设置里关闭，请重新启用后再采集。')
+        identity = company_identity(company, data.credit_code)
+        # 分派只看登记表里的 transport，三条取数通路互不越界：
+        # browser_page → 项目浏览器读公开页面；local → 只读本项目已存数据；
+        # http_api（只有付费来源用得上）→ 按声明式字段映射取数。
+        # READERS 就是「由项目浏览器采集」的那一组来源；其余非本地来源连浏览器模块都不必导入，
+        # 由 collectors 直接退成 unsupported，浏览器依赖因此不会进入不需要它的路径。
+        spec = SIGNAL_SOURCES[data.source]
+        from_local = spec['transport'] == 'local'
+        from_paid = spec['transport'] == 'http_api' and spec['tier'] == 'paid'
+        if from_local:
+            # 本地来源反过来完全不碰浏览器：它只读本项目的已存数据，也不限页数、不等间隔。
+            outcome = local.collect(data.source, identity['name'], repo=repo, identity=identity)
+        elif from_paid:
+            # client 由 store 把关：没启用或没密钥就是 None，paid 会退成 unsupported 而不发起请求。
+            outcome = paid.collect(data.source, identity['name'], client=store.client(data.source))
+        else:
+            browser_module = load_module('browser') if data.source in collectors.READERS else None
+            outcome = collectors.collect(data.source, identity['name'], browser_module=browser_module, data_dir=data_dir)
+        saved = []
+        for item in outcome['signals']:
+            # 每条信号先落成一条可溯源证据，再落成信号记录：证据仍是唯一的原始层。
+            # url 必须取信号实际出自的那个地址：浏览器/付费接口用各自出处，本地计算没有出处就留空。
+            evidence = repo.save_evidence(dict(title=f"{identity['name']} {item['rule']}", company=identity['name'],
+                                               kind=local.DERIVED_KIND if from_local else (paid.PAID_KIND if from_paid else 'disclosure'),
+                                               text=item.get('text') or json.dumps(item, sort_keys=True, ensure_ascii=False),
+                                               url=item.get('url', ''), published_at=item.get('observed_at') or None), data.source)
+            saved.append(repo.save_signal(SignalInput(
+                company_id=identity['id'], dimension=item['dimension'], rule=item['rule'], value=item['value'],
+                unit=item.get('unit', ''), source_class=item['source_class'], evidence_id=evidence['id'],
+                observed_at=item.get('observed_at', ''), collected_at=item.get('collected_at') or now())))
+        return dict(status=outcome['status'], message=outcome['message'], signals=saved)
+
+    @app.post('/api/companies/{company}/signals/extract')
+    def extract_company_signals(data: SignalExtractInput, company: str = PathParam(min_length=1, max_length=300)):
+        """把已存材料喂给抽取器：手动导入的公告与材料不会自己变成信号。"""
+        from .reliability import extract
+        from .reliability.models import SignalInput
+        from .reliability.rubric import RULES
+        identity = company_identity(company, data.credit_code)
+        # 非岗位材料 + 完整 JD 的岗位证据，按证据编号去重后一起进抽取器；只有完整职责可被评估。
+        materials = {item['id']: item for item in [*company_materials(identity), *company_jd_materials(identity)]
+                     if item['text'].strip()}
+        materials = list(materials.values())[:data.limit]
+        outcome = extract.extract(identity['name'], materials, max_tokens=data.max_tokens) if materials \
+            else dict(status='skipped', message='该公司还没有可抽取的非岗位材料。', signals=[], raw='')
+        task = repo.create_task('reliability_extract', identity['name'])
+        kinds = {item['id']: item['kind'] for item in materials}
+        # team_size_statement 的多条原始自述在这里聚合成一条信号：中位数与相容数由代码算，
+        # 模型只交原始数字；repository.signals() 每条规则只留最新一条，聚合必须发生在落库前。
+        from .reliability.extract import aggregate_team_size
+        size_signals = [item for item in outcome['signals'] if item.rule == 'team_size_statement']
+        other_signals = [item for item in outcome['signals'] if item.rule != 'team_size_statement']
+        merged, participants = aggregate_team_size(size_signals)
+        aggregation_note = ''
+        if merged is not None:
+            aggregation_note = (f'team_size_statement 由 {len(participants)} 条自述聚合（中位数与相容数由代码计算，'
+                                f'锚条编号 {merged.evidence_id}，参与编号：{"、".join(participants)}）。')
+        saved = []
+        # 聚合成功 → 只落合并后的一条；不足两条时原始自述照常落库（闸门会在报告里解释为什么不出分）。
+        for item in ([*other_signals, merged] if merged is not None else outcome['signals']):
+            spec = RULES[item.rule]
+            saved.append(repo.save_signal(SignalInput(
+                company_id=identity['id'], dimension=item.dimension, rule=item.rule, value=item.value,
+                unit=spec.unit, source_class=extract.KIND_TO_SOURCE_CLASS.get(kinds.get(item.evidence_id, ''), 'user_material'),
+                evidence_id=item.evidence_id, observed_at='', collected_at=now())))
+        # 结构化状态与 raw 原文一起进 tasks，前端才显示得出真实状态、事后也查得到模型说了什么。
+        # 聚合说明也写进任务：未成为锚条的参与编号在这里留档，出处链才查得回去。
+        message = outcome['message'] + aggregation_note
+        task.update(kind='reliability_extract', status=outcome['status'], message=message,
+                    count=len(saved), raw=str(outcome['raw'])[:4000])
+        repo.update_task(task)
+        return dict(status=outcome['status'], message=message, accepted=len(saved),
+                    signals=saved, evidence=len(materials), task=task)
+
+    @app.get('/api/reliability/sources')
+    def reliability_sources():
+        from .reliability.sources import SignalSourceStore
+        return {'sources': SignalSourceStore(repo).public()}
+
+    @app.put('/api/reliability/sources/{source_id}')
+    def save_reliability_source(data: SignalSourceInput, source_id: str = PathParam(min_length=2, max_length=40)):
+        from .reliability.sources import SIGNAL_SOURCES, SignalSourceInput as SourceSettings, SignalSourceStore
+        if source_id not in SIGNAL_SOURCES:
+            raise HTTPException(404, '未登记的信号来源')
+        try:
+            # 公开契约收下密钥，转成 reliability 层的设置对象；store.public() 只回 key_set 布尔。
+            return SignalSourceStore(repo).save(source_id, SourceSettings(mode=data.mode, key=data.key, url=data.url))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
 
     @app.get('/api/locations')
     def locations(limit: int = Query(40, ge=1, le=100)):

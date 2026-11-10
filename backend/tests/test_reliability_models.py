@@ -1,0 +1,121 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import pytest
+
+from jobscope.repository import Repository
+
+
+def test_company_identity_is_stable_and_alias_resolved(tmp_path):
+    repo = Repository(tmp_path)
+    first = repo.resolve_company('北京字节跳动科技有限公司', credit_code='91110000MA01ABCD7X')
+    again = repo.resolve_company('字节跳动', credit_code='91110000MA01ABCD7X')
+    assert first['id'] == again['id']
+    assert first['name'] == '北京字节跳动科技有限公司'
+    # 别名在第二次调用时才产生，first 是首次调用的返回值，只能断言 again 里的持久化状态。
+    assert set(again['aliases']) == {'字节跳动'}
+
+
+def test_fullwidth_and_space_noise_normalise_to_the_same_company(tmp_path):
+    repo = Repository(tmp_path)
+    a = repo.resolve_company('  明日    之星 ')
+    b = repo.resolve_company('明日之星')
+    assert a['id'] == b['id']
+
+
+def test_similar_names_stay_separate_rather_than_fuzzy_merged(tmp_path):
+    repo = Repository(tmp_path)
+    a = repo.resolve_company('杭州明日之星科技有限公司')
+    b = repo.resolve_company('杭州明日之星电子商务有限责任公司')
+    assert a['id'] != b['id']
+
+
+def test_aliases_are_stored_normalised(tmp_path):
+    repo = Repository(tmp_path)
+    company = repo.resolve_company('甲公司', aliases=['  甲 集团 '])
+    assert company['aliases'] == ['甲集团']
+
+
+def test_spaces_are_noise_for_latin_names_too(tmp_path):
+    # 删空白这个决定对中英文一致生效：Remotive 的海外公司名同样带多余空格。
+    repo = Repository(tmp_path)
+    assert repo.resolve_company('Automattic  Inc')['id'] == repo.resolve_company('Automattic Inc')['id']
+
+
+def test_signal_requires_evidence_and_rejects_unlisted_dimension():
+    from pydantic import ValidationError
+    from jobscope.reliability.models import SignalInput
+    base = dict(company_id='CO-x', dimension='stability', rule='insured_headcount_trend',
+                value={'before': 312, 'after': 240}, unit='人', source_class='official',
+                evidence_id='E-1', observed_at='2025-06-30', collected_at='2026-11-09T00:00:00+00:00')
+    assert SignalInput(**base).dimension == 'stability'
+    for field, bad in (('dimension', 'vibes'), ('source_class', 'rumour')):
+        with pytest.raises(ValidationError):
+            SignalInput(**{**base, field: bad})
+    with pytest.raises(ValidationError):
+        SignalInput(**{**base, 'evidence_id': ''})
+
+
+def test_employee_signals_cannot_stand_alone_as_negative():
+    from jobscope.reliability.models import can_stand_alone
+    assert can_stand_alone('employee') is False
+    assert can_stand_alone('official') is True
+
+
+def test_same_signal_from_the_same_evidence_is_stored_once(tmp_path):
+    from jobscope.reliability.models import SignalInput
+    repo = Repository(tmp_path)
+    company = repo.resolve_company('甲公司')
+    payload = dict(company_id=company['id'], dimension='stability', rule='company_age',
+                   value={'years': 8}, unit='年', source_class='official', evidence_id='E-1',
+                   observed_at='', collected_at='2026-11-09T00:00:00+00:00')
+    first = repo.save_signal(SignalInput(**payload))
+    second = repo.save_signal(SignalInput(**payload))
+    assert first['id'] == second['id']
+    assert len(repo.signals(company['id'])) == 1
+
+
+def test_signals_past_their_ttl_are_reported_as_stale(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from jobscope.reliability.models import SignalInput
+    repo = Repository(tmp_path)
+    company = repo.resolve_company('甲公司')
+    old = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()
+    repo.save_signal(SignalInput(company_id=company['id'], dimension='operations', rule='insured_headcount_trend',
+                                 value={'before': 100, 'after': 90}, unit='人', source_class='official',
+                                 evidence_id='E-2', observed_at='', collected_at=old))
+    rows = repo.signals(company['id'], ttl_days={'insured_headcount_trend': 400})
+    assert rows[0]['stale'] is True
+
+
+def company_rows(repo):
+    with repo.connection() as conn:
+        return conn.execute('SELECT count(*) FROM companies').fetchone()[0]
+
+
+def test_find_company_reads_the_same_identity_without_writing_a_row(tmp_path):
+    """读路径不许有副作用：查一个拼错的公司名不该留下一条垃圾实体。"""
+    repo = Repository(tmp_path)
+    assert repo.find_company('甲公司') is None
+    assert company_rows(repo) == 0
+    created = repo.resolve_company('甲公司', aliases=['  甲 集团 '])
+    found = repo.find_company('  甲 公司 ')
+    assert found['id'] == created['id'] and found['aliases'] == created['aliases']
+    assert company_rows(repo) == 1
+
+
+def test_find_company_uses_the_credit_code_as_the_strong_key_too(tmp_path):
+    # 与 resolve_company 同一套身份键规则：换了强键就是另一个实体，读不到也不该顺手建。
+    repo = Repository(tmp_path)
+    repo.resolve_company('甲公司')
+    assert repo.find_company('甲公司', credit_code='91110000MA01ABCD7X') is None
+    assert company_rows(repo) == 1
+
+
+def test_a_blank_name_fails_the_read_path_exactly_like_the_write_path(tmp_path):
+    repo = Repository(tmp_path)
+    with pytest.raises(ValueError):
+        repo.find_company('   ')
+    assert company_rows(repo) == 0

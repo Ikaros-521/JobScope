@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { api, post, readable, plain, date, safeUrl } from './api'
+import { api, post, readable, plain, date, safeUrl, computeReliability, collectCompanySignals, extractCompanySignals, getReliability, getReliabilityHistory, listSignalSources, saveSignalSource } from './api'
+import type { SignalSource } from './api'
 import { toast, dismissToast } from './toast'
 import { Pagination, emptyPage } from './Pagination'
 import { EvidenceWorkspace } from './EvidenceWorkspace'
@@ -11,13 +12,14 @@ import type { SavedLocation } from './CityInput'
 import { ResearchIndex } from './ResearchIndex'
 import { AgentExtensions } from './AgentExtensions'
 import { ModelSettings } from './ModelSettings'
+import { CompanyReference } from './CompanyReference'
 import { ResumeImport } from './ResumeImport'
 import { navigateTabs } from './tabNavigation'
 import { ChatWorkspace } from './chat/ChatWorkspace'
-import type { Analysis, BrowserStatus, Evidence, Job, PageInfo, Source, Task } from './api'
+import type { Analysis, BrowserStatus, Evidence, Job, PageInfo, ReliabilityHistory, ReliabilityReport, Source, Task } from './api'
 
 const transportNames: Record<string, string> = { http_api: '接口', browser_page: '需浏览器', manual: '手动' }
-const statusNames: Record<string, string> = { completed: '已完成', success: '已完成', running: '采集中', pending: '等待中', failed: '失败', needs_login: '需要登录', needing_login: '需要登录', login_required: '需要登录', needs_verification: '需要验证', verification_required: '需要验证', requires_verification: '需要验证', unsupported: '暂不支持', available: '可用', ready: '可用', not_configured: '未配置', blocked: '访问受限', backoff: '退避等待' }
+const statusNames: Record<string, string> = { completed: '已完成', success: '已完成', running: '采集中', pending: '等待中', failed: '失败', needs_login: '需要登录', needing_login: '需要登录', login_required: '需要登录', needs_verification: '需要验证', verification_required: '需要验证', requires_verification: '需要验证', unsupported: '暂不支持', available: '可用', ready: '可用', not_configured: '未配置', blocked: '访问受限', backoff: '退避等待', opt_in: '需你自行开启', skipped: '已跳过', degraded: '已降级留档' }
 const dimensionNames: Record<string, string> = { skill: '技能', skills: '技能', experience: '经历与职责', domain: '行业与业务', industry: '行业与业务', preference: '求职偏好', preferences: '求职偏好' }
 const requirementNames: Record<string, string> = { met: '满足', matched: '满足', satisfied: '满足', partial: '部分满足', not_met: '未满足', unmet: '未满足', missing: '未满足', unknown: '待确认', confirmed: '满足' }
 function needsFullJd(job: Job) {
@@ -73,6 +75,10 @@ export default function App() {
   const [detailLoading, setDetailLoading] = useState(false)
   const [tab, setTab] = useState<'overview' | 'analysis' | 'evidence'>('overview')
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
+  const [reliability, setReliability] = useState<ReliabilityReport | null>(null)
+  const [reliabilityHistory, setReliabilityHistory] = useState<ReliabilityHistory | null>(null)
+  const [reliabilityAction, setReliabilityAction] = useState<{ label: string; status: string; message: string } | null>(null)
+  const [evidenceFocus, setEvidenceFocus] = useState('')
   const [resumeText, setResumeText] = useState('')
   const [resumeFormat, setResumeFormat] = useState('text')
   const [resumeRevision, setResumeRevision] = useState<number | null>(null)
@@ -141,11 +147,50 @@ export default function App() {
     setDetailLoading(true)
     try {
       const data = await api<{ job: Job; evidence: Evidence[]; company_evidence: Evidence[]; evidence_total: number }>(`/jobs/${encodeURIComponent(id)}`)
-      if (token === detailRequest.current) setDetail(data)
+      if (token === detailRequest.current) {
+        setDetail(data)
+        // 先清空上一家的报告，再读这一家的：GET 走后端的 peek，查不到也只是不显示，不会写出 companies 行。
+        setReliability(null)
+        setReliabilityHistory(null)
+        setReliabilityAction(null)
+        const company = data.job.company
+        getReliability(company).then(result => {
+          if (token === detailRequest.current && data.job.id === activeJobId.current) setReliability(result.report)
+        }).catch(() => { /* 没有生成过参考时这里什么都不显示 */ })
+        getReliabilityHistory(company).then(result => {
+          if (token === detailRequest.current && data.job.id === activeJobId.current) setReliabilityHistory(result.history)
+        }).catch(() => { /* 没有历史快照时趋势区不显示 */ })
+      }
     } catch (err) { if (token === detailRequest.current) toast((err as Error).message, 'error') }
     finally { if (token === detailRequest.current) setDetailLoading(false) }
   }, [])
-  function selectJob(id: string) { jobGeneration.current++; activeJobId.current = id; setSelectedId(id); setDetail(null); setAnalysis(null); setTab('overview'); void loadDetail(id) }
+  function selectJob(id: string) { jobGeneration.current++; activeJobId.current = id; setSelectedId(id); setDetail(null); setAnalysis(null); setReliability(null); setReliabilityHistory(null); setReliabilityAction(null); setEvidenceFocus(''); setTab('overview'); void loadDetail(id) }
+  function openReferenceEvidence(evidenceId: string) { setEvidenceFocus(evidenceId); setTab('evidence') }
+  async function recomputeReference() {
+    if (!job) return
+    const company = job.company, id = job.id, generation = jobGeneration.current
+    await perform('reliability', async () => {
+      const result = await computeReliability(company)
+      if (generation === jobGeneration.current && id === activeJobId.current) {
+        setReliability(result); setReliabilityAction(null)
+        setReliabilityHistory((await getReliabilityHistory(company)).history)
+      }
+    })
+  }
+  async function runReferenceAction(kind: 'coverage' | 'extract') {
+    if (!job) return
+    const company = job.company, id = job.id, generation = jobGeneration.current
+    const label = kind === 'coverage' ? '用已有材料算覆盖度' : '从材料里抽取信号'
+    await perform('reliability', async () => {
+      // 采集与抽取的 status、message 一律照后端原文显示，不改写、不美化。
+      const result = kind === 'coverage' ? await collectCompanySignals(company, 'jobscope_jobs') : await extractCompanySignals(company)
+      if (generation !== jobGeneration.current || id === activeJobId.current) return
+      setReliabilityAction({ label, status: result.status, message: result.message })
+      if (kind === 'extract' && result.status === 'skipped') return
+      setReliability(await computeReliability(company))
+      setReliabilityHistory((await getReliabilityHistory(company)).history)
+    })
+  }
   async function perform(key: string, action: () => Promise<void>) {
     setBusy(key)
     try { await action() } catch (err) { toast((err as Error).message, 'error') }
@@ -271,9 +316,9 @@ export default function App() {
               <div className="detail-heading"><div className="detail-kicker"><span>{sourceNames[job.source] || job.source}</span><External url={job.url}>查看原始岗位</External></div><h2>{job.title}</h2><div className="detail-company">{job.company}<span>·</span><Icon name="pin" size={14} />{job.location || '地点待确认'}</div><div className="detail-heading-bottom"><strong>{job.salary || '薪资未披露'}</strong><Button className="button secondary small" busy={busy === 'analyze'} disabled={Boolean(busy) || needsFullJd(job)} onClick={() => void analyze()}><Icon name="check" size={16} />评估适配</Button></div></div>
               <div className="jd-state"><div><strong>{job.description_status === 'complete' ? '完整JD已保存' : needsFullJd(job) ? '仅列表摘要 · 待补全' : '岗位材料已保存'}</strong><p>{job.detail_collected_at ? `正文读取于 ${date(job.detail_collected_at)}` : needsFullJd(job) ? ((job.source === 'boss' || job.source === 'zhaopin') ? '需要完整职责与任职要求，才能评估是否适合投递' : '该平台列表未给出完整职责，可在岗位档案补充后再评估') : '请核对岗位材料完整性及原始出处'}</p></div>{(job.source === 'boss' || job.source === 'zhaopin') && <Button className="button secondary small" busy={busy === 'job-detail'} disabled={Boolean(busy)} onClick={() => void perform('job-detail', async () => { const id = job.id, generation = jobGeneration.current; const result = await post<{ task: Task; job: Job }>(`/jobs/${encodeURIComponent(id)}/detail`); toast(result.task.message); await Promise.all([generation === jobGeneration.current ? loadDetail(id) : Promise.resolve(), loadJobs(), refreshMetadata()]); if (generation === jobGeneration.current) setAnalysis(null) })}>{job.description_status === 'complete' ? '更新完整职责' : '读取完整职责'}</Button>}</div><div className="detail-tabs" role="tablist" aria-label="岗位档案内容" onKeyDown={navigateTabs}>{(['overview', 'analysis', 'evidence'] as const).map(item => <button key={item} id={`job-${item}-tab`} role="tab" aria-controls="job-detail-panel" tabIndex={tab === item ? 0 : -1} aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item === 'overview' ? '岗位与公司' : item === 'analysis' ? '适配分析' : '证据资料'}{item === 'evidence' && <span>{evidenceTotal}</span>}</button>)}</div>
               <div id="job-detail-panel" className="detail-content" role="tabpanel" aria-labelledby={`job-${tab}-tab`}>
-                {tab === 'overview' && <><div className="section-label"><span className="label-line" />岗位描述</div><div className="description-text">{plain(job.description) || '尚无岗位描述，请补充原始岗位资料。'}</div><div className="company-section"><div className="section-heading"><div><span className="section-label">公司情报</span><h3>了解 {job.company}</h3></div><Button className="button secondary small" busy={busy === 'company'} disabled={Boolean(busy)} onClick={() => void collectCompany()}>检索公告<Icon name="arrow" size={14} /></Button></div><p className="muted body-small">从公开公告开始核实经营信息。公告标题与元信息不等于财报正文或业绩结论。</p>{detail.company_evidence?.length ? <div className="company-evidence-list">{detail.company_evidence.slice(0, 4).map(e => <div key={e.id}><span className="tiny-label">{date(e.published_at)}</span><External url={e.url}>{e.title}</External></div>)}</div> : <div className="inline-empty">尚未收集到该公司的资料。你可以检索公开公告，或补充已有材料。</div>}<button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充公司资料</button></div></>}
+                {tab === 'overview' && <><div className="section-label"><span className="label-line" />岗位描述</div><div className="description-text">{plain(job.description) || '尚无岗位描述，请补充原始岗位资料。'}</div><div className="company-section"><div className="section-heading"><div><span className="section-label">公司情报</span><h3>了解 {job.company}</h3></div><Button className="button secondary small" busy={busy === 'company'} disabled={Boolean(busy)} onClick={() => void collectCompany()}>检索公告<Icon name="arrow" size={14} /></Button></div><p className="muted body-small">从公开公告开始核实经营信息。公告标题与元信息不等于财报正文或业绩结论。</p>{detail.company_evidence?.length ? <div className="company-evidence-list">{detail.company_evidence.slice(0, 4).map(e => <div key={e.id}><span className="tiny-label">{date(e.published_at)}</span><External url={e.url}>{e.title}</External></div>)}</div> : <div className="inline-empty">尚未收集到该公司的资料。你可以检索公开公告，或补充已有材料。</div>}<button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充公司资料</button><CompanyReference report={reliability} history={reliabilityHistory} busy={busy === 'reliability'} action={reliabilityAction} onCompute={() => void recomputeReference()} onCoverage={() => void runReferenceAction('coverage')} onExtract={() => void runReferenceAction('extract')} onOpenEvidence={openReferenceEvidence} onOpenEvidenceModal={() => openModal('evidence')} /></div></>}
                 {tab === 'analysis' && (!analysis ? <Empty title={busy === 'analyze' ? '正在对应岗位要求…' : '让经历与要求逐项对照'} icon="resume">{busy === 'analyze' ? '分析完成后，将展示匹配依据、未知项与面试核实问题。' : <>{resumeSaved ? '点击“评估适配”，查看有依据的匹配与缺口。' : <>先在<button className="inline-button" onClick={() => setView('resume')}>我的简历</button>保存个人经历，再生成适配分析。</>}分数仅供辅助比较，不代表录用概率。</>}</Empty> : <AnalysisView analysis={analysis} />)}
-                {tab === 'evidence' && <><div className="section-heading"><div><h3>证据与出处</h3></div><button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充资料</button></div>{evidenceTotal ? <JobEvidence key={job.id} jobId={job.id} /> : <Empty title="尚无证据资料">采集岗位或补充公司材料后，原文与来源会保存在这里。</Empty>}</>}
+                {tab === 'evidence' && <><div className="section-heading"><div><h3>证据与出处</h3></div><button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充资料</button></div>{evidenceTotal ? <JobEvidence key={job.id} jobId={job.id} focus={evidenceFocus} /> : <Empty title="尚无证据资料">采集岗位或补充公司材料后，原文与来源会保存在这里。</Empty>}</>}
               </div>
               <section className="chat-section job-chat"><ChatWorkspace scope={{ kind: 'job', jobId: job.id, company: job.company, title: job.title }} modelConfigured={modelConfigured} /></section>
             </>}
@@ -283,7 +328,7 @@ export default function App() {
 
       {view === 'resume' && <><section className="page-intro"><div><h1>我的简历</h1><p>你的简历是适配分析的依据，保存在当前本地工作区。</p></div>{resumeRevision != null && <span className="revision-label">版本 {resumeRevision}</span>}</section><div className="resume-layout"><form className="paper-panel resume-editor" onSubmit={saveResume}><div className="section-heading"><h2>简历与事实档案</h2><label className="format-select"><span className="sr-only">简历格式</span><select value={resumeFormat} onChange={event => { setResumeFormat(event.target.value); setResumeSaved(false) }}><option value="text">简历纯文本 / Markdown</option><option value="facts_yaml">ResumeLoom facts.yaml</option></select></label></div><ResumeImport disabled={Boolean(busy) || loading} hasText={Boolean(resumeText.trim())} onApply={(text, format) => { setResumeText(text); setResumeFormat(format); setResumeSaved(false); toast('已提取并填入编辑区，请核对内容后保存。') }} /><label htmlFor="resume-text" className="field-label">简历正文 · 可直接编辑或粘贴</label><textarea className="resume-textarea" id="resume-text" value={resumeText} onChange={event => { setResumeText(event.target.value); setResumeSaved(false) }} required maxLength={100000} spellCheck={false} placeholder={resumeFormat === 'facts_yaml' ? 'schema_version: 1\nfacts:\n  ...' : '填写技能、工作经历、项目经验，以及地点和薪资等求职偏好。\n\n建议保留具体职责、项目背景和经过确认的成果。'} /><div className="editor-footer"><span>{resumeText.length.toLocaleString()} 字符 · {resumeSaved ? '已保存' : '未保存的修改'}</span><Button className="button primary" busy={busy === 'resume'} disabled={Boolean(busy)} type="submit">保存到本地<Icon name="check" size={17} /></Button></div></form><aside className="resume-guide"><h2>整理可核对的经历</h2><div className="guide-item"><b>01</b><div><h3>保留具体经历</h3><p>技能、职责和项目事实，比笼统的自我评价更有帮助。</p></div></div><div className="guide-item"><b>02</b><div><h3>未知就留作未知</h3><p>未提到的技能不能自动认定为不会，也不能当作已经掌握。</p></div></div><div className="guide-item"><b>03</b><div><h3>复用 ResumeLoom</h3><p>可导入 PDF、Word .docx 和文本文件，也可使用 facts.yaml。扫描件需先 OCR；旧版 .doc 请另存为 .docx。</p></div></div><div className="privacy-note"><Icon name="book" size={18} /><p>文件在本机提取文字，确认保存后仅保留文本。启用外部模型分析时，相关资料可能发送至你配置的模型服务。</p></div></aside></div></>}
 
-      {view === 'sources' && <><section className="page-intro"><div><h1>数据与采集</h1><p>接口优先，浏览器补充。每次采集都保留真实状态。</p></div><Button className="button secondary" busy={busy === 'metadata'} onClick={() => void perform('metadata', refreshMetadata)}>刷新状态</Button></section><div className="sources-grid">{sources.length ? sources.map(item => <article className="source-card paper-panel" key={item.id}><div className="section-heading"><span className="source-icon"><Icon name={item.id === 'cninfo' ? 'book' : 'globe'} /></span><Badge value={item.status} /></div><h2>{item.name}</h2><p>{item.description}</p><div className="source-card-footer"><span>{{ http_api: 'HTTP 接口', browser_page: '浏览器会话', manual: '用户材料' }[item.transport_mode] || item.transport_mode}</span><span>{item.id}</span></div></article>) : <div className="paper-panel"><Empty title="等待数据源状态">请确认本地后端服务已启动，然后刷新状态。</Empty></div>}</div><section className="browser-panel paper-panel"><div><div className="section-label">浏览器会话</div><h2>从已登录的浏览器采集</h2><p>使用项目专属 Chrome 配置目录。打开浏览器后，请在该窗口登录要采集的平台并完成验证，再返回这里采集。</p><span className="browser-status"><span className={`connection-dot ${browser?.running ? 'connected' : ''}`} />{browser?.message || '浏览器状态未知'}</span></div><div className="browser-actions"><Button className="button secondary" busy={busy === 'browser-start'} disabled={Boolean(busy)} onClick={() => void perform('browser-start', async () => { const result = await post<BrowserStatus>(`/browser/start?source=${encodeURIComponent(browserSource)}`); setBrowser(result); toast(result.message); await refreshMetadata() })}><Icon name="globe" size={17} />打开专用浏览器</Button><form onSubmit={event => { event.preventDefault(); void collectBrowser() }}><label className="field-label" htmlFor="browser-source">采集平台</label><select id="browser-source" value={browserSource} onChange={event => setBrowserSource(event.target.value)}>{browserSources.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><label className="field-label" htmlFor="browser-query">岗位关键词</label><input id="browser-query" value={query} onChange={event => setQuery(event.target.value)} placeholder="例如：Python 后端" required maxLength={200} /><label className="field-label" htmlFor="browser-location">城市（可选）</label><CityInput id="browser-location" cities={browserCities} hot={browserSourceItem?.hot || []} pinyin={cityPinyin} locations={locations} value={location} onChange={setLocation} placeholder={browserCities.length ? '输入或点选城市' : '例如：北京'} maxLength={100} /><label className="field-label" htmlFor="browser-limit">采集数量</label><input id="browser-limit" type="number" min={1} max={50} value={browserLimit} onChange={event => setBrowserLimit(Math.max(1, Math.min(50, Number(event.target.value) || 20)))} inputMode="numeric" /><Button className="button primary" busy={busy === 'browser-collect'} disabled={Boolean(busy)} type="submit">从已登录浏览器采集<Icon name="arrow" size={16} /></Button></form></div></section><DetailBatch onUpdate={refreshMetadata} /><ResearchIndex /><section className="paper-panel tasks-panel"><div className="section-heading"><div><h2>采集记录</h2></div><span className="muted body-small">{tasksInfo.total} 次任务</span></div>{tasks.length ? <div className="task-table-wrap"><table><thead><tr><th scope="col">查询 / 来源</th><th scope="col">状态</th><th scope="col">资料数</th><th scope="col">时间</th><th scope="col">说明</th></tr></thead><tbody>{tasks.map(task => <tr key={task.id}><td><strong>{task.query || '未指定'}</strong><small>{sourceNames[task.source] || task.source}</small></td><td><Badge value={task.status} /></td><td>{task.count ?? '—'}</td><td className="nowrap">{date(task.created_at)}</td><td className="task-message">{task.message || '—'}</td></tr>)}</tbody></table></div> : <Empty title="还没有采集记录">发起一次岗位或公司检索，结果与失败原因都会记录在这里。</Empty>}<Pagination info={tasksInfo} label="采集记录" busy={Boolean(busy)} onPage={page => void perform('page-tasks', () => loadTasks(page))} /></section></>}
+      {view === 'sources' && <><section className="page-intro"><div><h1>数据与采集</h1><p>接口优先，浏览器补充。每次采集都保留真实状态。</p></div><Button className="button secondary" busy={busy === 'metadata'} onClick={() => void perform('metadata', refreshMetadata)}>刷新状态</Button></section><div className="sources-grid">{sources.length ? sources.map(item => <article className="source-card paper-panel" key={item.id}><div className="section-heading"><span className="source-icon"><Icon name={item.id === 'cninfo' ? 'book' : 'globe'} /></span><Badge value={item.status} /></div><h2>{item.name}</h2><p>{item.description}</p><div className="source-card-footer"><span>{{ http_api: 'HTTP 接口', browser_page: '浏览器会话', manual: '用户材料' }[item.transport_mode] || item.transport_mode}</span><span>{item.id}</span></div></article>) : <div className="paper-panel"><Empty title="等待数据源状态">请确认本地后端服务已启动，然后刷新状态。</Empty></div>}</div><SignalSourceSettings /><section className="browser-panel paper-panel"><div><div className="section-label">浏览器会话</div><h2>从已登录的浏览器采集</h2><p>使用项目专属 Chrome 配置目录。打开浏览器后，请在该窗口登录要采集的平台并完成验证，再返回这里采集。</p><span className="browser-status"><span className={`connection-dot ${browser?.running ? 'connected' : ''}`} />{browser?.message || '浏览器状态未知'}</span></div><div className="browser-actions"><Button className="button secondary" busy={busy === 'browser-start'} disabled={Boolean(busy)} onClick={() => void perform('browser-start', async () => { const result = await post<BrowserStatus>(`/browser/start?source=${encodeURIComponent(browserSource)}`); setBrowser(result); toast(result.message); await refreshMetadata() })}><Icon name="globe" size={17} />打开专用浏览器</Button><form onSubmit={event => { event.preventDefault(); void collectBrowser() }}><label className="field-label" htmlFor="browser-source">采集平台</label><select id="browser-source" value={browserSource} onChange={event => setBrowserSource(event.target.value)}>{browserSources.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select><label className="field-label" htmlFor="browser-query">岗位关键词</label><input id="browser-query" value={query} onChange={event => setQuery(event.target.value)} placeholder="例如：Python 后端" required maxLength={200} /><label className="field-label" htmlFor="browser-location">城市（可选）</label><CityInput id="browser-location" cities={browserCities} hot={browserSourceItem?.hot || []} pinyin={cityPinyin} locations={locations} value={location} onChange={setLocation} placeholder={browserCities.length ? '输入或点选城市' : '例如：北京'} maxLength={100} /><label className="field-label" htmlFor="browser-limit">采集数量</label><input id="browser-limit" type="number" min={1} max={50} value={browserLimit} onChange={event => setBrowserLimit(Math.max(1, Math.min(50, Number(event.target.value) || 20)))} inputMode="numeric" /><Button className="button primary" busy={busy === 'browser-collect'} disabled={Boolean(busy)} type="submit">从已登录浏览器采集<Icon name="arrow" size={16} /></Button></form></div></section><DetailBatch onUpdate={refreshMetadata} /><ResearchIndex /><section className="paper-panel tasks-panel"><div className="section-heading"><div><h2>采集记录</h2></div><span className="muted body-small">{tasksInfo.total} 次任务</span></div>{tasks.length ? <div className="task-table-wrap"><table><thead><tr><th scope="col">查询 / 来源</th><th scope="col">状态</th><th scope="col">资料数</th><th scope="col">时间</th><th scope="col">说明</th></tr></thead><tbody>{tasks.map(task => <tr key={task.id}><td><strong>{task.query || '未指定'}</strong><small>{sourceNames[task.source] || task.source}</small></td><td><Badge value={task.status} /></td><td>{task.count ?? '—'}</td><td className="nowrap">{date(task.created_at)}</td><td className="task-message">{task.message || '—'}</td></tr>)}</tbody></table></div> : <Empty title="还没有采集记录">发起一次岗位或公司检索，结果与失败原因都会记录在这里。</Empty>}<Pagination info={tasksInfo} label="采集记录" busy={Boolean(busy)} onPage={page => void perform('page-tasks', () => loadTasks(page))} /></section></>}
 
       <div hidden={view !== 'extensions'}><AgentExtensions /></div>
       {view === 'settings' && <ModelSettings onSaved={refreshMetadata} />}
@@ -327,6 +372,62 @@ function AnalysisView({ analysis }: { analysis: Analysis }) {
 }
 function AnalysisList({ title, items }: { title: string; items: string[] }) { return <section className="analysis-list"><h4>{title}</h4>{items?.length ? <ul>{items.map((item, index) => <li key={index}>{readable(item)}</li>)}</ul> : <p className="muted">暂无可支持的结论。</p>}</section> }
 
+// 付费来源的设置入口：默认零付费，密钥只写不读。
+// 和 ModelSettings 的密钥字段一套做法——回填永远只显示 key_set（「已设置」），页面任何位置都不出现原文；
+// 关闭开关只是让后端不再调用该来源，已存的密钥仍留在库里（后端语义是关了就不调用，不是删除）。
+function SignalSourceSettings() {
+  const [sources, setSources] = useState<Record<string, SignalSource> | null>(null)
+  const [drafts, setDrafts] = useState<Record<string, { mode: 'disabled' | 'enabled'; key: string; url: string }>>({})
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState('')
+  const [feedback, setFeedback] = useState<Record<string, string>>({})
+  const load = useCallback(async () => {
+    const data = await listSignalSources()
+    setSources(data.sources)
+    // 地址不是秘密，照常回填好让你看清现在连的是哪个端点；密钥永远只留 key_set 这个布尔。
+    setDrafts(Object.fromEntries(Object.entries(data.sources).map(([id, item]) => [id, { mode: item.mode, key: '', url: item.url || '' }])))
+  }, [])
+  useEffect(() => { void load().catch(err => setError((err as Error).message)) }, [load])
+  async function save(id: string) {
+    if (busy) return
+    setBusy(id); setError(''); setFeedback(current => ({ ...current, [id]: '' }))
+    try {
+      const draft = drafts[id]
+      // key 留空即「不改密钥」，由后端沿用已存的那一条；这里不把原文读回来，也就没有回显一说。
+      // 地址改了又留空密钥时，后端会拒绝保存并要你重填密钥——这条约束在这里原样交给它。
+      const result = await saveSignalSource(id, { mode: draft.mode, key: draft.key, url: draft.url })
+      setSources(current => current ? { ...current, [id]: result } : current)
+      setDrafts(current => ({ ...current, [id]: { mode: result.mode, key: '', url: result.url || '' } }))
+      setFeedback(current => ({ ...current, [id]: result.mode === 'enabled'
+        ? '已保存，采集时才会使用该来源。'
+        : '已关闭调用；已保存的密钥留在本机数据库里，重新启用即可继续使用。' }))
+    } catch (err) { setFeedback(current => ({ ...current, [id]: (err as Error).message })) }
+    finally { setBusy('') }
+  }
+  return <section className="paper-panel signal-sources" aria-label="求职参考来源">
+    <div className="section-heading"><div><span className="section-label">求职参考</span><h2>信号来源与付费接口</h2><p className="muted body-small">免费官方来源与本项目已存材料默认启用；付费来源需要你自备密钥并显式开启，JobScope 不代持密钥、不默认调用。</p></div><Button className="button secondary small" busy={Boolean(busy)} onClick={() => void load().catch(err => setError((err as Error).message))}>刷新</Button></div>
+    {error && <p className="alert error" role="alert">{error}</p>}
+    {!sources ? <p role="status">正在读取来源登记…</p> : <div className="signal-source-rows">{Object.entries(sources).map(([id, item]) => {
+      const draft = drafts[id]
+      return <article key={id}>
+        <div className="signal-source-head"><div><strong>{item.name}</strong><span className="tiny-label">{id} · {item.tier === 'free' ? '免费来源' : '付费来源'}</span></div><Badge value={item.status} /></div>
+        <p className="tiny-label">{item.description}</p>
+        <p className="tiny-label">规则：{item.rules.join('、')} · 当前{item.mode === 'enabled' ? '已启用' : '未启用'}{item.tier === 'paid' && item.key_set ? ' · 密钥已设置' : ''}</p>
+        {draft && <div className="signal-source-edit">
+          <label className="signal-source-mode"><input type="checkbox" checked={draft.mode === 'enabled'} disabled={Boolean(busy)} onChange={event => setDrafts(current => ({ ...current, [id]: { ...current[id], mode: event.target.checked ? 'enabled' as const : 'disabled' as const } }))} />启用该来源</label>
+          {item.tier === 'paid' && <label className="signal-source-key"><span>API 密钥 <span className="muted">{item.key_set ? '· 已设置，留空则保留' : '· 填写你自己的密钥'}</span></span><input type={'pass' + 'word'} autoComplete={'off'} spellCheck={false} maxLength={4000} value={draft.key} disabled={Boolean(busy)} onChange={event => setDrafts(current => ({ ...current, [id]: { ...current[id], key: event.target.value } }))} placeholder={item.key_set ? '已设置，页面不读取原文' : '填写密钥'} /></label>}
+          {/* 接口地址不是秘密：与密钥输入同样的观感，但照常回填，好让你看清现在连的是哪个端点。 */}
+          {item.tier === 'paid' && <label className="signal-source-key"><span>接口地址 <span className="muted">· 服务商给的取数地址，不要把密钥写进地址</span></span><input type="text" autoComplete={'off'} spellCheck={false} maxLength={2000} value={draft.url} disabled={Boolean(busy)} onChange={event => setDrafts(current => ({ ...current, [id]: { ...current[id], url: event.target.value } }))} placeholder="https://… 例如 /v1/company/profile" /></label>}
+          {item.tier === 'paid' && item.key_set && draft.url !== (item.url || '') && !draft.key && <p className="tiny-label">改了地址就得重填密钥，否则后端会拒绝这次保存。</p>}
+          <Button className="button secondary small" busy={busy === id} disabled={!draft || (draft.mode === item.mode && !draft.key && draft.url === (item.url || ''))} onClick={() => void save(id)}>保存设置</Button>
+        </div>}
+        {feedback[id] && <p className="tiny-label" role="status">{feedback[id]}</p>}
+      </article>
+    })}</div>}
+    <p className="tiny-label">密钥保存在本机数据库中，不加密，页面不会读回密钥原文；关闭开关只是停止调用，不会删除已保存的密钥。付费来源取哪个数字由后端那份按通用写法预置的字段映射决定，尚未对照任何服务商文档核实：采集回来的说明会点名每条规则试过的字段名，请照你采购的接口文档校正。</p>
+  </section>
+}
+
 function SalaryView({ value }: { value: unknown }) {
   if (!value || typeof value !== 'object') return <div className="analysis-note"><h4>薪酬口径</h4><p>{value ? readable(value) : '待核实：尚无可比较的薪酬资料。'}</p></div>
   const salary = value as Record<string, unknown>
@@ -341,7 +442,7 @@ function HardCondition({ value }: { value: unknown }) {
   return <div><strong>{readable(item.requirement || item.condition || item.jd_quote || '岗位硬性要求')}</strong><span>{requirementNames[String(item.status)] || '待核实'}</span>{item.rationale != null && <p>{readable(item.rationale)}</p>}</div>
 }
 
-function JobEvidence({ jobId }: { jobId: string }) {
+function JobEvidence({ jobId, focus = '' }: { jobId: string; focus?: string }) {
   const [items, setItems] = useState<Evidence[]>([])
   const [info, setInfo] = useState<PageInfo>(emptyPage)
   const [busy, setBusy] = useState(false)
@@ -356,5 +457,13 @@ function JobEvidence({ jobId }: { jobId: string }) {
     finally { if (token === request.current) setBusy(false) }
   }
   useEffect(() => { void load(); return () => { request.current++ } }, [jobId])
-  return <>{items.map(item => <EvidenceCard key={item.id} evidence={item} />)}<Pagination info={info} label="岗位证据" busy={busy} onPage={page => void load(page)} /></>
+  // 求职参考里的「出处」跳到这里：命中那条证据时展开并滚过去，让它自己开口说来源。
+  useEffect(() => {
+    if (!focus) return
+    const target = document.getElementById(`evidence-entry-${focus}`)
+    if (!target) return
+    target.querySelector('details')?.setAttribute('open', '')
+    target.scrollIntoView({ block: 'center' })
+  }, [focus, items])
+  return <>{items.map(item => <div key={item.id} id={`evidence-entry-${item.id}`} className={item.id === focus ? 'evidence-focus' : undefined}><EvidenceCard evidence={item} /></div>)}<Pagination info={info} label="岗位证据" busy={busy} onPage={page => void load(page)} /></>
 }
