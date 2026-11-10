@@ -59,17 +59,18 @@ export function McpManager({ servers, busy, act, focusId, onFocusConsumed }: { s
   }
   return <div className="ext-shell">
     <aside className="ext-list" aria-label="MCP 连接列表">
+      <h2 className="ext-list-heading">MCP 连接 <span>{servers.length}</span></h2>
+      <button type="button" className="button primary small" onClick={startCreate} disabled={Boolean(busy)}>添加 MCP 连接</button>
       <input type="search" aria-label="搜索连接" placeholder="搜索连接" value={search} onChange={event => setSearch(event.target.value)} />
-      <div className="ext-list-items">{filtered.map(item => <button key={item.id} type="button" className={`ext-item ${selected === item.id ? 'active' : ''}`} onClick={() => { setSelected(item.id); setEditing(false); setToolSearch('') }}>
+      <div className="ext-list-items">{filtered.map(item => <button key={item.id} type="button" className={`ext-item ${selected === item.id ? 'active' : ''}`} aria-pressed={selected === item.id} onClick={() => { setSelected(item.id); setEditing(false); setToolSearch('') }}>
         <span className={`ext-dot ${serverState(item).ready ? 'ready' : ''}`} aria-hidden="true" />
         <span className="ext-item-body"><strong>{item.name}</strong><small>{item.transport === 'stdio' ? '本地命令' : item.transport === 'sse' ? 'SSE' : 'HTTP'} · {item.allowed_tools.length}/{item.tools.length} 工具 · {serverState(item).label}</small></span>
-      </button>)}{!servers.length && <div className="extensions-empty"><span className="extensions-empty-mark" aria-hidden="true">＋</span><h3>连接第一个 MCP 工具</h3><p>去市场一键添加，或点击下方按钮手动配置服务地址</p><small>项目检索、薪资查询和简历读取已内置，无需另行配置</small></div>}{Boolean(servers.length) && !filtered.length && <p className="muted">没有匹配的连接</p>}</div>
-      <button type="button" className="button secondary small" onClick={startCreate} disabled={Boolean(busy)}>添加 MCP 连接</button>
+      </button>)}{!servers.length && <p className="muted">尚未添加连接。</p>}{Boolean(servers.length) && !filtered.length && <p className="muted">没有匹配的连接</p>}</div>
     </aside>
     <section className="ext-detail" aria-label="MCP 连接详情">
       {editing ? <>
         <div className="ext-detail-head"><h2>{selected ? '编辑 MCP 连接' : '添加 MCP 连接'}</h2>{selected && <button type="button" className="inline-button" onClick={() => setEditing(false)}>返回详情</button>}</div>
-        <form className="agent-connection-form" onSubmit={event => { event.preventDefault(); void save() }}><fieldset disabled={Boolean(busy)}><MCPConnectionFields key={server?.id || 'new'} draft={draft} onChange={setDraft} editing={Boolean(selected)} envKeys={server?.env_keys || []} headerKeys={server?.headers_set || []} />
+        <form className="agent-connection-form ext-detail-form" onSubmit={event => { event.preventDefault(); void save() }}><fieldset disabled={Boolean(busy)}><MCPConnectionFields key={server?.id || 'new'} draft={draft} onChange={setDraft} editing={Boolean(selected)} envKeys={server?.env_keys || []} headerKeys={server?.headers_set || []} />
           <p className="field-help">保存后：测试连接 → 选择允许调用的工具 → 启用连接</p><div className="agent-form-actions"><button className="button secondary" type="button" onClick={() => setEditing(false)}>取消</button><button className="button primary" type="submit">{busy === 'save' ? '保存中…' : '保存连接'}</button></div></fieldset></form>
       </> : server ? <>
         <div className="ext-detail-head"><h2>{server.name}<span className={`extension-state ${serverState(server).ready ? 'ready' : ''}`}>{serverState(server).label}</span></h2><code className="market-endpoint">{server.transport === 'stdio' ? [server.command, ...server.args].join(' ') : server.url}</code></div>
@@ -88,7 +89,7 @@ export function McpManager({ servers, busy, act, focusId, onFocusConsumed }: { s
           <div className="agent-tools-list">{tools.map(tool => <div key={tool.name} className="agent-tool"><div><strong>{tool.name}</strong><p>{tool.description || '服务未提供工具说明'}</p></div><label className="agent-checkbox"><input type="checkbox" checked={server.allowed_tools.includes(tool.name)} disabled={Boolean(busy)} onChange={event => patch(server, { allowed_tools: event.target.checked ? [...server.allowed_tools, tool.name] : server.allowed_tools.filter(name => name !== tool.name), auto_tools: server.auto_tools.filter(name => name !== tool.name) })} />允许调用</label><label className="agent-checkbox"><input type="checkbox" checked={server.auto_tools.includes(tool.name)} disabled={Boolean(busy) || !server.allowed_tools.includes(tool.name)} onChange={event => patch(server, { auto_tools: event.target.checked ? [...server.auto_tools, tool.name] : server.auto_tools.filter(name => name !== tool.name) })} />自动执行</label></div>)}</div>
         </>}
         <p className="field-help">保存与测试都不会自动授予执行权限；启用后 Agent 每次调用仍需你确认，除非工具被标记为自动执行。</p>
-      </> : <div className="extensions-empty"><span className="extensions-empty-mark" aria-hidden="true">＋</span><h3>选择左侧连接查看详情</h3><p>测试、工具授权、编辑与导出都在这里完成</p></div>}
+      </> : <div className="extensions-empty"><h3>{servers.length ? '选择连接查看详情' : '接入你的 MCP 工具'}</h3><p>{servers.length ? '在连接列表中选择一项，管理测试、授权与配置。' : '从市场添加服务，或使用列表顶部的按钮手动配置。'}</p>{!servers.length && <small>项目检索、薪资查询和简历读取已内置，无需另行配置。</small>}</div>}
     </section>
   </div>
 }
