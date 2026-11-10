@@ -215,6 +215,8 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .search-footnote button { font-size: 12px; white-space: nowrap; color: #525252; padding: 0; align-self: start; min-height: 24px; }
 .research-layout { display: grid; grid-template-columns: 304px minmax(0, 1fr); gap: 24px; align-items: start; }
 .job-list-panel, .detail-panel { background: #fff; border: 1px solid var(--line); border-radius: 12px; min-width: 0; overflow: hidden; }
+/* clip 与 hidden 同样裁剪圆角，但容器本身不可再被（焦点滚动等）横向挪动；地点下拉超出面板时不再把列表挤偏。 */
+.job-list-panel { overflow: clip; }
 .panel-title { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 4px 12px; border-bottom: 1px solid var(--line); padding: 10px 14px; }
 .panel-title .job-select-bar { width: 100%; padding: 2px 0 0; background: none; border-bottom: 0; }
 .panel-title h2 { font-size: 14px; }
@@ -248,6 +250,7 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .job-archive-filters .source-select { display: flex; border: 1px solid var(--line); border-radius: 8px; padding: 2px 10px; }
 .job-archive-filters .source-select select { width: 100%; border: 0; background: transparent; font-size: 13px; padding: 5px 0; }
 .job-archive-filters .city-input { border: 1px solid var(--line); border-radius: 8px; padding: 2px 10px; }
+.job-archive-filters .city-suggestions { left: auto; right: 0; }
 .job-archive-filters .city-input input { padding: 5px 2px; }
 .salary-range { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 2px 10px; min-width: 0; }
 .salary-range input { width: 100%; min-width: 0; border: 0; background: transparent; padding: 5px 2px; font-size: 13px; }

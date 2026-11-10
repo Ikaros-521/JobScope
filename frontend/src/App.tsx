@@ -27,7 +27,7 @@ function needsFullJd(job: Job) {
 }
 function jobQuery(filters: { q: string; location: string; source: string; salaryMin: string; salaryMax: string }) {
   // 薪资输入单位是 K/月，后端按元比较；留空表示不限制。
-  const params = new URLSearchParams({ q: filters.q, location: filters.location, source: filters.source, page_size: '30' })
+  const params = new URLSearchParams({ q: filters.q, location: filters.location, source: filters.source, page_size: '100' })
   if (filters.salaryMin) params.set('salary_min', String(Math.round(Number(filters.salaryMin) * 1000)))
   if (filters.salaryMax) params.set('salary_max', String(Math.round(Number(filters.salaryMax) * 1000)))
   return params
