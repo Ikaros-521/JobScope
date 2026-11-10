@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, post } from './api'
+import { toast } from './toast'
 
 type Protocol = 'openai' | 'anthropic'
 type Provider = { mode: 'disabled' | 'remote' | 'local'; channel: string; protocol: Protocol; url: string; model: string; local_model: string; key_set: boolean; source: string }
@@ -28,19 +29,16 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
   const [drafts, setDrafts] = useState<Record<Target, Draft> | null>(null)
   const [channels, setChannels] = useState<Channel[]>([])
   const [lists, setLists] = useState<Partial<Record<Target, ModelList>>>({})
-  const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
-  const [feedback, setFeedback] = useState<Partial<Record<Target, string>>>({})
   useEffect(() => {
     let active = true
     void Promise.all([api<Settings>('/settings/models'), api<{ channels: Channel[] }>('/settings/channels')]).then(([value, catalog]) => {
       if (active) { setSaved(value); setDrafts({ llm: draftOf(value.llm), embedding: draftOf(value.embedding) }); setChannels(catalog.channels) }
-    }).catch(err => { if (active) setError((err as Error).message) })
+    }).catch(err => { if (active) toast((err as Error).message, 'error') })
     return () => { active = false }
   }, [])
   function edit(target: Target, changes: Partial<Draft>) {
     setDrafts(current => current ? { ...current, [target]: { ...current[target], ...changes } } : current)
-    setFeedback(current => ({ ...current, [target]: '' }))
     if (['channel', 'protocol', 'url', 'key', 'clear_key', 'mode'].some(key => key in changes)) setLists(current => ({ ...current, [target]: undefined }))
   }
   function chooseChannel(target: Target, channel: Channel) {
@@ -48,26 +46,25 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
   }
   async function action(target: Target, operation: 'save' | 'test' | 'discover') {
     if (!drafts || busy) return
-    setBusy(`${target}-${operation}`); setError(''); setFeedback(current => ({ ...current, [target]: '' }))
+    setBusy(`${target}-${operation}`)
     try {
       if (operation === 'discover') {
         const result = await post<ModelList>('/settings/models/discover', { target, config: payload(drafts[target]) })
         setLists(current => ({ ...current, [target]: result }))
-        setFeedback(current => ({ ...current, [target]: result.models.length ? `已获取 ${result.models.length} 个模型，输入名称即可筛选。` : '渠道返回空列表，可手动输入模型 ID 后测试。' }))
+        toast(result.models.length ? `已获取 ${result.models.length} 个模型，输入名称即可筛选。` : '渠道返回空列表，可手动输入模型 ID 后测试。')
       } else if (operation === 'test') {
         const result = await post<{ duration_ms: number; dimensions: number | null }>('/settings/models/test', { target, config: payload(drafts[target]) })
-        setFeedback(current => ({ ...current, [target]: `连接成功 · ${result.duration_ms} ms${result.dimensions ? ` · ${result.dimensions} 维` : ''}。测试未保存配置。` }))
+        toast(`连接成功 · ${result.duration_ms} ms${result.dimensions ? ` · ${result.dimensions} 维` : ''}。测试未保存配置。`)
       } else {
         const result = await api<Settings>('/settings/models', { method: 'PUT', body: JSON.stringify({ [target]: payload(drafts[target]) }) })
         setSaved(result); setDrafts(current => current ? { ...current, [target]: draftOf(result[target]) } : current)
-        setFeedback(current => ({ ...current, [target]: '已保存，后续请求立即使用此配置。' }))
+        toast('已保存，后续请求立即使用此配置。')
         await onSaved()
       }
-    } catch (err) { setFeedback(current => ({ ...current, [target]: (err as Error).message })) }
+    } catch (err) { toast((err as Error).message, 'error') }
     finally { setBusy('') }
   }
   return <><section className="page-intro"><div><h1>模型设置</h1><p>选择渠道，填入密钥，找到要使用的模型。</p></div><span className="revision-label">保存在本机</span></section>
-    {error && <p className="alert error" role="alert">{error}</p>}
     {!drafts || !saved ? <p role="status">正在读取模型配置…</p> : <div className="model-settings-layout"><div className="model-settings-forms">{(['llm', 'embedding'] as Target[]).map(target => {
       const draft = drafts[target], stored = saved[target]
       const channel = channels.find(item => item.id === draft.channel)
@@ -97,7 +94,6 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
         </>}
         {draft.mode === 'local' && <><label className="field-label" htmlFor={`${target}-local`}>已缓存模型名称或路径</label><input id={`${target}-local`} value={draft.local_model} onChange={event => edit(target, { local_model: event.target.value })} placeholder="BAAI/bge-small-zh-v1.5" required maxLength={1000} spellCheck={false} /><p className="field-help">读取本机已有缓存。测试会加载模型，首次可能稍慢。</p></>}
         <div className="model-settings-actions"><span className="muted body-small">{dirty ? '有未保存修改' : stored.source === 'environment' ? '当前来自启动环境' : stored.source === 'saved' ? '当前使用本机保存配置' : '尚未设置'}</span><button className="button secondary" type="button" disabled={!valid || draft.mode === 'disabled'} onClick={() => void action(target, 'test')}>{busy === `${target}-test` && <span className="spinner" />}测试连接</button><button className="button primary" type="submit" disabled={!valid || !dirty}>{busy === `${target}-save` && <span className="spinner" />}保存设置</button></div></fieldset>
-        {feedback[target] && <p className="model-settings-feedback" role="status">{feedback[target]}</p>}
       </form>
     })}</div><aside className="model-settings-guide"><h2>三个步骤即可连接</h2><ol><li>选择服务渠道与协议</li><li>填入该渠道的 API 密钥</li><li>获取模型，搜索选择后测试</li></ol><p>测试成功后保存，后续问答和分析立即使用新配置。测试发送固定文本，不包含岗位或简历。</p><h3>自定义渠道</h3><p>中转平台、企业网关和本机服务均可接入。选择实际支持的 OpenAI 或 Anthropic 协议，填入服务地址。</p><h3>模型列表</h3><p>在线列表取决于渠道支持与账户权限。预设只作参考；列表不可用时，直接输入控制台的模型 ID 后测试。</p><h3>语义检索</h3><p>保存向量模型后，到“数据与采集”构建语义向量。未构建或服务不可用时回退全文检索。</p><h3>数据与密钥</h3><p>调用外部模型时，会向所选渠道发送问题及相关材料。密钥保存在本机数据库中，不加密，页面不会读回密钥。</p></aside></div>}
   </>

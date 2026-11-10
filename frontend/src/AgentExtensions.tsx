@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api, type Extensions } from './api'
+import { toast } from './toast'
 import { MarketView } from './MarketView'
 import { McpManager } from './McpManager'
 import { SkillManager } from './SkillManager'
@@ -12,20 +13,18 @@ export function AgentExtensions() {
   const [tab, setTab] = useState<Tab>('market')
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState('')
-  const [feedback, setFeedback] = useState('')
-  const [error, setError] = useState('')
   const [focusServer, setFocusServer] = useState<string | null>(null)
   const [skillPrefill, setSkillPrefill] = useState('')
 
   async function refresh() { setData(await api<Extensions>('/agent/extensions')) }
-  useEffect(() => { void refresh().catch(err => setError((err as Error).message)).finally(() => setLoading(false)) }, [])
+  useEffect(() => { void refresh().catch(err => toast((err as Error).message, 'error')).finally(() => setLoading(false)) }, [])
   async function act(key: string, action: () => Promise<void>, message: string): Promise<boolean> {
     if (busy) return false
-    setBusy(key); setError(''); setFeedback('')
-    try { await action(); await refresh(); setFeedback(message); return true }
+    setBusy(key)
+    try { await action(); await refresh(); toast(message); return true }
     catch (err) {
       await refresh().catch(() => {}) // 失败时以服务端状态为准，避免乐观更新残留
-      setError((err as Error).message); return false
+      toast((err as Error).message, 'error'); return false
     }
     finally { setBusy('') }
   }
@@ -51,7 +50,6 @@ export function AgentExtensions() {
     <section className="page-intro"><div><h1>Agent 扩展</h1><p>从市场安装工具与方法，或手动接入自己的 MCP 服务</p></div><span className="revision-label">{enabledServers} 个连接启用 · {enabledSkills} 个 Skills 启用</span></section>
     <div className="agent-extension-body">
       <div className="extensions-toolbar"><div className="agent-tabs" role="group" aria-label="扩展类型"><button type="button" aria-pressed={tab === 'market'} onClick={() => setTab('market')}>市场</button><button type="button" aria-pressed={tab === 'mcp'} onClick={() => { setTab('mcp'); setFocusServer(null) }}>MCP 工具 <span>{data.servers.length}</span></button><button type="button" aria-pressed={tab === 'skills'} onClick={() => setTab('skills')}>Skills <span>{data.skills.length}</span></button></div></div>
-      {error && <p role="alert" className="alert error">{error}</p>}{feedback && <p role="status" className="agent-extension-feedback">{feedback}</p>}
       {loading && tab !== 'market' && <p role="status">正在读取扩展…</p>}
       {tab === 'market' && <MarketView busy={busy} onInstallMcp={entry => void installMcp(entry)} onInstallSkill={entry => void installSkill(entry)} onTemplate={useTemplate} />}
       {tab === 'mcp' && !loading && <McpManager servers={data.servers} busy={busy} act={act} focusId={focusServer} onFocusConsumed={() => setFocusServer(null)} />}
