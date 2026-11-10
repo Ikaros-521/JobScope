@@ -43,7 +43,9 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
   }, [])
 
   useEffect(() => {
-    threadBottom.current?.scrollIntoView({ block: 'end' })
+    // 只滚线程自己的容器：scrollIntoView 会连带滚动详情面板等祖先，选中岗位时会把面板滚过标题区。
+    const thread = threadBottom.current?.parentElement
+    if (thread) thread.scrollTop = thread.scrollHeight
   }, [messages.length, run?.answer, run?.reasoning, run?.steps.length, run?.approval])
 
   function toggleReasoning(value: boolean) {
