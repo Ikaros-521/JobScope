@@ -1378,6 +1378,38 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
   .main-workbench .company-link { padding: 3px 8px; font-size: 12px; }
   .main-workbench > .evidence-view > .library-chat-panel:not([hidden]) { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   .main-workbench .library-chat-panel .chat-page { flex: 1; min-height: 0; height: auto; }
+  /* 工作区管理三页（数据与采集 / Agent 扩展 / 模型设置）：紧凑框架，整页可滚、留白与卡片收紧。 */
+  .main-compact { height: 100dvh; overflow-y: auto; padding-bottom: 16px; }
+  .main-compact > .topbar { height: 44px; }
+  .main-compact > .page-intro { margin: 8px 0 10px; }
+  .main-compact .page-intro h1 { font-size: 20px; margin-bottom: 0; }
+  .main-compact .page-intro p { font-size: 13px; }
+  .main-compact .page-footer { display: none; }
+  .main-compact .paper-panel { padding: 16px; }
+  .main-compact .section-heading { margin-bottom: 10px; }
+  .main-compact .management-overview { gap: 10px; margin-bottom: 12px; }
+  .main-compact .management-overview > div { padding: 10px 14px; gap: 12px; }
+  .main-compact .overview-icon { width: 32px; height: 32px; border-radius: 8px; }
+  .main-compact .management-tabs { gap: 16px; margin-bottom: 12px; }
+  .main-compact .management-tabs button { min-height: 38px; }
+  .main-compact .sources-workspace { display: flex; flex-direction: column; }
+  .main-compact .browser-panel { gap: 20px; }
+  .main-compact .browser-guide h2 { font-size: 18px; }
+  .main-compact .collection-steps { gap: 10px; }
+  .main-compact .task-table-wrap th { padding: 7px 10px; }
+  .main-compact .task-table-wrap td { padding: 7px 10px; line-height: 1.6; }
+  .main-compact .extensions-view > * { min-width: 0; }
+  .main-compact .extensions-overview { gap: 10px; margin-bottom: 12px; }
+  .main-compact .extensions-toolbar { padding: 12px 16px; gap: 12px; }
+  .main-compact .extensions-description { padding: 12px 16px 0; }
+  .main-compact .ext-shell { margin-top: 12px; gap: 16px; }
+  .main-compact .ext-item { padding: 12px; }
+  .main-compact .ext-detail { padding: 16px; }
+  .main-compact .model-settings-layout { gap: 16px; }
+  .main-compact .model-settings-card { padding: 16px; }
+  .main-compact .model-settings-card .section-heading { padding-bottom: 12px; }
+  .main-compact .model-settings-card fieldset { margin-top: 14px; }
+  .main-compact .model-settings-card .field-label { margin: 12px 0 6px; }
 }
 @media (min-width: 1200px) and (min-height: 700px) and (max-height: 820px) {
   .main-workbench .topbar { height: 40px; }

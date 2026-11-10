@@ -407,7 +407,7 @@ export default function App() {
       <div className="sidebar-bottom"><span className={`connection-dot ${online ? 'connected' : ''}`} />{online ? '本地工作区已连接' : '等待本地服务'}<span className="version">v0.1</span></div>
     </aside>
 
-    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : 'main'}>
+    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'extensions' || view === 'settings' ? 'main main-compact' : 'main'}>
       <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'resume' ? '我的简历' : view === 'evidence' ? '公司资料库' : view === 'global' ? '全局对话' : view === 'extensions' ? 'Agent 扩展' : view === 'settings' ? '模型设置' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
       <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} /></div>
 
@@ -495,7 +495,7 @@ export default function App() {
         </div>
       </div>}
 
-      <div hidden={view !== 'extensions'}><AgentExtensions /></div>
+      <div hidden={view !== 'extensions'} className="extensions-view"><AgentExtensions /></div>
       {view === 'settings' && <ModelSettings onSaved={refreshMetadata} />}
       <footer className="page-footer"><span>知根 JobScope</span><span>资料保留原始出处，未知信息待核实</span></footer>
     </main>

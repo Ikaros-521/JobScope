@@ -146,6 +146,12 @@ npm run build                                          # tsc -b + vite build 通
 
 验证（1440×900）：整页高度=视口（1777→900）；列表 50 条内滚（scrollTop 拉到底部验证）；来源档案/公司对话两个 tab 均一屏；`npm run build` 通过。
 
+## 2026-11-10 补充：工作区管理三页紧凑化
+
+数据与采集 / Agent 扩展 / 模型设置启用新的 `main-compact` 框架（与 main-workbench 并列，区别是内容超一屏时整页可滚而非强制内滚）：topbar 44px、页头单行 20px、页脚隐藏、paper-panel padding 24→16、区块间距收紧。定点收紧：管理概览卡（图标 32px、padding 10/14）、选项卡行 38px、采集记录表格行（th/td 7px 10px）、浏览器采集面板 gap 20、扩展工具条/列表/详情、模型设置卡（16px padding、field-label 12/6、fieldset 14）。
+
+验证（1440×900）：三页均 `main-compact` 生效、main 固定 900px 页面内滚、document 高度=视口；岗位研究页回归正常（workbench 三栏未受影响）；`npm run build` 通过。
+
 ## 边界与未测
 
 - 大批量（几百条）的真实删除只在单测里跑过（HTTP 层 1000 条上限校验），真实档案上的多量大删由用户自行操作，路径与自测相同。
