@@ -18,6 +18,13 @@ def client(tmp_path, monkeypatch):
 
 def test_end_to_end_import_resume_analyze_chat_and_scope(client):
     assert client.get("/api/health").json()["model_configured"] is False
+
+
+def test_index_shell_is_served_with_no_cache(client):
+    shell = client.get('/')
+    assert shell.status_code == 200
+    assert shell.headers.get('Cache-Control') == 'no-cache'
+    assert client.get('/api/health').headers.get('Cache-Control') is None
     payload = dict(title="Python工程师", company="甲公司", description="熟悉 Python、SQL、Redis", salary="20-30K·最高16薪", location="北京")
     job = client.post("/api/import/job", json=payload).json()["job"]
     assert job["source"] == "user_import"

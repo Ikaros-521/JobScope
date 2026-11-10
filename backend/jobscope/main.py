@@ -828,6 +828,15 @@ def create_app(data_dir=None):
     dist = root / "frontend" / "dist"
     if dist.is_dir():
         app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
+
+    @app.middleware('http')
+    async def no_cache_shell(request, call_next):
+        # 入口页每次都向服务器校验版本，避免旧前端长期驻留；带哈希的静态资源不受影响。
+        response = await call_next(request)
+        if request.url.path in ('/', '/index.html'):
+            response.headers['Cache-Control'] = 'no-cache'
+        return response
+
     return app
 
 
