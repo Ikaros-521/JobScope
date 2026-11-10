@@ -1350,14 +1350,14 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
   .main-workbench .description-text { margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; background: #fafafa; padding: 12px 14px; line-height: 1.8; }
   .main-workbench .description-text.collapsed { max-height: 220px; overflow-y: auto; }
   .main-workbench .job-chat { padding: 10px 20px 14px; }
-  /* 三栏工作台：档案 / 岗位信息 / 岗位对话。点击对话列展开压缩其余两列；未选岗位时退化为两栏。 */
+  /* 三栏工作台：档案 / 岗位信息 / 岗位对话，点击哪列哪列扩张、其余两列收窄（列宽 0.25s 过渡）；未选岗位时退化为两栏。 */
   .main-workbench .research-layout { grid-template-columns: 280px minmax(0, 1fr) 336px; transition: grid-template-columns .25s ease; }
+  .main-workbench .research-layout.focus-chat { grid-template-columns: 240px minmax(300px, 380px) minmax(0, 1fr); }
+  .main-workbench .research-layout.focus-archive { grid-template-columns: minmax(380px, 1fr) minmax(280px, 380px) 300px; }
   .main-workbench .research-layout.no-chat { grid-template-columns: 280px minmax(0, 1fr); }
-  .main-workbench .research-layout.chat-focus { grid-template-columns: 240px minmax(300px, 380px) minmax(0, 1fr); }
+  .main-workbench .research-layout.no-chat.focus-archive { grid-template-columns: minmax(380px, 1fr) minmax(280px, 380px); }
   .main-workbench .research-layout > .job-chat { display: flex; min-height: 0; grid-column: auto; }
   .main-workbench .research-layout > .job-chat .chat-page { flex: 1; height: auto; min-height: 0; }
-  .main-workbench .research-layout > .job-chat:not(.expanded) { cursor: pointer; }
-  .main-workbench .chat-collapse { margin-left: 8px; min-height: 24px; padding: 2px 8px; font-size: 12px; }
 }
 @media (min-width: 1200px) and (min-height: 700px) and (max-height: 820px) {
   .main-workbench .topbar { height: 40px; }

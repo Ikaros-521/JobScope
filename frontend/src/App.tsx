@@ -100,7 +100,7 @@ export default function App() {
   const [evidenceFocus, setEvidenceFocus] = useState('')
   const [descExpanded, setDescExpanded] = useState(false)
   const [companyPage, setCompanyPage] = useState(0)
-  const [chatFocus, setChatFocus] = useState(false)
+  const [paneFocus, setPaneFocus] = useState<'archive' | 'info' | 'chat'>('info')
   const [resumeText, setResumeText] = useState('')
   const [resumeFormat, setResumeFormat] = useState('text')
   const [resumeRevision, setResumeRevision] = useState<number | null>(null)
@@ -427,8 +427,8 @@ export default function App() {
           <div className="search-footnote"><span><span className="small-dot" />{selectedSource?.description || '标注“需浏览器”的来源，需要先在项目 Chrome 中登录。'}</span></div>
         </section>
 
-        <div className={`research-layout${chatFocus ? ' chat-focus' : ''}${job ? '' : ' no-chat'}`}>
-          <section className="job-list-panel" aria-labelledby="archive-heading"><div className="panel-title"><h2 id="archive-heading">岗位档案 <span>{jobsInfo.total.toLocaleString()}</span></h2>{hasArchiveFilters ? <button className="text-button archive-reset" disabled={Boolean(busy)} onClick={clearArchiveFilters}>清除筛选</button> : <span className="archive-scope">本地资料库</span>}</div>
+        <div className={`research-layout focus-${paneFocus}${job ? '' : ' no-chat'}`}>
+          <section className="job-list-panel" aria-labelledby="archive-heading" onClick={() => setPaneFocus('archive')}><div className="panel-title"><h2 id="archive-heading">岗位档案 <span>{jobsInfo.total.toLocaleString()}</span></h2>{hasArchiveFilters ? <button className="text-button archive-reset" disabled={Boolean(busy)} onClick={clearArchiveFilters}>清除筛选</button> : <span className="archive-scope">本地资料库</span>}</div>
             <form className="job-archive-filters" aria-label="岗位档案筛选" onSubmit={event => { event.preventDefault(); void perform('filter', async () => { await loadJobs({ ...archiveDraft }, 1) }) }}>
               <label className="search-input"><Icon name="search" size={16} /><span className="sr-only">档案关键词</span><input value={archiveDraft.q} onChange={event => setArchiveDraft({ ...archiveDraft, q: event.target.value })} placeholder="在已存档案中搜索" maxLength={300} /></label>
               <Button className="button secondary small archive-submit" type="submit" busy={busy === 'filter'} disabled={Boolean(busy)}>筛选</Button>
@@ -447,7 +447,7 @@ export default function App() {
             <Pagination info={jobsInfo} label="岗位档案" busy={Boolean(busy)} onPage={page => void perform('page-jobs', async () => { await loadJobs(undefined, page) })} /><div className="list-bottom">资料以采集时的页面为准，投递前请再次核实。</div>
           </section>
 
-          <section className="detail-panel" aria-label="岗位详情" tabIndex={-1}>
+          <section className="detail-panel" aria-label="岗位详情" tabIndex={-1} onClick={() => setPaneFocus('info')}>
             {selectedId && <button className="mobile-back text-button" onClick={() => { document.querySelector('.job-list-panel')?.scrollIntoView({ block: 'start' }); document.querySelector<HTMLElement>('.job-card-body[aria-pressed="true"]')?.focus({ preventScroll: true }) }}><Icon name="arrow" size={16} />返回岗位列表</button>}
             {detailLoading ? <div className="loading-state"><span className="spinner" />正在读取岗位档案…</div> : !job ? <div className="welcome-panel"><div className="welcome-heading"><Icon name="book" /><span>岗位调查档案</span></div><h2>先选一份岗位，再逐项核对</h2><p>检索岗位或导入已有 JD。选择左侧档案，查看要求、公司资料与简历依据。</p><div className="welcome-checklist"><div><span>01</span><section><h3>岗位要求</h3><p>职责、技能、地点和薪酬口径</p></section></div><div><span>02</span><section><h3>公司证据</h3><p>资料原文、披露主体和发布时间</p></section></div><div><span>03</span><section><h3>个人适配</h3><p>已有依据、硬性条件与待核实项</p></section></div></div><Button className="button secondary" onClick={() => openModal('job')}><Icon name="plus" />导入已有岗位</Button><div className="welcome-source-note">每份资料都保留出处，缺少证据时保持未知</div></div> : <>
               <div className="detail-heading"><div className="detail-kicker"><span>{sourceNames[job.source] || job.source}</span><External url={job.url}>查看原始岗位</External></div><h2>{job.title}</h2><div className="detail-company">{job.company}<span>·</span><Icon name="pin" size={14} />{job.location || '地点待确认'}</div><div className="detail-heading-bottom"><strong>{job.salary || '薪资未披露'}</strong><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => openBatchEdit([job])}>编辑档案</Button><Button className="button secondary small" busy={busy === 'analyze'} disabled={Boolean(busy) || needsFullJd(job)} onClick={() => void analyze()}><Icon name="check" size={16} />评估适配</Button></div></div>
@@ -459,7 +459,7 @@ export default function App() {
               </div>
             </>}
           </section>
-          {job && <section className={`chat-section job-chat${chatFocus ? ' expanded' : ''}`} onClick={chatFocus ? undefined : () => setChatFocus(true)}><ChatWorkspace scope={{ kind: 'job', jobId: job.id, company: job.company, title: job.title }} modelConfigured={modelConfigured} onCollapse={chatFocus ? () => setChatFocus(false) : undefined} /></section>}
+          {job && <section className="chat-section job-chat" onClick={() => setPaneFocus('chat')}><ChatWorkspace scope={{ kind: 'job', jobId: job.id, company: job.company, title: job.title }} modelConfigured={modelConfigured} /></section>}
         </div>
       </>}
 
