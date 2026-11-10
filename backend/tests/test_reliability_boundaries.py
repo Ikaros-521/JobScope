@@ -241,7 +241,9 @@ def test_every_finding_cites_evidence_and_material_never_shows_a_number(client, 
         # 序列化后必须是 null：字段被省略或写成 0 都会被前端读成一个数字。
         assert '"score":null' in json.dumps(report, ensure_ascii=False, separators=(',', ':'))
         for item in items:
-            assert set(item) == {'text', 'rule', 'kind', 'score', 'source_class', 'evidence_id', 'collected_at'}
+            assert set(item) == {'text', 'rule', 'kind', 'score', 'source_class', 'evidence_id', 'collected_at', 'data'}
+            # data 是句子里那组原始数字（前端事实小图的唯一来源）；只许是数字，不许出现文字或嵌套。
+            assert all(isinstance(value, (int, float)) and not isinstance(value, bool) for value in item['data'].values())
 
     # 逐条 material 规则单独建报告：覆盖率数字外露就是这条红线的事故现场。
     samples = {'salary_quote_coverage': {'known': 9, 'total': 10},

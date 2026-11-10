@@ -52,6 +52,9 @@ class ReportFinding(BaseModel):
     source_class: SourceClass
     evidence_id: str
     collected_at: str = Field(default='', max_length=40)
+    # 句子里那组原始数字随句子一起落库：前端的事实小图只画这里声明过的数字，
+    # 不从文字里反解析。material 的 data 只是文字里已有的计数，永远不参与任何分数图形。
+    data: dict = Field(default_factory=dict)
 
 
 class DimensionScore(BaseModel):

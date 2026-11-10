@@ -136,11 +136,18 @@ P1 验收逐条对应（全部由测试钉住，可随时重放）：
 
 ```text
 cd frontend
-npx tsc --noEmit    # 退出码 0，无输出
-npm run build       # ✓ built in 5.76s，dist/assets/index-*.js 722.32 kB（gzip 222.39 kB）
+npx tsc --noEmit    # 退出码 0，无输出（图表追加后再跑，仍 0）
+npm run build       # ✓ built（图表追加后 4.52s），dist/assets/index-*.js ≈ 722 kB（gzip ≈ 222 kB）
 ```
 
 chunk 体积提示与 P0 相同（单条 >500 kB），未处理。新面板行为（维度可展开、缺口行动入口、单公司历史趋势、material 行不画数字）由类型检查与构建保证编译层面成立；**浏览器点击级验证本轮未做**，留给下一轮 UI 实测（沿用 Task 11 那次的 browser-use 流程）。
+
+### 图表追加（同日，用户点名）
+
+- `ReportFinding` 新增 `data` 字段：句子里的原始数字随句子一起落库，边界测试同步钉住「data 里只能是数字」。受影响的 boundary/service/api 测试当轮全绿，随后全量重跑 **453 passed**（168.87s）。
+- 前端事实小图只画 `data` 里声明过的数字：薪资中位数对比条、JD 四指标条（满条口径 600 字/8 条/8 项/100%）、公告两期对比条；material 与缺数据的依据不出图，旧报告没有 data 字段时只显示文字。
+- 历史趋势折线（综合分实线 + 维度覆盖虚线，未出分的快照断线不硬连）只用 history 快照里已有的数据，零后端改动。
+- 点击级验证同样未做，与上一条合并留给下一轮 UI 实测。
 
 ### 仍然未验证（原样继承 + P1 新增两条）
 

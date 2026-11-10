@@ -53,7 +53,9 @@ export type ReliabilityFinding = {
   // material 类的 score 恒为 null：那个数字量的是本项目存了几条材料，不是对公司的评价。
   score: number | null; source_class: string; evidence_id: string;
   // 信号本身的采集时刻；过期判定发生在重算时，过期依据会落进 missing 不进 findings。
-  collected_at?: string
+  collected_at?: string;
+  // 句子里那组原始数字（旧报告没有这个字段）：事实小图只画这里声明过的数字，不从文字反解析。
+  data?: Record<string, number>
 }
 export type ReliabilityDimension = { dimension: string; label: string; score: number | null; confidence: number; findings: ReliabilityFinding[]; evidence_ids: string[]; missing: string[] }
 export type ReliabilityReport = {

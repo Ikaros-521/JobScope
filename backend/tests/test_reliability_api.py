@@ -368,7 +368,10 @@ def test_twelve_local_jobs_score_pay_and_professional_offline(client, tmp_path):
     report = client.post('/api/companies/甲公司/reliability', json=dict()).json()
     dimensions = {item['dimension']: item for item in report['dimensions']}
     assert dimensions['pay']['score'] == 95.0          # 比值 1.333 ≥ 1.2
+    # 原始数字随句子一起落库：前端的事实小图只画 data 里声明过的数字，不从文字反解析。
+    assert dimensions['pay']['findings'][0]['data'] == pay_signal['value']
     assert dimensions['professional']['score'] is not None
+    assert dimensions['professional']['findings'][0]['data']['jobs'] == 9
     for name in ('stability', 'people', 'operations', 'industry'):
         assert dimensions[name]['score'] is None, name
     assert dimensions['industry']['findings'][0]['rule'] == 'industry_media_count'

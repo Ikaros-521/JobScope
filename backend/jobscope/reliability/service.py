@@ -14,7 +14,7 @@ def _report_finding(item):
     return ReportFinding(text=wording.render(item), rule=item.rule, kind=kind,
                          score=item.score if kind == ASSESSMENT else None,
                          source_class=item.source_class, evidence_id=item.evidence_id,
-                         collected_at=item.collected_at)
+                         collected_at=item.collected_at, data=dict(item.data))
 
 
 class ReliabilityService:

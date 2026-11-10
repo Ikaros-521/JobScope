@@ -34,6 +34,94 @@ function tone(score: number) {
 
 const number = (value: number) => value.toLocaleString('zh-CN', { maximumFractionDigits: 1 })
 
+// 事实小图的取数声明：只画 data 里声明过的数字，不从句子反解析；material 与未声明的规则不出图。
+// 条形只陈述事实（数字 + 口径 + 样本数），条长不做任何好坏暗示；没有数据就不画，不留空坐标轴。
+const FACT_BARS: Record<string, { key: string; label: string; cap?: number }[]> = {
+  pay_vs_city_median: [
+    { key: 'company_median', label: '本公司报价中位数' },
+    { key: 'city_median', label: '同城中位数' },
+  ],
+  jd_specificity: [
+    { key: 'chars_mean', label: '描述均长（字）', cap: 600 },
+    { key: 'items_mean', label: '职责条目均数', cap: 8 },
+    { key: 'skills_mean', label: '技术栈命中均数', cap: 8 },
+    { key: 'quantified_share', label: '量化条目占比', cap: 1 },
+  ],
+  disclosure_revenue_trend: [
+    { key: 'previous', label: '上期营收' },
+    { key: 'current', label: '本期营收' },
+  ],
+  disclosure_headcount_trend: [
+    { key: 'previous', label: '上期在职人数' },
+    { key: 'current', label: '本期在职人数' },
+  ],
+}
+
+const FACT_CAPTIONS: Record<string, string> = {
+  pay_vs_city_median: '单位：元/月；条长按两边较大值对齐。样本口径见上方句子。',
+  jd_specificity: '满条口径：600 字 / 8 条职责 / 8 项技术栈 / 100% 量化。',
+  disclosure_revenue_trend: '数字自带公告口径（万元、亿元等），本工具不换算；条长按两期较大值对齐。',
+  disclosure_headcount_trend: '单位：人；条长按两期较大值对齐。人数变动有多种成因。',
+}
+
+function FactBars({ finding }: { finding: ReliabilityFinding }) {
+  const spec = FACT_BARS[finding.rule]
+  const data = finding.data
+  if (finding.kind !== 'assessment' || !spec || !data) return null
+  const rows = spec.map(item => ({ ...item, value: data[item.key] }))
+  if (!rows.length || rows.some(row => typeof row.value !== 'number')) return null
+  // 带 cap 的行按固定口径归一；没有 cap 的行（薪资、同比两端）按这组数字的较大值对齐。
+  const scaled = spec.some(row => row.cap)
+  const scale = Math.max(1e-9, ...rows.map(row => Math.abs(row.value as number)))
+  return <div className="reliability-bars">
+    {rows.map(row => {
+      const value = row.value as number
+      const fill = Math.max(0, Math.min(100, (scaled ? value / (row.cap as number) : Math.abs(value) / scale) * 100))
+      return <div key={row.key} className="reliability-bar-row">
+        <span className="reliability-bar-label">{row.label}</span>
+        <span className="reliability-bar-track"><i style={{ width: `${fill}%`, background: tone(finding.score as number) }} /></span>
+        <span className="reliability-bar-value">{number(value)}</span>
+      </div>
+    })}
+    <span className="tiny-label">{FACT_CAPTIONS[finding.rule]}</span>
+  </div>
+}
+
+// 历史趋势折线：综合分实线、维度覆盖虚线，都只来自这家公司自己的快照。
+// 某次快照没出分就断线，不硬连两个不连续的点；只有一次计算时不画线。
+function TrendChart({ history }: { history: ReliabilityHistory }) {
+  const points = history.items.map(item => ({ score: item.score, coverage: Math.round(item.confidence * 100) }))
+  if (points.length < 2) return null
+  const width = 300
+  const height = 96
+  const padX = 10
+  const padY = 10
+  const x = (index: number) => padX + (index * (width - 2 * padX)) / (points.length - 1)
+  const y = (value: number) => height - padY - (Math.max(0, Math.min(100, value)) / 100) * (height - 2 * padY)
+  const segments: string[] = []
+  let current: string[] = []
+  points.forEach((point, index) => {
+    if (point.score === null) {
+      if (current.length > 1) segments.push(current.join(' '))
+      current = []
+      return
+    }
+    current.push(`${x(index)},${y(point.score)}`)
+  })
+  if (current.length > 1) segments.push(current.join(' '))
+  const coveragePath = points.map((point, index) => `${x(index)},${y(point.coverage)}`).join(' ')
+  const dots = points.map((point, index) => point.score === null ? null : { cx: x(index), cy: y(point.score) }).filter(Boolean) as { cx: number; cy: number }[]
+  return <div className="reliability-trend-chart">
+    <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="综合参考分与维度覆盖的历史走势">
+      <line x1={padX} y1={y(50)} x2={width - padX} y2={y(50)} className="reliability-trend-grid" />
+      {segments.map((path, index) => <polyline key={index} points={path} fill="none" className="reliability-trend-score" />)}
+      <polyline points={coveragePath} fill="none" className="reliability-trend-coverage" />
+      {dots.map((dot, index) => <circle key={index} cx={dot.cx} cy={dot.cy} r={2.5} className="reliability-trend-dot" />)}
+    </svg>
+    <p className="tiny-label"><span className="reliability-legend-score">—</span> 综合参考分 · <span className="reliability-legend-coverage">‥</span> 维度覆盖（按权重）· 纵轴 0–100</p>
+  </div>
+}
+
 function Finding({ finding, onOpenEvidence }: { finding: ReliabilityFinding; onOpenEvidence: (evidenceId: string) => void }) {
   return <li>
     <p>{finding.text}</p>
@@ -46,6 +134,7 @@ function Finding({ finding, onOpenEvidence }: { finding: ReliabilityFinding; onO
       {finding.collected_at ? <span className="tiny-label">采集于 {date(finding.collected_at)}</span> : null}
       <button type="button" className="reliability-evidence-link" onClick={() => onOpenEvidence(finding.evidence_id)}>出处 {finding.evidence_id}</button>
     </span>
+    <FactBars finding={finding} />
   </li>
 }
 
@@ -64,6 +153,7 @@ function Trend({ history }: { history: ReliabilityHistory | null }) {
   return <details className="reliability-trend">
     <summary>这家公司的历史趋势（{history.items.length} 次计算）</summary>
     <p className="tiny-label">趋势只对比这家公司自己的历史快照；没有跨公司对比、排名或榜单。</p>
+    <TrendChart history={history} />
     <ol className="reliability-trend-items">
       {history.items.map(item => <li key={item.input_hash}>
         <span>{date(item.computed_at)}</span>
