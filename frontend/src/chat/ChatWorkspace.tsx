@@ -17,7 +17,7 @@ const SUGGESTIONS: Record<ChatMode, string[]> = {
 const COMPANY_SUGGESTIONS = ['这家公司有哪些岗位要求？', '公司经营情况有哪些证据？', '薪资还有哪些口径需要核实？']
 const JOB_SUGGESTIONS = ['这份岗位有哪些要求？', '公司有哪些可核实的信息？', '面试时还应该问清什么？']
 
-export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { scope: ChatScope; modelConfigured: boolean; onManageExtensions?: () => void }) {
+export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCollapse }: { scope: ChatScope; modelConfigured: boolean; onManageExtensions?: () => void; onCollapse?: () => void }) {
   const isGlobal = scope.kind === 'global'
   const isJob = scope.kind === 'job'
   const company = scope.kind === 'company' ? scope.company.trim() : ''
@@ -134,6 +134,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
           </span>
         </div>
         <span className={`chat-state ${run ? 'busy' : ''}`}>{run ? (run.approval ? '等待工具确认' : '生成中…') : '空闲'}</span>
+        {onCollapse && <button type="button" className="text-button chat-collapse" onClick={onCollapse}>收起</button>}
       </header>
 
       <div className="chat-thread" aria-live="polite">
