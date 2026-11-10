@@ -53,7 +53,7 @@ PAGES = {
                   mapper=map_boss, default='100010000',
                   search=lambda query, code, size: 'https://www.zhipin.com/web/geek/job?' + urlencode({'query': query, 'city': code}),
                   blocked='未收到岗位响应。请查看项目浏览器是否需要登录或人工验证；不会自动反复请求。'),
-    'zhaopin': _spec('zhaopin', mode='state', home='https://www.zhaopin.com/jobs/', size=20, pages=25,
+    'zhaopin': _spec('zhaopin', mode='state', home='https://www.zhaopin.com/jobs/', size=20, pages=50,
                      mapper=map_zhaopin, default='',
                      search=lambda query, code, size: 'https://www.zhaopin.com/jobs/?' + urlencode({'kw': query, 'jl': code}),
                      blocked='搜索页未带出岗位数据；可能需要登录、人工验证，或页面结构已变化。'),

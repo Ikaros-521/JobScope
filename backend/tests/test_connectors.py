@@ -150,9 +150,9 @@ def zhaopin_spec():
     return browser.PAGES['zhaopin']
 
 
-def test_zhaopin_page_cap_covers_five_hundred():
+def test_zhaopin_page_cap_covers_one_thousand():
     spec = zhaopin_spec()
-    assert spec['size'] * spec['pages'] == 500
+    assert spec['size'] * spec['pages'] == 1000
 
 
 def test_state_pagination_merges_pages_until_limit():

@@ -58,7 +58,7 @@ class BrowserCollectInput(RequestModel):
     source: Literal["boss", "zhaopin", "51job"] = "boss"
     query: str = Field(min_length=1, max_length=200)
     location: str = Field(default="", max_length=100)
-    limit: int = Field(default=20, ge=1, le=500)
+    limit: int = Field(default=20, ge=1, le=1000)
 
 
 class AnalyzeInput(RequestModel):
