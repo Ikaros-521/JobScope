@@ -25,6 +25,7 @@ class Repository:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.path = self.data_dir / "jobscope.sqlite3"
         with self.connection() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS evidence (id TEXT PRIMARY KEY, identity TEXT UNIQUE NOT NULL, company TEXT NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL);
@@ -72,6 +73,8 @@ class Repository:
         conn = sqlite3.connect(self.path, timeout=15)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys=ON")
+        # WAL 下小事务不再每笔强制 fsync，批量保存岗位从分钟级降到秒级。
+        conn.execute("PRAGMA synchronous=NORMAL")
         try:
             with conn:
                 yield conn
@@ -157,6 +160,11 @@ class Repository:
     def save_report(self, report):
         with self.connection() as conn:
             conn.execute("INSERT INTO reports VALUES (?,?,?,?)", (str(uuid.uuid4()), report["job_id"], now(), json.dumps(report, ensure_ascii=False)))
+
+    def task(self, task_id):
+        with self.connection() as conn:
+            row = conn.execute("SELECT payload FROM tasks WHERE id=?", (task_id,)).fetchone()
+        return json.loads(row["payload"]) if row else None
 
     def create_task(self, source, query):
         task = dict(id="T-" + uuid.uuid4().hex, source=source, query=query, status="running", message="采集中", created_at=now(), count=0)

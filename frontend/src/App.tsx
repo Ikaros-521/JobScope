@@ -204,18 +204,27 @@ export default function App() {
       await Promise.all([loadJobs(), refreshMetadata()])
     })
   }
+  async function watchTask(id: string): Promise<Task> {
+    // 后台采集最多约 30 分钟；轮询直到任务离开运行态。
+    for (let attempt = 0; attempt < 900; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 2000))
+      const { task } = await api<{ task: Task }>(`/tasks/${encodeURIComponent(id)}`)
+      if (task.status !== 'running' && task.status !== 'pending') return task
+    }
+    throw new Error('等待采集超时，请稍后在采集记录里查看结果')
+  }
   async function collectBrowser() {
-    const progress = toast('正在读取搜索结果并保存岗位，请稍候；若浏览器出现登录或验证页面，请在该窗口完成', 'notice', true)
+    const progress = toast('已开始后台采集，读完后自动保存并刷新；若浏览器出现登录或验证页面，请在该窗口完成', 'notice', true)
     await perform('browser-collect', async () => {
-      const result = await post<{ task: Task; jobs: Job[] }>('/browser/collect', { source: browserSource, query, location, limit: browserLimit })
+      const started = await post<{ task: Task }>('/browser/collect', { source: browserSource, query, location, limit: browserLimit })
+      const task = await watchTask(started.task.id)
       await Promise.all([loadJobs(), refreshMetadata()])
-      if (result.task.status === 'completed' && result.jobs.length > 0) {
-        toast(`已保存或更新 ${result.jobs.length} 条岗位，已打开本次结果。${result.task.message || ''}`)
+      if (task.status === 'completed' && task.count > 0) {
+        toast(`已保存或更新 ${task.count} 条岗位。${task.message || ''}`)
         setView('jobs')
-        selectJob(result.jobs[0].id)
         window.scrollTo({ top: 0, behavior: 'instant' })
       } else {
-        toast(result.task.message || '本次未保存岗位，请查看采集记录')
+        toast(task.message || '本次未保存岗位，请查看采集记录')
       }
     })
     dismissToast(progress)

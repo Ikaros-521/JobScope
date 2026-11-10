@@ -290,6 +290,27 @@ def create_app(data_dir=None):
             repo.update_task(task)
             return {"task": task, "jobs": []}
 
+    @app.post("/api/browser/collect")
+    def browser_collect(data: BrowserCollectInput):
+        # 大数量翻页（如智联 500 条）耗时远超浏览器请求超时，采集放后台线程，前端轮询任务状态。
+        task = repo.create_task(data.source, data.query)
+
+        def report(items, pages):
+            task.update(message=f"已读取 {items} 条岗位（第 {pages} 页），读完后自动保存")
+            repo.update_task(task)
+
+        def worker():
+            try:
+                result = load_module("browser").collect(data.source, data.query, location=data.location,
+                                                        limit=data.limit, data_dir=data_dir, progress=report)
+                persist_collection(task, result)
+            except Exception:
+                task.update(status="failed", message="采集未完成，请检查来源状态及本地依赖后重试")
+                repo.update_task(task)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"task": task, "jobs": []}
+
     @app.get("/api/health")
     def health():
         return {"status": "ok", "model_configured": model_configured()}
@@ -320,6 +341,13 @@ def create_app(data_dir=None):
     @app.get("/api/tasks")
     def tasks(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
         return repo.page('tasks', page, page_size)
+
+    @app.get("/api/tasks/{task_id}")
+    def read_task(task_id: str):
+        task = repo.task(task_id)
+        if not task:
+            raise HTTPException(404, "任务不存在")
+        return {"task": task}
 
     @app.get("/api/jobs")
     def jobs(q: str = Query(default="", max_length=300), location: str = Query(default="", max_length=300), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
@@ -820,10 +848,6 @@ def create_app(data_dir=None):
             raise
         except Exception as exc:
             raise HTTPException(503, "浏览器启动失败，请检查 Chrome 和可选依赖") from exc
-
-    @app.post("/api/browser/collect")
-    def browser_collect(data: BrowserCollectInput):
-        return run_collection(data.source, data.query, data.location, data.limit, use_browser=True)
 
     dist = root / "frontend" / "dist"
     if dist.is_dir():

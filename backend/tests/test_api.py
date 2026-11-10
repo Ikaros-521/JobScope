@@ -1,4 +1,5 @@
 import sys
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -90,6 +91,15 @@ def test_extract_only_uses_saved_cninfo_metadata(client, monkeypatch):
     assert client.post("/api/evidence/unknown/extract").status_code == 404
 
 
+def wait_task(client, task_id):
+    for _ in range(200):
+        task = client.get(f"/api/tasks/{task_id}").json()["task"]
+        if task["status"] != "running":
+            return task
+        time.sleep(0.05)
+    raise AssertionError("任务未在预期时间内结束")
+
+
 def test_browser_explicit_data_dir_and_collection_state(client, monkeypatch):
     import sys
     import types
@@ -97,15 +107,38 @@ def test_browser_explicit_data_dir_and_collection_state(client, monkeypatch):
     seen = []
     module.status = lambda data_dir: dict(installed=True, running=False, message=str(data_dir))
     module.start = lambda data_dir: dict(installed=True, running=True, message="已启动")
-    def collect(source, query, location, limit, data_dir):
+    def collect(source, query, location, limit, data_dir, progress=None):
         seen.append((source, query, data_dir))
         return dict(status="needs_login", message="请登录", jobs=[], evidence=[])
     module.collect = collect
     monkeypatch.setitem(sys.modules, "jobscope.browser", module)
     assert client.get("/api/browser/status").json()["installed"] is True
-    response = client.post("/api/browser/collect", json=dict(query="Python"))
-    assert response.json()["task"]["status"] == "needs_login"
+    response = client.post("/api/browser/collect", json=dict(query="Python")).json()
+    task = wait_task(client, response["task"]["id"])
+    assert task["status"] == "needs_login"
     assert seen[0][0] == "boss" and seen[0][2] == client.app.state.repo.data_dir
+
+
+def test_browser_collect_runs_in_background_and_reports_progress(client, monkeypatch):
+    import sys
+    import types
+    module = types.ModuleType("jobscope.browser")
+    def collect(source, query, location, limit, data_dir, progress=None):
+        if progress:
+            progress(1, 1)
+        return dict(status="completed", message="智联已读取", jobs=[dict(
+            title="Python工程师", company="甲有限公司", location="北京", external_id="CCL1234567890J12345678901",
+            url="https://www.zhaopin.com/jobdetail/CCL1234567890J12345678901.htm",
+            description="一、岗位职责", description_status="complete")], evidence=[])
+    module.collect = collect
+    monkeypatch.setitem(sys.modules, "jobscope.browser", module)
+    started = client.post("/api/browser/collect", json=dict(source="zhaopin", query="Python", location="北京", limit=50)).json()
+    assert started["task"]["status"] == "running"
+    task = wait_task(client, started["task"]["id"])
+    assert task["status"] == "completed" and task["count"] == 1
+    assert client.get("/api/jobs").json()["jobs"][0]["external_id"] == "CCL1234567890J12345678901"
+    assert client.get(f"/api/tasks/{started['task']['id']}").json()["task"]["status"] == "completed"
+    assert client.get("/api/tasks/no-such-id").status_code == 404
 
 
 def test_cross_origin_write_is_blocked(client):

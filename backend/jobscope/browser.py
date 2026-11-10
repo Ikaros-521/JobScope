@@ -53,7 +53,7 @@ PAGES = {
                   mapper=map_boss, default='100010000',
                   search=lambda query, code, size: 'https://www.zhipin.com/web/geek/job?' + urlencode({'query': query, 'city': code}),
                   blocked='未收到岗位响应。请查看项目浏览器是否需要登录或人工验证；不会自动反复请求。'),
-    'zhaopin': _spec('zhaopin', mode='state', home='https://www.zhaopin.com/jobs/', size=20, pages=3,
+    'zhaopin': _spec('zhaopin', mode='state', home='https://www.zhaopin.com/jobs/', size=20, pages=25,
                      mapper=map_zhaopin, default='',
                      search=lambda query, code, size: 'https://www.zhaopin.com/jobs/?' + urlencode({'kw': query, 'jl': code}),
                      blocked='搜索页未带出岗位数据；可能需要登录、人工验证，或页面结构已变化。'),
@@ -198,7 +198,7 @@ def _page(tab, spec, query, code, size):
     return None
 
 
-def _extend_state_pages(tab, spec, payload, query, code, size):
+def _extend_state_pages(tab, spec, payload, query, code, size, progress=None):
     """state 模式首屏只渲染一页；后续页向页面自己的检索接口按 pageIndex 续读。
 
     返回 (payload, 已读页数, 提示)。任何一页失败都保留已读到的内容，不算采集失败。
@@ -212,6 +212,8 @@ def _extend_state_pages(tab, spec, payload, query, code, size):
     for page in range(2, pages + 1):
         if len(items) >= size or payload.get('hasMore') is False:
             break
+        # 页与页之间留出间隔，避免高频连击触发来源风控。
+        time.sleep(0.5)
         more = tab.run_js(ZHAOPIN_PAGE_JS, query, code, page)
         if not isinstance(more, dict) or not isinstance(more.get('positionList'), list) or not more['positionList']:
             note = '；后续页未返回数据，已停止翻页'
@@ -222,10 +224,15 @@ def _extend_state_pages(tab, spec, payload, query, code, size):
         items.extend(more['positionList'])
         pages_read += 1
         payload = {**payload, 'positionList': items, 'hasMore': more.get('isEndPage') == 0}
+        if progress:
+            try:
+                progress(len(items), pages_read)
+            except Exception:
+                pass
     return payload, pages_read, note
 
 
-def collect(source='boss', query='', location='', limit=20, data_dir=None):
+def collect(source='boss', query='', location='', limit=20, data_dir=None, progress=None):
     """Collect from the platform's own page; nothing here is replayed outside the user session."""
     spec = PAGES.get(source)
     if spec is None:
@@ -256,7 +263,7 @@ def collect(source='boss', query='', location='', limit=20, data_dir=None):
             payload = _listen(tab, spec, query, _city_code(spec, city), size) if spec['mode'] == 'listen' else _page(tab, spec, query, _city_code(spec, city), size)
             if not isinstance(payload, dict):
                 return result('needs_verification', spec['blocked'])
-            payload, pages_read, page_note = _extend_state_pages(tab, spec, payload, query, _city_code(spec, city), size)
+            payload, pages_read, page_note = _extend_state_pages(tab, spec, payload, query, _city_code(spec, city), size, progress)
             output = spec['mapper'](payload, size, city)
             extras = []
             if pages_read > 1:

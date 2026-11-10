@@ -61,7 +61,9 @@
 - `https://www.zhaopin.com/jobs/?kw=Python&jl=530` 是 SSR 首屏直出 20 条的分栏页：URL `p=2` 参数无效（state `pageIndex` 仍为 1），页面无分页控件、列表容器不可滚动，窗口滚动只追加推荐模块，`positionList` 不增长。
 - 翻页走页面自身的检索接口：会话内 `POST https://fe-api.zhaopin.com/c/i/search/positions`，JSON 体传 `S_SOU_FULL_INDEX`（关键词）、`S_SOU_WORK_CITY`（城市码）、`pageIndex`、`pageSize: 20`，页面请求里带的 `at`/`rt` 令牌实测可以不带；响应 `data.list` 每页 20 条、`isEndPage` 到尾页置 1、`isVerification` 非零表示要求验证。第 2、3 页实测各返回 20 条不同岗位。
 - 注意该接口的岗位链接是 `http://jobs.zhaopin.com/<编号>.htm`（http 且非登记域名），编号与链接一致时归一成已回验的 `https://www.zhaopin.com/jobdetail/<编号>.htm` 再保存；`data.list` 条目不含 `jobDescription`，正文仍按详情页补读。
-- 智联浏览器采集已按此实现 3 页翻页（上限 60 条，按用户请求数量封顶），本机实测请求 50 条返回 50 条、3 页全部命中。
+- 智联浏览器采集已按此实现翻页：初始 3 页 60 条，应用户要求放宽到 25 页 / 500 条（按用户请求数量封顶，`isEndPage` 到尾页自动停）；页与页之间 0.5 秒间隔。本机实测：请求 500 条，25 页约 41 秒读毕、496 条入库（另有 428 条关键词实测 22 页到尾页）。
+- 大数量采集耗时远超浏览器请求超时（Chrome 约 300 秒，实测同步等待 420 秒仍读不完），`POST /api/browser/collect` 已改为后台线程执行、立即返回任务，前端每 2 秒轮询新增的 `GET /api/tasks/{id}`，任务消息实时显示“已读取 N 条（第 P 页）”。
+- 附带性能修复：`Repository` 启用 SQLite WAL（`journal_mode=WAL` 持久生效）并设 `synchronous=NORMAL`，单条岗位保存实测从约 235ms 降到 4.5ms（52 倍），500 条入库从分钟级降到约 2 秒。
 
 ## 回归
 

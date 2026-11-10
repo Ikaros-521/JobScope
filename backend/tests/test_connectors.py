@@ -150,6 +150,11 @@ def zhaopin_spec():
     return browser.PAGES['zhaopin']
 
 
+def test_zhaopin_page_cap_covers_five_hundred():
+    spec = zhaopin_spec()
+    assert spec['size'] * spec['pages'] == 500
+
+
 def test_state_pagination_merges_pages_until_limit():
     from jobscope.browser import _extend_state_pages
     tab = FakeStateTab([api_page(2), api_page(3, end=True)])
