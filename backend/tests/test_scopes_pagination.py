@@ -102,7 +102,8 @@ def test_job_overview_bounds_evidence_and_reports_full_count(client):
     result = client.get(f"/api/jobs/{job['id']}").json()
     assert result['evidence_total'] == 26
     assert len(result['evidence']) <= 10
-    assert len(result['company_evidence']) == 4
+    # 端点一次带 12 条公司证据，前端按 4 条/页切片分页：这里校验的是批量上限，不是分页步长。
+    assert len(result['company_evidence']) == 12
     assert client.get(f"/api/jobs/{job['id']}/evidence?page=3").json()['total'] == 26
 
 

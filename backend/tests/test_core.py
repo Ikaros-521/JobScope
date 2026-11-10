@@ -28,6 +28,32 @@ def test_company_filter_is_exact_and_does_not_merge_subsidiary(tmp_path):
     assert [e["title"] for e in repo.evidence(company="甲公司")] == ["母公司"]
 
 
+def test_save_job_and_evidence_register_company_entity(tmp_path):
+    repo = Repository(tmp_path)
+    repo.save_job(dict(title="Python工程师", company="甲 公司", description="Python", url="https://example.com/1"), "boss")
+    entity = repo.find_company("甲公司")
+    assert entity is not None and entity["name"] == "甲公司"
+    # 平台名只登记存在，不做变体合并：另一个写法是另一个主体，不是别名。
+    assert repo.find_company("甲公司科技") is None
+    # 证据落库同样登记其主体；空公司名只是缺失字段，不产生实体。
+    repo.save_evidence(dict(title="公告", company="乙公司", text="营收", kind="disclosure"))
+    assert repo.find_company("乙公司") is not None
+    repo.save_evidence(dict(title="无名", company="", text="占位", kind="user_material"))
+    with repo.connection() as conn:
+        assert conn.execute("SELECT count(*) FROM companies").fetchone()[0] == 2
+
+
+def test_company_evidence_index_lists_metadata_without_bodies(tmp_path):
+    repo = Repository(tmp_path)
+    repo.save_evidence(dict(title="年度公告", company="甲公司", text="正文" * 200, kind="disclosure"))
+    result = repo.company_evidence("甲公司")
+    assert result["total"] == 1 and result["pages"] == 1
+    assert result["evidence"][0]["id"].startswith("E-")
+    assert "text" not in result["evidence"][0]
+    # 未登记的名字不命中任何行。
+    assert repo.company_evidence("乙公司")["total"] == 0
+
+
 def test_resume_revision_changes_only_with_content(tmp_path):
     repo = Repository(tmp_path)
     first = repo.save_resume("Python", "text")

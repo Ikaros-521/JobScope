@@ -305,6 +305,9 @@ def test_state_pagination_keeps_first_page_on_failure_or_verification():
 
 
 def test_zhaopin_collect_ceiling_follows_page_count(tmp_path, monkeypatch):
+    # monkeypatch 要按名字导入 DrissionPage 才能替换其符号；它是 requirements-browser 的可选依赖，
+    # 未安装时按 test_documents 的口径跳过，而不是把可选依赖缺失报成失败。
+    pytest.importorskip('DrissionPage')
     from jobscope import browser
     seen = {}
     monkeypatch.setattr(browser, '_has_driver', lambda: True)
