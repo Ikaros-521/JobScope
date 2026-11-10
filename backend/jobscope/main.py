@@ -558,7 +558,7 @@ def create_app(data_dir=None):
         job = get_job(job_id)
         related = repo.page('evidence', job_id=job_id, page_size=1)
         snapshots = repo.page('evidence', linked_job_id=job_id, company=job['company'], page_size=10)
-        company = repo.page('evidence', company=job['company'], include_job_postings=False, page_size=4)
+        company = repo.page('evidence', company=job['company'], include_job_postings=False, page_size=12)
         return {"job": job, "evidence": snapshots['evidence'], "company_evidence": company['evidence'],
                 'evidence_total': related['total']}
 

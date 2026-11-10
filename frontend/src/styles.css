@@ -288,7 +288,9 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .detail-heading h2 { font-size: 24px; line-height: 1.6; margin: 16px 0 12px; overflow-wrap: anywhere; }
 .detail-company { color: #525252; font-size: 14px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .detail-company > span { color: #a3a3a3; }
-.detail-heading-bottom { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 20px; }
+.detail-heading-bottom { display: flex; align-items: center; gap: 12px; margin-top: 20px; }
+/* 薪资居左，操作按钮成组靠右；此前 space-between 把三个元素拉满整行，中间按钮悬空。 */
+.detail-heading-bottom .button:first-of-type { margin-left: auto; }
 .detail-heading-bottom strong { color: var(--green); font-size: 18px; line-height: 1.7; }
 .detail-tabs { display: flex; gap: 24px; padding: 0 24px; border-bottom: 1px solid var(--line); }
 .detail-tabs button { min-height: 48px; padding: 12px 0; color: var(--muted); font-size: 13px; position: relative; }
@@ -308,6 +310,9 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .tiny-label { font-size: 12px; color: var(--muted); line-height: 1.8; overflow-wrap: anywhere; }
 .inline-empty { font-size: 13px; color: var(--muted); background: #fafafa; border: 1px solid var(--line); border-radius: 8px; padding: 16px; line-height: 1.9; margin: 16px 0 8px; }
 .company-evidence-list { display: grid; gap: 16px; padding: 16px 0; }
+.company-pager { display: flex; align-items: center; gap: 12px; margin-top: 2px; }
+.company-pager .text-button { min-height: 26px; padding: 2px 0; font-size: 12px; }
+.company-pager .tiny-label { color: var(--muted); }
 .company-evidence-list > div { display: grid; gap: 4px; font-size: 13px; }
 /* 求职参考：视觉保持中性。只用 var(--green) 这一支强调色的深浅表示分数高低，
    不引入红橙警示色，也不给任何维度加定性标签；没有分数时不画空环、不摆占位数字。 */
@@ -1026,4 +1031,17 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
   .main-workbench .detail-panel { overflow-y: auto; overflow-anchor: none; }
   .main-workbench .list-bottom { display: none; }
   .main-workbench .page-footer { display: none; }
+  /* 详情面板紧凑化：标题区、状态条、选项卡压掉多余留白，正文与岗位对话成为两块定高卡片。 */
+  .main-workbench .detail-heading { padding: 12px 20px 8px; }
+  .main-workbench .detail-heading h2 { font-size: 18px; line-height: 1.5; margin: 6px 0 4px; }
+  .main-workbench .detail-heading-bottom { margin-top: 8px; }
+  .main-workbench .jd-state { padding: 10px 20px; }
+  .main-workbench .detail-tabs { padding: 0 20px; }
+  .main-workbench .detail-tabs button { min-height: 40px; }
+  .main-workbench .detail-content { padding: 12px 20px; }
+  .main-workbench .company-section { margin-top: 14px; padding-top: 12px; }
+  .main-workbench .description-text { margin-top: 10px; border: 1px solid var(--line); border-radius: 10px; background: #fafafa; padding: 12px 14px; line-height: 1.8; }
+  .main-workbench .description-text.collapsed { max-height: 220px; overflow-y: auto; }
+  .main-workbench .job-chat { padding: 10px 20px 14px; }
+  .main-workbench .job-chat .chat-page { height: 320px; min-height: 0; }
 }
