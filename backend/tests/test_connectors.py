@@ -155,6 +155,17 @@ def test_zhaopin_page_cap_covers_one_thousand():
     assert spec['size'] * spec['pages'] == 1000
 
 
+def test_collect_input_and_liepin_page_cap_cover_one_thousand():
+    from jobscope.models import CollectInput
+    assert CollectInput(source='liepin', query='Python', limit=1000).limit == 1000
+    with pytest.raises(ValueError):
+        CollectInput(source='liepin', query='Python', limit=1001)
+    import re
+    source = (Path(__file__).resolve().parents[1] / 'jobscope' / 'connectors.py').read_text(encoding='utf-8')
+    assert 'page < 25' in source  # 25 页 × 每页 40 条 = 1000
+    assert re.search(r'pageSize.{0,20}min\(limit, 40\)', source)
+
+
 def test_boss_and_51job_page_caps_cover_one_thousand():
     from jobscope import browser
     boss = browser.PAGES['boss']
@@ -546,13 +557,23 @@ def test_liepin_paginates_until_limit_and_deduplicates():
         index = len(pages) - 1
         cards = [liepin_card({'jobId': str(86374907 + n), 'title': f'岗位{n}'}) for n in range(index * 2, index * 2 + 2)]
         cards.append(liepin_card())
+        # has_next 从第 3 页起为 False：直连接口实测该字段恒假，翻页应以 totalPage 与新岗位为准。
         return httpx.Response(200, json=liepin_payload(cards, has_next=index < 2))
     output = module.collect('liepin', 'Python', limit=50, client=client_for(handler))
     ids = [job['external_id'] for job in output['jobs']]
     assert len(ids) == len(set(ids)) == len(output['jobs'])
-    assert len(pages) == 3
+    assert len(pages) == 10  # totalPage=10 划界；hasNext=False 不再提前停
     assert pages[1]['data']['mainSearchPcConditionForm']['currentPage'] == 1
+    assert len(ids) == 20
     assert f'{len(ids)} 条' in output['message']
+
+
+def test_liepin_stops_when_a_page_brings_no_new_jobs():
+    module = connectors()
+    def handler(request):
+        return httpx.Response(200, json=liepin_payload([liepin_card()]))
+    output = module.collect('liepin', 'Python', limit=50, client=client_for(handler))
+    assert output['status'] == 'completed' and len(output['jobs']) == 1
 
 
 def test_liepin_city_codes_are_only_the_verified_ones():

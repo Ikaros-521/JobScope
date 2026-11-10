@@ -343,7 +343,8 @@ def _liepin(client, query, location, limit):
     if code is None:
         return result('unsupported', f'当前城市暂未映射；可用{city_hint("liepin")}或留空。')
     jobs, evidence, page, failure = [], [], 0, None
-    while len(jobs) < limit and page < 3:
+    # 页数上限 25×40=1000，与浏览器源对齐；接口 hasNext 为假或无新岗位都会提前停。
+    while len(jobs) < limit and page < 25:
         body = {'data': {'mainSearchPcConditionForm': {
             'city': code, 'dq': code, 'pubTime': '', 'currentPage': page,
             'pageSize': min(limit, 40), 'key': query, 'suggestTag': '', 'workYearCode': '',
@@ -365,7 +366,14 @@ def _liepin(client, query, location, limit):
         jobs += [item for item, _ in fresh]
         evidence += [ev for _, ev in fresh]
         pagination = ((payload.get('data') or {}).get('pagination') or {})
-        if not fresh or not pagination.get('hasNext'):
+        # 直连接口实测 hasNext 恒为 false（800+ 结果、totalPage=10 时也是），不能作为停止依据；
+        # 以去重后还有没有新岗位为主，totalPage 划界，缺 totalPage 时才退回 hasNext。
+        total_page = int(pagination.get('totalPage') or 0)
+        if not fresh:
+            break
+        if total_page and page + 1 >= total_page:
+            break
+        if not total_page and not pagination.get('hasNext'):
             break
         page += 1
     note = f'{"全国" if not location else location} · '
@@ -451,7 +459,8 @@ def collect(source, query, location='', limit=20, *, client=None, cache_dir=None
         return result('unsupported', '未支持的数据来源。')
     query, location = str(query).strip()[:200], str(location or '').strip()[:100]
     try:
-        limit = max(1, min(int(limit), 50))
+        # 与 CollectInput 的 1000 对齐；各来源内部仍有自己的单页/页数封顶。
+        limit = max(1, min(int(limit), 1000))
     except (ValueError, TypeError):
         return result('failed', '采集数量必须是整数。')
     if not query:

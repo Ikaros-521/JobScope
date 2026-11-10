@@ -76,6 +76,7 @@ export default function App() {
   const [source, setSource] = useState('remotive')
   const [browserSource, setBrowserSource] = useState('boss')
   const [browserLimit, setBrowserLimit] = useState(20)
+  const [collectLimit, setCollectLimit] = useState(20)
   const [busy, setBusy] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
@@ -212,7 +213,7 @@ export default function App() {
   async function collect(event: FormEvent) {
     event.preventDefault()
     await perform('collect', async () => {
-      const data = await post<{ task: Task; jobs: Job[] }>('/collect', { source, query, location, limit: 20 })
+      const data = await post<{ task: Task; jobs: Job[] }>('/collect', { source, query, location, limit: collectLimit })
       toast(data.task.message || `采集结束，新增或更新 ${data.task.count ?? data.jobs?.length ?? 0} 条资料。`)
       await Promise.all([loadJobs(), refreshMetadata()])
     })
@@ -386,6 +387,7 @@ export default function App() {
             <label className="search-input"><Icon name="search" /><span className="sr-only">岗位关键词</span><input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索岗位、技能或公司" required maxLength={200} /></label>
             <label className="location-input"><Icon name="pin" size={18} /><CityInput label="工作地点" cities={selectedSource?.cities || []} hot={selectedSource?.hot || []} pinyin={cityPinyin} locations={locations} value={location} onChange={setLocation} placeholder="不限地点" maxLength={100} /></label>
             <label className="source-select"><span className="sr-only">岗位数据源</span><select value={source} onChange={event => setSource(event.target.value)}>{jobSources.map(item => <option key={item.id} value={item.id}>{item.name} · {transportNames[item.transport_mode] || item.transport_mode}</option>)}</select></label>
+            <label className="collect-limit"><span className="sr-only">采集数量</span><input type="number" min={1} max={1000} value={collectLimit} onChange={event => setCollectLimit(Math.max(1, Math.min(1000, Number(event.target.value) || 20)))} inputMode="numeric" aria-label="采集数量" /></label>
             <Button className="button primary" type="submit" busy={busy === 'collect'} disabled={Boolean(busy)}>检索岗位<Icon name="arrow" size={17} /></Button>
           </form>
           <div className="search-footnote"><span><span className="small-dot" />{selectedSource?.description || '选择来源后点击检索；标注“需浏览器”的来源会在项目 Chrome 内取数'}</span><button onClick={() => setView('sources')}>管理数据源<Icon name="arrow" size={13} /></button></div>
