@@ -1,6 +1,6 @@
 # JobScope 公司求职参考分析验证记录
 
-日期：2026-11-09（Asia/Shanghai）。本文只记录**当前机器上实际发生过**的运行与观察，没做过的逐项写在「未验证」里，不做任何承诺。功能设计见 `docs/proposals/2026-11-09-company-reliability-design.md`，计划与实施修正记录见 `docs/plans/2026-11-09-company-reliability.md`。
+日期：2026-11-09（Asia/Shanghai）。本文只记录**当前机器上实际发生过**的运行与观察，没做过的逐项写在「未验证」里，不做任何承诺。功能设计见 `docs/proposals/2026-11-09-company-reliability-design.md`，计划与实施修正记录见 `docs/plans/2026-11-09-company-reliability.md`（P1 见 `docs/plans/2026-11-10-company-reliability-p1.md`）。
 
 ## 环境
 
@@ -108,12 +108,52 @@ npm run build       # ✓ built in 4.35s，dist/assets/index-*.js 719.67 kB（gz
 - 若仍不通，走不通的入口原样保留在此以免重复踩：
 ```
 
+## P1 验证（2026-11-10，本分支 `codex/company-reliability` @ 交付提交）
+
+P1 的目标是用已存数据让 `pay`/`professional`/`people`/`operations` 四个维度本地出分。以下全部为本次实际运行，未做的仍留在上面的「未验证」清单里（P1 没有触碰 gsxt / 付费通路，那张清单原样有效）。
+
+### 后端（本次运行）
+
+```text
+python -m pytest backend/tests -q        # 453 passed in 163.14s（P0 基线 395）
+python -m pytest backend/tests -q -k reliability   # 229 passed（含新增与改跟的用例）
+```
+
+P1 验收逐条对应（全部由测试钉住，可随时重放）：
+
+1. **12 条本地岗位、不联网、不配模型**：`test_twelve_local_jobs_score_pay_and_professional_offline`——甲公司 12 条岗位（9 条完整 JD、8 条北京可解析报价），乙公司 14 条北京岗位补足同城样本到 22 条；只调 `jobscope_jobs` 采集与重算，`pay=95.0`（比值 1.333）、`professional` 出分、综合 `confidence=0.32`（P0 是 0.22）、`industry` 无分但带 material 登记，序列化后 `"score":null`。
+2. **四种样本闸门**：`test_pay_gate_fails_when_the_city_sample_is_below_twenty`、`..._company_sample_is_below_three`、`test_team_size_gate_fails_with_fewer_than_two_statements`、`test_trend_gate_fails_without_a_positive_previous_value`——各自不出分，且 `missing` 里能看到 `gate_note` 的具体阈值（「同城 ≥20 条」「至少需要 2 条」「上期大于 0」）。
+3. **industry 不出分 + material null**：rubric/边界测试覆盖，`industry_media_count` 的 finding 序列化后 score 为 null。
+4. **新模板极端取值**：`test_banned_words_are_unreachable_from_every_registered_template` 与 wording 参数化扫描覆盖 12 条规则 × 19 组取值，`TEMPLATES` 与 `RULES` 一一对应测试保持绿。
+5. **红线**：对外面从五个路径变六个（新增 `GET .../reliability/history`，只读）；`test_the_trend_only_compares_one_company_with_itself` 钉住趋势只归因同一家公司自己的快照，乙公司的数据不出现在甲的趋势里；share/rank/public/compare 词表扫描继续全绿。
+6. **幂等**：同一输入重复 `recompute` 的 `input_hash` 不变；重复本地采集的 evidence 编号不变（口径正文不带时刻的规矩延伸到了三条新本地规则）。
+
+### R3 语义（用户拍板后的落地）
+
+`team_size_statement` 的分档映射与聚合层是规格空档，由用户选定：**自述一致性**（区间相容，与规模大小无关——「5000-10000 人」是正常区间宽度，点值落在区间内即相容）+ **抽取端代码聚合**（模型逐条材料交 `{"size": N}`，代码算中位数与最大相容子集，锚条承载出处、参与编号进任务 message）。由 `test_team_size_aggregation_*`、`test_extracted_team_size_statements_aggregate_into_one_signal`、`test_team_size_scores_statement_agreement_not_size_itself` 钉住，其中明确断言「30 人与 8000 人的公司在自述一致时同分」。
+
+### 前端（本次运行）
+
+```text
+cd frontend
+npx tsc --noEmit    # 退出码 0，无输出
+npm run build       # ✓ built in 5.76s，dist/assets/index-*.js 722.32 kB（gzip 222.39 kB）
+```
+
+chunk 体积提示与 P0 相同（单条 >500 kB），未处理。新面板行为（维度可展开、缺口行动入口、单公司历史趋势、material 行不画数字）由类型检查与构建保证编译层面成立；**浏览器点击级验证本轮未做**，留给下一轮 UI 实测（沿用 Task 11 那次的 browser-use 流程）。
+
+### 仍然未验证（原样继承 + P1 新增两条）
+
+- 上面「未验证」清单的 9 条全部原样有效：gsxt 两个页面、正则、`VERIFY_MARKERS`、年报排序假设、付费映射与认证、裁判网/信用网无 reader、无真实外部分数落库。
+- P1 新增：**浏览器点击级面板验证未做**（本轮只做到命令行可复现的部分）。
+- P1 新增：`team_size_statement` / `disclosure_*_trend` 的真实抽取质量未验证——需要配置模型并导入真实公告/JD 后跑一次抽取（本轮全部用 mock 模型响应测试）。
+
 ## 回归
 
 ```powershell
 cd E:\Github_Pro\JobScope-reliability
-python -m pytest backend/tests -q                                   # 全量；Task 12 本轮未跑，由统一运行确认
-python -m pytest backend/tests -q -k reliability                    # 171 passed
+python -m pytest backend/tests -q                                   # 453 passed（P1 交付轮全量实测）
+python -m pytest backend/tests -q -k reliability                    # 229 passed
 cd frontend
 npx tsc --noEmit
 npm run build
