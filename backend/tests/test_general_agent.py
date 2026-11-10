@@ -64,6 +64,41 @@ def test_project_tool_loop_returns_citations(client, monkeypatch):
     assert any(e['tool'] == 'project_search' for e in result['trace']['events'])
 
 
+def test_company_archive_tools_load_reference_and_evidence_on_demand(client, monkeypatch):
+    configure(client)
+    # 落库即登记主体 → 本地覆盖度信号 → 参考报告：档案三件套齐了。
+    client.post('/api/import/job', json=dict(title='后端工程师', company='甲公司', description='Python RAG', salary='20-30K'))
+    assert client.post('/api/companies/甲公司/signals/collect', json={'source': 'jobscope_jobs'}).status_code == 200
+    report = client.post('/api/companies/甲公司/reliability').json()
+    assert report['evidence_ids'], '本地覆盖度信号应把岗位证据带进报告引用'
+    eid = report['evidence_ids'][0]
+    calls = scripted(monkeypatch, [tool('company_profile', {'company': '甲公司'}),
+                                   tool('company_detail', {'company': '甲公司', 'section': 'evidence'}),
+                                   final(f'档案摘要已读，引用其材料 [证据ID：{eid}]')])
+    result = client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'message': '甲公司怎么样'}).json()
+    assert result['mode'] == 'agent'
+    profile = json.loads(calls[1]['messages'][-1]['content'])
+    assert profile['found'] is True
+    assert profile['reference']['nature'] == '主观参考' and profile['company']['name'] == '甲公司'
+    assert {s['section'] for s in profile['sections']} == {'signals', 'history', 'evidence'}
+    detail = json.loads(calls[2]['messages'][-1]['content'])
+    assert detail['total'] >= 1 and detail['evidence'][0]['id'].startswith('E-')
+    assert 'text' not in detail['evidence'][0], '证据索引只给元数据，正文按需用 project_read 读'
+    # profile 把报告引用的证据静默登记进可引用集合：最终回答引用它应通过引用校验。
+    assert result['citations'][0]['id'] == eid
+
+
+def test_company_profile_unknown_company_reports_gap_without_writing_rows(client, monkeypatch):
+    configure(client)
+    calls = scripted(monkeypatch, [tool('company_profile', {'company': '不存在公司'}), final('资料库没有这家公司。')])
+    result = client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'message': '不存在公司怎么样'}).json()
+    assert result['mode'] == 'agent'
+    profile = json.loads(calls[1]['messages'][-1]['content'])
+    assert profile['found'] is False
+    # 查询不写行：只读口径同样适用于 Agent 工具。
+    assert client.get('/api/companies/不存在公司/reliability').json()['report'] is None
+
+
 def test_skills_are_imported_and_loaded_on_demand(client, monkeypatch):
     text = '---\nname: interview-coach\ndescription: 面试演练与反馈\n---\n每次只问一个问题，使用 STAR 结构反馈。'
     saved = client.post('/api/agent/skills', json={'content': text}).json()

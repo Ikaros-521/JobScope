@@ -106,6 +106,9 @@ class Repository:
         item.update(id="E-" + identity[:24], collected_at=now())
         with self.connection() as conn:
             conn.execute("INSERT OR IGNORE INTO evidence VALUES (?,?,?,?,?)", (item["id"], identity, item["company"], item["kind"], json.dumps(item, ensure_ascii=False)))
+            # 与 save_job 同一口径：证据落库即登记其公司主体，资料库随材料生长。
+            if str(item["company"]).strip():
+                self._upsert_company(conn, item["company"])
             return json.loads(conn.execute("SELECT payload FROM evidence WHERE identity=?", (identity,)).fetchone()["payload"])
 
     def save_job(self, data, source):
@@ -125,6 +128,12 @@ class Repository:
         with self.connection() as conn:
             conn.execute("INSERT INTO jobs VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at", (item["id"], json.dumps(item, ensure_ascii=False), item["updated_at"]))
             conn.execute("INSERT OR IGNORE INTO job_evidence VALUES (?,?)", (item["id"], evidence["id"]))
+            # 岗位/证据落库时顺带登记公司主体，公司资料库随采集生长。这里登记的是平台或用户
+            # 给出的数据本体，不是查询参数，不违反「拼错的查询不留 companies 行」的读路径约定；
+            # 也只登记存在、不做变体合并——错合并比漏登记更糟，合并仍由 reliability 流程的
+            # credit_code 强键完成。空名不登记：那不是主体，只是缺失字段。
+            if str(item["company"]).strip():
+                self._upsert_company(conn, item["company"])
         return self.job(item["id"])
 
     def link_evidence(self, job_id, evidence_id):
@@ -161,6 +170,24 @@ class Repository:
         with self.connection() as conn:
             row = conn.execute("SELECT payload FROM evidence WHERE id=?", (evidence_id,)).fetchone()
         return json.loads(row[0]) if row else None
+
+    def company_evidence(self, name, aliases=(), page=1, page_size=10):
+        """实体口径的证据索引：本体与别名都算这家主体，只回元数据不回正文。
+
+        正文一律按 evidence_id 走 get_evidence / project_read 读取，Agent 按需展开时才把全文拉进上下文。
+        """
+        names = sorted({name, *aliases})
+        with self.connection() as conn:
+            rows = conn.execute(
+                f"SELECT payload FROM evidence WHERE company IN ({','.join('?' * len(names))}) ORDER BY rowid DESC",
+                tuple(names)).fetchall()
+        items = [json.loads(row["payload"]) for row in rows]
+        total = len(items)
+        pages = max(1, (total + page_size - 1) // page_size)
+        page = min(page, pages)
+        keys = ("id", "title", "kind", "source", "url", "collected_at", "published_at")
+        return dict(total=total, page=page, pages=pages,
+                    evidence=[{key: item.get(key) for key in keys} for item in items[(page - 1) * page_size:page * page_size]])
 
     def resume(self):
         with self.connection() as conn:
@@ -500,24 +527,28 @@ class Repository:
             row = conn.execute('SELECT payload FROM companies WHERE id=?', (company_id,)).fetchone()
         return json.loads(row['payload']) if row else None
 
-    def resolve_company(self, name, credit_code='', aliases=()):
-        """Exact normalised match or credit code only; a wrong merge is worse than a miss."""
+    def _upsert_company(self, conn, name, credit_code='', aliases=()):
+        """resolve_company 的身份与合并逻辑，跑在调用方已打开的连接里（落库事务内登记主体时用）。"""
         cleaned = self.normalise_name(name)
         if not cleaned:
             raise ValueError('公司名称不能为空')
         code = str(credit_code or '').strip().upper()
         identity = code or cleaned
         company_id = 'CO-' + digest(identity)[:24]
+        row = conn.execute('SELECT payload FROM companies WHERE id=?', (company_id,)).fetchone()
+        known = json.loads(row['payload']) if row else dict(id=company_id, name=cleaned, credit_code=code, aliases=[], created_at=now())
+        merged = {self.normalise_name(a) for a in [*known['aliases'], *aliases, cleaned] if str(a).strip()}
+        merged.discard(known['name'])
+        known['aliases'] = sorted(merged)
+        known['updated_at'] = now()
+        conn.execute('INSERT INTO companies VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,credit_code=excluded.credit_code,aliases=excluded.aliases,payload=excluded.payload,updated_at=excluded.updated_at',
+                     (company_id, known['name'], known['credit_code'], json.dumps(known['aliases'], ensure_ascii=False), json.dumps(known, ensure_ascii=False), known['updated_at']))
+        return known
+
+    def resolve_company(self, name, credit_code='', aliases=()):
+        """Exact normalised match or credit code only; a wrong merge is worse than a miss."""
         with self.connection() as conn:
-            row = conn.execute('SELECT payload FROM companies WHERE id=?', (company_id,)).fetchone()
-            known = json.loads(row['payload']) if row else dict(id=company_id, name=cleaned, credit_code=code, aliases=[], created_at=now())
-            merged = {self.normalise_name(a) for a in [*known['aliases'], *aliases, cleaned] if str(a).strip()}
-            merged.discard(known['name'])
-            known['aliases'] = sorted(merged)
-            known['updated_at'] = now()
-            conn.execute('INSERT INTO companies VALUES (?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,credit_code=excluded.credit_code,aliases=excluded.aliases,payload=excluded.payload,updated_at=excluded.updated_at',
-                         (company_id, known['name'], known['credit_code'], json.dumps(known['aliases'], ensure_ascii=False), json.dumps(known, ensure_ascii=False), known['updated_at']))
-            return known
+            return self._upsert_company(conn, name, credit_code, aliases)
 
     def save_signal(self, signal):
         item = signal.model_dump()
