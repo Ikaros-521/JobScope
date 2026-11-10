@@ -1358,6 +1358,26 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
   .main-workbench .research-layout.no-chat.focus-archive { grid-template-columns: minmax(380px, 1fr) minmax(280px, 380px); }
   .main-workbench .research-layout > .job-chat { display: flex; min-height: 0; grid-column: auto; }
   .main-workbench .research-layout > .job-chat .chat-page { flex: 1; height: auto; min-height: 0; }
+  /* 公司资料库一屏工作台：控件行紧凑，来源列表/公司对话内部滚动，底部重复分页隐藏。 */
+  .main-workbench > .evidence-view:not([hidden]) { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .main-workbench > .evidence-view:not([hidden]) > * { flex-shrink: 0; }
+  .main-workbench .evidence-library-controls { margin-bottom: 10px; }
+  .main-workbench .evidence-library-controls form { gap: 10px; margin-bottom: 6px; }
+  .main-workbench .evidence-library-controls input { min-height: 0; padding: 7px 10px; }
+  .main-workbench .evidence-library-controls .button { min-height: 36px; padding: 6px 12px; }
+  .main-workbench .library-scope { margin-top: 4px; }
+  .main-workbench .management-tabs { gap: 16px; margin-bottom: 10px; }
+  .main-workbench .management-tabs button { min-height: 38px; }
+  .main-workbench > .evidence-view > .evidence-library-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-anchor: none; }
+  .main-workbench > .evidence-view > .evidence-library-list > .pagination:last-of-type { display: none; }
+  .main-workbench .evidence-library-list .section-heading { margin-bottom: 6px; }
+  .main-workbench .library-item { padding: 10px 0; }
+  .main-workbench .library-item .evidence-card summary { padding: 8px 10px; gap: 10px; }
+  .main-workbench .library-item .evidence-card strong { font-size: 13px; line-height: 1.5; }
+  .main-workbench .library-item .evidence-card summary div > span { margin-top: 2px; font-size: 11px; }
+  .main-workbench .company-link { padding: 3px 8px; font-size: 12px; }
+  .main-workbench > .evidence-view > .library-chat-panel:not([hidden]) { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+  .main-workbench .library-chat-panel .chat-page { flex: 1; min-height: 0; height: auto; }
 }
 @media (min-width: 1200px) and (min-height: 700px) and (max-height: 820px) {
   .main-workbench .topbar { height: 40px; }
