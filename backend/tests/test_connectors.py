@@ -184,15 +184,18 @@ def zhaopin_position(**changes):
     return {**position, **changes}
 
 
-def test_zhaopin_ssr_state_maps_real_duty_text():
+def test_zhaopin_ssr_state_keeps_truncated_teaser_as_labelled_excerpt():
     module = connectors()
     output = module.map_zhaopin({'positionList': [zhaopin_position()]}, 20, '北京')
     job = output['jobs'][0]
     assert output['status'] == 'completed'
     assert job['external_id'] == 'CCL1212490300J40899799810'
     assert job['location'] == '北京 海淀' and job['salary'] == '7000-11000元'
-    assert job['description_status'] == 'complete'
+    # 搜索页 jobDescription 是来源截断的预览，不允许标成完整正文。
+    assert job['description_status'] == 'listing'
+    assert 'detail_transport' not in job
     assert '负责数据采标' in job['description'] and '经验：1-3年' in job['description']
+    assert '截断' in job['description'] and '完整岗位职责尚未读取' in job['description']
     assert job['tags'] == ['Python', '数据标注']
     assert job['url'] == 'https://www.zhaopin.com/jobdetail/CCL1212490300J40899799810.htm'
     assert job['published_at'].startswith('2026-11-06')

@@ -6,6 +6,7 @@ import time
 from urllib.parse import urlsplit
 
 from . import browser
+from .connectors import plain
 from .repository import now
 
 batch_lock = threading.Lock()
@@ -26,26 +27,59 @@ DETAIL_SNAPSHOT = r'''return (() => {
     page_title: document.title};
 })()'''
 
+# 智联详情页的整段 JD 在页面自带的 SSR 状态里；展示类名随改版漂移，状态字段更稳。
+ZHAOPIN_DETAIL_SNAPSHOT = r'''return (() => {
+  const dp = ((window.__INITIAL_STATE__ || {}).jobDetail || {}).detailedPosition || {};
+  return {url: location.href, title: dp.name || '', description: dp.description || '',
+    raw_description: dp.jobDesc || '', salary: dp.salary || '', company: dp.companyName || '',
+    working_exp: dp.workingExp || '', education: dp.education || '',
+    page_title: document.title};
+})()'''
+
+# 详情读取只允许这两个已登记的主机与路径形态；其余一律拒绝，防止重放任意页面。
+DETAIL_SOURCES = {
+    'boss': ('www.zhipin.com', r'/job_detail/[A-Za-z0-9_-]+\.html'),
+    'zhaopin': ('www.zhaopin.com', r'/jobdetail/[A-Za-z0-9]+\.htm'),
+}
+
 
 def valid_detail_url(job):
+    rule = DETAIL_SOURCES.get(job.get('source'))
+    if not rule:
+        return False
     try:
         url = urlsplit(job.get('url', ''))
-        return (job.get('source') == 'boss' and url.scheme == 'https'
-                and url.netloc == 'www.zhipin.com'
-                and bool(re.fullmatch(r'/job_detail/[A-Za-z0-9_-]+\.html', url.path))
+        return (url.scheme == 'https' and url.netloc == rule[0]
+                and bool(re.fullmatch(rule[1], url.path))
                 and not url.query and not url.fragment)
     except ValueError:
         return False
 
 
-def normalize_detail(job, snapshot):
+def _verification_block(snapshot):
+    """Both sources interpose a verification or login page instead of the posting."""
     url = snapshot.get('url', '')
-    if any(part in url for part in ('/safe/', '/verify', 'security-check')) or '验证' in snapshot.get('page_title', ''):
+    page_title = str(snapshot.get('page_title', ''))
+    if any(part in url for part in ('/safe/', '/verify', 'security-check')) or '验证' in page_title or 'Verification' in page_title:
         return dict(status='needs_verification', message='详情页要求人工验证，已暂停补采；请在项目Chrome完成验证后继续')
     if '/login' in url or '/passport' in url:
         return dict(status='needs_login', message='详情页要求重新登录，请在项目Chrome中完成')
-    if not valid_detail_url(job) or urlsplit(url).path != urlsplit(job['url']).path or urlsplit(url).netloc != 'www.zhipin.com':
+    return None
+
+
+def normalize_detail(job, snapshot):
+    blocked = _verification_block(snapshot)
+    if blocked:
+        return blocked
+    # 保存的岗位与快照必须同源同路径（scheme+host+path），防止任意页面冒名覆盖。
+    if not valid_detail_url(job) or urlsplit(snapshot.get('url', ''))[:3] != urlsplit(job['url'])[:3]:
         return dict(status='failed', message='详情页岗位标识不一致，未覆盖原岗位')
+    if job['source'] == 'zhaopin':
+        return _normalize_zhaopin(job, snapshot)
+    return _normalize_boss(job, snapshot)
+
+
+def _normalize_boss(job, snapshot):
     description = snapshot.get('description', '').strip()
     title = snapshot.get('title', '').strip()
     if not title or len(description) < 30 or len(description) > 100000:
@@ -69,12 +103,31 @@ def normalize_detail(job, snapshot):
                 job=updated, company_evidence=evidence)
 
 
+def _normalize_zhaopin(job, snapshot):
+    description = str(snapshot.get('description', '') or '').strip()
+    if not description and snapshot.get('raw_description'):
+        description = plain(snapshot['raw_description'])
+    title = str(snapshot.get('title', '') or '').strip()
+    if not title or len(description) < 30 or len(description) > 100000:
+        return dict(status='unavailable', message='未取得完整职位描述，可能已下架或页面结构变化；保留原摘要')
+    # 与搜索页摘要保持同一头部格式，正文整段替换截断预览。
+    head = [f'{label}：{plain(snapshot.get(key))}' for label, key in (('经验', 'working_exp'), ('学历', 'education'))
+            if plain(snapshot.get(key))]
+    updated = {**job, 'title': title, 'description': '\n'.join(head + ['', description]),
+               'description_status': 'complete', 'detail_collected_at': now(),
+               'detail_source_url': job['url'], 'detail_transport': 'browser_dom'}
+    if plain(snapshot.get('salary')):
+        updated['salary'] = plain(snapshot['salary'])
+    return dict(status='completed', message='完整职位描述已读取并保存；公司为平台展示名称，法定主体未核验',
+                job=updated, company_evidence=None)
+
+
 def collect_detail(job, data_dir):
     if not valid_detail_url(job):
-        return dict(status='unsupported', message='仅支持已保存的BOSS原始岗位详情链接')
+        return dict(status='unsupported', message='仅支持已保存的BOSS或智联原始岗位详情链接')
     port = browser._connection(data_dir)
     if not port:
-        return dict(status='needs_login', message='请先打开项目Chrome并登录BOSS')
+        return dict(status='needs_login', message='请先打开项目Chrome并登录对应平台')
     if not browser._lock.acquire(blocking=False):
         return dict(status='backoff', message='项目浏览器正在采集，请稍后重试')
     tab = None
@@ -90,8 +143,9 @@ def collect_detail(job, data_dir):
             except Exception:
                 # A loaded document can still be readable after a subresource timeout.
                 pass
+            script = ZHAOPIN_DETAIL_SNAPSHOT if job.get('source') == 'zhaopin' else DETAIL_SNAPSHOT
             for attempt in range(6):
-                snapshot = tab.run_js(DETAIL_SNAPSHOT)
+                snapshot = tab.run_js(script)
                 output = normalize_detail(job, snapshot)
                 if output['status'] != 'unavailable':
                     break
@@ -111,14 +165,16 @@ def collect_detail(job, data_dir):
 
 
 def save_detail(repo, output):
-    saved = repo.save_job(output['job'], 'boss')
+    saved = repo.save_job(output['job'], output['job'].get('source', 'boss'))
     if output.get('company_evidence'):
-        repo.save_evidence(output['company_evidence'], 'boss_detail')
+        repo.save_evidence(output['company_evidence'], output['job'].get('source', 'boss') + '_detail')
     return saved
 
 
 def pending_jobs(repo):
-    return [j for j in repo.jobs() if j['source'] == 'boss' and j.get('description_status') != 'complete']
+    # detail_transport='page_state' 是旧版把搜索页截断摘要误标为完整的记录，也必须重读详情页。
+    return [j for j in repo.jobs() if j['source'] in DETAIL_SOURCES
+            and (j.get('description_status') != 'complete' or j.get('detail_transport') == 'page_state')]
 
 
 def run_batch(repo, task, limit=500, collector=None, pause=time.sleep):

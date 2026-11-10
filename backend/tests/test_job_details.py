@@ -111,3 +111,68 @@ def test_batch_skips_complete_saves_progress_and_stops_at_verification(tmp_path)
 def test_detail_url_is_only_saved_boss_job(tmp_path, url):
     from jobscope.job_details import valid_detail_url
     assert not valid_detail_url({**listing(Repository(tmp_path)), 'url': url})
+
+
+def zhaopin_listing(repo, external_id='CCL1212490300J40899799810'):
+    return repo.save_job(dict(external_id=external_id, title='数据采集分析师', company='甲品牌苏州分公司',
+                              location='北京 海淀', salary='7000-11000元',
+                              description='经验：1-3年\n学历：本科\n\n负责数据采标与质量复核。\n以上为搜索页摘要，来源已截断；完整岗位职责尚未读取。',
+                              description_status='listing',
+                              url=f'https://www.zhaopin.com/jobdetail/{external_id}.htm'), 'zhaopin')
+
+
+def zhaopin_snapshot(job, **changes):
+    snapshot = dict(url=job['url'], title='数据采集分析师', salary='7000-11000元',
+                    description='1、负责数据采集和整理，推动问题及时合理解决;\n2、负责数据采集工作，之前有传感器采集经验最好;\n3、有python等脚本编程能力者优先。',
+                    raw_description='', working_exp='1-3年', education='本科', company='甲品牌苏州分公司',
+                    page_title='数据采集分析师招聘 - 智联招聘')
+    return {**snapshot, **changes}
+
+
+def test_zhaopin_detail_normalization_replaces_truncated_teaser(tmp_path):
+    from jobscope.job_details import normalize_detail
+    repo = Repository(tmp_path)
+    job = zhaopin_listing(repo)
+    output = normalize_detail(job, zhaopin_snapshot(job))
+    assert output['status'] == 'completed'
+    assert output['job']['description_status'] == 'complete'
+    assert output['job']['detail_transport'] == 'browser_dom'
+    assert output['job']['description'].startswith('经验：1-3年\n学历：本科\n\n1、负责数据采集和整理')
+    assert '搜索页摘要' not in output['job']['description']
+    assert output['company_evidence'] is None
+    # 详情页状态缺失时保留原摘要，不误标完整。
+    assert normalize_detail(job, zhaopin_snapshot(job, description=''))['status'] == 'unavailable'
+    # raw_description 兜底：description 为空但 jobDesc HTML 存在时清洗后可用。
+    fallback = normalize_detail(job, zhaopin_snapshot(job, description='',
+                                                     raw_description='1、负责数据采集和整理，推动问题及时合理解决;\n2、负责数据采集工作，之前有传感器采集经验最好;\n3、有python等脚本编程能力者优先。'))
+    assert fallback['status'] == 'completed'
+    assert '1、负责数据采集和整理' in fallback['job']['description']
+
+
+def test_zhaopin_detail_identity_and_verification(tmp_path):
+    from jobscope.job_details import normalize_detail
+    job = zhaopin_listing(Repository(tmp_path))
+    other = zhaopin_snapshot(job, url='https://www.zhaopin.com/jobdetail/CCL9999999999J99999999999.htm')
+    assert normalize_detail(job, other)['status'] == 'failed'
+    assert normalize_detail(job, zhaopin_snapshot(job, url='https://www.zhaopin.com/safe/verify'))['status'] == 'needs_verification'
+    assert normalize_detail(job, zhaopin_snapshot(job, page_title='Security Verification'))['status'] == 'needs_verification'
+    assert normalize_detail(job, zhaopin_snapshot(job, url='http://www.zhaopin.com/jobdetail/CCL1212490300J40899799810.htm'))['status'] == 'failed'
+
+
+def test_zhaopin_detail_saves_and_backfills_legacy_teaser(tmp_path):
+    from jobscope.job_details import normalize_detail, pending_jobs, save_detail
+    repo = Repository(tmp_path)
+    job = zhaopin_listing(repo)
+    # 旧版把截断摘要误标为 complete（detail_transport='page_state'），仍要被批量补采捞起。
+    legacy = dict(job, description_status='complete', detail_transport='page_state')
+    repo.save_job(legacy, 'zhaopin')
+    assert [j['id'] for j in pending_jobs(repo)] == [job['id']]
+    saved = save_detail(repo, normalize_detail(repo.job(job['id']), zhaopin_snapshot(job)))
+    assert saved['description_status'] == 'complete' and saved['detail_transport'] == 'browser_dom'
+    assert '1、负责数据采集和整理' in saved['description']
+    assert pending_jobs(repo) == []
+    # 完成后再次采集摘要不会降级已保存的完整正文。
+    zhaopin_listing(repo)
+    refreshed = repo.job(job['id'])
+    assert refreshed['description_status'] == 'complete'
+    assert '1、负责数据采集和整理' in refreshed['description']

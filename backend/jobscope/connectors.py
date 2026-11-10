@@ -236,22 +236,21 @@ def map_zhaopin(state, limit=20, city=''):
             value = plain(item.get(key))
             if value:
                 description.append(f'{label}：{value}')
+        # 搜索页自带的 jobDescription 是来源截断的预览（实测约百字即断句），不能当完整正文标注。
         duties = plain(item.get('jobDescription'))[:100000]
         job = {'external_id': str(item.get('number') or ''), 'title': plain(item.get('name')),
                'company': plain(item.get('companyName')),
                'location': ' '.join(x for x in (plain(item.get('workCity')), plain(item.get('cityDistrict'))) if x),
                'salary': plain(item.get('salary60')),
                'url': _safe_url(item.get('positionUrl'), 'www.zhaopin.com'), 'source': 'zhaopin',
-               'description': '\n'.join(description + (['', duties] if duties else ['、'.join(tags), '仅搜索列表字段；完整岗位职责尚未读取。'])),
+               'description': '\n'.join(description + (['', duties, '以上为搜索页摘要，来源已截断；完整岗位职责尚未读取。']
+                                                        if duties else ['、'.join(tags), '仅搜索列表字段；完整岗位职责尚未读取。'])),
                'evidence_ids': [], 'tags': tags[:30], 'published_at': _published(item.get('publishTime'))}
-        job['description_status'] = 'complete' if duties else 'listing'
-        if duties:
-            job['detail_transport'] = 'page_state'
-        if _push(job, '岗位正文取自智联搜索页自带字段；公司为平台展示名称，法定主体未核验。'
-                 if duties else '只采集搜索列表字段，完整职责尚未读取；公司为平台展示名称，未核验法定主体。',
+        job['description_status'] = 'listing'
+        if _push(job, '岗位摘要为智联搜索页截断预览，完整职责待详情页补读；公司为平台展示名称，法定主体未核验。',
                  jobs, evidence, seen, limit, city):
             break
-    return result(message=f'已读取智联招聘搜索页岗位 {len(jobs)} 条；正文完整性按条标注，法定主体尚未核验。', jobs=jobs, evidence=evidence)
+    return result(message=f'已读取智联招聘搜索页岗位 {len(jobs)} 条；摘要可能被来源截断，完整职责由详情页补读，法定主体尚未核验。', jobs=jobs, evidence=evidence)
 
 
 def map_job51(payload, limit=20, city=''):

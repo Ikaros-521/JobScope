@@ -26,7 +26,7 @@
 - 落盘前逐条比对上文已回验的 11 个码：复现 11、码不符 0、缺失 0，因此 `backend/jobscope/data/cities.json` 收录 374 个城市（含全国）用于 BOSS 采集。`scripts/harvest_city_dictionary.py` 可重跑，对不上就拒绝写入；它固定与 `VERIFIED_BOSS_CITY_CODES` 下限比对，不拿合并结果自证。
 - 首字母由抓取脚本用 pypinyin 生成，且只在整词读法与平台拼音一致时才采信：373 城中 321 城可首字母命中（佛山 `fs`、哈尔滨 `heb`），52 城不给快捷写法（如六安），仍可按汉字或整词拼音命中。pypinyin 只被抓取脚本使用，运行时依赖没有变化。
 - 智联、前程无忧、猎聘的城市表本次没有取到，因此这三家仍是逐个回验的 10 城，未做任何扩写：
-  - 智联 `https://www.zhaopin.com/jobs/?kw=Python&jl=530` 页面 297,651 字节，加其 8 个脚本包（最大 `chunk-vendors` 1,542,978 字节、`chunk-common` 413,568 字节）内均无 `jl` 城市码表；`cityList`、`careerArea` 字样在页面中出现 0 次。
+  - 智联 `https://www.zhaopin.com/jobs/?kw=Python&jl=530` 页面 297,651 字节，加其 8 个脚本包（最大 `chunk-vendors` 1,542,978 字节、`chunk-common` 413,568 字节）内均无 `jl` 城市码表；`cityList`/`careerArea` 字样在页面中出现 0 次。
   - 前程无忧 `https://we.51job.com/pc/search?keyword=Python&jobArea=080200` 本机直连只有 7,987 字节 WAF 挑战页，其 10 个脚本包（含 `fccdn.51jobcdn.com/we/static/js/app-*.js`）无 `jobArea` 码表。
   - 猎聘 `https://www.liepin.com/city-hangzhou/zhaopin/?key=Python`（2,824 字节）与首页（346,306 字节）加 10 个脚本包（含 3,260,593 字节 `common.js`）均无 `dq` 码表。
   - 三家的字典预计要按既有做法在各自会话内取页面自身的数据（打开城市筛选、读同源响应），本次未做。
@@ -45,11 +45,22 @@
 - 猎聘完整岗位职责读取未实现，详情页正文选择器尚未实测；不做未验证的承诺。
 - 翻页深度、更多关键词与长期可用性未测；来源改版或风控加严后可能失效，届时应表现为明确的失败状态而不是空结果。
 
+## 2026-11-10 更正：智联搜索页 `jobDescription` 是截断摘要，不是完整职责
+
+上表“含 `jobDescription` 完整职责”的说法经实测推翻，本节更正并记录已发生的修复：
+
+- 复核 2026-11-09 会话保存的 20 条智联岗位：正文全部在约 68–130 字处戛然而止，结尾多为逗号或半句（如“……掌握至少一门”“……熟悉Linux”），证明搜索页 `positionList[].jobDescription` 是来源按长度截断的预览。旧代码把非空摘要标成 `description_status='complete'`，导致“岗位要求不完整”。
+- 智联详情页（`https://www.zhaopin.com/jobdetail/<编号>.htm`）在项目浏览器会话内可读，其页面自带 `__INITIAL_STATE__.jobDetail.detailedPosition.description` 为完整正文（同岗位实测 247 字节起，最长 3680 字），类名选择器在当前页面 0 命中，故按状态字段读取。
+- 修复（本机已复测）：`map_zhaopin` 不再把截断摘要标成 complete，统一标注“来源已截断”；详情读取扩展到智联（`job_details.py` 增 `ZHAOPIN_DETAIL_SNAPSHOT`，`DETAIL_SOURCES` 登记 zhipin.com 与 zhaopin.com 两种路径形态）；批量与单条补采端点覆盖智联；`pending_jobs` 把旧版误标（`detail_transport='page_state'`）也当作待补全。已保存的 20 条误标岗位经真实浏览器会话批量补读：20/20 保存完整 JD，0 失败。
+- 附带发现并修复：原 `normalize_detail` 只比对路径与主机，不校验 scheme，`http://` 快照可覆盖已保存正文；现要求快照与保存岗位 scheme+host+path 完全一致。
+- 环境插曲：本机 Chrome 在运行中自动升级（157.0.8103.38→39），升级未完成使 `chrome.exe` 出现并行配置错误（WinError 14001），项目 Chrome 会话假死；用同目录 `new_chrome.exe` 替换后恢复，项目配置目录及登录态不受影响。
+- 前程无忧检索接口的 `jobDescribe` 是否同样截断本次未测（库中无 51job 样本），不下结论。
+
 ## 回归
 
 ```powershell
-cd E:\Github_Pro\JobScope
-.venv\Scripts\python.exe -m pytest backend/tests -q   # 224 passed
+cd E:\Github_Pro\ResumeLoom\jobscope
+.venv\Scripts\python.exe -m pytest backend/tests -q   # 227 passed（2026-11-10）
 .venv\Scripts\python.exe scripts\harvest_city_dictionary.py boss   # 11 项已回验码逐条复现后才落盘
 cd frontend
 npm run build                                          # tsc -b + vite build 通过

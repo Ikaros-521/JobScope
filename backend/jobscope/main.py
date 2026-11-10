@@ -598,7 +598,7 @@ def create_app(data_dir=None):
         details = load_module('job_details')
         if details.batch_lock.locked():
             raise HTTPException(409, '批量JD补采正在运行，请等待完成')
-        task = repo.create_task('boss', job['title'] + ' · 完整JD')
+        task = repo.create_task(job['source'], job['title'] + ' · 完整JD')
         output = details.collect_detail(job, data_dir=data_dir)
         saved = details.save_detail(repo, output) if output['status'] == 'completed' else job
         task.update(kind='job_details', status=output['status'], message=output['message'], count=int(output['status'] == 'completed'))
@@ -608,10 +608,10 @@ def create_app(data_dir=None):
     @app.get('/api/browser/details/status')
     def details_status():
         details = load_module('job_details')
-        jobs = [j for j in repo.jobs() if j['source'] == 'boss']
+        jobs = [j for j in repo.jobs() if j['source'] in details.DETAIL_SOURCES]
         tasks = [t for t in repo.tasks() if t.get('kind') == 'job_details' and t.get('total') is not None]
-        complete = sum(j.get('description_status') == 'complete' for j in jobs)
-        return dict(total=len(jobs), complete=complete, pending=len(jobs) - complete, task=tasks[0] if tasks else None)
+        pending = len(details.pending_jobs(repo))
+        return dict(total=len(jobs), complete=len(jobs) - pending, pending=pending, task=tasks[0] if tasks else None)
 
     @app.post('/api/browser/details')
     def start_details(data: DetailBatchInput):
