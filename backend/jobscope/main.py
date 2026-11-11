@@ -19,7 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from .analysis import analyze, parse_resume
 from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
-from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ReliabilityInput, ResumeInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
+from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ReliabilityInput, ResumeInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
 from .repository import Repository, now
 from .settings import ModelSettings, ModelSettingsInput, ConnectionInput, _active
 
@@ -276,19 +276,42 @@ def create_app(data_dir=None):
         repo.update_task(task)
         return {"task": task, "jobs": [repo.job(job["id"]) for job in jobs]}
 
+    def execute_collection(source, query, task, location='', limit=10, use_browser=False):
+        connectors = load_module("connectors")
+        if use_browser or source in connectors.BROWSER_SOURCES:
+            result = load_module("browser").collect(source, query, location=location, limit=limit, data_dir=data_dir)
+        else:
+            result = connectors.collect(source, query, location=location, limit=limit, cache_dir=data_dir / "cache")
+        return persist_collection(task, result)
+
     def run_collection(source, query, location, limit, use_browser=False):
         task = repo.create_task(source, query)
         try:
-            connectors = load_module("connectors")
-            if use_browser or source in connectors.BROWSER_SOURCES:
-                result = load_module("browser").collect(source, query, location=location, limit=limit, data_dir=data_dir)
-            else:
-                result = connectors.collect(source, query, location=location, limit=limit, cache_dir=data_dir / "cache")
-            return persist_collection(task, result)
+            return execute_collection(source, query, task, location, limit, use_browser)
         except Exception:
             task.update(status="failed", message="采集未完成，请检查来源状态及本地依赖后重试")
             repo.update_task(task)
             return {"task": task, "jobs": []}
+
+    @app.post("/api/company-research")
+    def company_research(data: CompanyResearchInput):
+        # 多平台公司检索：公告（接口）与国内岗位源（浏览器）逐渠道串行跑；渠道各自独立 try，
+        # 单渠道失败/需要登录只反映在该渠道任务上，不影响其余渠道，前端按任务逐个提示。
+        company = data.company.strip()
+        # liepin 是接口源（connectors），browser 渠道由 BROWSER_SOURCES 判定，这里不按顺序硬编码。
+        plan = ['cninfo', 'boss', 'zhaopin', '51job', 'liepin']
+        tasks = [repo.create_task(source, company) for source in plan]
+
+        def worker():
+            for source, task in zip(plan, tasks):
+                try:
+                    execute_collection(source, company, task, limit=10)
+                except Exception:
+                    task.update(status="failed", message="该渠道检索失败，已跳过；不影响其他渠道")
+                    repo.update_task(task)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return {"tasks": tasks}
 
     @app.post("/api/browser/collect")
     def browser_collect(data: BrowserCollectInput):
@@ -337,6 +360,24 @@ def create_app(data_dir=None):
     @app.post("/api/collect")
     def collect(data: CollectInput):
         return run_collection(data.source, data.query, data.location, data.limit)
+
+    @app.post("/api/company/lookup")
+    def company_lookup(data: CompanyLookupInput):
+        # 公开网页快查：单页同步执行（FastAPI 线程池承载，页加载 + 渲染等待约半分钟内）。
+        # 卡片按解析出的精确主体名归档成证据（identity 去重，重复查询幂等），任务记录保留真实状态。
+        task = repo.create_task(data.channel, data.company)
+        lookup = load_module("company_lookup")
+        outcome = lookup.collect(data.channel, data.company,
+                                 browser_module=load_module("browser"), data_dir=data_dir)
+        saved = 0
+        for card in outcome.get('cards', []):
+            repo.save_evidence(dict(title=card['name'], company=card['name'], kind='web_company_profile',
+                                    text=card['text'], url=card.get('url', '')), data.channel)
+            saved += 1
+        task.update(status=outcome.get('status', 'failed'), message=outcome.get('message', '快查未完成'),
+                    count=saved)
+        repo.update_task(task)
+        return {"task": task, "cards": outcome.get('cards', [])}
 
     @app.get("/api/tasks")
     def tasks(page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):

@@ -54,11 +54,22 @@ class CollectInput(RequestModel):
     limit: int = Field(default=20, ge=1, le=1000)
 
 
+class CompanyResearchInput(RequestModel):
+    """公司情报多平台检索：以精确公司名为关键词跑公告与岗位渠道。"""
+    company: str = Field(min_length=1, max_length=100)
+
+
 class BrowserCollectInput(RequestModel):
     source: Literal["boss", "zhaopin", "51job"] = "boss"
     query: str = Field(min_length=1, max_length=200)
     location: str = Field(default="", max_length=100)
     limit: int = Field(default=20, ge=1, le=1000)
+
+
+class CompanyLookupInput(RequestModel):
+    """公司快查：公开网页快照，渠道与公司名都从严校验。"""
+    channel: Literal["qcc", "tyc"]
+    company: str = Field(min_length=1, max_length=120)
 
 
 class AnalyzeInput(RequestModel):

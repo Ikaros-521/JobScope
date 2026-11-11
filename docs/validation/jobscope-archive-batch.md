@@ -168,6 +168,15 @@ npm run build                                          # tsc -b + vite build 通
 
 验证：三态（archive 300 / info 336 / chat 508）对整棵对话子树做越界扫描全部 0 溢出；hint 按容器宽度自适应显隐；`npm run build` 通过。
 
+## 2026-11-11 补充：公司情报多平台异步检索
+
+用户指出公司情报检索只查巨潮、与求职参考的数据打通名不副实。改造：
+
+- **后端** `POST /api/company-research`（body `{company}`）：以精确公司名跑五个渠道——cninfo 公告（接口）、boss/zhaopin/51job（浏览器）、liepin（接口），后台线程逐渠道串行；渠道走 BROWSER_SOURCES 判定（liepin 是接口源）。每渠道独立 try：失败只标记该渠道任务（"该渠道检索失败，已跳过；不影响其他渠道"），不中断编排；端点立即返回任务列表，前端轮询。原 `run_collection` 拆出 `execute_collection` 复用。
+- **前端**：按钮"检索公告"→"**多平台检索**"；说明文案改为"多平台检索该公司岗位与公告，结果直接作为求职参考的依据材料；渠道失败不影响整体"；点击后粘性 toast"已启动 5 个渠道…"，各渠道终态时逐渠道 toast 结果（完成 notice / 失败 error），全部结束后刷新详情与元数据。检索回来的证据入 evidence 表，供"从材料里抽取信号""生成参考"直接使用——数据打通即在此。
+
+验证：真实运行"海宁辰曦科技有限公司"五渠道——cninfo/zhaopin/51job completed、boss needs_verification、liepin failed，渠道间零牵连，任务消息如实；单测 test_company_research.py 验证渠道规划与失败隔离（stub 渠道：cninfo 抛错仅自身 failed，liepin completed，浏览器渠道 needs_login）；全套 487 passed；UI 实测按钮文案、粘性 toast、防重复触发。
+
 ## 边界与未测
 
 - 大批量（几百条）的真实删除只在单测里跑过（HTTP 层 1000 条上限校验），真实档案上的多量大删由用户自行操作，路径与自测相同。
