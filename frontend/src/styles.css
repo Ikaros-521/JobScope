@@ -667,6 +667,19 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .browser-fields input, .browser-fields select { width: 100%; }
 .browser-form-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 12px; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
 .browser-form-note { font-size: 12px; color: var(--muted); line-height: 1.8; margin-top: 12px; }
+/* 公司快查：单张面板放下表单与结果，卡片最多三行字段摘要，保证一屏读完。 */
+.lookup-panel { margin: 0; display: flex; flex-direction: column; gap: 16px; }
+.lookup-panel .section-heading { margin-bottom: 0; }
+.lookup-panel h2 { font-size: 18px; }
+.lookup-panel form > .browser-fields { grid-template-columns: minmax(160px, 200px) minmax(0, 1fr); }
+.lookup-panel .browser-form-actions { margin-top: 16px; padding-top: 16px; }
+.lookup-result { display: flex; flex-direction: column; gap: 12px; }
+.lookup-message { font-size: 13px; color: var(--muted); line-height: 1.8; margin: 0; }
+.lookup-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
+.lookup-card { background: var(--surface); border-radius: 8px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.lookup-card-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-width: 0; }
+.lookup-card-heading strong { font-size: 13px; overflow-wrap: anywhere; }
+.lookup-fields { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.8; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
 .tasks-panel { margin-top: 24px; }
 .task-table-wrap { overflow-x: auto; }
 .task-table-wrap table { width: 100%; border-collapse: collapse; text-align: left; font-size: 13px; }

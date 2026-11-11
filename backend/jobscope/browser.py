@@ -65,6 +65,14 @@ PAGES = {
 }
 
 
+# 公司快查渠道没有岗位搜索页，只要能打开站点首页让用户登录/过验证即可；start() 按
+# PAGES → LOOKUP_PAGES → boss 的顺序找落点，公司快查面板的「打开专用浏览器」复用同一入口。
+LOOKUP_PAGES = {
+    'qcc': dict(name='企查查', home='https://www.qcc.com'),
+    'tyc': dict(name='天眼查', home='https://www.tianyancha.com'),
+}
+
+
 @contextmanager
 def session_lock(data_dir=None):
     """OS lock is released on process exit, so no stale PID-file deadlock."""
@@ -137,7 +145,7 @@ def status(data_dir=None):
 
 
 def start(data_dir=None, source='boss'):
-    spec = PAGES.get(source) or PAGES['boss']
+    spec = PAGES.get(source) or LOOKUP_PAGES.get(source) or PAGES['boss']
     if not _has_driver() or not _chrome():
         return status(data_dir)
     if not _lock.acquire(blocking=False):

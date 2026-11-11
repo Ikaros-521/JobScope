@@ -438,6 +438,12 @@ SOURCES = {
                      description='公开远程岗位接口，主要为海外岗位；不是国内招聘数据源。'),
     'cninfo': dict(name='巨潮资讯', kind='evidence', transport='http_api', status='available',
                    description='公司公告检索，只保存已读取的公告元信息，不代表已解析财报正文。'),
+    # company_web 是公司快查专用通路：不进 BROWSER_SOURCES/HTTP_SOURCES，岗位采集路由碰不到它。
+    # 与 reliability 的企查查/天眼查开放平台（付费 API）是两套登记表，互不影响。
+    'qcc': dict(name='企查查网页', kind='company', transport='company_web', status='needs_verification',
+                description='公开搜索页快查公司工商信息；未登录数据有限，登录/验证需在项目浏览器手动完成。'),
+    'tyc': dict(name='天眼查网页', kind='company', transport='company_web', status='needs_verification',
+                description='公开搜索页快查公司工商信息；可见字段有限，解析到什么存什么，按公司名归档。'),
     'user_import': dict(name='手动导入', kind='manual', transport='manual', status='available',
                         description='用户提供的岗位或公司资料，保留用户材料来源标记。'),
 }

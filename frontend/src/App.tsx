@@ -7,6 +7,7 @@ import { Pagination, emptyPage } from './Pagination'
 import { EvidenceWorkspace } from './EvidenceWorkspace'
 import { EvidenceCard } from './EvidenceCard'
 import { DetailBatch } from './DetailBatch'
+import { CompanyLookup } from './CompanyLookup'
 import { CityInput } from './CityInput'
 import type { SavedLocation } from './CityInput'
 import { ResearchIndex } from './ResearchIndex'
@@ -18,7 +19,7 @@ import { navigateTabs } from './tabNavigation'
 import { ChatWorkspace } from './chat/ChatWorkspace'
 import type { Analysis, BrowserStatus, Evidence, Job, PageInfo, ReliabilityHistory, ReliabilityReport, Source, Task } from './api'
 
-const transportNames: Record<string, string> = { http_api: '接口', browser_page: '需浏览器', manual: '手动' }
+const transportNames: Record<string, string> = { http_api: '接口', browser_page: '需浏览器', company_web: '网页快查', manual: '手动' }
 const statusNames: Record<string, string> = { completed: '已完成', success: '已完成', running: '采集中', pending: '等待中', failed: '失败', needs_login: '需要登录', needing_login: '需要登录', login_required: '需要登录', needs_verification: '需要验证', verification_required: '需要验证', requires_verification: '需要验证', unsupported: '暂不支持', available: '可用', ready: '可用', not_configured: '未配置', blocked: '访问受限', backoff: '退避等待', opt_in: '需你自行开启', skipped: '已跳过', degraded: '已降级留档' }
 const dimensionNames: Record<string, string> = { skill: '技能', skills: '技能', experience: '经历与职责', domain: '行业与业务', industry: '行业与业务', preference: '求职偏好', preferences: '求职偏好' }
 const requirementNames: Record<string, string> = { met: '满足', matched: '满足', satisfied: '满足', partial: '部分满足', not_met: '未满足', unmet: '未满足', missing: '未满足', unknown: '待确认', confirmed: '满足' }
@@ -62,7 +63,7 @@ function External({ url, children }: { url: string; children: ReactNode }) { con
 export default function App() {
   const [view, setView] = useState<'jobs' | 'resume' | 'sources' | 'evidence' | 'global' | 'settings' | 'extensions'>('jobs')
   const [navigationOpen, setNavigationOpen] = useState(false)
-  const [sourcesTab, setSourcesTab] = useState<'collect' | 'catalog' | 'history'>('collect')
+  const [sourcesTab, setSourcesTab] = useState<'collect' | 'lookup' | 'catalog' | 'history'>('collect')
   const [jobs, setJobs] = useState<Job[]>([])
   const [jobsInfo, setJobsInfo] = useState<PageInfo>(emptyPage)
   const [jobsTotal, setJobsTotal] = useState(0)
@@ -491,7 +492,7 @@ export default function App() {
           <div><span className="overview-icon"><Icon name="globe" /></span><div><span>专用浏览器</span><strong>{browser ? browser.running ? '运行中' : '未启动' : '状态未知'}<small>登录后采集</small></strong></div></div>
           <div><span className="overview-icon"><Icon name="book" /></span><div><span>采集记录</span><strong>{tasksInfo.total.toLocaleString()}<small>次任务</small></strong></div></div>
         </div>
-        <div className="management-tabs" role="tablist" aria-label="数据管理分区" onKeyDown={navigateTabs}>{([{ id: 'collect', label: '采集工作台' }, { id: 'catalog', label: '数据源' }, { id: 'history', label: '任务记录' }] as const).map(item => <button key={item.id} id={`sources-${item.id}-tab`} role="tab" aria-controls={`sources-${item.id}-panel`} aria-selected={sourcesTab === item.id} tabIndex={sourcesTab === item.id ? 0 : -1} onClick={() => setSourcesTab(item.id)}>{item.label}{item.id === 'catalog' && <span>{sources.length}</span>}</button>)}</div>
+        <div className="management-tabs" role="tablist" aria-label="数据管理分区" onKeyDown={navigateTabs}>{([{ id: 'collect', label: '采集工作台' }, { id: 'lookup', label: '公司快查' }, { id: 'catalog', label: '数据源' }, { id: 'history', label: '任务记录' }] as const).map(item => <button key={item.id} id={`sources-${item.id}-tab`} role="tab" aria-controls={`sources-${item.id}-panel`} aria-selected={sourcesTab === item.id} tabIndex={sourcesTab === item.id ? 0 : -1} onClick={() => setSourcesTab(item.id)}>{item.label}{item.id === 'catalog' && <span>{sources.length}</span>}</button>)}</div>
         <div id="sources-collect-panel" role="tabpanel" aria-labelledby="sources-collect-tab" hidden={sourcesTab !== 'collect'}>
           <section className="browser-panel paper-panel">
             <div className="browser-guide"><span className="section-label">浏览器采集</span><h2>从已登录的平台<br />带回真实岗位</h2><p>使用项目专属 Chrome，登录状态与日常浏览器分开保存。</p><ol className="collection-steps"><li><span>1</span><div><strong>选择平台</strong><p>在右侧填写关键词与城市</p></div></li><li><span>2</span><div><strong>打开浏览器并登录</strong><p>遇到验证时，请在浏览器内手动完成</p></div></li><li><span>3</span><div><strong>开始采集</strong><p>结果自动存档，任务记录保留真实状态</p></div></li></ol><div className="browser-status"><span className={`connection-dot ${browser?.running ? 'connected' : ''}`} />{browser?.message || '浏览器状态未知'}</div></div>
@@ -504,9 +505,12 @@ export default function App() {
           </section>
           <div className="collection-maintenance"><DetailBatch onUpdate={refreshMetadata} /><ResearchIndex /></div>
         </div>
+        <div id="sources-lookup-panel" role="tabpanel" aria-labelledby="sources-lookup-tab" hidden={sourcesTab !== 'lookup'}>
+          <CompanyLookup refreshMetadata={refreshMetadata} />
+        </div>
         <div id="sources-catalog-panel" role="tabpanel" aria-labelledby="sources-catalog-tab" hidden={sourcesTab !== 'catalog'}>
           <div className="management-section-heading"><div><h2>岗位与公司数据源</h2><p>接口优先，浏览器补充；可用状态不代表已登录。</p></div></div>
-          <div className="sources-grid">{sources.length ? sources.map(item => <article className="source-card paper-panel" key={item.id}><div className="source-card-heading"><span className="source-icon"><Icon name={item.id === 'cninfo' ? 'book' : 'globe'} /></span><h3>{item.name}</h3><Badge value={item.status} /></div><p>{item.description}</p><div className="source-card-footer"><span>{{ http_api: 'HTTP 接口', browser_page: '浏览器会话', manual: '用户材料' }[item.transport_mode] || item.transport_mode}</span><span>{item.id}</span></div></article>) : <div className="paper-panel"><Empty title="等待数据源状态">请确认本地后端服务已启动，然后刷新状态。</Empty></div>}</div>
+          <div className="sources-grid">{sources.length ? sources.map(item => <article className="source-card paper-panel" key={item.id}><div className="source-card-heading"><span className="source-icon"><Icon name={item.id === 'cninfo' ? 'book' : 'globe'} /></span><h3>{item.name}</h3><Badge value={item.status} /></div><p>{item.description}</p><div className="source-card-footer"><span>{{ http_api: 'HTTP 接口', browser_page: '浏览器会话', company_web: '网页快查', manual: '用户材料' }[item.transport_mode] || item.transport_mode}</span><span>{item.id}</span></div></article>) : <div className="paper-panel"><Empty title="等待数据源状态">请确认本地后端服务已启动，然后刷新状态。</Empty></div>}</div>
           <SignalSourceSettings />
         </div>
         <div id="sources-history-panel" role="tabpanel" aria-labelledby="sources-history-tab" hidden={sourcesTab !== 'history'}>

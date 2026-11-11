@@ -165,3 +165,20 @@ cd frontend
 npx tsc --noEmit
 npm run build
 ```
+
+## 公司快查（2026-11-11，分支 `feat/company-web-lookup`）
+
+数据与采集新增「公司快查」标签页：输入公司名，由项目 Chrome 打开企查查/天眼查的公开搜索页，把可见的公司卡片解析成 `web_company_profile` 证据存档。实现于 `backend/jobscope/company_lookup.py`，端点 `POST /api/company/lookup`。它与上面「未验证」清单里的付费 qcc/tyc 开放平台是两条独立通路（网页快查不需要密钥），gsxt 通路同样未被触碰。
+
+### 新增假设（未实测，保持 `needs_verification`）
+
+1. **搜索地址**：`https://www.qcc.com/web/search?key=<公司>` 与 `https://www.tianyancha.com/search?key=<公司>` 按公开页面通用写法预置，未在真实会话访问过。
+2. **详情链接特征**：企查查按 `/firm/<id>`、天眼查按 `/company/<id>`（兼容 `/firm/`）匹配卡片锚点；改版后特征可能变化。
+3. **字段正则**（法定代表人/注册资本/成立日期/经营状态/统一社会信用代码/电话/邮箱/登记机关/地址）：标签写法、间隔与值格式全是按通用页面写的猜测；取不到就留空，不猜。
+4. **卡片抽取脚本 `CARDS_JS`**：向上找最多 4 层容器取 innerText，两家站点改版通常只影响容器层级，但上限 10 张、单卡 1500 字符的截断假设未实测。
+5. **`VERIFY_MARKERS` 只在零卡片时才判拦截**：页头常驻「登录」按钮，因此卡片解析成功时登录字样不拦截；这个先后顺序本身也没有实测过。
+
+### 已验证（本轮实际运行）
+
+- 后端：`pytest backend/tests -q` 全绿；新增 `test_company_lookup.py` 16 例（字段映射、上限 5 张、验证页留前台、无卡片诚实 partial、needs_login/unsupported/backoff、重复查询去重、任务状态词表、422 校验、`/api/sources` 登记）。
+- 端到端（真实站点）尚未做：需要人工在项目浏览器里登录/过验证后按上面模板实测，实测前页面上保持「需要验证」状态。

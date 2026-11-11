@@ -604,10 +604,13 @@ def test_registry_matches_the_api_contracts():
     from jobscope import browser, models
     module = connectors()
     allowed = set(get_args(models.CollectInput.model_fields['source'].annotation))
-    assert allowed == set(module.SOURCES) - {'user_import'}
+    # company_web 是公司快查专用通路（有自己的端点与输入模型），不进岗位采集契约。
+    company_web = {source for source, item in module.SOURCES.items() if item['transport'] == 'company_web'}
+    assert allowed == set(module.SOURCES) - {'user_import'} - company_web
     assert set(browser.PAGES) == {'boss', 'zhaopin', '51job'} >= set(module.BROWSER_SOURCES)
     assert set(get_args(models.BrowserCollectInput.model_fields['source'].annotation)) >= set(module.BROWSER_SOURCES)
     assert allowed - set(module.HTTP_SOURCES) == set(module.BROWSER_SOURCES)
+    assert set(get_args(models.CompanyLookupInput.model_fields['channel'].annotation)) == company_web
 
 
 def test_browser_only_sources_are_never_collected_over_plain_http():

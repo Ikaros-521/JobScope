@@ -2,7 +2,7 @@ import type { ReactNode } from 'react'
 import { date, plain, safeUrl } from './api'
 import type { Evidence } from './api'
 
-export const kindNames: Record<string, string> = { job_posting: '岗位原文', disclosure_metadata: '公告索引', disclosure: '披露正文', company_statement: '企业自述', employee_statement: '员工自述', user_material: '用户材料', media_report: '媒体报道', announcement: '公告' }
+export const kindNames: Record<string, string> = { job_posting: '岗位原文', disclosure_metadata: '公告索引', disclosure: '披露正文', company_statement: '企业自述', employee_statement: '员工自述', user_material: '用户材料', media_report: '媒体报道', announcement: '公告', web_company_profile: '企业信息快照' }
 
 export function searchTerms(query: string) { return query.trim().split(/\s+/).filter(Boolean) }
 
