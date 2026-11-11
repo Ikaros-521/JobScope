@@ -162,6 +162,12 @@ npm run build                                          # tsc -b + vite build 通
 
 验证：提示条显示/文案正确；点 × 后 localStorage 写入 `off`、刷新不再显示；聚焦列边框实测 `rgb(23,62,53)`（深绿）、未聚焦列保持 `rgb(220,228,223)` 浅灰。`npm run build` 通过。
 
+## 2026-11-11 补充：修窄对话列内容撑破卡片
+
+用户反馈对话列样式超出卡片范围。根因：三栏布局下 `.chat-page` 作为 flex/grid 子项默认 `min-width: auto`，composer 工具栏的长键盘提示等不可收缩内容把它撑到容器外（archive 聚焦 300px 窄列时整树右移 66px）。修复：`.job-chat .chat-page` 加 `min-width: 0` + `container-type: inline-size`，容器查询 `≤460px` 时隐藏键盘提示、压缩头部与欢迎区；宽列（>460px，如对话扩张态 508px）提示照常显示。
+
+验证：三态（archive 300 / info 336 / chat 508）对整棵对话子树做越界扫描全部 0 溢出；hint 按容器宽度自适应显隐；`npm run build` 通过。
+
 ## 边界与未测
 
 - 大批量（几百条）的真实删除只在单测里跑过（HTTP 层 1000 条上限校验），真实档案上的多量大删由用户自行操作，路径与自测相同。

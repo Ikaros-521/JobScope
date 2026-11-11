@@ -1146,6 +1146,16 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 /* ===== 全局对话（类 Agent 会话页） ===== */
 .main:has(.chat-global) .page-footer { display: none; }
 .chat-page { display: flex; gap: 16px; height: calc(100vh - 210px); min-height: 480px; padding: 0 0 20px; position: relative; }
+/* 三栏布局里对话列会被压窄：允许 chat-page 收缩，内部按容器宽度自适应。 */
+.job-chat .chat-page { min-width: 0; container-type: inline-size; }
+@container (max-width: 460px) {
+  .chat-page .composer-hint { display: none; }
+  .chat-page .chat-main-head { padding: 10px 14px; gap: 10px; }
+  .chat-page .chat-main-title h2 { max-width: 100%; }
+  .chat-page .chat-suggestions button { padding: 8px 10px; min-height: 34px; }
+  .chat-page .chat-welcome h3 { font-size: 16px; }
+  .chat-page .chat-welcome p { font-size: 12px; line-height: 1.7; }
+}
 .main > .page-intro.chat-intro { margin-bottom: 16px; }
 .chat-intro p { max-width: 560px; }
 .chat-sidebar { width: 264px; flex: none; display: flex; flex-direction: column; background: #fff; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; transition: width .18s ease; }
@@ -1360,7 +1370,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
   .main-workbench .research-layout.no-chat { grid-template-columns: 280px minmax(0, 1fr); }
   .main-workbench .research-layout.no-chat.focus-archive { grid-template-columns: minmax(380px, 1fr) minmax(280px, 380px); }
   .main-workbench .research-layout > .job-chat { display: flex; min-height: 0; grid-column: auto; }
-  .main-workbench .research-layout > .job-chat .chat-page { flex: 1; height: auto; min-height: 0; }
+  .main-workbench .research-layout > .job-chat .chat-page { flex: 1; height: auto; min-height: 0; min-width: 0; }
   /* 三列点击聚焦的可发现性：悬停高亮示意可点，聚焦列绿边标记当前焦点。 */
   .main-workbench .research-layout > section { cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease; }
   .main-workbench .research-layout > section:hover { border-color: #9db8aa; box-shadow: 0 0 0 1px #9db8aa66; }
