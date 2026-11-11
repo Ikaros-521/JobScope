@@ -9,6 +9,14 @@ const toolNames: Record<string, string> = {
   tool_approval: '等待工具确认', tool_denied: '用户拒绝调用', tool_error: '工具调用失败',
 }
 
+const stepMetaKeys = new Set(['step', 'tool', 'duration_ms', 'label', 'status', 'calls'])
+
+function stepDetail(step: ToolStep): string {
+  const entries = Object.entries(step).filter(([key]) => !stepMetaKeys.has(key))
+  if (!entries.length) return ''
+  return readable(Object.fromEntries(entries))
+}
+
 function stepName(step: ToolStep) {
   return step.label || toolNames[step.tool] || step.tool
 }
@@ -16,6 +24,7 @@ function stepName(step: ToolStep) {
 function StepRow({ step, open }: { step: ToolStep; open: boolean }) {
   const failed = step.status === 'error'
   const waiting = step.status === 'waiting'
+  const detail = stepDetail(step)
   return <details className="tool-step" open={open}>
     <summary>
       <span className={`tool-step-dot ${failed ? 'error' : waiting ? 'waiting' : 'ok'}`} aria-hidden="true" />
@@ -24,9 +33,10 @@ function StepRow({ step, open }: { step: ToolStep; open: boolean }) {
         {failed ? '失败 · ' : ''}{step.selected != null ? `${step.selected}份证据 · ` : ''}{step.matched_jobs != null ? `${step.matched_jobs}个岗位 · ` : ''}{step.duration_ms < 1 ? '<1' : Math.round(step.duration_ms)} ms
       </span>
     </summary>
-    {(step.arguments != null || step.result_preview) && <div className="tool-step-body">
+    {(step.arguments != null || step.result_preview || detail) && <div className="tool-step-body">
       {step.arguments != null && <div><b>调用参数</b><pre>{JSON.stringify(step.arguments, null, 2)}</pre></div>}
       {step.result_preview && <div><b>返回摘要</b><pre>{readable(step.result_preview)}</pre></div>}
+      {!step.arguments && !step.result_preview && detail && <div><b>执行详情</b><pre>{detail}</pre></div>}
     </div>}
   </details>
 }

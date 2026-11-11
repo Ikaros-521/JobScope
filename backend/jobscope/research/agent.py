@@ -31,7 +31,7 @@ class ResearchAgent:
         with self.repo.connection() as c:
             c.execute('INSERT OR REPLACE INTO research_runs VALUES (?,?,?)', (run['id'], json.dumps(run, ensure_ascii=False), run['created_at']))
 
-    def answer(self, message, scope, resume=None, history=None, on_event=None, should_stop=None):
+    def answer(self, message, scope, resume=None, history=None, on_event=None, should_stop=None, on_delta=None):
         start = time.perf_counter()
         run = dict(id='R-' + uuid.uuid4().hex, status='running', scope=scope, question=message,
                    created_at=now(), events=[], limits=dict(max_retrieval_calls=2, max_salary_calls=1, max_model_calls=2, context_characters=24000))
@@ -134,7 +134,7 @@ class ResearchAgent:
                 try:
                     if self.synthesizer is answer_question:
                         result = self.synthesizer(message, evidence, resume=resume, history=history, preselected=True,
-                                                  tool_context=dict(salary=metrics, coverage=coverage))
+                                                  tool_context=dict(salary=metrics, coverage=coverage), on_delta=on_delta)
                     else:
                         # Compatibility seam for application-level injected providers/tests.
                         result = self.synthesizer(message, evidence, resume=resume, history=history)

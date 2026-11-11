@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -141,3 +142,66 @@ def test_model_chat_null_content_is_a_controlled_failure(monkeypatch):
     monkeypatch.setattr(httpx.Client, "post", fake_post)
     with pytest.raises(ValueError, match="格式"):
         answer_question("情况", [dict(id="E-1", title="当前资料", text="内容", url="", company="甲")])
+
+
+def test_answer_extractor_streams_unescaped_answer_increments():
+    from jobscope.chat import _AnswerExtractor
+    pieces = ['```json\n{"ans', 'wer":"第一行\\n第二行 \\"引', '话\\" 与\\u4e2d文 [E-1]。","evid', 'ence_ids":["E-1"]}']
+    seen = []
+    extractor = _AnswerExtractor(seen.append)
+    for piece in pieces:
+        extractor.feed(piece)
+    assert ''.join(seen) == '第一行\n第二行 "引话" 与中文 [E-1]。'
+    # Anything after the answer value is never streamed.
+    assert all('evidence_ids' not in piece for piece in seen)
+
+
+def test_answer_question_streaming_keeps_final_validation(monkeypatch):
+    import httpx
+    monkeypatch.setenv("JOBSCOPE_LLM_URL", "https://example.com/v1/chat/completions")
+    monkeypatch.setenv("JOBSCOPE_LLM_MODEL", "test-model")
+    raw = '{"answer":"有效回答 [E-1]。","evidence_ids":["E-1"]}'
+
+    class FakeResponse:
+        status_code = 200
+        def raise_for_status(self):
+            return None
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def iter_lines(self):
+            return iter(['data: ' + json.dumps({'choices': [{'delta': {'content': raw[:10]}}]}),
+                         'data: ' + json.dumps({'choices': [{'delta': {'content': raw[10:]}}]}),
+                         'data: [DONE]'])
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+        def stream(self, *args, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, 'Client', FakeClient)
+    seen = []
+    result = answer_question("情况", [dict(id="E-1", title="当前资料", text="内容", url="", company="甲")], resume=None,
+                             on_delta=seen.append)
+    assert ''.join(seen) == '有效回答 [E-1]。'
+    assert result['answer'] == '有效回答 [E-1]。' and result['mode'] == 'model'
+    # A streamed preview that fails final citation checks never surfaces as the answer.
+    bad = raw.replace('"E-1"]}', '"E-9"]}')
+    class FakeBadResponse(FakeResponse):
+        def iter_lines(self):
+            return iter(['data: ' + json.dumps({'choices': [{'delta': {'content': bad}}]}), 'data: [DONE]'])
+    class FakeBadClient(FakeClient):
+        def stream(self, *args, **kwargs):
+            return FakeBadResponse()
+    monkeypatch.setattr(httpx, 'Client', FakeBadClient)
+    seen2 = []
+    with pytest.raises(ValueError, match='引用'):
+        answer_question("情况", [dict(id="E-1", title="当前资料", text="内容", url="", company="甲")], resume=None,
+                        on_delta=seen2.append)
+    assert seen2  # preview streamed, but the invalid citation set blocks the final answer

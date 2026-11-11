@@ -342,6 +342,34 @@ def test_cancel_after_natural_completion_is_noop(client):
     assert 'cancelled' not in [kind for kind, _ in frames]
 
 
+def test_research_run_streams_answer_deltas(client, monkeypatch):
+    configure(client)
+    repo = client.app.state.repo
+    evidence_id = repo.save_evidence(dict(title='公司自述', company='证优客', text='证优客是一家做认证服务的公司，总部在杭州。'), 'user_import')['id']
+
+    original_post = httpx.Client.post
+
+    def failing_post(self, url, **kwargs):
+        if isinstance(self, TestClient):
+            return original_post(self, url, **kwargs)
+        raise httpx.ConnectError('fixture', request=None)
+
+    monkeypatch.setattr(httpx.Client, 'post', failing_post)  # model_plan 降级为确定性计划
+    answer_json = '{"answer":"证优客是做认证服务的公司 [' + evidence_id + ']。","evidence_ids":["' + evidence_id + '"]}'
+    pieces = [answer_json[i:i + 14] for i in range(0, len(answer_json), 14)]
+    lines = ['data: ' + json.dumps({'choices': [{'delta': {'content': piece}}]}, ensure_ascii=False) for piece in pieces] + ['data: [DONE]']
+    stream_scripted(monkeypatch, [lines])
+    run = client.post('/api/chat/runs', json={'message': '这是个什么公司', 'company': '证优客'}).json()
+    await_run(client, run['run_id'])
+    stored = stored_messages(client, run['conversation_id'])
+    assert stored[-1]['role'] == 'assistant' and '认证服务' in stored[-1]['content'] and stored[-1]['mode'] == 'model'
+    frames = read_stream(client, run['run_id'])
+    kinds = [kind for kind, _ in frames]
+    assert 'delta' in kinds and kinds[-2:] == ['done', 'end']
+    streamed = ''.join(payload['text'] for kind, payload in frames if kind == 'delta')
+    assert '认证服务' in streamed
+
+
 def test_run_approval_resumes_in_background_and_is_single_use(client, monkeypatch):
     from jobscope.extensions import MCPClient, tool_alias
 

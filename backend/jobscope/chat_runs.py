@@ -212,7 +212,8 @@ class RunManager:
                     result = ResearchAgent(self.repo, synthesizer=answer_question).answer(
                         message, handle.scope, resume=facts, history=history,
                         on_event=lambda item: handle.push('step', item),
-                        should_stop=handle.cancel.is_set)
+                        should_stop=handle.cancel.is_set,
+                        on_delta=lambda piece: handle.push('delta', dict(text=piece)))
                     result.setdefault('conversation_id', handle.conversation_id)
             self._settle(handle, result, mode)
         except RunCancelled:

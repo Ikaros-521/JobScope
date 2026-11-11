@@ -37,6 +37,63 @@ def headers(config):
     return result
 
 
+def stream_complete(config, system, user, *, max_tokens=1800, temperature=None, timeout=45, on_delta=None):
+    """Streaming complete(): text deltas reach on_delta as they arrive.
+
+    Returns (content, usage) with the same semantics as complete(); the returned
+    content is the full text and remains the only input to downstream validation.
+    """
+    from .chat import validate_model_url
+    import json
+    protocol = config.get('protocol', 'openai')
+    body = dict(model=config['model'], messages=[dict(role='user', content=user)], max_tokens=max_tokens, stream=True)
+    if protocol == 'anthropic':
+        body['system'] = system
+    elif system:
+        body['messages'].insert(0, dict(role='system', content=system))
+    if temperature is not None:
+        body['temperature'] = temperature
+    text, usage = '', {}
+    finish_reason = ''
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+            with client.stream('POST', validate_model_url(endpoint(config['url'], protocol)), headers=headers(config), json=body) as response:
+                response.raise_for_status()
+                for payload in _sse_payloads(response):
+                    data = json.loads(payload)
+                    if protocol == 'anthropic':
+                        usage = data.get('usage', usage) or usage
+                        if data.get('type') == 'message_delta':
+                            finish_reason = data.get('delta', {}).get('stop_reason') or finish_reason
+                        if data.get('type') == 'content_block_delta':
+                            delta = data.get('delta') or {}
+                            if delta.get('type') == 'text_delta' and isinstance(delta.get('text'), str):
+                                text += delta['text']
+                                if on_delta:
+                                    on_delta(delta['text'])
+                    else:
+                        if data.get('usage'):
+                            usage = data['usage']
+                        choices = data.get('choices') or []
+                        if not choices:
+                            continue
+                        finish_reason = choices[0].get('finish_reason') or finish_reason
+                        delta = choices[0].get('delta') or {}
+                        if isinstance(delta.get('content'), str):
+                            text += delta['content']
+                            if on_delta:
+                                on_delta(delta['content'])
+    except (httpx.HTTPError, json.JSONDecodeError, ValueError, KeyError, TypeError, IndexError):
+        traceback.print_exc(file=sys.stderr)
+        raise ValueError('模型请求失败，请检查服务配置后重试') from None
+    if not isinstance(text, str) or not text.strip():
+        truncated = finish_reason in ('max_tokens', 'length')
+        if truncated:
+            raise OutputLimitError('模型已响应，但输出额度耗尽，尚未生成最终答案')
+        raise ValueError('模型返回格式无效')
+    return text, usage
+
+
 def complete(config, system, user, *, max_tokens=1800, temperature=None, timeout=45):
     from .chat import validate_model_url
     protocol = config.get('protocol', 'openai')
