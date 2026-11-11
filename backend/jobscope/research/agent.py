@@ -12,6 +12,10 @@ from .retrieval import retrieve
 from .tools import salary_query, salary_text
 
 
+class RunCancelled(Exception):
+    """Raised at pipeline checkpoints after the user stopped the run; results are discarded."""
+
+
 class ResearchAgent:
     def __init__(self, repo, synthesizer=None):
         self.repo = repo
@@ -27,11 +31,15 @@ class ResearchAgent:
         with self.repo.connection() as c:
             c.execute('INSERT OR REPLACE INTO research_runs VALUES (?,?,?)', (run['id'], json.dumps(run, ensure_ascii=False), run['created_at']))
 
-    def answer(self, message, scope, resume=None, history=None, on_event=None):
+    def answer(self, message, scope, resume=None, history=None, on_event=None, should_stop=None):
         start = time.perf_counter()
         run = dict(id='R-' + uuid.uuid4().hex, status='running', scope=scope, question=message,
                    created_at=now(), events=[], limits=dict(max_retrieval_calls=2, max_salary_calls=1, max_model_calls=2, context_characters=24000))
         self._save(run)
+
+        def stop_requested():
+            return bool(should_stop and should_stop())
+
         def event(tool, started, **data):
             item = dict(step=len(run['events']) + 1, tool=tool,
                         duration_ms=round((time.perf_counter() - started) * 1000, 2), **data)
@@ -40,9 +48,13 @@ class ResearchAgent:
             if on_event:
                 on_event(item)
         try:
+            if stop_requested():
+                raise RunCancelled('已停止')
             t = time.perf_counter()
             synced = self.index.sync()
             event('index_sync', t, documents=synced['documents'], chunks=synced['chunks'], updated=synced['updated'])
+            if stop_requested():
+                raise RunCancelled('已停止')
             with self.repo.connection() as c:
                 if scope['kind'] == 'global':
                     # Candidate names only; never inject company documents into the planner.
@@ -53,6 +65,8 @@ class ResearchAgent:
             baseline = plan_query(message, history or [], scope, names)
             plan, planner_info = model_plan(message, history or [], baseline, scope, names)
             event('query_plan', t, plan=plan.model_dump(), provider=planner_info)
+            if stop_requested():
+                raise RunCancelled('已停止')
             if plan.clarification:
                 coverage = dict(status='clarification_required', sources=0, companies=0, exhaustive=False)
                 run.update(status='completed', plan=plan.model_dump(), strategy='clarification', coverage=coverage,
@@ -64,6 +78,8 @@ class ResearchAgent:
             event('hybrid_search', t, strategy=retrieved['strategy'], candidates=retrieved['candidates'],
                   lexical_candidates=retrieved['lexical_candidates'], dense_candidates=retrieved['dense_candidates'],
                   selected=len(retrieved['evidence']), terms=retrieved['terms'], degraded=retrieved['degraded'])
+            if stop_requested():
+                raise RunCancelled('已停止')
             evidence = retrieved['evidence']
             metrics = None
             if plan.intent == 'salary':
@@ -93,6 +109,8 @@ class ResearchAgent:
                       basis=metrics['threshold_basis'], aggregation='all_filtered_jobs')
             # One recovery: relax generated concept expansions, never scope, entity or numeric filters.
             if not evidence and plan.intent != 'salary' and plan.query != message:
+                if stop_requested():
+                    raise RunCancelled('已停止')
                 t = time.perf_counter()
                 recovery = plan.model_copy(update={'query': message[:1500]})
                 recovered = retrieve(self.index, recovery, scope)
@@ -139,6 +157,10 @@ class ResearchAgent:
                        context_characters=24000 - remaining, metrics=metrics)
             self._save(run)
             return dict(**result, run_id=run['id'], trace=run, metrics=metrics, coverage=coverage)
+        except RunCancelled:
+            run.update(status='cancelled', duration_ms=round((time.perf_counter() - start) * 1000, 2))
+            self._save(run)
+            raise
         except Exception:
             run.update(status='failed', error='研究执行失败，未展示未经校验的答案', duration_ms=round((time.perf_counter() - start) * 1000, 2))
             self._save(run)

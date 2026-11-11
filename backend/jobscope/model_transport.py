@@ -190,10 +190,13 @@ def _sse_payloads(response):
             yield payload
 
 
-def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, timeout=60):
+def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, should_stop=None, timeout=60):
     """Streaming tool_turn: content and reasoning deltas go to the callbacks as they arrive.
 
     Returns (assistant_message, usage, reasoning) with the same message shape as tool_turn.
+    should_stop is polled between chunks: when the user stops the run the stream is
+    abandoned immediately; the partial turn either validates truncated or raises,
+    and the caller discards the outcome either way.
     """
     from .chat import validate_model_url
     import json
@@ -207,6 +210,8 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, ti
             with client.stream('POST', validate_model_url(endpoint(config['url'], protocol)), headers=headers(config), json=body) as response:
                 response.raise_for_status()
                 for payload in _sse_payloads(response):
+                    if should_stop is not None and should_stop():
+                        break
                     data = json.loads(payload)
                     if protocol == 'anthropic':
                         usage = data.get('usage', usage) or usage

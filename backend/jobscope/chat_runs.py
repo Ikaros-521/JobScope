@@ -1,6 +1,12 @@
 """Run-based global chat: agents execute in worker threads while clients observe SSE event logs.
 
 Runs survive page reloads and session switches (reattach via the event log) but not process restarts.
+
+Cancellation contract: cancel() acknowledges instantly (pushes 'cancelled' and finishes the run
+under the handle lock) so the client and the conversation unlock immediately. The worker thread
+keeps running until its next should_stop checkpoint; blocking calls it cannot interrupt are already
+timeout-bounded. Once cancelled the handle is closed: late pushes are dropped and _settle never
+persists, so no answer can appear after a stop.
 """
 import json
 import threading
@@ -11,6 +17,7 @@ from .analysis import parse_resume
 from .chat import answer_question
 from .extensions import ExtensionStore
 from .general_agent import GeneralAgent, RunHooks
+from .research.agent import RunCancelled
 from .settings import ModelSettings, use_config
 
 GLOBAL_SCOPE = dict(kind='global')
@@ -31,12 +38,16 @@ class RunHandle:
         self.condition = threading.Condition()
         self.cancel = threading.Event()
         self.done = False
+        self.closed = False
         self.pending_approval = False
         self.pending_payload = None
         self.thread = None
 
     def push(self, kind, payload):
         with self.condition:
+            if self.closed:
+                # Cancelled runs are sealed: late worker output never reaches clients.
+                return
             self.events.append((kind, payload))
             self.condition.notify_all()
 
@@ -48,6 +59,7 @@ class RunHandle:
     def reopen(self):
         with self.condition:
             self.done = False
+            self.closed = False
             self.condition.notify_all()
 
     def snapshot(self):
@@ -145,15 +157,23 @@ class RunManager:
         handle = self._runs.get(run_id)
         if handle is None:
             raise ValueError('运行不存在或已结束')
-        if handle.pending_approval:
-            handle.pending_approval = False
-            handle.pending_payload = None
-            ExtensionStore(self.repo).finish_pending(run_id)
-            handle.push('cancelled', dict(message='已放弃本次工具确认'))
+        # The whole sequence is atomic against _settle: either the run already
+        # finished naturally, or 'cancelled' is acknowledged now and everything
+        # the worker thread produces afterwards is discarded.
+        with handle.condition:
+            if handle.done and not handle.pending_approval:
+                return handle.snapshot()
+            handle.cancel.set()
+            if handle.pending_approval:
+                handle.pending_approval = False
+                handle.pending_payload = None
+                ExtensionStore(self.repo).finish_pending(run_id)
+                handle.push('cancelled', dict(message='已放弃本次工具确认'))
+            else:
+                handle.push('cancelled', dict(message='已停止本轮生成'))
+            handle.closed = True
             handle.finish()
             return handle.snapshot()
-        handle.cancel.set()
-        return handle.snapshot()
 
     def approve(self, run_id, approved, approval_id):
         handle = self._runs.get(run_id)
@@ -191,9 +211,13 @@ class RunManager:
                     facts = parse_resume(saved['text'], saved['format']) if saved['text'].strip() else []
                     result = ResearchAgent(self.repo, synthesizer=answer_question).answer(
                         message, handle.scope, resume=facts, history=history,
-                        on_event=lambda item: handle.push('step', item))
+                        on_event=lambda item: handle.push('step', item),
+                        should_stop=handle.cancel.is_set)
                     result.setdefault('conversation_id', handle.conversation_id)
             self._settle(handle, result, mode)
+        except RunCancelled:
+            # Already acknowledged by cancel(); the worker just reached its checkpoint.
+            return
         except ValueError as exc:
             handle.push('error', dict(message=str(exc)))
             handle.finish()
@@ -214,24 +238,22 @@ class RunManager:
             handle.finish()
 
     def _settle(self, handle, result, mode):
-        if result.get('pending_approval'):
-            handle.pending_approval = True
-            handle.pending_payload = dict(run_id=result['trace']['id'], **result['pending_approval'])
-            handle.push('approval_required', handle.pending_payload)
+        # Atomic against cancel(): whoever takes the condition first wins. If the
+        # stop was acknowledged first, everything produced here is discarded;
+        # otherwise the answer is persisted and 'done' precedes any 'cancelled'.
+        with handle.condition:
+            if handle.cancel.is_set():
+                return
+            if result.get('pending_approval'):
+                handle.pending_approval = True
+                handle.pending_payload = dict(run_id=result['trace']['id'], **result['pending_approval'])
+                handle.push('approval_required', handle.pending_payload)
+                handle.finish()
+                return
+            stored = self._persist(handle, result)[0]
+            handle.push('done', dict(message_id=stored['id'], answer=result['answer'], mode=result.get('mode', 'agent'),
+                                     interrupted=result.get('interrupted', False)))
             handle.finish()
-            return
-        cancelled = handle.cancel.is_set()
-        if cancelled and mode != 'general' and not result.get('interrupted'):
-            # Research runs have no partial text to keep; drop the finished answer when stopped.
-            handle.push('cancelled', dict(message='已停止本轮生成'))
-            handle.finish()
-            return
-        if cancelled and not result.get('interrupted'):
-            result['interrupted'] = True
-        stored = self._persist(handle, result)[0]
-        handle.push('done', dict(message_id=stored['id'], answer=result['answer'], mode=result.get('mode', 'agent'),
-                                 interrupted=result.get('interrupted', False)))
-        handle.finish()
 
     def _persist(self, handle, result):
         entry = dict(role='assistant', content=result['answer'], mode=result.get('mode', 'agent'))

@@ -1,5 +1,6 @@
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -98,6 +99,14 @@ def await_run(client, run_id, timeout=15):
 
 def stored_messages(client, conversation_id):
     return client.get(f'/api/conversations/{conversation_id}').json()['messages']
+
+
+def join_worker(client, run_id, timeout=5):
+    # 取消即时生效后工作线程可能仍在跑（僵尸直到下一个检查点才退出）；
+    # 测试结束前必须等它退出，否则会吞掉下一个测试 monkeypatch 的假模型流。
+    handle = client.app.state.runs.get(run_id)
+    if handle and handle.thread is not None:
+        handle.thread.join(timeout=timeout)
 
 
 def read_stream(client, run_id):
@@ -210,6 +219,7 @@ def test_concurrent_runs_on_same_conversation_are_rejected(client, monkeypatch):
     assert rejected.status_code == 409
     client.post(f"/api/chat/runs/{run['run_id']}/cancel")
     await_run(client, run['run_id'])
+    join_worker(client, run['run_id'])
 
 
 def test_general_run_streams_reasoning_and_tool_events(client, monkeypatch):
@@ -237,23 +247,99 @@ def test_general_run_streams_reasoning_and_tool_events(client, monkeypatch):
     assert follow_up_assistant['tool_calls'][0]['type'] == 'function'
 
 
-def test_cancel_interrupts_general_run_and_marks_partial(client, monkeypatch):
+def test_cancel_interrupts_general_run_and_discards_partial(client, monkeypatch):
     configure(client)
     stream_scripted(monkeypatch, [stream_tool('project_search', {'query': 'Python'})], delay=0.5)
     run = client.post('/api/chat/runs', json={'message': '长时间任务', 'agent_mode': 'general'}).json()
     cancelled = client.post(f"/api/chat/runs/{run['run_id']}/cancel").json()
-    assert not cancelled['done']
-    await_run(client, run['run_id'])
+    # 取消立即生效：快照直接 done，会话解锁，不再等工作线程跑到检查点。
+    assert cancelled['done'] and cancelled['cancelled']
+    followup = client.post('/api/chat/runs', json={'message': '接着问', 'conversation_id': run['conversation_id']})
+    assert followup.status_code == 200
+    join_worker(client, run['run_id'])
+    await_run(client, followup.json()['run_id'])
+    join_worker(client, followup.json()['run_id'])
     stored = stored_messages(client, run['conversation_id'])
-    assert stored[-1]['role'] == 'assistant' and stored[-1].get('interrupted') is True
+    assert [item['role'] for item in stored] == ['user', 'user', 'assistant']
+    assert stored[1]['content'] == '接着问'
+    frames = read_stream(client, run['run_id'])
+    kinds = [kind for kind, _ in frames]
+    assert kinds.count('cancelled') == 1 and 'done' not in kinds
 
 
-def test_cancel_stops_research_run_without_answer(client):
+def test_cancel_stops_research_run_without_answer(client, monkeypatch):
+    from jobscope.research.index import ResearchIndex
+
+    def slow_sync(self):
+        time.sleep(0.3)
+        return dict(documents=0, chunks=0, updated=0)
+
+    monkeypatch.setattr(ResearchIndex, 'sync', slow_sync)
     run = client.post('/api/chat/runs', json={'message': '研究一下'}).json()
-    client.post(f"/api/chat/runs/{run['run_id']}/cancel")
-    await_run(client, run['run_id'])
+    cancelled = client.post(f"/api/chat/runs/{run['run_id']}/cancel").json()
+    assert cancelled['done'] and cancelled['cancelled']
     stored = stored_messages(client, run['conversation_id'])
     assert [item['role'] for item in stored] == ['user']
+    frames = read_stream(client, run['run_id'])
+    assert [kind for kind, _ in frames][-2:] == ['cancelled', 'end']
+    join_worker(client, run['run_id'])
+
+
+def test_cancel_during_blocking_step_is_immediate_and_seals_the_log(client, monkeypatch):
+    from jobscope.research.index import ResearchIndex
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_sync(self):
+        entered.set()
+        release.wait(timeout=5)
+        return dict(documents=0, chunks=0, updated=0)
+
+    monkeypatch.setattr(ResearchIndex, 'sync', blocking_sync)
+    run = client.post('/api/chat/runs', json={'message': '研究一下'}).json()
+    assert entered.wait(timeout=5)
+    started = time.time()
+    cancelled = client.post(f"/api/chat/runs/{run['run_id']}/cancel").json()
+    # 工作线程仍阻塞在不可中断步骤里，取消也已经即时生效。
+    assert time.time() - started < 1 and cancelled['done'] and cancelled['cancelled']
+    followup = client.post('/api/chat/runs', json={'message': '新问题', 'conversation_id': run['conversation_id']})
+    assert followup.status_code == 200
+    release.set()
+    join_worker(client, run['run_id'])
+    await_run(client, followup.json()['run_id'])
+    join_worker(client, followup.json()['run_id'])
+    stored = stored_messages(client, run['conversation_id'])
+    assert [item['role'] for item in stored] == ['user', 'user', 'assistant']
+    frames = read_stream(client, run['run_id'])
+    kinds = [kind for kind, _ in frames]
+    # 僵尸线程解除阻塞后的迟到输出一律被丢弃：日志封口，只保留取消。
+    assert kinds.count('cancelled') == 1 and 'done' not in kinds and 'step' not in kinds
+
+
+def test_research_agent_checkpoints_raise_run_cancelled(client):
+    from jobscope.research.agent import ResearchAgent, RunCancelled
+    repo = client.app.state.repo
+    agent = ResearchAgent(repo, synthesizer=lambda *args, **kwargs: dict(answer='不该出现', citations=[], mode='model'))
+    checks = {'n': 0}
+
+    def flip():
+        checks['n'] += 1
+        return checks['n'] > 1  # 第一道检查放行，索引同步后第二道命中
+
+    with pytest.raises(RunCancelled):
+        agent.answer('研究一下', {'kind': 'global'}, should_stop=flip)
+    with repo.connection() as c:
+        payloads = [json.loads(row[0]) for row in c.execute('SELECT payload FROM research_runs').fetchall()]
+    assert any(item['status'] == 'cancelled' for item in payloads)
+
+
+def test_cancel_after_natural_completion_is_noop(client):
+    run = client.post('/api/chat/runs', json={'message': '研究一下'}).json()
+    await_run(client, run['run_id'])
+    snapshot = client.post(f"/api/chat/runs/{run['run_id']}/cancel").json()
+    assert snapshot['done'] and not snapshot['cancelled']
+    frames = read_stream(client, run['run_id'])
+    assert 'cancelled' not in [kind for kind, _ in frames]
 
 
 def test_run_approval_resumes_in_background_and_is_single_use(client, monkeypatch):

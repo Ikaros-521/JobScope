@@ -32,6 +32,7 @@ def create_app(data_dir=None):
     app.state.repo = repo
     settings = ModelSettings(repo)
     runs = RunManager(repo)
+    app.state.runs = runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
 

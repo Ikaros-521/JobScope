@@ -311,7 +311,8 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                 if hooks and (hooks.on_delta or hooks.on_reasoning):
                     state['partial'] = ''
                     assistant, usage, reasoning = stream_turn(get_model_config(), state['messages'], state['tools'],
-                                                              on_delta=on_delta, on_reasoning=hooks.on_reasoning)
+                                                              on_delta=on_delta, on_reasoning=hooks.on_reasoning,
+                                                              should_stop=hooks.should_stop)
                 else:
                     assistant, usage = tool_turn(get_model_config(), state['messages'], state['tools'])
                 state['turns'] += 1

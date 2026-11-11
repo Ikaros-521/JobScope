@@ -203,8 +203,18 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }) {
   const stop = useCallback(async () => {
     const runId = runIdRef.current
     if (!runId) return
-    try { await cancelChatRun(runId) } catch (err) { setError((err as Error).message) }
-  }, [])
+    try {
+      await cancelChatRun(runId)
+    } catch (err) {
+      setError((err as Error).message) // 取消失败：保持现状，继续等 SSE 终止事件
+      return
+    }
+    // 服务端已确认取消：立即复位 UI，不等 cancelled 事件（僵尸线程的迟到事件会被服务端丢弃）
+    closeStream()
+    setRun(null)
+    void reloadRef.current(conversationIdRef.current)
+    void refreshSessions()
+  }, [refreshSessions])
 
   const approve = useCallback(async (approved: boolean) => {
     const runId = runIdRef.current
