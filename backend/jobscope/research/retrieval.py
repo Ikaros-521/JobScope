@@ -13,6 +13,16 @@ def retrieve(index, plan, scope, provider=None, limit=8, budget=24000):
     index.sync()
     clause, params = scope_clause(scope, plan)
     terms = plan.terms()
+    # The relevance floor counts original query terms only; company tokens injected
+    # below widen recall inside a narrow scope, they never raise the bar.
+    minimum_hits = 1 if plan.concepts else max(1, math.ceil(len(terms) * .4))
+    company_tokens = set()
+    if scope['kind'] != 'global':
+        # Colloquial prompts ("这是个什么公司") may carry zero searchable terms. The SQL
+        # clause already restricts candidates to this company, so its own name is the
+        # strongest safe recall signal there.
+        company_tokens = set(tokenize(scope['company']))
+        terms += [token for token in company_tokens if token not in terms]
     hits = []
     with index.repo.connection() as c:
         if terms:
@@ -23,8 +33,11 @@ def retrieve(index, plan, scope, provider=None, limit=8, budget=24000):
                 JOIN research_chunks c ON c.id=research_fts.rowid JOIN research_docs d ON d.evidence_id=c.evidence_id
                 WHERE research_fts MATCH ? AND ''' + clause + ' ORDER BY distance,c.id LIMIT 80', [expression, *params])]
             # Entity names constrain scope; they are not proof of content relevance.
-            minimum_hits = 1 if plan.concepts else max(1, math.ceil(len(terms) * .4))
-            hits = [item for item in hits if len(set(terms) & set(tokenize(item['title'] + ' ' + item['text']))) >= minimum_hits]
+            # A company-name hit is definitive inside its own scope, though.
+            def relevant(item):
+                matched = set(terms) & set(tokenize(item['title'] + ' ' + item['text']))
+                return len(matched) >= minimum_hits or (company_tokens and matched & company_tokens)
+            hits = [item for item in hits if relevant(item)]
         vectors = []
         if provider and provider.configured:
             vectors = [dict(row) for row in c.execute('''SELECT c.*,d.company,d.kind,d.job_id,d.title,d.url,d.source,d.published_at,d.collected_at,v.vector

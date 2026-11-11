@@ -36,6 +36,25 @@ def test_salary_alias_retrieves_quote_and_excludes_zero_hits(repo):
     assert retrieve(index, plan_query('量子纠缠拓扑', [], {'kind': 'global'}), {'kind': 'global'})['evidence'] == []
 
 
+def test_colloquial_prompt_recalls_company_scope_evidence(repo):
+    # "这是个什么公司" tokenizes to stopword bigrams only; inside a narrow scope the
+    # company name itself must still recall that company's evidence.
+    from jobscope.research.index import ResearchIndex
+    from jobscope.research.query import plan_query
+    from jobscope.research.retrieval import retrieve
+    target = repo.save_evidence(dict(title='招聘平台公司自述', company='证优客', text='证优客是一家做招聘信息服务的公司，成立于2015年。'))
+    repo.save_evidence(dict(title='别家自述', company='乙公司', text='乙公司是另一家公司，业务不同。'))
+    index = ResearchIndex(repo)
+    scope = {'kind': 'company', 'company': '证优客'}
+    result = retrieve(index, plan_query('这是个什么公司', [], scope), scope)
+    assert [e['id'] for e in result['evidence']] == [target['id']]
+    # Longer garbage prompts raise the original-term floor; a company-name hit stays sufficient.
+    wordy = retrieve(index, plan_query('这家公司到底是做什么的呢背景如何实力怎样', [], scope), scope)
+    assert [e['id'] for e in wordy['evidence']] == [target['id']]
+    # Global scope keeps its zero-hit behaviour for nonsense queries.
+    assert retrieve(index, plan_query('这是个什么公司', [], {'kind': 'global'}), {'kind': 'global'})['evidence'] == []
+
+
 def test_index_is_incremental_latest_version_only_and_scope_enforced(repo):
     from jobscope.research.index import ResearchIndex
     from jobscope.research.query import plan_query
