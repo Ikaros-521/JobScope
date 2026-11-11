@@ -186,7 +186,11 @@ def collect(channel, company, *, browser_module, data_dir=None):
             _close(tab)
             return _outcome('failed', f'{spec["name"]}页面读取失败；请确认会话仍在运行后重试。')
         if not cards and markers:
-            # 停在验证页时把页面留在前台交给用户处理，不重试、不绕过。
+            # 停在验证页时把页面顶到前台交给用户处理，不重试、不绕过。
+            try:
+                tab.set.activate()
+            except Exception:
+                pass
             return _outcome('needs_verification',
                             f'{spec["name"]}要求登录或人工校验；已把该页留在项目浏览器前台，请手动完成后重试。')
         _close(tab)

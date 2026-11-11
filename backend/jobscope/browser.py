@@ -175,6 +175,14 @@ def start(data_dir=None, source='boss'):
         _lock.release()
 
 
+def _front(tab):
+    """需要人工登录/验证的页面必须顶到前台；埋在标签堆里等于没提示。"""
+    try:
+        tab.set.activate()
+    except Exception:
+        pass
+
+
 def _city_code(spec, city):
     return spec['codes'].get(city, spec['default']) if city else spec['default']
 
@@ -386,10 +394,13 @@ def collect(source='boss', query='', location='', limit=20, data_dir=None, progr
             tab = Chromium(f'127.0.0.1:{port}').new_tab()
             payload = _listen(tab, spec, query, _city_code(spec, city), size) if spec['mode'] == 'listen' else _page(tab, spec, query, _city_code(spec, city), size)
             if not isinstance(payload, dict):
+                _front(tab)
                 return result('needs_verification', spec['blocked'])
             extend = {'state': _extend_state_pages, 'listen': _extend_listen_pages, 'fetch': _extend_fetch_pages}[spec['mode']]
             payload, pages_read, page_note = extend(tab, spec, payload, query, _city_code(spec, city), size, progress)
             output = spec['mapper'](payload, size, city)
+            if output.get('status') in ('needs_verification', 'needs_login'):
+                _front(tab)
             extras = []
             if pages_read > 1:
                 extras.append(f'已翻页读取 {pages_read} 页')
