@@ -18,7 +18,7 @@ from .chat import answer_question
 from .extensions import ExtensionStore
 from .general_agent import GeneralAgent, RunHooks
 from .research.agent import RunCancelled
-from .settings import ModelSettings, use_config
+from .settings import LlmChannelStore, ModelSettings, use_config
 
 GLOBAL_SCOPE = dict(kind='global')
 
@@ -76,6 +76,8 @@ class RunManager:
         self.repo = repo
         self._runs = {}
         self._lock = threading.RLock()
+        # 正在做上下文压缩的会话：压缩期间禁止发送、编辑、删除与再次压缩。
+        self._compressing = set()
 
     def get(self, run_id):
         return self._runs.get(run_id)
@@ -99,22 +101,74 @@ class RunManager:
                         self._runs.pop(run_id, None)
             self._runs[handle.id] = handle
 
-    def start(self, *, message, conversation_id=None, mode='research', model='', edit_message_id=None, scope=None):
-        # The full settings map is required: worker threads read both llm and embedding targets from it.
+    def resolve_llm_config(self, conversation=None, model=None, llm_channel=None):
+        """Resolve the effective LLM config for a run.
+
+        None means "inherit the persisted conversation"; '' means "reset" (channel default /
+        global default). Explicit values win, so a deleted channel surfaces as a clear error.
+        """
         config = ModelSettings(self.repo).effective()
-        if model:
-            config = {**config, 'llm': {**config['llm'], 'model': model}}
+        channel_id = llm_channel
+        model_name = model
+        if conversation is not None:
+            if channel_id is None:
+                channel_id = conversation.get('llm_channel', '')
+            if model_name is None:
+                model_name = conversation.get('model', '')
+        channel_id = channel_id or ''
+        model_name = model_name or ''
+        if channel_id:
+            # 会话级渠道覆盖：整组替换连接信息；模型缺省取渠道默认模型。
+            payload = LlmChannelStore(self.repo).get(channel_id)
+            override = {**config['llm'], 'mode': 'remote', 'channel': payload.get('channel', 'custom'),
+                        'protocol': payload.get('protocol', 'openai'), 'url': payload['url'],
+                        'key': payload.get('key', ''), 'local_model': '', 'model': model_name or payload.get('model', '')}
+            if payload.get('context_tokens'):
+                override['context_tokens'] = payload['context_tokens']
+            return {**config, 'llm': override}
+        if model_name:
+            return {**config, 'llm': {**config['llm'], 'model': model_name}}
+        return config
+
+    def begin_compression(self, conversation_id):
+        with self._lock:
+            if conversation_id in self._compressing:
+                return False
+            self._compressing.add(conversation_id)
+            return True
+
+    def end_compression(self, conversation_id):
+        with self._lock:
+            self._compressing.discard(conversation_id)
+
+    def is_compressing(self, conversation_id):
+        with self._lock:
+            return conversation_id in self._compressing
+
+    def start(self, *, message, conversation_id=None, mode='research', model=None, edit_message_id=None, scope=None, llm_channel=None):
         scope = scope or GLOBAL_SCOPE
         title = None
+        conversation = None
         if conversation_id:
+            if self.is_compressing(conversation_id):
+                raise ValueError('会话正在压缩上下文，请稍后重试')
             conversation = self.repo.get_conversation(conversation_id, scope)
             history = self.repo.truncate_for_edit(conversation_id, scope, edit_message_id) if edit_message_id else conversation['messages']
         else:
             if edit_message_id:
                 raise ValueError('新对话不能编辑历史消息')
-            conversation_id = self.repo.create_conversation(scope, mode=mode, model=model)
             history = []
             title = message[:30]
+        # The full settings map is required: worker threads read both llm and embedding targets from it.
+        config = self.resolve_llm_config(conversation, model, llm_channel)
+        effective_channel = (llm_channel if llm_channel is not None else (conversation or {}).get('llm_channel', '')) or ''
+        effective_model = (model if model is not None else (conversation or {}).get('model', '')) or ''
+        if mode == 'general' and (config['llm'].get('mode') != 'remote' or not config['llm'].get('model')):
+            raise ValueError('通用 Agent 需要先配置支持工具调用的对话模型')
+        if conversation is None:
+            conversation_id = self.repo.create_conversation(scope, mode=mode, model=effective_model, llm_channel=effective_channel)
+        # 已压缩的旧消息不进模型上下文；压缩摘要检查点（无 compacted 标记）保留。
+        history = [m for m in history if not m.get('compacted')]
         handle = RunHandle('R-' + uuid.uuid4().hex, conversation_id, config, scope)
         with self._lock:
             blocker = self.active_for_conversation(conversation_id)

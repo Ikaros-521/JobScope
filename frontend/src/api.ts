@@ -34,17 +34,24 @@ export type ChatMode = 'research' | 'general'
 export type StoredMessage = {
   id: string; ts: string; role: 'user' | 'assistant'; content: string;
   reasoning?: string; mode?: string; interrupted?: boolean;
+  // kind='compaction' 是压缩检查点；compacted 表示该消息已被压缩折叠（仅 UI 呈现，不进模型上下文）
+  kind?: string; compacted_count?: number; compacted?: boolean;
   citations?: Citation[]; trace?: ResearchRun; metrics?: SalaryMetrics | null
 }
 export type ToolStep = { step: number; tool: string; duration_ms: number; label?: string; status?: string; arguments?: Record<string, unknown>; result_preview?: string; selected?: number; matched_jobs?: number; calls?: number }
 export type ApprovalRequest = { approval_id: string; tool: string; arguments: Record<string, unknown>; reason: string; run_id?: string }
 export type ChatRunStatus = { run_id: string; conversation_id: string; done: boolean; cancelled: boolean; awaiting_approval: boolean; pending_approval: ApprovalRequest | null }
 export type ChatScope = { kind: 'global' } | { kind: 'company'; company: string } | { kind: 'job'; jobId: string; company: string; title?: string }
-export type ConversationSummary = { id: string; title: string; mode: ChatMode; model: string; updated_at: string; message_count: number; preview: string }
-export type ConversationDetail = { id: string; scope: { kind: string; company?: string; job_id?: string }; title: string; mode: ChatMode; model: string; created_at: string; updated_at: string; messages: StoredMessage[]; active_run: ChatRunStatus | null }
+export type ConversationSummary = { id: string; title: string; mode: ChatMode; model: string; llm_channel: string; updated_at: string; message_count: number; preview: string }
+export type ConversationDetail = { id: string; scope: { kind: string; company?: string; job_id?: string }; title: string; mode: ChatMode; model: string; llm_channel: string; created_at: string; updated_at: string; messages: StoredMessage[]; active_run: ChatRunStatus | null }
 export type ChatRunStart = { run_id: string; conversation_id: string; user_message_id: string; title: string | null }
-export type ModelProvider = { mode: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model: string; key_set: boolean; source: string }
+export type ModelProvider = { mode: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model: string; key_set: boolean; source: string; context_tokens?: number | null; saved_channel_id?: string }
 export type Channel = { id: string; name: string; url: string; protocol: 'openai' | 'anthropic'; models: string[]; embeddings: string[] }
+// 已保存的对话渠道：每条自带地址/密钥/默认模型/模型列表，可激活为全局默认
+export type LlmChannel = { id: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models: string[]; context_tokens: number | null; key_set: boolean }
+export type LlmChannelDraft = { id?: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models?: string[]; key?: string; clear_key?: boolean; context_tokens?: number | null }
+// 已保存渠道的测试/拉列表：带上 channel_id，后端才能用该渠道已保存的密钥而不是全局配置。
+export type ModelConnectionInput = { target: 'llm' | 'embedding'; channel_id?: string; config: { mode: 'disabled' | 'remote' | 'local'; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model?: string; key?: string; clear_key?: boolean; context_tokens?: number | null } }
 export type RunEvent = { event: string; data: Record<string, unknown> }
 
 // 求职参考分析：字段口径以后端 reliability/models.py 与 main.py 的端点返回为准。
@@ -100,14 +107,14 @@ export function listConversations(scope: ChatScope = { kind: 'global' }) {
   return api<{ conversations: ConversationSummary[] }>(`/conversations?${params}`)
 }
 export function getConversation(id: string) { return api<ConversationDetail>(`/conversations/${encodeURIComponent(id)}`) }
-export function patchConversation(id: string, body: { title?: string; mode?: ChatMode; model?: string }) {
+export function patchConversation(id: string, body: { title?: string; mode?: ChatMode; model?: string; llm_channel?: string }) {
   return api<ConversationSummary>(`/conversations/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) })
 }
 export function deleteConversation(id: string) { return api<{ ok: boolean }>(`/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
 export function deleteConversationMessage(conversationId: string, messageId: string) {
   return api<{ ok: boolean }>(`/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`, { method: 'DELETE' })
 }
-export function startChatRun(body: { message: string; conversation_id?: string; agent_mode?: ChatMode; model?: string; edit_message_id?: string; company?: string; job_id?: string }) {
+export function startChatRun(body: { message: string; conversation_id?: string; agent_mode?: ChatMode; model?: string; llm_channel?: string; edit_message_id?: string; company?: string; job_id?: string }) {
   return post<ChatRunStart>('/chat/runs', body)
 }
 export function cancelChatRun(runId: string) { return post<ChatRunStatus>(`/chat/runs/${encodeURIComponent(runId)}/cancel`) }
@@ -116,6 +123,14 @@ export function approveChatRun(runId: string, approved: boolean, approvalId: str
 }
 export function getModelSettings() { return api<Record<'llm' | 'embedding', ModelProvider>>('/settings/models') }
 export function getChannels() { return api<{ channels: Channel[] }>('/settings/channels') }
+export function listLlmChannels() { return api<{ channels: LlmChannel[] }>('/settings/llm-channels') }
+export function saveLlmChannel(draft: LlmChannelDraft) { return post<{ channel: LlmChannel; channels: LlmChannel[] }>('/settings/llm-channels', draft) }
+export function deleteLlmChannel(id: string) { return api<{ ok: boolean; channels: LlmChannel[] }>(`/settings/llm-channels/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+export function activateLlmChannel(id: string) { return post<Record<'llm' | 'embedding', ModelProvider>>(`/settings/llm-channels/${encodeURIComponent(id)}/activate`) }
+export type CompressResult = { compacted_count: number; summary_message_id: string; message_count: number }
+export function compressConversation(id: string) { return post<CompressResult>(`/conversations/${encodeURIComponent(id)}/compress`) }
+// 上下文用量估算：中文为主的文本约 3.2 字符/token，叠加 system 提示与工具声明的固定基数。
+export function estimateTokens(text: string) { return Math.ceil((text || '').length / 3.2) }
 
 const STREAM_EVENTS = ['start', 'resumed', 'step', 'delta', 'reasoning_delta', 'approval_required', 'done', 'error', 'cancelled', 'end'] as const
 export function openRunStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {

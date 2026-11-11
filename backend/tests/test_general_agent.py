@@ -53,6 +53,23 @@ def test_general_chat_without_project_evidence_and_scoped_isolation(client, monk
     assert client.post('/api/chat', json={'company': '甲', 'agent_mode': 'general', 'message': 'hello'}).status_code == 400
 
 
+def test_compaction_summary_is_pinned_beyond_recent_history_window(client, monkeypatch):
+    configure(client)
+    repo = client.app.state.repo
+    conversation_id = repo.create_conversation(dict(kind='global', agent_mode='general'), mode='general')
+    history = [dict(role='assistant', kind='compaction', content='### 📋 上下文压缩摘要\n\n早前结论：用户在比较杭州 AI 岗位。')]
+    history += [dict(role='user' if index % 2 == 0 else 'assistant', content=f'近期消息{index}') for index in range(7)]
+    repo.append_messages(conversation_id, history)
+    calls = scripted(monkeypatch, [final()])
+    result = client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'conversation_id': conversation_id, 'message': '继续'})
+    assert result.status_code == 200
+    messages = calls[0]['messages']
+    # 摘要固定在第 2 条（system 之后），近期窗口只取最近 6 条，摘要不会被挤掉。
+    assert '上下文压缩摘要' in messages[1]['content']
+    recent = [item for item in messages[2:-1] if item['role'] != 'system']
+    assert len(recent) == 6 and '近期消息0' not in json.dumps(recent, ensure_ascii=False)
+
+
 def test_project_tool_loop_returns_citations(client, monkeypatch):
     configure(client)
     job = client.post('/api/import/job', json=dict(title='Agent工程师', company='甲', description='Python RAG', salary='20-30K')).json()['job']

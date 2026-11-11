@@ -2,11 +2,14 @@
 import json
 import os
 import time
+import uuid
 from contextvars import ContextVar
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
+
+from .repository import now
 
 _active = ContextVar('jobscope_model_config', default=None)
 
@@ -21,6 +24,8 @@ class ProviderInput(BaseModel):
     local_model: str = Field(default='', max_length=1000)
     key: str = Field(default='', max_length=4000)
     clear_key: bool = False
+    # 上下文窗口大小只用于前端用量估算，不参与任何请求；留空按 128000 估算。
+    context_tokens: int | None = Field(default=None, ge=4000, le=2_000_000)
 
 
 class ModelSettingsInput(BaseModel):
@@ -33,6 +38,22 @@ class ConnectionInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     target: Literal['llm', 'embedding']
     config: ProviderInput
+    channel_id: str | None = Field(default=None, max_length=100)
+
+
+class LlmChannelInput(BaseModel):
+    """一条可保存、可激活的对话渠道；激活时整体写入 llm 设置行。"""
+    model_config = ConfigDict(extra='forbid')
+    id: str | None = Field(default=None, max_length=100)
+    name: str = Field(min_length=1, max_length=100)
+    channel: str = Field(default='custom', max_length=100)
+    protocol: Literal['openai', 'anthropic'] = 'openai'
+    url: str = Field(default='', max_length=2000)
+    model: str = Field(default='', max_length=300)
+    models: list[str] = Field(default_factory=list, max_length=200)
+    key: str = Field(default='', max_length=4000)
+    clear_key: bool = False
+    context_tokens: int | None = Field(default=None, ge=4000, le=2_000_000)
 
 
 def environment():
@@ -114,7 +135,7 @@ class ModelSettings:
         if not data['key'] and not value.clear_key:
             previous_url = endpoint(old['url'], old.get('protocol', 'openai'), target) if old.get('url') else ''
             current_url = endpoint(data['url'], data['protocol'], target) if data['url'] else ''
-            if old.get('key') and current_url != previous_url:
+            if old.get('key') and (current_url != previous_url or data['protocol'] != old.get('protocol', 'openai')):
                 raise ValueError('更换服务地址时请重新填写密钥，或勾选清除密钥')
             data['key'] = old.get('key', '')
         if data['mode'] == 'remote':
@@ -134,9 +155,17 @@ class ModelSettings:
                 conn.execute('INSERT OR REPLACE INTO model_settings VALUES (?,?)', (target, json.dumps(value, ensure_ascii=False)))
         return self.public(self.effective())
 
-    def test(self, target, value):
+    def connection_config(self, target, value, channel_id=None, *, require_model=True):
+        current = self.effective()
+        if channel_id:
+            if target != 'llm':
+                raise ValueError('已保存对话渠道仅支持对话模型')
+            current['llm'] = LlmChannelStore(self.repo).get(channel_id)
+        return self.prepare(target, value, current, require_model=require_model)
+
+    def test(self, target, value, channel_id=None):
         from .model_transport import complete, OutputLimitError
-        data = self.prepare(target, value, self.effective())
+        data = self.connection_config(target, value, channel_id)
         if data['mode'] == 'disabled':
             raise ValueError('请先选择一个模型连接方式')
         start = time.perf_counter()
@@ -156,9 +185,9 @@ class ModelSettings:
             raise ConnectionError('连接测试失败，请检查接口地址、模型、密钥或本地模型缓存。配置未被本次测试修改。') from None
         return dict(ok=True, dimensions=dimensions, duration_ms=round((time.perf_counter() - start) * 1000), message='连接成功；仅验证服务与响应格式，未评估回答质量')
 
-    def discover(self, target, value):
+    def discover(self, target, value, channel_id=None):
         from .model_transport import endpoint, headers
-        data = self.prepare(target, value, self.effective(), require_model=False)
+        data = self.connection_config(target, value, channel_id, require_model=False)
         if data['mode'] != 'remote':
             raise ValueError('在线模型列表需要 API 连接')
         models = set()
@@ -192,3 +221,89 @@ class ModelSettings:
             return dict(models=sorted(models)[:1000], source='live', message='账户返回的模型列表；具体调用权限请通过测试确认')
         except (httpx.HTTPError, ValueError, KeyError, TypeError, OSError):
             raise ConnectionError('获取模型失败，请检查渠道地址、密钥和账户权限。该渠道也可能不提供模型列表；可搜索预设或手动输入模型 ID 后测试。') from None
+
+
+class LlmChannelStore:
+    """已保存的对话渠道清单。激活 = 把渠道 payload 整体写入 model_settings 的 llm 行，下游请求链路零改动。"""
+
+    def __init__(self, repo):
+        self.repo = repo
+        with repo.connection() as conn:
+            conn.execute('CREATE TABLE IF NOT EXISTS llm_channels(id TEXT PRIMARY KEY,payload TEXT NOT NULL)')
+
+    def list(self):
+        with self.repo.connection() as conn:
+            rows = conn.execute('SELECT payload FROM llm_channels').fetchall()
+        channels = [json.loads(row[0]) for row in rows]
+        channels.sort(key=lambda item: (item.get('created_at', ''), item.get('id', '')))
+        return channels
+
+    @staticmethod
+    def public(channels):
+        return [{**{k: v for k, v in item.items() if k != 'key'}, 'key_set': bool(item.get('key'))} for item in channels]
+
+    def get(self, channel_id):
+        with self.repo.connection() as conn:
+            row = conn.execute('SELECT payload FROM llm_channels WHERE id=?', (channel_id,)).fetchone()
+        if row is None:
+            raise ValueError('渠道不存在或已删除')
+        return json.loads(row[0])
+
+    def save(self, data):
+        from .chat import validate_model_url
+        from .channels import channel_by_id
+        from .model_transport import endpoint
+        stored = {item['id']: item for item in self.list()}
+        channel_id = data.id or 'LC-' + uuid.uuid4().hex[:12]
+        old = stored.get(channel_id, {})
+        if not data.id:
+            # 同名视为同一条渠道：再保存一次是编辑而非无限增长。
+            for item in stored.values():
+                if item.get('name') == data.name.strip():
+                    channel_id, old = item['id'], item
+                    break
+        channel = channel_by_id(data.channel)
+        url = (data.url or '').strip() or channel['url']
+        if not url:
+            raise ValueError('请填写该渠道的服务地址')
+        url = endpoint(url, data.protocol, 'llm')
+        validate_model_url(url)
+        # 与全局设置同一套凭证规则：换了地址或协议就必须重填密钥，不能把旧密钥发给新主机。
+        if old and not data.clear_key and not data.key.strip() and old.get('key'):
+            if url != old.get('url') or data.protocol != old.get('protocol'):
+                raise ValueError('更换服务地址或协议时请重新填写密钥，或勾选清除密钥')
+        models = [m.strip()[:300] for m in data.models if isinstance(m, str) and m.strip()][:200]
+        if not models:
+            # 渠道预设与上次保存的列表都比空列表有用，避免保存后下拉里没有可选模型。
+            models = old.get('models') or list(channel.get('models') or [])[:200]
+        payload = dict(id=channel_id, name=data.name.strip()[:100], channel=data.channel, protocol=data.protocol,
+                       url=url, model=data.model.strip()[:300], models=models,
+                       context_tokens=data.context_tokens,
+                       created_at=old.get('created_at') or now(), updated_at=now())
+        if data.clear_key:
+            payload['key'] = ''
+        elif data.key.strip():
+            payload['key'] = data.key.strip()
+        else:
+            payload['key'] = old.get('key', '')
+        with self.repo.connection() as conn:
+            conn.execute('INSERT OR REPLACE INTO llm_channels VALUES (?,?)', (channel_id, json.dumps(payload, ensure_ascii=False)))
+        return payload
+
+    def delete(self, channel_id):
+        with self.repo.connection() as conn:
+            cursor = conn.execute('DELETE FROM llm_channels WHERE id=?', (channel_id,))
+            if cursor.rowcount == 0:
+                raise ValueError('渠道不存在或已删除')
+
+    def activate(self, channel_id):
+        payload = self.get(channel_id)
+        row = dict(mode='remote', channel=payload.get('channel', 'custom'), protocol=payload.get('protocol', 'openai'),
+                   url=payload['url'], model=payload.get('model', ''), local_model='', key=payload.get('key', ''),
+                   clear_key=False, context_tokens=payload.get('context_tokens'),
+                   # 标记当前生效的渠道条目；手动改全局表单后该标记随新 payload 消失。
+                   saved_channel_id=payload['id'])
+        with self.repo.connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            conn.execute('INSERT OR REPLACE INTO model_settings VALUES (?,?)', ('llm', json.dumps(row, ensure_ascii=False)))
+        return row

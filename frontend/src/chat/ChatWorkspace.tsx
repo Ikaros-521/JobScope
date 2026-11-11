@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState } from 'react'
-import { getChannels, getModelSettings } from '../api'
-import type { ChatMode, ChatScope, StoredMessage } from '../api'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { KeyboardEvent as ReactKeyboardEvent, TouchEvent as ReactTouchEvent, WheelEvent as ReactWheelEvent } from 'react'
+import { estimateTokens, getChannels, getModelSettings, listLlmChannels } from '../api'
+import type { ChatMode, ChatScope, LlmChannel, StoredMessage } from '../api'
+import { toast } from '../toast'
 import { ChatComposer } from './ChatComposer'
-import type { EditingTarget } from './ChatComposer'
+import type { ComposerChannel, EditingTarget } from './ChatComposer'
 import { ChatMessageItem, ReasoningBlock } from './ChatMessageItem'
 import { SessionList } from './SessionList'
 import { ToolTimeline } from './ToolTimeline'
@@ -17,6 +19,11 @@ const SUGGESTIONS: Record<ChatMode, string[]> = {
 const COMPANY_SUGGESTIONS = ['这家公司有哪些岗位要求？', '公司经营情况有哪些证据？', '薪资还有哪些口径需要核实？']
 const JOB_SUGGESTIONS = ['这份岗位有哪些要求？', '公司有哪些可核实的信息？', '面试时还应该问清什么？']
 
+// 距底部超过该阈值视为用户正在回看，暂停自动吸底；翻回阈值内自动恢复。
+const STICK_THRESHOLD = 80
+// 上下文估算基数：system 提示 + 工具声明，不随会话变化。
+const CONTEXT_BASE_TOKENS = 600
+
 export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { scope: ChatScope; modelConfigured: boolean; onManageExtensions?: () => void }) {
   const isGlobal = scope.kind === 'global'
   const isJob = scope.kind === 'job'
@@ -24,29 +31,85 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
   const jobCompany = scope.kind === 'job' ? scope.company : ''
   const {
     sessions, conversation, messages, run, error,
-    openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeMode, changeModel, clearError,
+    openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeMode, changeModel, compress, clearError,
   } = useChatRun(scope)
   const [input, setInput] = useState('')
   const [editing, setEditing] = useState<EditingTarget>(null)
   const [sessionsCollapsed, setSessionsCollapsed] = useState(isJob)
-  const [modelOptions, setModelOptions] = useState<string[]>([])
+  const [globalModels, setGlobalModels] = useState<string[]>([])
+  const [modelChannels, setModelChannels] = useState<ComposerChannel[]>([])
+  const [contextWindow, setContextWindow] = useState(128000)
   const [showReasoning, setShowReasoning] = useState(() => localStorage.getItem('jobscope-reasoning') !== 'off')
-  const threadBottom = useRef<HTMLDivElement>(null)
+  const [showJump, setShowJump] = useState(false)
+  const [compressing, setCompressing] = useState(false)
+  const threadRef = useRef<HTMLDivElement>(null)
+  const stickRef = useRef(true)
 
   useEffect(() => {
-    Promise.all([getChannels(), getModelSettings()])
-      .then(([channels, settings]) => {
+    Promise.all([getChannels(), getModelSettings(), listLlmChannels()])
+      .then(([channels, settings, saved]) => {
         const channel = channels.channels.find(item => item.id === settings.llm.channel)
-        setModelOptions(channel?.models ?? [])
+        setGlobalModels(channel?.models ?? [])
+        setContextWindow(settings.llm.context_tokens ?? 128000)
+        setModelChannels(saved.channels.map(item => toComposerChannel(item)))
       })
       .catch(() => { /* 模型选项获取失败时保持“跟随全局设置” */ })
   }, [])
 
-  useEffect(() => {
+  function scrollToBottom() {
+    const thread = threadRef.current
     // 只滚线程自己的容器：scrollIntoView 会连带滚动详情面板等祖先，选中岗位时会把面板滚过标题区。
-    const thread = threadBottom.current?.parentElement
+    // 用即时滚动而非 smooth：内嵌浏览器后台面板会冻结动画，平滑滚动可能完全不动。
     if (thread) thread.scrollTop = thread.scrollHeight
+  }
+
+  // 滚轮/触控/键盘也补算一次：部分内嵌浏览器只更新 scrollTop 而不派发 scroll 事件。
+  const measureStick = () => {
+    const thread = threadRef.current
+    if (!thread) return
+    const distance = thread.scrollHeight - thread.scrollTop - thread.clientHeight
+    const stick = distance <= STICK_THRESHOLD
+    stickRef.current = stick
+    setShowJump(!stick)
+  }
+  const measureStickDeferred = () => { window.setTimeout(measureStick, 60) }
+  // 向上滚立即解除吸底：不依赖 scroll 事件与定时器（后台面板会节流），保证流式输出时不会被拽回底部。
+  const pauseStick = () => { stickRef.current = false; setShowJump(true) }
+  const onThreadWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
+    if (event.deltaY < 0) pauseStick()
+    else measureStickDeferred()
+  }
+  const touchYRef = useRef<number | null>(null)
+  const onThreadTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => {
+    touchYRef.current = event.touches[0]?.clientY ?? null
+  }
+  const onThreadTouchMove = (event: ReactTouchEvent<HTMLDivElement>) => {
+    const current = event.touches[0]?.clientY ?? null
+    if (touchYRef.current !== null && current !== null && current > touchYRef.current) pauseStick()
+    touchYRef.current = current
+    measureStickDeferred()
+  }
+  const onThreadKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (['PageUp', 'Home', 'ArrowUp'].includes(event.key)) pauseStick()
+    else if (['PageDown', 'End', 'ArrowDown', ' '].includes(event.key)) measureStickDeferred()
+  }
+
+  useEffect(() => {
+    if (!stickRef.current) return
+    scrollToBottom()
+    // 会话恢复时消息与布局可能分两拍到位：补一次延迟滚动，避免停在顶部。
+    const timer = window.setTimeout(() => { if (stickRef.current) scrollToBottom() }, 150)
+    return () => window.clearTimeout(timer)
   }, [messages.length, run?.answer, run?.reasoning, run?.steps.length, run?.approval])
+
+  // 切换会话时恢复吸底并直接落到最新消息。
+  useEffect(() => { stickRef.current = true; setShowJump(false); scrollToBottom() }, [conversation.id])
+
+  function jumpToBottom() {
+    stickRef.current = true
+    setShowJump(false)
+    scrollToBottom()
+  }
 
   function toggleReasoning(value: boolean) {
     setShowReasoning(value)
@@ -56,6 +119,30 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
   const running = Boolean(run)
   const canMutate = conversation.id !== null && !running
   const mode: ChatMode = isGlobal ? conversation.mode : 'research'
+
+  // 用量只统计未折叠消息（含摘要检查点）：与模型实际可见的上下文口径一致；流式增量也计入。
+  const contextTokens = useMemo(() => (
+    CONTEXT_BASE_TOKENS + messages.reduce((sum, item) => sum + (item.compacted ? 0 : estimateTokens(item.content)), 0)
+      + (run?.answer ? estimateTokens(run.answer) : 0)
+  ), [messages, run?.answer])
+
+  // 会话选了已存渠道且该渠道登记了窗口大小时，按渠道窗口估算，否则用全局设置。
+  const activeWindow = useMemo(() => {
+    const channel = modelChannels.find(item => item.id === conversation.llm_channel)
+    return channel?.context_tokens || contextWindow
+  }, [modelChannels, conversation.llm_channel, contextWindow])
+
+  // 与后端一致的压缩门槛：保留最近 4 条，至少还要有 2 条可折叠。
+  const canCompress = messages.filter(item => !item.compacted).length - 4 >= 2
+
+  async function compressContext() {
+    if (compressing || running) return
+    setCompressing(true)
+    const result = await compress()
+    setCompressing(false)
+    if (result.ok) toast(`已压缩 ${result.compacted_count} 条历史消息，上下文已精简`)
+    else toast(result.message || '压缩失败，请稍后重试', 'error')
+  }
 
   function startEdit(message: StoredMessage) {
     setEditing({ id: message.id, original: message.content })
@@ -70,6 +157,8 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
   async function submit() {
     const text = input.trim()
     if (!text) return
+    stickRef.current = true
+    setShowJump(false)
     const ok = await send(text, editing ? { editMessageId: editing.id } : undefined)
     if (ok) {
       setInput('')
@@ -86,7 +175,11 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
     }
     const index = messages.findIndex(item => item.id === message.id)
     const previous = [...messages.slice(0, index)].reverse().find(item => item.role === 'user')
-    if (previous) void send(previous.content, { editMessageId: previous.id })
+    if (previous) {
+      stickRef.current = true
+      setShowJump(false)
+      void send(previous.content, { editMessageId: previous.id })
+    }
   }
 
   function toggleSessions() { setSessionsCollapsed(value => !value) }
@@ -101,6 +194,11 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
         : isJob
           ? { title: '围绕这份岗位提问', text: '检索该岗位的职责原文、详情快照与同一公司的补充资料，回答标注出处；资料缺失的部分保持未知。' }
           : { title: `围绕 ${company} 提问`, text: '询问招聘要求、公司披露、员工情况或仍待核实的问题；回答只引用该公司已保存的资料。' }
+
+  const channelName = modelChannels.find(item => item.id === conversation.llm_channel)?.name
+  const modelSuffix = conversation.llm_channel
+    ? ` · ${channelName || '渠道已删除'} · ${conversation.model || '默认模型'}`
+    : conversation.model ? ` · ${conversation.model}` : ''
 
   return <div className={`chat-page chat-${scope.kind} ${sessionsCollapsed ? 'sessions-collapsed' : ''}`}>
     <aside className="chat-sidebar">
@@ -130,46 +228,48 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
             {isGlobal
               ? (mode === 'general' ? '通用 Agent · 工具调用 / MCP / Skills' : '资料研究 · 检索与引用校验')
               : isJob ? '资料研究 · 只检索该岗位与同公司资料' : '资料研究 · 只检索该公司的已保存资料'}
-            {conversation.model ? ` · ${conversation.model}` : ''}
+            {modelSuffix}
           </span>
         </div>
         <span className={`chat-state ${run ? 'busy' : ''}`}>{run ? (run.approval ? '等待工具确认' : '生成中…') : '空闲'}</span>
       </header>
 
-      <div className="chat-thread" aria-live="polite">
-        {messages.length === 0 && !run && <div className="chat-welcome">
-          <h3>{welcome.title}</h3>
-          <p>{welcome.text}</p>
-          {(isGlobal || isJob || company) && <div className="chat-suggestions">
-            {suggestions.map(text => <button key={text} type="button" onClick={() => { setInput(text); }}>{text}</button>)}
+      <div className="chat-thread-wrap">
+        <div className="chat-thread" ref={threadRef} aria-live="polite"
+          onScroll={measureStick} onWheel={onThreadWheel} onTouchStart={onThreadTouchStart} onTouchMove={onThreadTouchMove} onKeyDown={onThreadKeyDown} tabIndex={-1}>
+          {messages.length === 0 && !run && <div className="chat-welcome">
+            <h3>{welcome.title}</h3>
+            <p>{welcome.text}</p>
+            {(isGlobal || isJob || company) && <div className="chat-suggestions">
+              {suggestions.map(text => <button key={text} type="button" onClick={() => { setInput(text); }}>{text}</button>)}
+            </div>}
           </div>}
-        </div>}
 
-        {messages.map(message => <ChatMessageItem
-          key={message.id}
-          message={message}
-          showReasoning={showReasoning}
-          editing={editing?.id === message.id}
-          canMutate={canMutate}
-          onStartEdit={startEdit}
-          onEditSubmit={(target, content) => { setEditing(null); void send(content, { editMessageId: target.id }) }}
-          onEditCancel={cancelEdit}
-          onResend={resend}
-          onDelete={target => void removeMessage(target.id)}
-        />)}
+          {messages.map(message => <ChatMessageItem
+            key={message.id}
+            message={message}
+            showReasoning={showReasoning}
+            editing={editing?.id === message.id}
+            canMutate={canMutate}
+            onStartEdit={startEdit}
+            onEditSubmit={(target, content) => { setEditing(null); stickRef.current = true; setShowJump(false); void send(content, { editMessageId: target.id }) }}
+            onEditCancel={cancelEdit}
+            onResend={resend}
+            onDelete={target => void removeMessage(target.id)}
+          />)}
 
-        {run && <article className="chat-bubble assistant live-bubble">
-          <div className="chat-bubble-head">
-            <span className="chat-avatar" aria-hidden="true">知</span>
-            <span className="message-author">{run.approval ? '知根 Agent · 等待确认' : '知根 Agent · 正在工作'}</span>
-          </div>
-          {showReasoning && run.reasoning && <ReasoningBlock text={run.reasoning} live={!run.approval} />}
-          <ToolTimeline steps={run.steps} running />
-          {run.answer && <div className="message-content"><Markdown content={run.answer} /></div>}
-          {run.error && <div className="run-error">{run.error}</div>}
-        </article>}
-
-        <div ref={threadBottom} />
+          {run && <article className="chat-bubble assistant live-bubble">
+            <div className="chat-bubble-head">
+              <span className="chat-avatar" aria-hidden="true">知</span>
+              <span className="message-author">{run.approval ? '知根 Agent · 等待确认' : '知根 Agent · 正在工作'}</span>
+            </div>
+            {showReasoning && run.reasoning && <ReasoningBlock text={run.reasoning} live={!run.approval} />}
+            <ToolTimeline steps={run.steps} running />
+            {run.answer && <div className="message-content"><Markdown content={run.answer} /></div>}
+            {run.error && <div className="run-error">{run.error}</div>}
+          </article>}
+        </div>
+        {showJump && <button type="button" className="jump-bottom" onClick={jumpToBottom}>↓ 回到底部</button>}
       </div>
 
       {run?.approval && <section className="agent-approval" aria-label="待确认工具调用">
@@ -191,8 +291,10 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
         mode={mode}
         onModeChange={mode => void changeMode(mode)}
         model={conversation.model}
-        modelOptions={modelOptions}
-        onModelChange={model => void changeModel(model)}
+        llmChannel={conversation.llm_channel}
+        modelChannels={modelChannels}
+        globalModels={globalModels}
+        onModelChange={(model, channelId) => void changeModel(model, channelId)}
         running={running}
         awaiting={Boolean(run?.approval)}
         onStop={() => void stop()}
@@ -207,7 +309,19 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
         modeLabel={isJob ? '岗位资料研究' : '公司资料研究'}
         locked={isGlobal || isJob || company ? '' : '请先在上方确认公司主体'}
         scopeName={isGlobal ? '全项目资料' : isJob ? `${jobCompany}的岗位资料` : company || '未选定公司'}
+        contextTokens={contextTokens}
+        contextWindow={activeWindow}
+        compressing={compressing}
+        hasConversation={conversation.id !== null}
+        canCompress={canCompress}
+        onCompress={() => void compressContext()}
       />
     </section>
   </div>
+}
+
+function toComposerChannel(item: LlmChannel): ComposerChannel {
+  const models = item.models.filter(Boolean)
+  if (item.model && !models.includes(item.model)) models.unshift(item.model)
+  return { id: item.id, name: item.name, model: item.model, models, context_tokens: item.context_tokens ?? null }
 }

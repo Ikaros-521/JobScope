@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  approveChatRun, cancelChatRun, deleteConversation, deleteConversationMessage, getConversation,
+  approveChatRun, cancelChatRun, compressConversation, deleteConversation, deleteConversationMessage, getConversation,
   listConversations, openRunStream, patchConversation, startChatRun,
 } from '../api'
-import type { ApprovalRequest, ChatMode, ChatScope, ConversationSummary, StoredMessage, ToolStep } from '../api'
+import type { ApprovalRequest, ChatMode, ChatScope, ConversationSummary, CompressResult, StoredMessage, ToolStep } from '../api'
 
 export type RunState = {
   id: string
@@ -15,7 +15,7 @@ export type RunState = {
   notice?: string
 }
 
-export type ChatConversation = { id: string | null; title: string; mode: ChatMode; model: string }
+export type ChatConversation = { id: string | null; title: string; mode: ChatMode; model: string; llm_channel: string }
 
 function scopeMatches(stored: { kind: string; company?: string; job_id?: string } | undefined, scope: ChatScope) {
   if (!stored) return false
@@ -26,7 +26,7 @@ function scopeMatches(stored: { kind: string; company?: string; job_id?: string 
 
 export function useChatRun(scope: ChatScope = { kind: 'global' }) {
   const [sessions, setSessions] = useState<ConversationSummary[]>([])
-  const [conversation, setConversation] = useState<ChatConversation>({ id: null, title: '新对话', mode: 'research', model: '' })
+  const [conversation, setConversation] = useState<ChatConversation>({ id: null, title: '新对话', mode: 'research', model: '', llm_channel: '' })
   const [messages, setMessages] = useState<StoredMessage[]>([])
   const [run, setRun] = useState<RunState | null>(null)
   const [error, setError] = useState('')
@@ -125,7 +125,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }) {
         return
       }
       setMessages(detail.messages)
-      setConversation(current => current.id === conversationId ? { ...current, title: detail.title, mode: detail.mode, model: detail.model } : current)
+      setConversation(current => current.id === conversationId ? { ...current, title: detail.title, mode: detail.mode, model: detail.model, llm_channel: detail.llm_channel || '' } : current)
       if (detail.active_run && !detail.active_run.done && runIdRef.current !== detail.active_run.run_id) {
         attach(detail.active_run.run_id)
       }
@@ -142,7 +142,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }) {
     setMessages([])
     if (id) sessionStorage.setItem(storageKeyRef.current, id)
     else sessionStorage.removeItem(storageKeyRef.current)
-    setConversation({ id, title: '新对话', mode: 'research', model: '' })
+    setConversation({ id, title: '新对话', mode: 'research', model: '', llm_channel: '' })
     if (id) await reload(id)
   }, [reload])
 
@@ -171,7 +171,9 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }) {
         message: content,
         conversation_id: targetId ?? undefined,
         agent_mode: company || jobId ? 'research' : conversation.mode,
-        model: conversation.model || undefined,
+        // 显式传空串表示“跟随全局/渠道默认”：后端据此区分“未指定（沿用会话）”与“重置”。
+        model: conversation.model,
+        llm_channel: conversation.llm_channel,
         edit_message_id: options?.editMessageId,
         ...(company ? { company } : {}),
         ...(jobId ? { job_id: jobId } : {}),
@@ -262,10 +264,23 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation.id])
 
-  const changeModel = useCallback(async (model: string) => {
-    setConversation(current => ({ ...current, model }))
+  const changeModel = useCallback(async (model: string, channelId: string) => {
+    setConversation(current => ({ ...current, model, llm_channel: channelId }))
     if (conversation.id) {
-      try { await patchConversation(conversation.id, { model }) } catch (err) { setError((err as Error).message) }
+      try { await patchConversation(conversation.id, { model, llm_channel: channelId }) } catch (err) { setError((err as Error).message) }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversation.id])
+
+  const compress = useCallback(async (): Promise<CompressResult & { ok: boolean; message?: string }> => {
+    const id = conversation.id
+    if (!id) return { ok: false, compacted_count: 0, summary_message_id: '', message_count: 0, message: '新对话还没有可压缩的历史' }
+    try {
+      const result = await compressConversation(id)
+      await reloadRef.current(id)
+      return { ...result, ok: true }
+    } catch (err) {
+      return { ok: false, compacted_count: 0, summary_message_id: '', message_count: 0, message: (err as Error).message }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation.id])
@@ -274,6 +289,6 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }) {
 
   return {
     sessions, conversation, messages, run, error,
-    openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeMode, changeModel, refreshSessions, clearError,
+    openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeMode, changeModel, compress, refreshSessions, clearError,
   }
 }

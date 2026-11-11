@@ -2,15 +2,23 @@ import { useEffect, useRef } from 'react'
 import type { ChatMode } from '../api'
 
 export type EditingTarget = { id: string; original: string } | null
+export type ComposerChannel = { id: string; name: string; model: string; models: string[]; context_tokens?: number | null }
 
-export function ChatComposer({ input, onInputChange, mode, onModeChange, model, modelOptions, onModelChange, running, awaiting, onStop, onSend, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, showMode = true, modeLabel = '公司资料研究', locked = '', scopeName = '全项目资料' }: {
+function tokensLabel(value: number) { return value >= 10000 ? `${Math.round(value / 1000)}k` : value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value) }
+
+// 下拉选项值编码：''=跟随全局；'|model'=覆盖全局配置上的模型；'channelId|model'=指定渠道的模型；'channelId|'=渠道默认模型
+function selectValue(model: string, channelId: string) { return channelId ? `${channelId}|${model}` : model ? `|${model}` : '' }
+
+export function ChatComposer({ input, onInputChange, mode, onModeChange, model, llmChannel = '', modelChannels = [], globalModels = [], onModelChange, running, awaiting, onStop, onSend, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, showMode = true, modeLabel = '公司资料研究', locked = '', scopeName = '全项目资料', contextTokens = 0, contextWindow = 128000, compressing = false, hasConversation = false, canCompress = true, onCompress }: {
   input: string
   onInputChange: (value: string) => void
   mode: ChatMode
   onModeChange: (mode: ChatMode) => void
   model: string
-  modelOptions: string[]
-  onModelChange: (model: string) => void
+  llmChannel?: string
+  modelChannels?: ComposerChannel[]
+  globalModels?: string[]
+  onModelChange: (model: string, channelId: string) => void
   running: boolean
   awaiting: boolean
   onStop: () => void
@@ -25,6 +33,12 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
   modeLabel?: string
   locked?: string
   scopeName?: string
+  contextTokens?: number
+  contextWindow?: number
+  compressing?: boolean
+  hasConversation?: boolean
+  canCompress?: boolean
+  onCompress?: () => void
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   useEffect(() => {
@@ -45,6 +59,15 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
     if (running || blocked || !input.trim()) return
     onSend()
   }
+
+  function pickModel(value: string) {
+    const sep = value.indexOf('|')
+    if (sep < 0) { onModelChange(value, ''); return }
+    onModelChange(value.slice(sep + 1), value.slice(0, sep))
+  }
+
+  const percent = contextWindow > 0 ? Math.min(100, Math.round((contextTokens / contextWindow) * 100)) : 0
+  const level = percent >= 85 ? 'danger' : percent >= 60 ? 'warning' : ''
 
   return <div className="chat-composer">
     {editing && <div className="composer-editing-note">
@@ -75,10 +98,18 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
       {!showMode && <span className="composer-scope-tag">{modeLabel}</span>}
       <label className="composer-model">
         <span>模型</span>
-        <select value={model} onChange={event => onModelChange(event.target.value)} disabled={running || awaiting}>
+        <select value={selectValue(model, llmChannel)} onChange={event => pickModel(event.target.value)} disabled={running || awaiting}>
           <option value="">跟随全局设置</option>
-          {modelOptions.filter(option => option !== model).map(option => <option key={option} value={option}>{option}</option>)}
-          {model && !modelOptions.includes(model) && <option value={model}>{model}</option>}
+          <optgroup label="全局默认渠道">
+            {globalModels.map(item => <option key={`global-${item}`} value={`|${item}`}>{item}</option>)}
+            {model && !llmChannel && !globalModels.includes(model) && <option value={`|${model}`}>{model}</option>}
+          </optgroup>
+          {modelChannels.map(channel => <optgroup key={channel.id} label={channel.name}>
+            <option value={`${channel.id}|`}>{channel.model ? `默认 · ${channel.model}` : '渠道默认模型（未设置）'}</option>
+            {channel.models.map(item => <option key={`${channel.id}-${item}`} value={`${channel.id}|${item}`}>{item}</option>)}
+            {llmChannel === channel.id && model && !channel.models.includes(model) && model !== channel.model && <option value={`${channel.id}|${model}`}>{model}</option>}
+          </optgroup>)}
+          {llmChannel && !modelChannels.some(channel => channel.id === llmChannel) && <option value={selectValue(model, llmChannel)}>{`渠道已删除 · ${model || '默认模型'}`}</option>}
         </select>
       </label>
       <label className="composer-switch">
@@ -86,6 +117,17 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
         <span>思维链</span>
       </label>
       {showMode && onManageExtensions && <button type="button" className="composer-extensions" onClick={onManageExtensions}>MCP 与 Skills</button>}
+      {onCompress && <div className="context-meter-group">
+        <div className={`context-meter ${level}`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}
+          aria-label="当前会话上下文估算用量" title={`当前会话上下文估算 ${tokensLabel(contextTokens)} / ${tokensLabel(contextWindow)} tokens（${percent}%，按字符数估算）`}>
+          <span className="context-meter-bar" aria-hidden="true"><span className="context-meter-fill" style={{ width: `${percent}%` }} /></span>
+          <span className="context-meter-text">{tokensLabel(contextTokens)} / {tokensLabel(contextWindow)}</span>
+        </div>
+        <button type="button" className="composer-compress" onClick={onCompress} disabled={running || awaiting || compressing || !hasConversation || !canCompress}
+          title={canCompress ? '把较早的历史折叠成一条摘要检查点，模型上下文随之精简；原文仍保留可查看' : '历史消息较少，暂无需压缩'}>
+          {compressing ? '压缩中…' : '压缩上下文'}
+        </button>
+      </div>}
       <span className="composer-hint">Enter 发送 · Shift + Enter 换行{mode === 'general' ? ' · 外部工具按配置确认' : ' · 回答标注证据出处'}</span>
     </div>
   </div>

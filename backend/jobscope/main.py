@@ -21,7 +21,54 @@ from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
 from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ReliabilityInput, ResumeInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
 from .repository import Repository, now
-from .settings import ModelSettings, ModelSettingsInput, ConnectionInput, _active
+from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, ConnectionInput, _active, get_model_config
+
+
+SUMMARY_SYSTEM = ('你是求职情报工作台的对话上下文压缩引擎，把早期对话提炼为高密度结构化摘要。'
+                  '要求：1.保留用户意图、涉及的公司/岗位/薪资等关键事实与已得出的结论；'
+                  '2.保留出现过的证据ID（形如 E-xxx）、来源链接与未完成的待办事项；'
+                  '3.去除寒暄与冗余；4.用中文 Markdown 输出，以「### 📋 上下文压缩摘要」作为标题开头。')
+# 单次摘要请求的字符上限（约 4–5k tokens）；超过就分段提炼再合并，绝不截断原文。
+SUMMARY_CHUNK_CHARS = 16000
+# 整段历史的硬上限：超过时明确拒绝，而不是悄悄丢掉后面的内容。
+SUMMARY_MAX_CHARS = 240000
+
+
+def _summary_chunks(messages):
+    chunks, current, size = [], [], 0
+    for message in messages:
+        text = f"【{'用户' if message.get('role') == 'user' else '助手'}】{message.get('content', '')}"
+        if current and size + len(text) > SUMMARY_CHUNK_CHARS:
+            chunks.append('\n\n'.join(current))
+            current, size = [], 0
+        current.append(text)
+        size += len(text)
+    if current:
+        chunks.append('\n\n'.join(current))
+    return chunks
+
+
+def summarise_messages(config, messages):
+    """Summarise every message; long histories are summarised in chunks and merged (no truncation)."""
+    from .model_transport import complete
+    chunks = _summary_chunks(messages)
+    if not chunks:
+        raise ValueError('没有可压缩的消息')
+    if sum(len(chunk) for chunk in chunks) > SUMMARY_MAX_CHARS:
+        raise OverflowError
+    if len(chunks) == 1:
+        summary, _ = complete(config, SUMMARY_SYSTEM, '请压缩以下历史对话：\n\n' + chunks[0],
+                              temperature=0.3, max_tokens=2048, timeout=120)
+        return summary.strip()
+    partials = []
+    for index, chunk in enumerate(chunks, 1):
+        part, _ = complete(config, SUMMARY_SYSTEM, f'这是同一段历史对话的第 {index}/{len(chunks)} 段，先提炼本段：\n\n{chunk}',
+                           temperature=0.3, max_tokens=2048, timeout=120)
+        partials.append(f'### 第 {index} 段\n{part.strip()}')
+    merged, _ = complete(config, SUMMARY_SYSTEM,
+                         '以下是同一段历史对话的分段摘要，请合并为一份不重复、不丢失关键事实的总摘要：\n\n' + '\n\n'.join(partials),
+                         temperature=0.3, max_tokens=2048, timeout=120)
+    return merged.strip()
 
 
 def create_app(data_dir=None):
@@ -31,6 +78,7 @@ def create_app(data_dir=None):
     app = FastAPI(title="知根 JobScope", docs_url="/api/docs", redoc_url=None)
     app.state.repo = repo
     settings = ModelSettings(repo)
+    llm_channels = LlmChannelStore(repo)
     runs = RunManager(repo)
     app.state.runs = runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
@@ -187,7 +235,7 @@ def create_app(data_dir=None):
     @app.post('/api/settings/models/discover')
     def discover_models(data: ConnectionInput):
         try:
-            return settings.discover(data.target, data.config)
+            return settings.discover(data.target, data.config, data.channel_id)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         except ConnectionError as exc:
@@ -203,11 +251,39 @@ def create_app(data_dir=None):
     @app.post('/api/settings/models/test')
     def test_model_settings(data: ConnectionInput):
         try:
-            return settings.test(data.target, data.config)
+            return settings.test(data.target, data.config, data.channel_id)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         except ConnectionError as exc:
             raise HTTPException(502, str(exc)) from None
+
+    @app.get('/api/settings/llm-channels')
+    def list_llm_channels():
+        return dict(channels=llm_channels.public(llm_channels.list()))
+
+    @app.post('/api/settings/llm-channels')
+    def save_llm_channel(data: LlmChannelInput):
+        try:
+            channel = llm_channels.public([llm_channels.save(data)])[0]
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return dict(channel=channel, channels=llm_channels.public(llm_channels.list()))
+
+    @app.delete('/api/settings/llm-channels/{channel_id}')
+    def delete_llm_channel(channel_id: str):
+        try:
+            llm_channels.delete(channel_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return dict(ok=True, channels=llm_channels.public(llm_channels.list()))
+
+    @app.post('/api/settings/llm-channels/{channel_id}/activate')
+    def activate_llm_channel(channel_id: str):
+        try:
+            llm_channels.activate(channel_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return settings.public(settings.effective())
 
     @app.middleware("http")
     async def local_write_protection(request: Request, call_next):
@@ -702,6 +778,8 @@ def create_app(data_dir=None):
             raise HTTPException(400, '全局对话不能同时指定岗位或公司')
         if data.scope != 'global' and not data.job_id and not data.company:
             raise HTTPException(400, "请先选择岗位或公司，限定问答资料范围")
+        if data.conversation_id and runs.is_compressing(data.conversation_id):
+            raise HTTPException(409, '会话正在压缩上下文，请稍后重试')
         if data.scope == 'global':
             scope_identity = dict(kind='global')
             if data.agent_mode == 'general':
@@ -717,6 +795,8 @@ def create_app(data_dir=None):
             conversation_id, history = repo.conversation(data.conversation_id, scope_identity)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from exc
+        # 已压缩的旧消息不进模型上下文；压缩摘要检查点保留。
+        history = [m for m in history if not m.get('compacted')]
         resume = repo.resume()
         # Send only confirmed YAML facts to the model; unconfirmed facts stay local.
         facts = parse_resume(resume["text"], resume["format"]) if resume["text"].strip() else []
@@ -744,16 +824,23 @@ def create_app(data_dir=None):
 
     @app.post('/api/chat/runs')
     def start_chat_run(data: ChatRunInput):
-        if data.agent_mode == 'general' and not model_configured():
-            raise HTTPException(400, '通用 Agent 需要先配置支持工具调用的对话模型。也可切回资料研究模式。')
+        if data.agent_mode == 'general':
+            # 以“这次实际会用的模型”判断：会话已保存的渠道/模型也算配置完成。
+            try:
+                conversation = repo.get_conversation(data.conversation_id) if data.conversation_id else None
+                config = runs.resolve_llm_config(conversation, data.model, data.llm_channel)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
+            if config['llm'].get('mode') != 'remote' or not config['llm'].get('model'):
+                raise HTTPException(400, '通用 Agent 需要先配置支持工具调用的对话模型。也可切回资料研究模式。')
         scope = chat_scope('job' if data.job_id else ('company' if data.company.strip() else 'global'),
                            data.company, data.job_id)
         if data.agent_mode == 'general' and scope['kind'] != 'global':
             raise HTTPException(400, '岗位与公司对话只检索本范围的已保存资料；通用 Agent 请在全局对话中使用。')
         try:
             return runs.start(message=data.message, conversation_id=data.conversation_id or None,
-                              mode=data.agent_mode, model=data.model, edit_message_id=data.edit_message_id,
-                              scope=scope)
+                              mode=data.agent_mode, model=data.model, llm_channel=data.llm_channel,
+                              edit_message_id=data.edit_message_id, scope=scope)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
 
@@ -804,7 +891,7 @@ def create_app(data_dir=None):
     @app.patch('/api/conversations/{conversation_id}')
     def patch_conversation(conversation_id: str, data: ConversationPatch):
         try:
-            repo.update_conversation(conversation_id, title=data.title, mode=data.mode, model=data.model)
+            repo.update_conversation(conversation_id, title=data.title, mode=data.mode, model=data.model, llm_channel=data.llm_channel)
             conversation = repo.get_conversation(conversation_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
@@ -813,6 +900,8 @@ def create_app(data_dir=None):
 
     @app.delete('/api/conversations/{conversation_id}')
     def delete_conversation(conversation_id: str):
+        if runs.is_compressing(conversation_id):
+            raise HTTPException(409, '会话正在压缩上下文，请稍后重试')
         handle = runs.active_for_conversation(conversation_id)
         if handle:
             runs.cancel(handle.id)
@@ -826,11 +915,53 @@ def create_app(data_dir=None):
     def delete_conversation_message(conversation_id: str, message_id: str):
         if runs.active_for_conversation(conversation_id):
             raise HTTPException(409, '会话正在生成中，请等待完成或先停止')
+        if runs.is_compressing(conversation_id):
+            raise HTTPException(409, '会话正在压缩上下文，请稍后重试')
         try:
             repo.delete_message(conversation_id, None, message_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
         return dict(ok=True)
+
+    @app.post('/api/conversations/{conversation_id}/compress')
+    def compress_conversation(conversation_id: str):
+        """一键压缩上下文：旧消息打标折叠（不删除），边界处插入模型生成的摘要检查点。"""
+        if runs.active_for_conversation(conversation_id):
+            raise HTTPException(409, '会话正在生成中，请等待完成或先停止')
+        if not runs.begin_compression(conversation_id):
+            raise HTTPException(409, '该会话正在压缩上下文，请稍后重试')
+        try:
+            try:
+                conversation = repo.get_conversation(conversation_id)
+            except ValueError as exc:
+                raise HTTPException(404, str(exc)) from None
+            try:
+                config = runs.resolve_llm_config(conversation)['llm']
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
+            if config.get('mode') != 'remote' or not config.get('model'):
+                raise HTTPException(400, '压缩上下文需要先配置对话模型')
+            messages = conversation['messages']
+            keep_recent = 4
+            boundary = len(messages) - keep_recent
+            foldable = [m for m in messages[:boundary] if not m.get('compacted')]
+            if boundary <= 0 or len(foldable) < 2:
+                raise HTTPException(422, '历史消息较少，暂无需压缩')
+            try:
+                summary = summarise_messages(config, foldable)
+            except OverflowError:
+                raise HTTPException(422, '历史记录过长，单次压缩会超出模型额度；请先删除部分较早消息后重试') from None
+            except Exception:
+                raise HTTPException(502, '摘要生成失败，请检查模型服务后重试；历史未被修改') from None
+            if not summary.strip():
+                raise HTTPException(502, '模型返回了空摘要，历史未被修改')
+            try:
+                return repo.compress_conversation(conversation_id, boundary, summary.strip(),
+                                                  expected_ids=[m.get('id') for m in messages])
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
+        finally:
+            runs.end_compression(conversation_id)
 
     @app.get('/api/research/index')
     def research_index_status():

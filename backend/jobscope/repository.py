@@ -70,6 +70,7 @@ class Repository:
             ('updated_at', "TEXT NOT NULL DEFAULT ''"),
             ('mode', "TEXT NOT NULL DEFAULT 'research'"),
             ('model', "TEXT NOT NULL DEFAULT ''"),
+            ('llm_channel', "TEXT NOT NULL DEFAULT ''"),
         ):
             if name not in columns:
                 conn.execute(f'ALTER TABLE conversations ADD COLUMN {name} {definition}')
@@ -371,14 +372,14 @@ class Repository:
                     raise ValueError('会话范围不匹配，请为当前范围新建对话')
                 return conversation_id, json.loads(row['messages'])
             conversation_id = 'C-' + uuid.uuid4().hex
-            conn.execute('INSERT INTO conversations VALUES (?,?,?,?,?,?,?,?)', (conversation_id, encoded, '[]', '', now(), now(), 'research', ''))
+            conn.execute('INSERT INTO conversations VALUES (?,?,?,?,?,?,?,?,?)', (conversation_id, encoded, '[]', '', now(), now(), 'research', '', ''))
         return conversation_id, []
 
-    def create_conversation(self, scope, mode='research', model=''):
+    def create_conversation(self, scope, mode='research', model='', llm_channel=''):
         conversation_id = 'C-' + uuid.uuid4().hex
         encoded = json.dumps(scope, sort_keys=True, ensure_ascii=False)
         with self.connection() as conn:
-            conn.execute('INSERT INTO conversations VALUES (?,?,?,?,?,?,?,?)', (conversation_id, encoded, '[]', '', now(), now(), mode, model))
+            conn.execute('INSERT INTO conversations VALUES (?,?,?,?,?,?,?,?,?)', (conversation_id, encoded, '[]', '', now(), now(), mode, model, llm_channel))
         return conversation_id
 
     @staticmethod
@@ -415,12 +416,12 @@ class Repository:
     def list_conversations(self, scope, limit=200):
         encoded = json.dumps(scope, sort_keys=True, ensure_ascii=False)
         with self.connection() as conn:
-            rows = conn.execute('SELECT id,title,mode,model,updated_at,messages FROM conversations WHERE scope=? ORDER BY updated_at DESC LIMIT ?', (encoded, limit)).fetchall()
+            rows = conn.execute('SELECT id,title,mode,model,llm_channel,updated_at,messages FROM conversations WHERE scope=? ORDER BY updated_at DESC LIMIT ?', (encoded, limit)).fetchall()
         result = []
         for row in rows:
             messages = json.loads(row['messages'])
             preview = next((m['content'][:80] for m in messages if m.get('role') == 'user'), '')
-            result.append(dict(id=row['id'], title=row['title'] or preview or '新对话', mode=row['mode'] or 'research', model=row['model'], updated_at=row['updated_at'], message_count=len(messages), preview=preview))
+            result.append(dict(id=row['id'], title=row['title'] or preview or '新对话', mode=row['mode'] or 'research', model=row['model'], llm_channel=row['llm_channel'] or '', updated_at=row['updated_at'], message_count=len(messages), preview=preview))
         return result
 
     def get_conversation(self, conversation_id, scope=None):
@@ -432,7 +433,7 @@ class Repository:
         if self._fill_message_ids(messages):
             with self.connection() as conn:
                 conn.execute('UPDATE conversations SET messages=? WHERE id=?', (json.dumps(messages, ensure_ascii=False), conversation_id))
-        return dict(id=row['id'], scope=json.loads(row['scope']), title=row['title'] or '新对话', mode=row['mode'] or 'research', model=row['model'], created_at=row['created_at'], updated_at=row['updated_at'], messages=messages)
+        return dict(id=row['id'], scope=json.loads(row['scope']), title=row['title'] or '新对话', mode=row['mode'] or 'research', model=row['model'], llm_channel=row['llm_channel'] or '', created_at=row['created_at'], updated_at=row['updated_at'], messages=messages)
 
     def _conversation_row(self, conn, conversation_id, scope=None):
         row = conn.execute('SELECT scope,title,messages FROM conversations WHERE id=?', (conversation_id,)).fetchone()
@@ -440,7 +441,7 @@ class Repository:
             raise ValueError('会话不存在或范围不匹配')
         return row
 
-    def update_conversation(self, conversation_id, scope=None, *, title=None, mode=None, model=None):
+    def update_conversation(self, conversation_id, scope=None, *, title=None, mode=None, model=None, llm_channel=None):
         fields, values = [], []
         if title is not None:
             fields.append('title=?')
@@ -451,6 +452,9 @@ class Repository:
         if model is not None:
             fields.append('model=?')
             values.append(model[:200])
+        if llm_channel is not None:
+            fields.append('llm_channel=?')
+            values.append(llm_channel[:100])
         if not fields:
             return
         clause = ' AND scope=?' if scope is not None else ''
@@ -504,6 +508,32 @@ class Repository:
             messages = messages[:index]
             conn.execute('UPDATE conversations SET messages=?, updated_at=? WHERE id=?', (json.dumps(messages, ensure_ascii=False), now(), conversation_id))
             return messages
+
+    def compress_conversation(self, conversation_id, boundary, summary, expected_ids=None):
+        """Fold messages [0, boundary) behind a summary checkpoint inserted at boundary; nothing is deleted.
+
+        Older messages keep a `compacted` flag so history builders can skip them while the
+        UI still shows the originals; the checkpoint message itself stays in the model view.
+        expected_ids makes the write compare-and-swap: if the conversation changed while the
+        summary was being generated (a new message, an edit, a delete), nothing is written.
+        """
+        with self.connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = self._conversation_row(conn, conversation_id)
+            messages = json.loads(row['messages'])
+            if expected_ids is not None and [item.get('id') for item in messages] != list(expected_ids):
+                raise ValueError('会话在压缩期间发生了变化，请重试')
+            if not 0 < boundary <= len(messages):
+                raise ValueError('压缩边界无效')
+            folded = 0
+            for item in messages[:boundary]:
+                if not item.get('compacted'):
+                    item['compacted'] = True
+                    folded += 1
+            stamped = self._stamp(dict(role='assistant', kind='compaction', content=summary, compacted_count=folded))
+            messages = messages[:boundary] + [stamped] + messages[boundary:]
+            conn.execute('UPDATE conversations SET messages=?, updated_at=? WHERE id=?', (json.dumps(messages, ensure_ascii=False), now(), conversation_id))
+        return dict(compacted_count=folded, summary_message_id=stamped['id'], message_count=len(messages))
 
     @staticmethod
     def normalise_name(name):

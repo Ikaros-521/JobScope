@@ -51,10 +51,25 @@ export function ChatMessageItem({ message, live, showReasoning, editing, canMuta
   const reasoning = showReasoning ? message.reasoning || '' : ''
   const author = isUser ? '我' : message.mode === 'evidence_search' ? '资料检索' : message.mode === 'model' ? '资料问答' : '知根 Agent'
 
-  return <article className={`chat-bubble ${isUser ? 'user' : 'assistant'}`}>
+  if (message.kind === 'compaction') {
+    // 一键压缩产出的摘要检查点：不按普通气泡渲染，只提供可展开的摘要卡。
+    return <article className="chat-bubble compaction-card">
+      <details>
+        <summary>
+          <span className="compaction-pill">🗜️ 历史上下文已提炼</span>
+          {Boolean(message.compacted_count) && <span className="compaction-meta">已折叠 {message.compacted_count} 条较早对话；模型只看摘要与之后的内容，原文仍保留在上方</span>}
+          <button type="button" className="compaction-copy" onClick={() => void copy()}>{copied ? '已复制' : '复制摘要'}</button>
+        </summary>
+        <div className="compaction-body"><Markdown content={message.content} /></div>
+      </details>
+    </article>
+  }
+
+  return <article className={`chat-bubble ${isUser ? 'user' : 'assistant'} ${message.compacted ? 'compacted-msg' : ''}`}>
     <div className="chat-bubble-head">
       <span className="chat-avatar" aria-hidden="true">{isUser ? '我' : '知'}</span>
       <span className="message-author">{author}</span>
+      {message.compacted && <span className="archived-chip">已折叠 · 不进模型上下文</span>}
       {message.interrupted && <span className="interrupted-chip">已手动停止</span>}
       <div className="msg-actions">
         <button type="button" onClick={() => void copy()}>{copied ? '已复制' : '复制'}</button>

@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
 import { api, post } from './api'
+import type { ModelProvider } from './api'
 import { toast } from './toast'
 import { navigateTabs } from './tabNavigation'
+import { LlmChannelManager } from './LlmChannelManager'
 
 type Protocol = 'openai' | 'anthropic'
-type Provider = { mode: 'disabled' | 'remote' | 'local'; channel: string; protocol: Protocol; url: string; model: string; local_model: string; key_set: boolean; source: string }
-type Draft = Provider & { key: string; clear_key: boolean }
+type Provider = { mode: 'disabled' | 'remote' | 'local'; channel: string; protocol: Protocol; url: string; model: string; local_model: string; key_set: boolean; source: string; context_tokens?: number | null; saved_channel_id?: string }
+type Draft = Omit<Provider, 'context_tokens'> & { key: string; clear_key: boolean; context_tokens: number | '' }
 type Target = 'llm' | 'embedding'
 type Settings = Record<Target, Provider>
 type Channel = { id: string; name: string; url: string; protocol: Protocol; models: string[]; embeddings: string[] | null; note?: string }
@@ -14,8 +16,8 @@ type ActionStatus = { kind: 'success' | 'error'; message: string }
 const targets: Target[] = ['llm', 'embedding']
 const labels = { llm: '对话与分析模型', embedding: '语义检索模型' }
 const descriptions = { llm: '问题规划、资料问答与简历适配分析', embedding: '向量召回，与全文检索融合' }
-const draftOf = (value: Provider): Draft => ({ ...value, key: '', clear_key: false })
-const payload = (value: Draft) => ({ mode: value.mode, channel: value.channel, protocol: value.protocol, url: value.url.trim(), model: value.model.trim(), local_model: value.local_model.trim(), key: value.key.trim(), clear_key: value.clear_key })
+const draftOf = (value: Provider): Draft => ({ ...value, key: '', clear_key: false, context_tokens: value.context_tokens ?? '' })
+const payload = (value: Draft) => ({ mode: value.mode, channel: value.channel, protocol: value.protocol, url: value.url.trim(), model: value.model.trim(), local_model: value.local_model.trim(), key: value.key.trim(), clear_key: value.clear_key, context_tokens: value.context_tokens === '' ? null : value.context_tokens })
 function resolvedUrl(value: Draft, target: Target) {
   const url = value.url.trim().replace(/\/$/, '')
   const explicitEndpoint = /\/(chat\/completions|messages|embeddings|models)$/.test(url)
@@ -59,6 +61,13 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
   function feedback(target: Target, message: string, kind: ActionStatus['kind'] = 'success') {
     setStatus(current => ({ ...current, [target]: { kind, message } }))
     toast(message, kind === 'error' ? 'error' : undefined)
+  }
+  async function applyActivated(settings: Record<'llm' | 'embedding', ModelProvider>) {
+    const normalise = (value: ModelProvider): Provider => ({ ...value, mode: value.mode as Provider['mode'], protocol: value.protocol })
+    const next = { llm: normalise(settings.llm), embedding: normalise(settings.embedding) }
+    setSaved(next)
+    setDrafts({ llm: draftOf(next.llm), embedding: draftOf(next.embedding) })
+    await onSaved()
   }
   function chooseChannel(target: Target, channel: Channel) {
     edit(target, { channel: channel.id, protocol: channel.protocol, url: channel.url, model: '', key: '', clear_key: false })
@@ -115,6 +124,7 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
       const currentStatus = status[target]
       return <form className="paper-panel model-settings-card" key={target} id={`${target}-settings-panel`} role="tabpanel" aria-labelledby={`${target}-settings-tab`} hidden={selectedTarget !== target} tabIndex={0} aria-busy={busy.startsWith(`${target}-`)} onSubmit={event => { event.preventDefault(); void action(target, 'save') }}>
         <div className="section-heading"><div><h2>{labels[target]}</h2><p className="body-small muted">{descriptions[target]}</p></div><span className={`badge ${stored.mode !== 'disabled' ? 'good' : ''}`}><span />{stored.mode === 'disabled' ? '未启用' : stored.mode === 'local' ? '本地模型' : '已配置'}</span></div>
+        {target === 'llm' && <LlmChannelManager activeLlm={stored} onActivated={applyActivated} />}
         <fieldset disabled={Boolean(busy)}>
           <section className="model-form-section" aria-labelledby={`${target}-connection-heading`}>
             <h3 className="model-section-heading" id={`${target}-connection-heading`}><span>01</span> 服务连接</h3>
@@ -129,6 +139,10 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
               </div>
               <label className="field-label" htmlFor={`${target}-key`}>API 密钥 <span className="muted">{stored.key_set && !keyChangedHost ? '· 留空保留已保存密钥' : '· 本机免认证服务可留空'}</span></label><input id={`${target}-key`} type={'pass' + 'word'} value={draft.key} onChange={event => edit(target, { key: event.target.value, clear_key: false })} placeholder="填写渠道的 API Key" maxLength={4000} autoComplete={'new-pass' + 'word'} spellCheck={false} />
               {stored.key_set && <label className="model-key-clear"><input type="checkbox" checked={draft.clear_key} onChange={event => edit(target, { clear_key: event.target.checked, key: '' })} />清除已保存密钥</label>}{keyChangedHost && <p className="field-help key-warning">已更换服务地址或协议，请重新填写密钥，或选择清除密钥。</p>}
+              {target === 'llm' && <>
+                <label className="field-label" htmlFor={`${target}-context`}>上下文窗口 tokens <span className="muted">· 仅用于对话页的上下文用量估算，留空按 128000 估算</span></label>
+                <input id={`${target}-context`} type="number" min={4000} step={1000} value={draft.context_tokens} onChange={event => edit(target, { context_tokens: event.target.value === '' ? '' : Number(event.target.value) })} placeholder="128000" />
+              </>}
             </>}
           </section>
           {draft.mode === 'remote' && <section className="model-form-section" aria-labelledby={`${target}-model-heading`}>

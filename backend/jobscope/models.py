@@ -115,7 +115,9 @@ class ChatRunInput(RequestModel):
     message: str = Field(min_length=1, max_length=12000)
     conversation_id: str | None = Field(default=None, max_length=100)
     agent_mode: Literal['research', 'general'] = 'research'
-    model: str = Field(default='', max_length=200)
+    # 省略=沿用会话已保存的模型/渠道；空串=重置为渠道默认或全局默认。
+    model: str | None = Field(default=None, max_length=200)
+    llm_channel: str | None = Field(default=None, max_length=100)
     edit_message_id: str | None = Field(default=None, max_length=50)
     company: str = Field(default='', max_length=300)
     job_id: str | None = Field(default=None, max_length=100)
@@ -125,6 +127,8 @@ class ConversationPatch(RequestModel):
     title: str | None = Field(default=None, min_length=1, max_length=100)
     mode: Literal['research', 'general'] | None = None
     model: str | None = Field(default=None, max_length=200)
+    # 空串=跟随全局配置；非空=使用已保存渠道，llm_channels 表里必须存在
+    llm_channel: str | None = Field(default=None, max_length=100)
 
 
 class ReliabilityInput(RequestModel):
