@@ -394,7 +394,10 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .body-small { font-size: 13px; line-height: 1.9; }
 .tiny-label { font-size: 12px; color: var(--muted); line-height: 1.8; overflow-wrap: anywhere; }
 .inline-empty { font-size: 13px; color: var(--muted); background: #fafafa; border: 1px solid var(--line); border-radius: 8px; padding: 16px; line-height: 1.9; margin: 16px 0 8px; }
-.company-evidence-list { display: grid; gap: 16px; padding: 16px 0; }
+.company-evidence-list { display: grid; gap: 10px; padding: 14px 0; }
+.company-evidence-list .evidence-card { margin: 0; }
+.company-evidence-list .evidence-card summary { padding: 10px 12px; }
+.company-evidence-list .evidence-card strong { font-size: 13px; line-height: 1.5; }
 .company-pager { display: flex; align-items: center; gap: 12px; margin-top: 2px; }
 .company-pager .text-button { min-height: 26px; padding: 2px 0; font-size: 12px; }
 .company-pager .tiny-label { color: var(--muted); }
