@@ -177,6 +177,12 @@ npm run build                                          # tsc -b + vite build 通
 
 验证：真实运行"海宁辰曦科技有限公司"五渠道——cninfo/zhaopin/51job completed、boss needs_verification、liepin failed，渠道间零牵连，任务消息如实；单测 test_company_research.py 验证渠道规划与失败隔离（stub 渠道：cninfo 抛错仅自身 failed，liepin completed，浏览器渠道 needs_login）；全套 487 passed；UI 实测按钮文案、粘性 toast、防重复触发。
 
+## 2026-11-11 补充：多平台检索接入企查查/天眼查 + BOSS"卡住"诊断
+
+- **接入快查渠道**：`/api/company-research` 从 5 渠道扩到 7 渠道——cninfo → qcc（企查查）→ tyc（天眼查）→ boss → zhaopin → 51job → liepin。qcc/tyc 复用并发会话开发的 `company_lookup.py`（company_web 传输，读项目 Chrome 公开页，卡片按精确主体名归档为 `web_company_profile` 证据），抽出 `execute_lookup` 供单渠道端点 `/api/company/lookup` 与编排共用。
+- **BOSS"卡住"诊断**：用户反馈编排里 boss 拉起浏览器卡住（单独采集成功过）。实测编排中 boss 渠道 38 秒即返回 `needs_verification`——不是卡死，是 BOSS 停在滑块/登录验证页：此前会话验证态过期触发风控。设计上如实把页面留在项目浏览器前台交给用户手动完成，不重试不绕过；在项目 Chrome 窗口里完成一次 BOSS 验证即可恢复。企查查同理 needs_verification（公开页限流，首次使用需在项目浏览器登录）。
+- 实测七渠道（海宁辰曦科技有限公司）52 秒全部到终态：cninfo/tyc/zhaopin/51job completed（tyc 解析到 3 家公司卡片）、qcc/boss needs_verification、liepin failed（接口结构问题，如实标记），零卡住、渠道间零牵连。测试扩展到七渠道规划与 qcc 卡片归档、tyc 失败隔离（18 passed）。
+
 ## 边界与未测
 
 - 大批量（几百条）的真实删除只在单测里跑过（HTTP 层 1000 条上限校验），真实档案上的多量大删由用户自行操作，路径与自测相同。
