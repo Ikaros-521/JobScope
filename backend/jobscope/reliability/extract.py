@@ -6,7 +6,6 @@ import statistics
 import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from ..chat import model_configured
 from .rubric import DIMENSIONS, RULES
 
 # 抽取器不产生分数：分数只在 rubric 里算。提示词把这条写死，并在返回结构上禁掉额外字段。
@@ -78,16 +77,16 @@ def _numbers(value):
 
 
 def extract(company, evidence, *, max_tokens=1200, timeout=45):
-    if not model_configured():
+    from ..settings import purpose_configured, get_purpose_config
+    if not purpose_configured('extraction'):
         return dict(status='skipped', message='未配置模型，跳过自动抽取。', signals=[], raw='')
     known = {item['id'] for item in evidence}
     payload = dict(company=company, rules=sorted(RULES),
                    evidence=[dict(id=item['id'], title=str(item.get('title', ''))[:120], kind=item.get('kind', ''),
                                   text=str(item.get('text', ''))[:12000]) for item in evidence[:40]])
     from ..model_transport import complete
-    from ..settings import get_model_config
     try:
-        content, _usage = complete(get_model_config(), prompt_text(), json.dumps(payload, ensure_ascii=False),
+        content, _usage = complete(get_purpose_config('extraction'), prompt_text(), json.dumps(payload, ensure_ascii=False),
                                    temperature=0, max_tokens=max_tokens, timeout=timeout)
     except (ValueError, httpx.HTTPError) as exc:
         # 模型或网络没走通时不把异常抛给调用方：一句说明加空结果，原始响应此时还不存在。

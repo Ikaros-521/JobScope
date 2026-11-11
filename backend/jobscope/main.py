@@ -19,10 +19,11 @@ from starlette.concurrency import run_in_threadpool
 from .analysis import analyze, parse_resume
 from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
-from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ReliabilityInput, ResumeInput, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
+from .bindings import ModelBindings, normalise_binding
+from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ModelBindingInput, ReliabilityInput, ResumeInput, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
-from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, ConnectionInput, _active, get_model_config
+from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, ConnectionInput, _active, get_model_config, purpose_configured
 
 
 SUMMARY_SYSTEM = ('你是求职情报工作台的对话上下文压缩引擎，把早期对话提炼为高密度结构化摘要。'
@@ -80,6 +81,8 @@ def create_app(data_dir=None):
     app.state.repo = repo
     settings = ModelSettings(repo)
     llm_channels = LlmChannelStore(repo)
+    bindings = ModelBindings(repo)
+    bindings.migrate_legacy_activation(settings)
     runs = RunManager(repo)
     scope_expansions = ScopeExpansionStore(repo)
     app.state.runs = runs  # exposed for tests: join worker threads to avoid cross-test leaks
@@ -270,6 +273,53 @@ def create_app(data_dir=None):
     def list_llm_channels():
         return dict(channels=llm_channels.public(llm_channels.list()))
 
+    def read_bindings_payload():
+        """Bindings plus the actually-effective runtime summary per purpose; keys are never echoed."""
+        from .bindings import PURPOSES
+        effective = settings.effective()
+        catalog = {item['id']: item for item in llm_channels.list()}
+        result = {}
+        for purpose in PURPOSES:
+            binding = bindings.get(purpose)
+            row = effective['llm' if purpose == 'agent' else purpose]
+            entry = dict(binding=binding, inherited=not binding or binding.get('kind') == 'inherit', resolved=dict(
+                configured=row.get('mode') == 'remote', mode=row.get('mode', 'disabled'),
+                model=row.get('model', ''), context_tokens=row.get('context_tokens')))
+            channel_id = (binding or {}).get('channel_id')
+            if channel_id:
+                channel = catalog.get(channel_id)
+                entry['channel_name'] = channel['name'] if channel else '渠道已删除'
+                entry['channel_missing'] = channel is None
+            result[purpose] = entry
+        return result
+
+    @app.get('/api/settings/bindings')
+    def read_model_bindings():
+        return read_bindings_payload()
+
+    @app.put('/api/settings/bindings')
+    def save_model_binding(data: ModelBindingInput):
+        purpose = data.purpose
+        if data.kind == 'inherit':
+            if purpose not in {'extraction', 'analysis'}:
+                raise HTTPException(422, '该功能必须显式选择渠道与模型')
+            bindings.clear(purpose)
+            return read_bindings_payload()
+        payload = {k: v for k, v in dict(kind=data.kind, channel_id=data.channel_id, model=data.model, local_model=data.local_model).items() if v is not None}
+        try:
+            normalised = normalise_binding(purpose, payload)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if normalised['kind'] == 'channel':
+            try:
+                channel = llm_channels.get(normalised['channel_id'])
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from None
+            if purpose == 'embedding' and channel.get('protocol') == 'anthropic':
+                raise HTTPException(422, 'Anthropic 协议渠道不提供向量模型，请选择其他渠道')
+        bindings.save(purpose, normalised)
+        return read_bindings_payload()
+
     @app.post('/api/settings/llm-channels')
     def save_llm_channel(data: LlmChannelInput):
         try:
@@ -280,19 +330,24 @@ def create_app(data_dir=None):
 
     @app.delete('/api/settings/llm-channels/{channel_id}')
     def delete_llm_channel(channel_id: str):
+        references = bindings.channel_references(channel_id)
+        if references:
+            names = {'agent': '对话 Agent', 'embedding': '语义检索', 'extraction': '信号抽取', 'analysis': '简历适配分析'}
+            raise HTTPException(422, '该渠道正被以下功能使用：' + '、'.join(names.get(item, item) for item in references) + '。请先在「功能与模型」中改绑或关闭。')
         try:
             llm_channels.delete(channel_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
-        return dict(ok=True, channels=llm_channels.public(llm_channels.list()))
+        return dict(ok=True, channels=llm_channels.public(llm_channels.list()), bindings=read_bindings_payload())
 
     @app.post('/api/settings/llm-channels/{channel_id}/activate')
     def activate_llm_channel(channel_id: str):
+        """设为对话默认：写一条指向该渠道的 agent 绑定。"""
         try:
-            llm_channels.activate(channel_id)
+            llm_channels.activate(channel_id, bindings)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
-        return settings.public(settings.effective())
+        return dict(settings=settings.public(settings.effective()), bindings=read_bindings_payload())
 
     @app.middleware("http")
     async def local_write_protection(request: Request, call_next):
@@ -771,7 +826,7 @@ def create_app(data_dir=None):
             raise HTTPException(400, "请先保存简历或 facts.yaml")
         company_evidence = repo.evidence(company=job["company"], include_job_postings=False)
         try:
-            if model_configured():
+            if purpose_configured('analysis'):
                 semantic = importlib.import_module(".semantic", __package__)
                 report = semantic.analyze_semantically(job, resume, company_evidence)
             else:

@@ -46,12 +46,21 @@ def test_channel_crud_key_retention_and_activate(client):
 
     activated = client.post(f"/api/settings/llm-channels/{channel['id']}/activate")
     assert activated.status_code == 200
-    llm = activated.json()['llm']
+    payload = activated.json()
+    # 激活现在是“设为对话默认”：写指向渠道的绑定，不复制配置。
+    llm = payload['settings']['llm']
     assert llm['mode'] == 'remote' and llm['channel'] == 'deepseek' and llm['url'] == 'https://api.deepseek.com/v1/chat/completions'
     assert llm['key_set'] is False  # 上一步已清除
+    assert payload['bindings']['agent']['binding'] == dict(kind='channel', channel_id=channel['id'], model='deepseek-chat')
 
+    # 被功能引用的渠道不能直接删除；改绑后才可删。
+    assert client.delete(f"/api/settings/llm-channels/{channel['id']}").status_code == 422
+    other = client.post('/api/settings/llm-channels', json=dict(
+        name='备用渠道', channel='custom', protocol='openai', url='https://other.example/v1', model='other-model', key='sk-other')).json()['channel']
+    assert client.put('/api/settings/bindings', json=dict(purpose='agent', kind='channel', channel_id=other['id'], model='other-model')).status_code == 200
     assert client.delete(f"/api/settings/llm-channels/{channel['id']}").status_code == 200
-    assert client.get('/api/settings/llm-channels').json()['channels'] == []
+    remaining = client.get('/api/settings/llm-channels').json()['channels']
+    assert [item['id'] for item in remaining] == [other['id']]
     assert client.delete(f"/api/settings/llm-channels/{channel['id']}").status_code == 404
     assert client.post(f"/api/settings/llm-channels/{channel['id']}/activate").status_code == 404
 

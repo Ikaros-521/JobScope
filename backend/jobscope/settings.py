@@ -42,7 +42,7 @@ class ConnectionInput(BaseModel):
 
 
 class LlmChannelInput(BaseModel):
-    """一条可保存、可激活的对话渠道；激活时整体写入 llm 设置行。"""
+    """一条可保存的对话渠道：密钥与连接信息的唯一事实源，功能绑定指向它。"""
     model_config = ConfigDict(extra='forbid')
     id: str | None = Field(default=None, max_length=100)
     name: str = Field(min_length=1, max_length=100)
@@ -51,6 +51,7 @@ class LlmChannelInput(BaseModel):
     url: str = Field(default='', max_length=2000)
     model: str = Field(default='', max_length=300)
     models: list[str] = Field(default_factory=list, max_length=200)
+    embeddings: list[str] = Field(default_factory=list, max_length=200)
     key: str = Field(default='', max_length=4000)
     clear_key: bool = False
     context_tokens: int | None = Field(default=None, ge=4000, le=2_000_000)
@@ -64,11 +65,22 @@ def environment():
     local = os.getenv('JOBSCOPE_EMBEDDING_LOCAL_MODEL', '')
     if local:
         result['embedding'].update(mode='local', local_model=local, source='environment')
+    # 抽取/分析未绑定时跟随对话默认；这里是线程级兜底（正式组装在 ModelSettings.effective）。
+    result['extraction'] = dict(result['llm'])
+    result['analysis'] = dict(result['llm'])
     return result
 
 
 def get_model_config(target='llm'):
     return (_active.get() or environment())[target].copy()
+
+
+def get_purpose_config(purpose='extraction'):
+    return (_active.get() or environment())[purpose].copy()
+
+
+def purpose_configured(purpose):
+    return get_purpose_config(purpose)['mode'] == 'remote'
 
 
 class use_config:
@@ -93,12 +105,57 @@ class ModelSettings:
         with repo.connection() as conn:
             conn.execute('CREATE TABLE IF NOT EXISTS model_settings(target TEXT PRIMARY KEY,payload TEXT NOT NULL)')
 
+    def channel_payload(self, channel_id):
+        return LlmChannelStore(self.repo).get(channel_id)
+
+    def resolve_purpose(self, purpose, bindings):
+        """Resolve one feature binding to a provider dict; None = inherit the default row.
+
+        Channels are the source of truth for credentials — the binding is a pointer,
+        so deleting/rotating a channel key takes effect without touching bindings.
+        """
+        binding = bindings.get(purpose)
+        if not binding or binding.get('kind') in (None, 'inherit'):
+            return None
+        kind = binding.get('kind')
+        if kind == 'disabled':
+            return dict(mode='disabled', channel='custom', protocol='openai', url='', model='', key='', local_model='', source='binding')
+        if kind == 'local':
+            return dict(mode='local', channel='custom', protocol='openai', url='', model='', key='', local_model=binding.get('local_model', ''), source='binding')
+        try:
+            payload = LlmChannelStore(self.repo).get(binding.get('channel_id', ''))
+        except ValueError:
+            return None  # 渠道已被删除：回落默认配置，绑定在功能页可见为“渠道已删除”
+        protocol = payload.get('protocol', 'openai')
+        if purpose == 'embedding' and protocol == 'anthropic':
+            return None
+        from .model_transport import endpoint
+        url = payload['url']
+        if purpose == 'embedding':
+            url = endpoint(url, 'openai', 'embedding')
+            protocol = 'openai'
+        return dict(mode='remote', channel=payload.get('channel', 'custom'), protocol=protocol, url=url,
+                    model=binding.get('model') or payload.get('model', ''), key=payload.get('key', ''),
+                    local_model='', context_tokens=payload.get('context_tokens'),
+                    saved_channel_id=payload['id'], source='binding')
+
     def effective(self):
         result = environment()
         with self.repo.connection() as conn:
             for row in conn.execute('SELECT target,payload FROM model_settings'):
                 saved = json.loads(row[1])
                 result[row[0]].update(**dict(channel='custom', protocol='openai') | saved, source='saved')
+        from .bindings import ModelBindings
+        bindings = ModelBindings(self.repo)
+        agent = self.resolve_purpose('agent', bindings)
+        if agent:
+            result['llm'] = agent
+        embedding = self.resolve_purpose('embedding', bindings)
+        if embedding:
+            result['embedding'] = embedding
+        for purpose in ('extraction', 'analysis'):
+            override = self.resolve_purpose(purpose, bindings)
+            result[purpose] = override or dict(result['llm'])
         return result
 
     @staticmethod
@@ -224,7 +281,7 @@ class ModelSettings:
 
 
 class LlmChannelStore:
-    """已保存的对话渠道清单。激活 = 把渠道 payload 整体写入 model_settings 的 llm 行，下游请求链路零改动。"""
+    """已保存的渠道清单：每条渠道自带连接信息、密钥与模型列表；功能绑定指向它。"""
 
     def __init__(self, repo):
         self.repo = repo
@@ -276,8 +333,11 @@ class LlmChannelStore:
         if not models:
             # 渠道预设与上次保存的列表都比空列表有用，避免保存后下拉里没有可选模型。
             models = old.get('models') or list(channel.get('models') or [])[:200]
+        embeddings = [m.strip()[:300] for m in data.embeddings if isinstance(m, str) and m.strip()][:200]
+        if not embeddings:
+            embeddings = old.get('embeddings') or list(channel.get('embeddings') or [])[:200]
         payload = dict(id=channel_id, name=data.name.strip()[:100], channel=data.channel, protocol=data.protocol,
-                       url=url, model=data.model.strip()[:300], models=models,
+                       url=url, model=data.model.strip()[:300], models=models, embeddings=embeddings,
                        context_tokens=data.context_tokens,
                        created_at=old.get('created_at') or now(), updated_at=now())
         if data.clear_key:
@@ -296,14 +356,9 @@ class LlmChannelStore:
             if cursor.rowcount == 0:
                 raise ValueError('渠道不存在或已删除')
 
-    def activate(self, channel_id):
+    def activate(self, channel_id, bindings):
+        """设为对话默认：写一条指向渠道的绑定，不复制密钥——渠道是唯一事实源。"""
         payload = self.get(channel_id)
-        row = dict(mode='remote', channel=payload.get('channel', 'custom'), protocol=payload.get('protocol', 'openai'),
-                   url=payload['url'], model=payload.get('model', ''), local_model='', key=payload.get('key', ''),
-                   clear_key=False, context_tokens=payload.get('context_tokens'),
-                   # 标记当前生效的渠道条目；手动改全局表单后该标记随新 payload 消失。
-                   saved_channel_id=payload['id'])
-        with self.repo.connection() as conn:
-            conn.execute('BEGIN IMMEDIATE')
-            conn.execute('INSERT OR REPLACE INTO model_settings VALUES (?,?)', ('llm', json.dumps(row, ensure_ascii=False)))
-        return row
+        if not payload.get('model'):
+            raise ValueError('该渠道还没有默认模型，请先在渠道里填写默认模型')
+        return bindings.save('agent', dict(kind='channel', channel_id=channel_id, model=payload.get('model')))

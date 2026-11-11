@@ -130,6 +130,8 @@ def test_anthropic_fit_uses_messages_and_keeps_fact_validation(monkeypatch):
     from jobscope.settings import _active, environment
     config = environment()
     config['llm'].update(mode='remote', protocol='anthropic', url='https://gateway.example/v1', model='fixture')
+    # 适配分析未绑定功能模型时跟随对话默认：保持两份一致，模拟运行时 effective() 的组装结果。
+    config['analysis'] = dict(config['llm'])
     def reply(url, kwargs):
         assert url.endswith('/messages')
         body = kwargs['json']

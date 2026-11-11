@@ -76,6 +76,15 @@ class AnalyzeInput(RequestModel):
     job_id: str = Field(min_length=1, max_length=100)
 
 
+class ModelBindingInput(RequestModel):
+    """功能级模型绑定：channel 指向已存渠道+模型；embedding 另有 local；抽取/分析可 disabled/inherit。"""
+    purpose: Literal["agent", "embedding", "extraction", "analysis"]
+    kind: Literal["channel", "local", "disabled", "inherit"]
+    channel_id: str | None = Field(default=None, max_length=100)
+    model: str | None = Field(default=None, max_length=300)
+    local_model: str | None = Field(default=None, max_length=1000)
+
+
 class DetailBatchInput(RequestModel):
     limit: int = Field(default=500, ge=1, le=500)
 

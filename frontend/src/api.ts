@@ -52,8 +52,8 @@ export type ChatRunStart = { run_id: string; conversation_id: string; user_messa
 export type ModelProvider = { mode: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model: string; key_set: boolean; source: string; context_tokens?: number | null; saved_channel_id?: string }
 export type Channel = { id: string; name: string; url: string; protocol: 'openai' | 'anthropic'; models: string[]; embeddings: string[] }
 // 已保存的对话渠道：每条自带地址/密钥/默认模型/模型列表，可激活为全局默认
-export type LlmChannel = { id: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models: string[]; context_tokens: number | null; key_set: boolean }
-export type LlmChannelDraft = { id?: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models?: string[]; key?: string; clear_key?: boolean; context_tokens?: number | null }
+export type LlmChannel = { id: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models: string[]; embeddings?: string[]; context_tokens: number | null; key_set: boolean }
+export type LlmChannelDraft = { id?: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models?: string[]; embeddings?: string[]; key?: string; clear_key?: boolean; context_tokens?: number | null }
 // 已保存渠道的测试/拉列表：带上 channel_id，后端才能用该渠道已保存的密钥而不是全局配置。
 export type ModelConnectionInput = { target: 'llm' | 'embedding'; channel_id?: string; config: { mode: 'disabled' | 'remote' | 'local'; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model?: string; key?: string; clear_key?: boolean; context_tokens?: number | null } }
 export type RunEvent = { event: string; data: Record<string, unknown> }
@@ -135,10 +135,19 @@ export function getModelSettings() { return api<Record<'llm' | 'embedding', Mode
 export function getChannels() { return api<{ channels: Channel[] }>('/settings/channels') }
 export function listLlmChannels() { return api<{ channels: LlmChannel[] }>('/settings/llm-channels') }
 export function saveLlmChannel(draft: LlmChannelDraft) { return post<{ channel: LlmChannel; channels: LlmChannel[] }>('/settings/llm-channels', draft) }
-export function deleteLlmChannel(id: string) { return api<{ ok: boolean; channels: LlmChannel[] }>(`/settings/llm-channels/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
-export function activateLlmChannel(id: string) { return post<Record<'llm' | 'embedding', ModelProvider>>(`/settings/llm-channels/${encodeURIComponent(id)}/activate`) }
+export function deleteLlmChannel(id: string) { return api<{ ok: boolean; channels: LlmChannel[]; bindings: BindingsPayload }>(`/settings/llm-channels/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+export function activateLlmChannel(id: string) { return post<{ settings: Record<'llm' | 'embedding', ModelProvider>; bindings: BindingsPayload }>(`/settings/llm-channels/${encodeURIComponent(id)}/activate`) }
 export type CompressResult = { compacted_count: number; summary_message_id: string; message_count: number }
 export function compressConversation(id: string) { return post<CompressResult>(`/conversations/${encodeURIComponent(id)}/compress`) }
+// 功能级模型绑定：渠道是唯一事实源，绑定是指向渠道+模型的指针。
+export type ModelPurpose = 'agent' | 'embedding' | 'extraction' | 'analysis'
+export type ModelBinding = { kind: 'channel' | 'local' | 'disabled' | 'inherit'; channel_id?: string; model?: string; local_model?: string }
+export type BindingEntry = { binding: ModelBinding | null; inherited: boolean; channel_name?: string; channel_missing?: boolean; resolved: { configured: boolean; mode: string; model: string; context_tokens: number | null } }
+export type BindingsPayload = Record<ModelPurpose, BindingEntry>
+export function getBindings() { return api<BindingsPayload>('/settings/bindings') }
+export function saveBinding(purpose: ModelPurpose, binding: ModelBinding | { kind: 'inherit' }) {
+  return api<BindingsPayload>('/settings/bindings', { method: 'PUT', body: JSON.stringify({ purpose, ...binding }) })
+}
 // 上下文用量估算：中文为主的文本约 3.2 字符/token，叠加 system 提示与工具声明的固定基数。
 export function estimateTokens(text: string) { return Math.ceil((text || '').length / 3.2) }
 
