@@ -1,13 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, post } from './api'
 import { toast } from './toast'
-import type { Evidence, PageInfo, Task } from './api'
+import type { ConversationNavigation, Evidence, PageInfo, Task } from './api'
 import { Pagination, emptyPage } from './Pagination'
 import { EvidenceCard, kindNames } from './EvidenceCard'
 import { ChatWorkspace } from './chat/ChatWorkspace'
 import { navigateTabs } from './tabNavigation'
 
-export function EvidenceWorkspace({ refreshMetadata, modelConfigured, active }: { refreshMetadata: () => Promise<void>; modelConfigured: boolean; active: boolean }) {
+export function EvidenceWorkspace({ refreshMetadata, modelConfigured, active, navigation, onNavigateConversation, onOpened, onManageExtensions }: {
+  refreshMetadata: () => Promise<void>; modelConfigured: boolean; active: boolean
+  navigation?: ConversationNavigation | null
+  onNavigateConversation?: (request: ConversationNavigation) => void
+  onOpened?: (requestId: string) => void
+  onManageExtensions?: () => void
+}) {
   const [items, setItems] = useState<Evidence[]>([])
   const [info, setInfo] = useState<PageInfo>(emptyPage)
   const [company, setCompany] = useState('')
@@ -47,6 +53,12 @@ export function EvidenceWorkspace({ refreshMetadata, modelConfigured, active }: 
     try { await action() } catch (err) { toast((err as Error).message, 'error') } finally { setBusy('') }
   }
   function chooseCompany(value: string) { setCompany(value); setChatCompany(value); setTab('chat') }
+  const navigationSeen = useRef('')
+  useEffect(() => {
+    if (!active || !navigation || navigation.scope.kind !== 'company' || navigationSeen.current === navigation.requestId) return
+    navigationSeen.current = navigation.requestId
+    chooseCompany(navigation.scope.company)
+  }, [active, navigation])
   return <>
     <section className="page-intro"><div><h1>公司资料库</h1><p>按公司核对来源，围绕单一主体展开调查</p></div><span className="revision-label">精确主体 · 独立对话</span></section>
     <section className="paper-panel evidence-library-controls"><form onSubmit={event => { event.preventDefault(); const values = { company: company.trim(), q: search.trim() }; setFilter(values); setChatCompany(values.company); void run('search', () => load(1, values)) }}>
@@ -58,6 +70,6 @@ export function EvidenceWorkspace({ refreshMetadata, modelConfigured, active }: 
     <section hidden={tab !== 'records'} id="library-records-panel" className="paper-panel evidence-library-list" role="tabpanel" aria-labelledby="library-records-tab"><div className="section-heading"><div><h2>来源档案</h2><p className="body-small muted">原文保留出处和时间；点击公司可进入独立对话</p></div><div className="library-search"><label className="field-label" htmlFor="evidence-text-search">搜索标题与内容</label><div className="library-search-field"><input id="evidence-text-search" value={search} onChange={event => setSearch(event.target.value)} placeholder={filter.company ? `在${filter.company}内搜索` : '输入关键词，立即搜索'} maxLength={200} />{busy === 'search' ? <span className="spinner" aria-hidden="true" /> : search && <button className="text-button" type="button" onClick={() => setSearch('')}>清空</button>}</div><p className="tiny-label" aria-live="polite">{filter.q ? `「${filter.q}」命中 ${info.total} 条来源` : `共 ${info.total} 条来源 · 搜索覆盖标题与正文`}</p></div></div>
       <Pagination info={info} label="来源档案" busy={Boolean(busy)} onPage={page => void run('page', () => load(page))} />
       {items.length ? items.map(item => <article className="library-item" key={item.id}><div className="library-company"><button className="company-link" onClick={() => chooseCompany(item.company)} aria-label={`与${item.company}对话`}>{item.company || '主体未知'}</button><span>{kindNames[item.kind] || item.kind}</span></div><EvidenceCard evidence={item} query={filter.q} />{item.source === 'cninfo' && item.kind === 'disclosure_metadata' && <div className="extraction-action"><p>提取PDF正文后依据页码和原始报告核对</p><button className="button secondary small" disabled={Boolean(busy)} onClick={() => void run(item.id, async () => { const result = await post<{ pages: number; total_pages: number; truncated: boolean }>(`/evidence/${encodeURIComponent(item.id)}/extract`); toast(`已提取 ${result.pages}/${result.total_pages} 页${result.truncated ? '，报告已截断，请核对覆盖范围' : ''}`); await load(info.page) })}>{busy === item.id ? <span className="spinner" /> : null}提取报告正文</button></div>}</article>) : <div className="empty"><h3>{filter.q ? `标题和正文里没有「${filter.q}」` : '还没有符合条件的资料'}</h3><p>{filter.q ? '关键词按空格拆分，需同时命中；也可清除筛选查看全部来源，或检索公司公告' : '调整筛选、检索公司公告，或在岗位档案中补充材料'}</p></div>}
-    </section><div hidden={tab !== 'chat'} id="library-chat-panel" className="library-chat-panel" role="tabpanel" aria-labelledby="library-chat-tab"><section className="paper-panel company-picker"><div><label className="field-label" htmlFor="chat-company-select">对话主体（精确匹配）</label><div className="company-picker-row"><input id="chat-company-select" list="known-companies" value={company} onChange={event => setCompany(event.target.value)} placeholder="输入资料库中的精确公司名称" maxLength={300} /><button className="button secondary" disabled={!company.trim() || company.trim() === chatCompany} onClick={() => setChatCompany(company.trim())}>确认公司</button></div><p className="tiny-label">切换主体会另开新会话，之前的会话仍保留在左侧列表；资料筛选不会改变已锁定的对话范围。</p></div>{chatCompany && <span className="company-scope-chip"><span>已锁定主体</span><strong>{chatCompany}</strong></span>}</section>{tab === 'chat' && <ChatWorkspace key={chatCompany || 'unselected'} scope={{ kind: 'company', company: chatCompany }} modelConfigured={modelConfigured} />}</div>
+    </section><div hidden={tab !== 'chat'} id="library-chat-panel" className="library-chat-panel" role="tabpanel" aria-labelledby="library-chat-tab"><section className="paper-panel company-picker"><div><label className="field-label" htmlFor="chat-company-select">对话主体（精确匹配）</label><div className="company-picker-row"><input id="chat-company-select" list="known-companies" value={company} onChange={event => setCompany(event.target.value)} placeholder="输入资料库中的精确公司名称" maxLength={300} /><button className="button secondary" disabled={!company.trim() || company.trim() === chatCompany} onClick={() => setChatCompany(company.trim())}>确认公司</button></div><p className="tiny-label">切换主体会另开新会话，之前的会话仍保留在左侧列表；资料筛选不会改变已锁定的对话范围。</p></div>{chatCompany && <span className="company-scope-chip"><span>已锁定主体</span><strong>{chatCompany}</strong></span>}</section>{tab === 'chat' && <ChatWorkspace key={chatCompany || 'unselected'} scope={{ kind: 'company', company: chatCompany }} modelConfigured={modelConfigured} navigation={navigation?.scope.kind === 'company' && navigation.scope.company === chatCompany ? navigation : null} onNavigateConversation={onNavigateConversation} onOpened={onOpened} onManageExtensions={onManageExtensions} />}</div>
   </>
 }

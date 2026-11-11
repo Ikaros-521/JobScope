@@ -63,13 +63,15 @@ def test_anthropic_test_plan_and_answer_use_messages_protocol(client, monkeypatc
         assert kwargs['headers']['anthropic-version'] == '2023-06-01'
         assert 'Authorization' not in kwargs['headers']
         text = 'OK'
-        if body['system']:
-            data = json.loads(body['messages'][0]['content'])
-            if 'baseline' in data:
-                text = json.dumps(data['baseline'])
-            elif 'evidence' in data:
-                eid = data['evidence'][0]['id']
-                text = json.dumps({'answer': f'需要Python [{eid}]', 'evidence_ids': [eid]})
+        if body.get('tools'):
+            content = body['messages'][-1]['content']
+            if content[0]['type'] != 'tool_result':
+                return httpx.Response(200, json={'content': [{'type': 'tool_use', 'id': 'lookup',
+                    'name': 'project_search', 'input': {'query': 'Python'}}], 'stop_reason': 'tool_use'},
+                    request=httpx.Request('POST', url))
+            data = json.loads(content[0]['content'])
+            eid = data['evidence'][0]['id']
+            text = f'需要Python [{eid}]'
         return httpx.Response(200, json={'content': [{'type': 'thinking', 'thinking': 'hidden'}, {'type': 'text', 'text': text}], 'usage': {'input_tokens': 10}}, request=httpx.Request('POST', url))
     intercept(monkeypatch, 'post', post)
     config = dict(mode='remote', channel='custom', protocol='anthropic', url='https://gateway.example/v1', model='claude-fixture', key='fixture-token')
@@ -77,7 +79,7 @@ def test_anthropic_test_plan_and_answer_use_messages_protocol(client, monkeypatc
     assert client.put('/api/settings/models', json={'llm': config}).status_code == 200
     client.post('/api/import/job', json={'title': 'Python开发', 'company': '协议验收公司', 'description': '需要Python'})
     result = client.post('/api/chat', json={'scope': 'global', 'message': 'Python岗位要求'}).json()
-    assert result['mode'] == 'model' and result['citations']
+    assert result['mode'] == 'agent' and result['citations']
     assert len(calls) == 3 and all(url == 'https://gateway.example/v1/messages' for url, _ in calls)
 
 

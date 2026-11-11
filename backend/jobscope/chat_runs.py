@@ -88,7 +88,8 @@ class RunManager:
         for handle in handles:
             if handle.conversation_id != conversation_id:
                 continue
-            running = handle.thread is not None and handle.thread.is_alive() and not handle.done
+            # Registration reserves the source even before its worker starts.
+            running = not handle.done
             if running or handle.pending_approval:
                 return handle
         return None
@@ -132,7 +133,7 @@ class RunManager:
 
     def begin_compression(self, conversation_id):
         with self._lock:
-            if conversation_id in self._compressing:
+            if conversation_id in self._compressing or self.active_for_conversation(conversation_id):
                 return False
             self._compressing.add(conversation_id)
             return True
@@ -145,42 +146,57 @@ class RunManager:
         with self._lock:
             return conversation_id in self._compressing
 
-    def start(self, *, message, conversation_id=None, mode='research', model=None, edit_message_id=None, scope=None, llm_channel=None):
+    def start(self, *, message, conversation_id=None, mode='general', model=None, edit_message_id=None, scope=None, llm_channel=None, background=True):
         scope = scope or GLOBAL_SCOPE
         title = None
-        conversation = None
-        if conversation_id:
-            if self.is_compressing(conversation_id):
-                raise ValueError('会话正在压缩上下文，请稍后重试')
-            conversation = self.repo.get_conversation(conversation_id, scope)
-            history = self.repo.truncate_for_edit(conversation_id, scope, edit_message_id) if edit_message_id else conversation['messages']
-        else:
-            if edit_message_id:
-                raise ValueError('新对话不能编辑历史消息')
-            history = []
-            title = message[:30]
-        # The full settings map is required: worker threads read both llm and embedding targets from it.
-        config = self.resolve_llm_config(conversation, model, llm_channel)
-        effective_channel = (llm_channel if llm_channel is not None else (conversation or {}).get('llm_channel', '')) or ''
-        effective_model = (model if model is not None else (conversation or {}).get('model', '')) or ''
-        if mode == 'general' and (config['llm'].get('mode') != 'remote' or not config['llm'].get('model')):
-            raise ValueError('通用 Agent 需要先配置支持工具调用的对话模型')
-        if conversation is None:
-            conversation_id = self.repo.create_conversation(scope, mode=mode, model=effective_model, llm_channel=effective_channel)
-        # 已压缩的旧消息不进模型上下文；压缩摘要检查点（无 compacted 标记）保留。
-        history = [m for m in history if not m.get('compacted')]
-        handle = RunHandle('R-' + uuid.uuid4().hex, conversation_id, config, scope)
+        # Reserve history edits, appends and registration against compression and cloning.
         with self._lock:
-            blocker = self.active_for_conversation(conversation_id)
-            if blocker:
-                raise ValueError('当前会话正在生成回答，请等待完成或先停止')
-            self._runs[handle.id] = handle
-        user_message = self.repo.append_messages(conversation_id, [dict(role='user', content=message)])[0]
-        if title:
-            self.repo.ensure_title(conversation_id, scope, title)
-        handle.thread = threading.Thread(target=self._execute, args=(handle, message, history, mode), daemon=True)
-        handle.push('start', dict(run_id=handle.id, conversation_id=conversation_id, user_message_id=user_message['id'], mode=mode))
-        handle.thread.start()
+            conversation = None
+            if conversation_id:
+                if self.is_compressing(conversation_id):
+                    raise ValueError('会话正在压缩上下文，请稍后重试')
+                if self.active_for_conversation(conversation_id):
+                    raise ValueError('当前会话正在生成回答，请等待完成或先停止')
+                conversation = self.repo.get_conversation(conversation_id, scope)
+            elif edit_message_id:
+                raise ValueError('新对话不能编辑历史消息')
+            config = self.resolve_llm_config(conversation, model, llm_channel)
+            configured = config['llm'].get('mode') == 'remote' and bool(config['llm'].get('model'))
+            if mode == 'general' and not configured:
+                raise ValueError('通用 Agent 需要先配置支持工具调用的对话模型')
+            # Old research clients share the scoped runtime when a model is enabled.
+            mode = 'general' if configured else 'research'
+            effective_channel = (llm_channel if llm_channel is not None else (conversation or {}).get('llm_channel', '')) or ''
+            effective_model = (model if model is not None else (conversation or {}).get('model', '')) or ''
+            if conversation is None:
+                conversation_id = self.repo.create_conversation(scope, mode=mode, model=effective_model, llm_channel=effective_channel)
+                history = []
+                title = message[:30]
+            else:
+                history = self.repo.truncate_for_edit(conversation_id, scope, edit_message_id) if edit_message_id else conversation['messages']
+                self.repo.update_conversation(conversation_id, scope, mode=mode)
+            history = [m for m in history if not m.get('compacted')]
+            handle = RunHandle('R-' + uuid.uuid4().hex, conversation_id, config, scope)
+            handle.streaming = background
+            user_message = self.repo.append_messages(conversation_id, [dict(role='user', content=message)])[0]
+            if title:
+                self.repo.ensure_title(conversation_id, scope, title)
+            self._register(handle)
+            handle.push('start', dict(run_id=handle.id, conversation_id=conversation_id, user_message_id=user_message['id'], mode=mode))
+            if background:
+                handle.thread = threading.Thread(target=self._execute, args=(handle, message, history, mode), daemon=True)
+                handle.thread.start()
+            else:
+                handle.thread = threading.current_thread()
+        if not background:
+            try:
+                self._execute(handle, message, history, mode)
+            finally:
+                # FastAPI reuses its worker thread; it is not this run's live worker.
+                handle.thread = None
+            if hasattr(handle, 'error'):
+                raise ValueError(handle.error)
+            return handle.result
         return dict(run_id=handle.id, conversation_id=conversation_id, user_message_id=user_message['id'], title=title)
 
     def stream(self, run_id):
@@ -230,11 +246,17 @@ class RunManager:
             return handle.snapshot()
 
     def approve(self, run_id, approved, approval_id):
+        with self._lock:
+            return self._approve(run_id, approved, approval_id)
+
+    def _approve(self, run_id, approved, approval_id):
         handle = self._runs.get(run_id)
         if handle is None or (handle.done and not handle.pending_approval):
             raise ValueError('运行不存在或已结束')
         if not handle.pending_approval:
             raise ValueError('该运行没有等待确认的工具调用')
+        if (handle.pending_payload or {}).get('approval_id') != approval_id:
+            raise ValueError('工具确认标识已失效，请使用当前确认请求')
         if handle.thread is not None and handle.thread.is_alive():
             raise ValueError('该运行仍在进行中')
         handle.pending_approval = False
@@ -247,6 +269,8 @@ class RunManager:
         return handle.snapshot()
 
     def _hooks(self, handle):
+        if not getattr(handle, 'streaming', True):
+            return None
         return RunHooks(
             on_event=lambda item: handle.push('step', item),
             on_delta=lambda piece: handle.push('delta', dict(text=piece)),
@@ -258,7 +282,7 @@ class RunManager:
         try:
             with use_config(handle.config):
                 if mode == 'general':
-                    result = GeneralAgent(self.repo).start(message, history, handle.conversation_id, self._hooks(handle), run_id=handle.id)
+                    result = GeneralAgent(self.repo).start(message, history, handle.conversation_id, self._hooks(handle), run_id=handle.id, scope=handle.scope)
                 else:
                     from .research.agent import ResearchAgent
                     saved = self.repo.resume()
@@ -267,17 +291,19 @@ class RunManager:
                         message, handle.scope, resume=facts, history=history,
                         on_event=lambda item: handle.push('step', item),
                         should_stop=handle.cancel.is_set,
-                        on_delta=lambda piece: handle.push('delta', dict(text=piece)))
+                        on_delta=(lambda piece: handle.push('delta', dict(text=piece))) if handle.streaming else None)
                     result.setdefault('conversation_id', handle.conversation_id)
             self._settle(handle, result, mode)
         except RunCancelled:
             # Already acknowledged by cancel(); the worker just reached its checkpoint.
             return
         except ValueError as exc:
-            handle.push('error', dict(message=str(exc)))
+            handle.error = str(exc)
+            handle.push('error', dict(message=handle.error))
             handle.finish()
         except Exception:
-            handle.push('error', dict(message='生成失败，请稍后重试'))
+            handle.error = '生成失败，请稍后重试'
+            handle.push('error', dict(message=handle.error))
             handle.finish()
 
     def _resume(self, handle, approved, approval_id):
@@ -286,10 +312,12 @@ class RunManager:
                 result = GeneralAgent(self.repo).resume(handle.id, approved, approval_id, self._hooks(handle))
             self._settle(handle, result, 'general')
         except ValueError as exc:
-            handle.push('error', dict(message=str(exc)))
+            handle.error = str(exc)
+            handle.push('error', dict(message=handle.error))
             handle.finish()
         except Exception:
-            handle.push('error', dict(message='生成失败，请稍后重试'))
+            handle.error = '生成失败，请稍后重试'
+            handle.push('error', dict(message=handle.error))
             handle.finish()
 
     def _settle(self, handle, result, mode):
@@ -299,6 +327,8 @@ class RunManager:
         with handle.condition:
             if handle.cancel.is_set():
                 return
+            result.setdefault('conversation_id', handle.conversation_id)
+            handle.result = result
             if result.get('pending_approval'):
                 handle.pending_approval = True
                 handle.pending_payload = dict(run_id=result['trace']['id'], **result['pending_approval'])
@@ -320,6 +350,8 @@ class RunManager:
             entry['trace'] = result['trace']
         if result.get('metrics'):
             entry['metrics'] = result['metrics']
+        if result.get('actions'):
+            entry['actions'] = result['actions']
         if result.get('interrupted'):
             entry['interrupted'] = True
         return self.repo.append_messages(handle.conversation_id, [entry])

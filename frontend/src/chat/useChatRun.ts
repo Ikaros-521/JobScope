@@ -3,7 +3,7 @@ import {
   approveChatRun, cancelChatRun, compressConversation, deleteConversation, deleteConversationMessage, getConversation,
   listConversations, openRunStream, patchConversation, startChatRun,
 } from '../api'
-import type { ApprovalRequest, ChatMode, ChatScope, ConversationSummary, CompressResult, StoredMessage, ToolStep } from '../api'
+import type { ApprovalRequest, ChatMode, ChatScope, ConversationDetail, ConversationNavigation, ConversationSummary, CompressResult, ScopeExpansion, StoredMessage, ToolStep } from '../api'
 
 export type RunState = {
   id: string
@@ -24,12 +24,21 @@ function scopeMatches(stored: { kind: string; company?: string; job_id?: string 
   return stored.kind === 'job' && stored.job_id === scope.jobId
 }
 
-export function useChatRun(scope: ChatScope = { kind: 'global' }) {
+export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: ConversationNavigation | null, onOpened?: (requestId: string) => void) {
   const [sessions, setSessions] = useState<ConversationSummary[]>([])
-  const [conversation, setConversation] = useState<ChatConversation>({ id: null, title: '新对话', mode: 'research', model: '', llm_channel: '' })
+  const [conversation, setConversation] = useState<ChatConversation>({ id: null, title: '新对话', mode: 'general', model: '', llm_channel: '' })
   const [messages, setMessages] = useState<StoredMessage[]>([])
+  const [scopeActions, setScopeActions] = useState<ScopeExpansion[]>([])
+  const [lineage, setLineage] = useState<ConversationDetail['lineage']>(null)
   const [run, setRun] = useState<RunState | null>(null)
   const [error, setError] = useState('')
+  const [opening, setOpening] = useState(false)
+  const [starting, setStarting] = useState(false)
+  const startingRef = useRef(false)
+  const openingRef = useRef(false)
+  const selectionRef = useRef(0)
+  const onOpenedRef = useRef(onOpened)
+  onOpenedRef.current = onOpened
   const sourceRef = useRef<EventSource | null>(null)
   const runIdRef = useRef<string | null>(null)
   const conversationIdRef = useRef<string | null>(null)
@@ -61,7 +70,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }) {
     runIdRef.current = runId
     setRun({ id: runId, steps: [], answer: '', reasoning: '' })
     const source = openRunStream(runId, (event, data) => {
-      if (conversationIdRef.current === null) return // 会话已切换，静默丢弃迟到事件
+      if (conversationIdRef.current === null || runIdRef.current !== runId) return // 会话已切换，静默丢弃迟到事件
       if (event === 'start') {
         setRun(current => current && current.id === data.run_id ? { ...current, steps: [], answer: '', reasoning: '', approval: undefined, error: undefined, notice: undefined } : current)
         return
@@ -114,54 +123,91 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshSessions])
 
+  const applyDetail = useCallback((detail: ConversationDetail) => {
+    conversationIdRef.current = detail.id
+    setMessages(detail.messages)
+    setScopeActions(detail.scope_expansions || [])
+    setLineage(detail.lineage || null)
+    setConversation({ id: detail.id, title: detail.title, mode: 'general', model: detail.model, llm_channel: detail.llm_channel || '' })
+    if (detail.active_run && (!detail.active_run.done || detail.active_run.awaiting_approval) && runIdRef.current !== detail.active_run.run_id) {
+      attach(detail.active_run.run_id)
+    }
+  }, [attach])
+
   const reload = useCallback(async (conversationId: string | null) => {
-    if (!conversationId) { setMessages([]); return }
+    if (!conversationId) { setMessages([]); setScopeActions([]); return }
+    const selection = selectionRef.current
+    const storedKey = storageKeyRef.current
     try {
       const detail = await getConversation(conversationId)
-      if (conversationIdRef.current !== conversationId) return
-      if (!scopeMatches(detail.scope, scopeRef.current)) {
-        sessionStorage.removeItem(storageKeyRef.current)
-        setError('该会话属于其他对话范围，已改为新会话')
-        return
-      }
-      setMessages(detail.messages)
-      setConversation(current => current.id === conversationId ? { ...current, title: detail.title, mode: detail.mode, model: detail.model, llm_channel: detail.llm_channel || '' } : current)
-      if (detail.active_run && !detail.active_run.done && runIdRef.current !== detail.active_run.run_id) {
-        attach(detail.active_run.run_id)
-      }
-    } catch (err) { sessionStorage.removeItem(storageKeyRef.current); setError((err as Error).message) }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [attach, scopeKey])
+      if (selection !== selectionRef.current || storedKey !== storageKeyRef.current || conversationIdRef.current !== conversationId) return
+      if (!scopeMatches(detail.scope, scopeRef.current)) throw new Error('该会话属于其他对话范围')
+      applyDetail(detail)
+    } catch (err) {
+      if (selection !== selectionRef.current || storedKey !== storageKeyRef.current) return
+      setError((err as Error).message)
+    }
+  }, [applyDetail])
 
   reloadRef.current = reload
 
-  const openConversation = useCallback(async (id: string | null) => {
+  const openConversation = useCallback(async (id: string | null): Promise<boolean> => {
+    const selection = ++selectionRef.current
+    const storedKey = storageKeyRef.current
     closeStream()
+    conversationIdRef.current = null
     setError('')
     setRun(null)
     setMessages([])
-    if (id) sessionStorage.setItem(storageKeyRef.current, id)
-    else sessionStorage.removeItem(storageKeyRef.current)
-    setConversation({ id, title: '新对话', mode: 'research', model: '', llm_channel: '' })
-    if (id) await reload(id)
-  }, [reload])
+    setScopeActions([])
+    setLineage(null)
+    setConversation({ id: null, title: '新对话', mode: 'general', model: '', llm_channel: '' })
+    if (!id) { sessionStorage.removeItem(storedKey); setOpening(false); openingRef.current = false; return true }
+    setOpening(true)
+    openingRef.current = true
+    try {
+      const detail = await getConversation(id)
+      if (selection !== selectionRef.current || storedKey !== storageKeyRef.current) return false
+      if (!scopeMatches(detail.scope, scopeRef.current)) throw new Error('该会话属于其他对话范围，已改为新会话')
+      sessionStorage.setItem(storedKey, id)
+      applyDetail(detail)
+      return true
+    } catch (err) {
+      if (selection !== selectionRef.current || storedKey !== storageKeyRef.current) return false
+      sessionStorage.removeItem(storedKey)
+      setError((err as Error).message)
+      return false
+    } finally {
+      if (selection === selectionRef.current) { setOpening(false); openingRef.current = false }
+    }
+  }, [applyDetail])
 
-  // 工作区卸载再挂载（切换页面或岗位）时接回上次会话；会话本身一直在服务端继续生成
-  const restoredRef = useRef(false)
+  // 显式跳转优先于范围内的历史恢复；消费一次后允许正常切换会话。
+  const restoredScope = useRef('')
+  const navigationSeen = useRef('')
   useEffect(() => {
-    if (restoredRef.current) return
-    restoredRef.current = true
-    const saved = sessionStorage.getItem(storageKeyRef.current)
-    if (saved) void openConversation(saved)
-  }, [openConversation])
+    if (navigation && scopeMatches(navigation.scope, scopeRef.current) && navigationSeen.current !== navigation.requestId) {
+      navigationSeen.current = navigation.requestId
+      restoredScope.current = scopeKey
+      void openConversation(navigation.conversationId).then(ok => { if (ok) onOpenedRef.current?.(navigation.requestId) })
+      return
+    }
+    if (restoredScope.current === scopeKey) return
+    restoredScope.current = scopeKey
+    void openConversation(sessionStorage.getItem(storageKeyRef.current))
+  }, [scopeKey, navigation, openConversation])
+
+  useEffect(() => () => { selectionRef.current++ }, [])
 
   const send = useCallback(async (text: string, options?: { editMessageId?: string }) => {
     const content = text.trim()
-    if (!content || runIdRef.current) return false
+    if (!content || runIdRef.current || openingRef.current || startingRef.current) return false
     const target = scopeRef.current
     const company = target.kind === 'company' ? target.company : ''
     const jobId = target.kind === 'job' ? target.jobId : ''
     if (target.kind === 'company' && !company) return false
+    startingRef.current = true
+    setStarting(true)
     setError('')
     const targetId = conversation.id
     const tempId = `tmp-${Date.now()}`
@@ -170,7 +216,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }) {
       const started = await startChatRun({
         message: content,
         conversation_id: targetId ?? undefined,
-        agent_mode: company || jobId ? 'research' : conversation.mode,
+        agent_mode: 'general',
         // 显式传空串表示“跟随全局/渠道默认”：后端据此区分“未指定（沿用会话）”与“重置”。
         model: conversation.model,
         llm_channel: conversation.llm_channel,
@@ -198,7 +244,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }) {
       setMessages(current => current.filter(item => item.id !== tempId))
       setError((err as Error).message)
       return false
-    }
+    } finally { startingRef.current = false; setStarting(false) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attach, conversation, refreshSessions])
 
@@ -288,7 +334,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }) {
   const clearError = useCallback(() => setError(''), [])
 
   return {
-    sessions, conversation, messages, run, error,
+    sessions, conversation, messages, scopeActions, lineage, run, error, opening, starting,
     openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeMode, changeModel, compress, refreshSessions, clearError,
   }
 }

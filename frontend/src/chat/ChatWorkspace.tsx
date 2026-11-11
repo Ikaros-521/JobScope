@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, TouchEvent as ReactTouchEvent, WheelEvent as ReactWheelEvent } from 'react'
-import { estimateTokens, getChannels, getModelSettings, listLlmChannels } from '../api'
-import type { ChatMode, ChatScope, LlmChannel, StoredMessage } from '../api'
+import { acceptScopeExpansion, estimateTokens, getChannels, getModelSettings, listLlmChannels, proposeScopeExpansion } from '../api'
+import type { ChatScope, ConversationNavigation, LlmChannel, ScopeExpansion, StoredMessage } from '../api'
 import { toast } from '../toast'
 import { ChatComposer } from './ChatComposer'
 import type { ComposerChannel, EditingTarget } from './ChatComposer'
@@ -10,11 +10,9 @@ import { SessionList } from './SessionList'
 import { ToolTimeline } from './ToolTimeline'
 import { Markdown } from './Markdown'
 import { useChatRun } from './useChatRun'
+import { ScopeExpansionCard } from './ScopeExpansionCard'
 
-const SUGGESTIONS: Record<ChatMode, string[]> = {
-  research: ['哪些岗位提到了 RAG 或 Agent？', '比较已保存岗位的招聘薪资', '哪些公司仍缺少独立资料？'],
-  general: ['结合我的简历，制定 Agent 岗位面试计划', '检索 Python 岗位并比较薪资', '解释 MCP 与 Skills 的区别'],
-}
+const SUGGESTIONS = ['结合我的简历，制定 Agent 岗位面试计划', '检索 Python 岗位并比较薪资', '哪些公司仍缺少独立资料？']
 
 const COMPANY_SUGGESTIONS = ['这家公司有哪些岗位要求？', '公司经营情况有哪些证据？', '薪资还有哪些口径需要核实？']
 const JOB_SUGGESTIONS = ['这份岗位有哪些要求？', '公司有哪些可核实的信息？', '面试时还应该问清什么？']
@@ -24,15 +22,20 @@ const STICK_THRESHOLD = 80
 // 上下文估算基数：system 提示 + 工具声明，不随会话变化。
 const CONTEXT_BASE_TOKENS = 600
 
-export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { scope: ChatScope; modelConfigured: boolean; onManageExtensions?: () => void }) {
+export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navigation, onNavigateConversation, onOpened }: {
+  scope: ChatScope; modelConfigured: boolean; onManageExtensions?: () => void
+  navigation?: ConversationNavigation | null
+  onNavigateConversation?: (navigation: ConversationNavigation) => void
+  onOpened?: (requestId: string) => void
+}) {
   const isGlobal = scope.kind === 'global'
   const isJob = scope.kind === 'job'
   const company = scope.kind === 'company' ? scope.company.trim() : ''
   const jobCompany = scope.kind === 'job' ? scope.company : ''
   const {
-    sessions, conversation, messages, run, error,
-    openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeMode, changeModel, compress, clearError,
-  } = useChatRun(scope)
+    sessions, conversation, messages, scopeActions, lineage, run, error, opening, starting,
+    openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeModel, compress, clearError,
+  } = useChatRun(scope, navigation, onOpened)
   const [input, setInput] = useState('')
   const [editing, setEditing] = useState<EditingTarget>(null)
   const [sessionsCollapsed, setSessionsCollapsed] = useState(isJob)
@@ -42,6 +45,15 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
   const [showReasoning, setShowReasoning] = useState(() => localStorage.getItem('jobscope-reasoning') !== 'off')
   const [showJump, setShowJump] = useState(false)
   const [compressing, setCompressing] = useState(false)
+  const [showScopeOptions, setShowScopeOptions] = useState(false)
+  const [proposing, setProposing] = useState(false)
+  const [cloning, setCloning] = useState(false)
+  const cloningRef = useRef(false)
+  const proposingRef = useRef(false)
+  const conversationIdRef = useRef(conversation.id)
+  conversationIdRef.current = conversation.id
+  const [localActions, setLocalActions] = useState<ScopeExpansion[]>([])
+  const [actionOverrides, setActionOverrides] = useState<Record<string, ScopeExpansion>>({})
   const threadRef = useRef<HTMLDivElement>(null)
   const stickRef = useRef(true)
 
@@ -100,7 +112,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
     // 会话恢复时消息与布局可能分两拍到位：补一次延迟滚动，避免停在顶部。
     const timer = window.setTimeout(() => { if (stickRef.current) scrollToBottom() }, 150)
     return () => window.clearTimeout(timer)
-  }, [messages.length, run?.answer, run?.reasoning, run?.steps.length, run?.approval])
+  }, [messages.length, localActions.length, scopeActions.length, run?.answer, run?.reasoning, run?.steps.length, run?.approval])
 
   // 切换会话时恢复吸底并直接落到最新消息。
   useEffect(() => { stickRef.current = true; setShowJump(false); scrollToBottom() }, [conversation.id])
@@ -117,8 +129,57 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
   }
 
   const running = Boolean(run)
-  const canMutate = conversation.id !== null && !running
-  const mode: ChatMode = isGlobal ? conversation.mode : 'research'
+  const busy = running || opening || starting || compressing || cloning || proposing
+  const canMutate = conversation.id !== null && !busy
+  const selectedChannel = modelChannels.find(item => item.id === conversation.llm_channel)
+  const effectiveConfigured = conversation.llm_channel ? Boolean(selectedChannel && (conversation.model || selectedChannel.model)) : modelConfigured
+  const scopeLabel = isGlobal ? '全项目' : isJob ? `本岗位 · ${scope.title || jobCompany}` : `本公司 · ${company || '未选定'}`
+
+  useEffect(() => { setLocalActions([]); setActionOverrides({}); setShowScopeOptions(false) }, [conversation.id])
+
+  function resolveAction(action: ScopeExpansion) {
+    return actionOverrides[action.id] || scopeActions.find(item => item.id === action.id) || action
+  }
+
+  async function requestExpansion(target: 'company' | 'global') {
+    if (!conversation.id || busy || proposingRef.current) return
+    const sourceId = conversation.id
+    proposingRef.current = true
+    setProposing(true)
+    try {
+      const action = await proposeScopeExpansion(sourceId, target)
+      if (conversationIdRef.current !== sourceId) return
+      setLocalActions(current => [...current.filter(item => item.id !== action.id), action])
+      setShowScopeOptions(false)
+      stickRef.current = true
+    } catch (err) { toast((err as Error).message || '暂时无法扩大范围，请重试', 'error') }
+    finally { proposingRef.current = false; setProposing(false) }
+  }
+
+  async function acceptExpansion(action: ScopeExpansion) {
+    if (!conversation.id || busy) throw new Error('请等待当前会话完成后重试')
+    if (!onNavigateConversation) throw new Error('此入口暂不支持跳转，请重新打开工作区')
+    if (cloningRef.current) return
+    cloningRef.current = true
+    setCloning(true)
+    try {
+      const result = await acceptScopeExpansion(conversation.id, action.id)
+      setActionOverrides(current => ({ ...current, [action.id]: { ...action, target_conversation_id: result.conversation_id } }))
+      onNavigateConversation({ requestId: `${action.id}:${Date.now()}`, conversationId: result.conversation_id, scope: result.scope })
+    } finally { cloningRef.current = false; setCloning(false) }
+  }
+
+  function actionInScope(action: ScopeExpansion) {
+    const source = action.source_scope
+    if (source.kind !== scope.kind) return false
+    if (source.kind === 'job' && scope.kind === 'job') return source.job_id === scope.jobId
+    if (source.kind === 'company' && scope.kind === 'company') return source.company === scope.company
+    return source.kind === 'global'
+  }
+
+  const visibleMessageActions = new Set(messages.flatMap(message => (message.actions || []).filter(actionInScope).map(action => action.id)))
+  const liveActions = (run?.steps || []).flatMap(step => step.action ? [step.action] : [])
+  const floatingActions = Array.from(new Map([...scopeActions, ...localActions].filter(action => !visibleMessageActions.has(action.id)).map(action => [action.id, action])).values())
 
   // 用量只统计未折叠消息（含摘要检查点）：与模型实际可见的上下文口径一致；流式增量也计入。
   const contextTokens = useMemo(() => (
@@ -184,16 +245,14 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
 
   function toggleSessions() { setSessionsCollapsed(value => !value) }
 
-  const suggestions = isGlobal ? SUGGESTIONS[mode] : isJob ? JOB_SUGGESTIONS : COMPANY_SUGGESTIONS
+  const suggestions = isGlobal ? SUGGESTIONS : isJob ? JOB_SUGGESTIONS : COMPANY_SUGGESTIONS
   const welcome = !isGlobal && !isJob && !company
-    ? { title: '先确认公司主体，再开始对话', text: '在上方输入资料库中的精确公司名称。对话只检索这一主体的岗位与公司资料，其他公司和全局对话历史不会进来。' }
-    : mode === 'general'
-      ? { title: '让工具参与完成任务', text: 'Agent 会按需检索项目、读取简历、加载 Skill 或调用 MCP；外部工具会先向你确认。' }
-      : isGlobal
-        ? { title: '从所有已保存资料中查找线索', text: '检索本项目保存的全部岗位和公司证据，回答会标注公司与出处。' }
-        : isJob
-          ? { title: '围绕这份岗位提问', text: '检索该岗位的职责原文、详情快照与同一公司的补充资料，回答标注出处；资料缺失的部分保持未知。' }
-          : { title: `围绕 ${company} 提问`, text: '询问招聘要求、公司披露、员工情况或仍待核实的问题；回答只引用该公司已保存的资料。' }
+    ? { title: '先确认公司主体，再开始对话', text: '在上方输入资料库中的精确公司名称，Agent 将围绕这一主体检索。' }
+    : isGlobal
+      ? { title: '让 Agent 帮你查资料、做比较、准备面试', text: '可检索本项目全部岗位与公司资料，按需读取简历、Skills 或调用 MCP；回答保留来源。' }
+      : isJob
+        ? { title: '围绕这份岗位展开', text: 'Agent 可检索本岗位与同公司的公共资料。需要比较其他岗位或公司时，可复制对话并扩大范围。' }
+        : { title: `围绕 ${company} 展开`, text: 'Agent 可检索该公司的岗位与资料。需要跨公司比较时，可复制对话进入全局范围。' }
 
   const channelName = modelChannels.find(item => item.id === conversation.llm_channel)?.name
   const modelSuffix = conversation.llm_channel
@@ -203,7 +262,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
   return <div className={`chat-page chat-${scope.kind} ${sessionsCollapsed ? 'sessions-collapsed' : ''}`}>
     <aside className="chat-sidebar">
       <div className="chat-sidebar-top">
-        <button type="button" className="button primary small chat-new-button" onClick={() => { void openConversation(null); cancelEdit() }} disabled={running || (scope.kind === 'company' && !company)}>
+        <button type="button" className="button primary small chat-new-button" onClick={() => { void openConversation(null); cancelEdit() }} disabled={busy || (scope.kind === 'company' && !company)}>
           {sessionsCollapsed ? '＋' : '＋ 新对话'}
         </button>
         <button type="button" className="icon-button" aria-label={sessionsCollapsed ? '展开会话列表' : '收起会话列表'} onClick={toggleSessions}>
@@ -214,7 +273,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
         sessions={sessions}
         activeId={conversation.id}
         collapsed={sessionsCollapsed}
-        onOpen={id => { if (!running) { cancelEdit(); void openConversation(id) } }}
+        onOpen={id => { if (!busy) { cancelEdit(); void openConversation(id) } }}
         onRename={(id, title) => void renameSession(id, title)}
         onDelete={id => void removeSession(id)}
       />
@@ -225,14 +284,14 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
         <div className="chat-main-title">
           <h2>{isGlobal ? conversation.title : scope.kind === 'job' ? (scope.title || scope.company) : `${company || '未选定公司'} · 对话`}</h2>
           <span className="chat-main-sub">
-            {isGlobal
-              ? (mode === 'general' ? '通用 Agent · 工具调用 / MCP / Skills' : '资料研究 · 检索与引用校验')
-              : isJob ? '资料研究 · 只检索该岗位与同公司资料' : '资料研究 · 只检索该公司的已保存资料'}
+            Agent · {isGlobal ? '全部岗位与公司资料' : isJob ? '本岗位与同公司公共资料' : '本公司岗位与资料'}
             {modelSuffix}
           </span>
         </div>
-        <span className={`chat-state ${run ? 'busy' : ''}`}>{run ? (run.approval ? '等待工具确认' : '生成中…') : '空闲'}</span>
+        <span className={`chat-state ${run ? 'busy' : ''}`}>{opening ? '正在打开会话…' : run ? (run.approval ? '等待工具确认' : '生成中…') : '空闲'}</span>
       </header>
+
+      {lineage && <div className="chat-clone-notice" role="status">范围已扩大至{scopeLabel}；已复制的历史回答仍按原范围生成，可继续提问。</div>}
 
       <div className="chat-thread-wrap">
         <div className="chat-thread" ref={threadRef} aria-live="polite"
@@ -247,7 +306,9 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
 
           {messages.map(message => <ChatMessageItem
             key={message.id}
-            message={message}
+            message={{ ...message, actions: message.actions?.filter(actionInScope).map(resolveAction) }}
+            actionsDisabled={busy}
+            onAcceptScope={acceptExpansion}
             showReasoning={showReasoning}
             editing={editing?.id === message.id}
             canMutate={canMutate}
@@ -267,7 +328,9 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
             <ToolTimeline steps={run.steps} running />
             {run.answer && <div className="message-content"><Markdown content={run.answer} /></div>}
             {run.error && <div className="run-error">{run.error}</div>}
+            {Array.from(new Map(liveActions.map(action => [action.id, action])).values()).map(action => <ScopeExpansionCard key={action.id} action={resolveAction(action)} disabled onAccept={acceptExpansion} />)}
           </article>}
+          {floatingActions.map(action => <ScopeExpansionCard key={action.id} action={resolveAction(action)} disabled={busy} onAccept={acceptExpansion} />)}
         </div>
         {showJump && <button type="button" className="jump-bottom" onClick={jumpToBottom}>↓ 回到底部</button>}
       </div>
@@ -283,13 +346,20 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
         </div>
       </section>}
 
-      {error && <div className="alert error chat-alert" role="alert"><span>{error}</span><button aria-label="关闭错误提示" onClick={clearError}>×</button></div>}
+      {error && <div className="alert error chat-alert" role="alert"><span>{error}</span>
+        {navigation && <button type="button" onClick={() => { void openConversation(navigation.conversationId).then(ok => { if (ok) onOpened?.(navigation.requestId) }) }}>重新打开目标对话</button>}
+        <button aria-label="关闭错误提示" onClick={clearError}>×</button></div>}
+
+      {showScopeOptions && !isGlobal && <div className="scope-expansion-options" aria-label="选择扩大后的范围">
+        <span>将当前对话复制到：</span>
+        {isJob && <button type="button" className="button secondary small" disabled={busy || proposing} onClick={() => void requestExpansion('company')}>所属公司</button>}
+        <button type="button" className="button secondary small" disabled={busy || proposing} onClick={() => void requestExpansion('global')}>全项目</button>
+        <button type="button" className="text-button" onClick={() => setShowScopeOptions(false)}>取消</button>
+      </div>}
 
       <ChatComposer
         input={input}
         onInputChange={setInput}
-        mode={mode}
-        onModeChange={mode => void changeMode(mode)}
         model={conversation.model}
         llmChannel={conversation.llm_channel}
         modelChannels={modelChannels}
@@ -299,15 +369,15 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions }: { 
         awaiting={Boolean(run?.approval)}
         onStop={() => void stop()}
         onSend={() => void submit()}
-        modelConfigured={modelConfigured}
+        modelConfigured={effectiveConfigured}
         showReasoning={showReasoning}
         onToggleReasoning={toggleReasoning}
         editing={editing}
         onCancelEdit={cancelEdit}
         onManageExtensions={onManageExtensions}
-        showMode={isGlobal}
-        modeLabel={isJob ? '岗位资料研究' : '公司资料研究'}
-        locked={isGlobal || isJob || company ? '' : '请先在上方确认公司主体'}
+        scopeLabel={scopeLabel}
+        onExpandScope={!isGlobal && onNavigateConversation ? () => setShowScopeOptions(value => !value) : undefined}
+        locked={opening ? '正在打开会话…' : starting ? '正在开始本轮对话…' : cloning ? '正在复制并打开对话…' : proposing ? '正在生成范围扩展卡片…' : isGlobal || isJob || company ? '' : '请先在上方确认公司主体'}
         scopeName={isGlobal ? '全项目资料' : isJob ? `${jobCompany}的岗位资料` : company || '未选定公司'}
         contextTokens={contextTokens}
         contextWindow={activeWindow}

@@ -45,18 +45,20 @@ def final(text='可以先准备一个 Agent 项目，再练习工具调用。'):
 
 def test_general_chat_without_project_evidence_and_scoped_isolation(client, monkeypatch):
     configure(client)
-    calls = scripted(monkeypatch, [final()])
+    calls = scripted(monkeypatch, [final(), final('公司范围回答')])
     result = client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'message': '帮我制定 Agent 学习计划'})
     assert result.status_code == 200
     assert result.json()['mode'] == 'agent' and result.json()['trace']['strategy'] == 'agent'
     assert calls[0]['tools'] and '简历' not in calls[0]['messages'][-1]['content']
-    assert client.post('/api/chat', json={'company': '甲', 'agent_mode': 'general', 'message': 'hello'}).status_code == 400
+    scoped = client.post('/api/chat', json={'company': '甲', 'agent_mode': 'general', 'message': 'hello'})
+    assert scoped.status_code == 200
+    assert scoped.json()['trace']['scope'] == {'kind': 'company', 'company': '甲'}
 
 
 def test_compaction_summary_is_pinned_beyond_recent_history_window(client, monkeypatch):
     configure(client)
     repo = client.app.state.repo
-    conversation_id = repo.create_conversation(dict(kind='global', agent_mode='general'), mode='general')
+    conversation_id = repo.create_conversation(dict(kind='global'), mode='general')
     history = [dict(role='assistant', kind='compaction', content='### 📋 上下文压缩摘要\n\n早前结论：用户在比较杭州 AI 岗位。')]
     history += [dict(role='user' if index % 2 == 0 else 'assistant', content=f'近期消息{index}') for index in range(7)]
     repo.append_messages(conversation_id, history)

@@ -19,8 +19,9 @@ from starlette.concurrency import run_in_threadpool
 from .analysis import analyze, parse_resume
 from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
-from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ReliabilityInput, ResumeInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
+from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ReliabilityInput, ResumeInput, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
 from .repository import Repository, now
+from .scope_expansion import ScopeExpansionStore
 from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, ConnectionInput, _active, get_model_config
 
 
@@ -80,6 +81,7 @@ def create_app(data_dir=None):
     settings = ModelSettings(repo)
     llm_channels = LlmChannelStore(repo)
     runs = RunManager(repo)
+    scope_expansions = ScopeExpansionStore(repo)
     app.state.runs = runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
@@ -208,6 +210,13 @@ def create_app(data_dir=None):
     def agent_approval(run_id: str, data: ApprovalInput):
         from .general_agent import GeneralAgent
         try:
+            handle = runs.get(run_id)
+            if handle is not None:
+                runs.approve(run_id, data.approved, data.approval_id)
+                handle.thread.join()
+                if hasattr(handle, 'error'):
+                    raise ValueError(handle.error)
+                return handle.result
             result = GeneralAgent(repo).resume(run_id, data.approved, data.approval_id)
             if result['trace']['status'] != 'awaiting_approval':
                 repo.append_conversation(result['conversation_id'], result['trace']['question'], result['answer'])
@@ -330,6 +339,8 @@ def create_app(data_dir=None):
             if not job_id:
                 raise HTTPException(400, '岗位对话需要先指定岗位')
             job = get_job(job_id)
+            if company.strip() and company.strip() != job['company']:
+                raise HTTPException(400, '所选岗位与公司范围不一致')
             return dict(kind='job', job_id=job['id'], company=job['company'])
         raise HTTPException(400, '暂不支持该对话范围')
 
@@ -772,8 +783,6 @@ def create_app(data_dir=None):
 
     @app.post("/api/chat")
     def chat(data: ChatInput):
-        if data.agent_mode == 'general' and data.scope != 'global':
-            raise HTTPException(400, '通用 Agent 仅在全局对话中可用，公司与岗位对话继续使用隔离检索')
         if data.scope == 'global' and (data.job_id or data.company):
             raise HTTPException(400, '全局对话不能同时指定岗位或公司')
         if data.scope != 'global' and not data.job_id and not data.company:
@@ -782,8 +791,6 @@ def create_app(data_dir=None):
             raise HTTPException(409, '会话正在压缩上下文，请稍后重试')
         if data.scope == 'global':
             scope_identity = dict(kind='global')
-            if data.agent_mode == 'general':
-                scope_identity['agent_mode'] = 'general'
         elif data.job_id:
             job = get_job(data.job_id)
             if data.company and data.company != job["company"]:
@@ -792,27 +799,20 @@ def create_app(data_dir=None):
         else:
             scope_identity = dict(kind='company', company=data.company)
         try:
-            conversation_id, history = repo.conversation(data.conversation_id, scope_identity)
+            # Validate before entering the synchronous adapter, just like /chat/runs.
+            conversation = repo.get_conversation(data.conversation_id, scope_identity) if data.conversation_id else None
+            config = runs.resolve_llm_config(conversation)
         except ValueError as exc:
-            raise HTTPException(409, str(exc)) from exc
-        # 已压缩的旧消息不进模型上下文；压缩摘要检查点保留。
-        history = [m for m in history if not m.get('compacted')]
-        resume = repo.resume()
-        # Send only confirmed YAML facts to the model; unconfirmed facts stay local.
-        facts = parse_resume(resume["text"], resume["format"]) if resume["text"].strip() else []
+            raise HTTPException(409, str(exc)) from None
+        if data.agent_mode == 'general' and (config['llm'].get('mode') != 'remote' or not config['llm'].get('model')):
+            raise HTTPException(400, '通用 Agent 需要先配置支持工具调用的对话模型')
         try:
-            if data.agent_mode == 'general':
-                from .general_agent import GeneralAgent
-                result = GeneralAgent(repo).start(data.message, history, conversation_id)
-                if result['trace']['status'] != 'awaiting_approval':
-                    repo.append_conversation(conversation_id, data.message, result['answer'])
-                return {**result, 'scope': scope_identity}
-            from .research.agent import ResearchAgent
-            result = ResearchAgent(repo, synthesizer=answer_question).answer(data.message, scope_identity, resume=facts, history=history)
-            repo.append_conversation(conversation_id, data.message, result['answer'])
-            return {**result, 'conversation_id': conversation_id, 'scope': scope_identity}
+            result = runs.start(message=data.message, conversation_id=data.conversation_id,
+                                mode=data.agent_mode, scope=scope_identity, background=False)
+            return {**result, 'scope': scope_identity}
         except ValueError as exc:
-            raise HTTPException(502, str(exc)) from exc
+            status = 409 if '会话' in str(exc) else 502
+            raise HTTPException(status, str(exc)) from None
 
     @app.get('/api/research/runs/{run_id}')
     def research_run(run_id: str):
@@ -835,8 +835,6 @@ def create_app(data_dir=None):
                 raise HTTPException(400, '通用 Agent 需要先配置支持工具调用的对话模型。也可切回资料研究模式。')
         scope = chat_scope('job' if data.job_id else ('company' if data.company.strip() else 'global'),
                            data.company, data.job_id)
-        if data.agent_mode == 'general' and scope['kind'] != 'global':
-            raise HTTPException(400, '岗位与公司对话只检索本范围的已保存资料；通用 Agent 请在全局对话中使用。')
         try:
             return runs.start(message=data.message, conversation_id=data.conversation_id or None,
                               mode=data.agent_mode, model=data.model, llm_channel=data.llm_channel,
@@ -886,7 +884,32 @@ def create_app(data_dir=None):
             raise HTTPException(404, str(exc)) from None
         handle = runs.active_for_conversation(conversation_id)
         conversation['active_run'] = handle.snapshot() if handle else None
+        actions = scope_expansions.list(conversation_id)
+        conversation['scope_expansions'] = actions
+        conversation['lineage'] = scope_expansions.lineage(conversation_id)
+        # Restore the current card status without rewriting any source history.
+        by_id = scope_expansions.actions_for_messages(conversation['messages'])
+        for message in conversation['messages']:
+            if message.get('actions'):
+                message['actions'] = [by_id.get(action.get('id'), action) for action in message['actions']]
         return conversation
+
+    @app.post('/api/conversations/{conversation_id}/scope-expansions')
+    def propose_scope_expansion(conversation_id: str, data: ScopeExpansionInput):
+        try:
+            return scope_expansions.propose(conversation_id, data.target, data.reason)
+        except ValueError as exc:
+            raise HTTPException(404 if '不存在' in str(exc) else 400, str(exc)) from None
+
+    @app.post('/api/conversations/{conversation_id}/scope-expansions/{action_id}/accept')
+    def accept_scope_expansion(conversation_id: str, action_id: str):
+        with runs._lock:
+            if runs.active_for_conversation(conversation_id) or runs.is_compressing(conversation_id):
+                raise HTTPException(409, '会话正在生成、等待工具确认或压缩上下文，请完成或停止后再扩展')
+            try:
+                return scope_expansions.accept(conversation_id, action_id)
+            except ValueError as exc:
+                raise HTTPException(404 if '不存在' in str(exc) else 409, str(exc)) from None
 
     @app.patch('/api/conversations/{conversation_id}')
     def patch_conversation(conversation_id: str, data: ConversationPatch):

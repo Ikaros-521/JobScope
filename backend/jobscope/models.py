@@ -107,20 +107,25 @@ class ChatInput(RequestModel):
     company: str | None = Field(default=None, max_length=300)
     history: list[HistoryItem] = Field(default_factory=list, max_length=12)
     scope: Literal['scoped', 'global'] = 'scoped'
-    agent_mode: Literal['research', 'general'] = 'research'
+    agent_mode: Literal['research', 'general'] = 'general'
     conversation_id: str | None = Field(default=None, max_length=100)
 
 
 class ChatRunInput(RequestModel):
     message: str = Field(min_length=1, max_length=12000)
     conversation_id: str | None = Field(default=None, max_length=100)
-    agent_mode: Literal['research', 'general'] = 'research'
+    agent_mode: Literal['research', 'general'] = 'general'
     # 省略=沿用会话已保存的模型/渠道；空串=重置为渠道默认或全局默认。
     model: str | None = Field(default=None, max_length=200)
     llm_channel: str | None = Field(default=None, max_length=100)
     edit_message_id: str | None = Field(default=None, max_length=50)
     company: str = Field(default='', max_length=300)
     job_id: str | None = Field(default=None, max_length=100)
+
+
+class ScopeExpansionInput(RequestModel):
+    target: Literal['company', 'global']
+    reason: str = Field(default='', max_length=2000)
 
 
 class ConversationPatch(RequestModel):

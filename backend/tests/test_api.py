@@ -37,7 +37,7 @@ def test_index_shell_is_served_with_no_cache(client):
     result = client.post("/api/analyze", json=dict(job_id=job["id"]))
     assert result.status_code == 200
     assert result.json()["coverage"] == pytest.approx(2 / 3, abs=0.01)
-    response = client.post("/api/chat", json=dict(message="营收情况", job_id=job["id"]))
+    response = client.post("/api/chat", json=dict(message="营收情况", job_id=job["id"], agent_mode='research'))
     assert response.status_code == 200
     assert response.json()["mode"] == "evidence_search"
     assert all(c["id"] != foreign["id"] for c in response.json()["citations"])

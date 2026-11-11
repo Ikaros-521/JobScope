@@ -1300,10 +1300,19 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .composer-stop:hover { background: #262626; }
 .composer-stop span { font-size: 10px; }
 .composer-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 10px; font-size: 12px; }
-.composer-mode { display: inline-flex; background: #f0f0f0; border-radius: 8px; padding: 2px; gap: 2px; }
-.composer-mode button { min-height: 30px; padding: 4px 14px; font-size: 12px; border-radius: 6px; color: #525252; background: none; border: 0; }
-.composer-mode button[aria-pressed="true"] { background: #fff; color: var(--green); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,.08); }
-.composer-mode button:disabled { opacity: .55; }
+.composer-scope { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; max-width: 100%; }
+.composer-scope-tag { display: inline-block; max-width: 220px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 4px 9px; color: var(--green); background: #eef4f0; border: 1px solid #dce7df; border-radius: 7px; font-size: 12px; }
+.composer-expand { min-height: 28px; padding: 3px 6px; font-size: 11px; color: var(--green); border: 0; background: none; white-space: nowrap; }
+.composer-expand:hover:not(:disabled) { text-decoration: underline; }
+.chat-clone-notice { flex: none; padding: 6px 16px; color: #446c58; font-size: 11px; line-height: 1.5; background: #f6faf7; border-bottom: 1px solid var(--line); }
+.scope-expansion-options { flex: none; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 16px; border-top: 1px solid var(--line); background: #f7faf8; font-size: 12px; }
+.scope-expansion-card { display: grid; gap: 7px; padding: 12px 14px; margin: 10px auto; border: 1px solid #ccdcd2; border-radius: 10px; background: #f6faf7; text-align: left; min-width: 0; max-width: 860px; overflow-wrap: anywhere; white-space: normal; }
+.scope-expansion-heading { display: flex; align-items: center; gap: 7px; color: var(--green); font-size: 13px; }
+.scope-expansion-target { font-size: 12px; color: #446c58; }
+.scope-expansion-card p { margin: 0; font-size: 12px; line-height: 1.6; color: #525252; }
+.scope-expansion-card .button { justify-self: start; max-width: 100%; white-space: normal; min-height: 30px; }
+.scope-expansion-card small { color: #737373; font-size: 11px; }
+.scope-expansion-card p.scope-expansion-error { color: #8c3a2a; }
 .composer-model { display: inline-flex; align-items: center; gap: 6px; color: #525252; }
 .composer-model select { min-height: 32px; font-size: 12px; padding: 4px 8px; border-radius: 8px; max-width: 220px; }
 .composer-switch { display: inline-flex; align-items: center; gap: 8px; color: #525252; cursor: pointer; }

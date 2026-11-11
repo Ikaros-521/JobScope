@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { api, post, readable, plain, date, safeUrl, computeReliability, collectCompanySignals, extractCompanySignals, getReliability, getReliabilityHistory, listSignalSources, saveSignalSource } from './api'
-import type { SignalSource } from './api'
+import type { ConversationNavigation, SignalSource } from './api'
 import { toast, dismissToast } from './toast'
 import { Pagination, emptyPage } from './Pagination'
 import { EvidenceWorkspace } from './EvidenceWorkspace'
@@ -63,6 +63,17 @@ function External({ url, children }: { url: string; children: ReactNode }) { con
 export default function App() {
   const [view, setView] = useState<'jobs' | 'resume' | 'sources' | 'evidence' | 'global' | 'settings' | 'extensions'>('jobs')
   const [navigationOpen, setNavigationOpen] = useState(false)
+  const [chatNavigation, setChatNavigation] = useState<ConversationNavigation | null>(null)
+  const navigateConversation = useCallback((request: ConversationNavigation) => {
+    if (request.scope.kind === 'job') throw new Error('扩大范围只能前往公司或全局对话')
+    setChatNavigation(request)
+    setView(request.scope.kind === 'global' ? 'global' : 'evidence')
+    setNavigationOpen(false)
+  }, [])
+  const chatOpened = useCallback((requestId: string) => {
+    setChatNavigation(current => current?.requestId === requestId ? null : current)
+    toast('范围已扩大，可继续提问')
+  }, [])
   const [sourcesTab, setSourcesTab] = useState<'collect' | 'lookup' | 'catalog' | 'history'>('collect')
   const [jobs, setJobs] = useState<Job[]>([])
   const [jobsInfo, setJobsInfo] = useState<PageInfo>(emptyPage)
@@ -428,9 +439,9 @@ export default function App() {
 
     <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'extensions' || view === 'settings' ? 'main main-compact' : 'main'}>
       <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'resume' ? '我的简历' : view === 'evidence' ? '公司资料库' : view === 'global' ? '全局对话' : view === 'extensions' ? 'Agent 扩展' : view === 'settings' ? '模型设置' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
-      <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} /></div>
+      <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} /></div>
 
-      {view === 'global' && <><section className="page-intro chat-intro"><div><h1>全局对话</h1><p>跨岗位、跨公司检索项目资料，回答标注公司与出处</p></div><span className="revision-label">会话保存在本机</span></section><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onManageExtensions={() => setView('extensions')} /></>}
+      {view === 'global' && <><section className="page-intro chat-intro"><div><h1>全局对话</h1><p>跨岗位、跨公司检索项目资料，回答标注公司与出处</p></div><span className="revision-label">会话保存在本机</span></section><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onManageExtensions={() => setView('extensions')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} /></>}
 
       {view === 'jobs' && <>
         <section className="page-intro"><div><h1>岗位研究</h1><p>把岗位要求、公司证据和你的经历逐项核对</p></div><Button className="button secondary" onClick={() => openModal('job')}><Icon name="plus" size={17} />导入岗位</Button></section>
@@ -479,7 +490,7 @@ export default function App() {
               </div>
             </>}
           </section>
-          {job && <section className="chat-section job-chat" onClick={() => setPaneFocus('chat')}><ChatWorkspace scope={{ kind: 'job', jobId: job.id, company: job.company, title: job.title }} modelConfigured={modelConfigured} /></section>}
+          {job && <section className="chat-section job-chat" onClick={() => setPaneFocus('chat')}><ChatWorkspace key={job.id} scope={{ kind: 'job', jobId: job.id, company: job.company, title: job.title }} modelConfigured={modelConfigured} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} /></section>}
         </div>
       </>}
 

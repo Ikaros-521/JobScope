@@ -199,7 +199,7 @@ def test_research_api_exposes_run_and_index_without_raw_vector_or_credentials(re
     from jobscope.main import create_app
     job(repo)
     with TestClient(create_app(repo.data_dir)) as client:
-        result = client.post('/api/chat', json={'scope': 'global', 'message': '工资'}).json()
+        result = client.post('/api/chat', json={'scope': 'global', 'message': '工资', 'agent_mode': 'research'}).json()
         assert result['run_id'].startswith('R-')
         trace = client.get('/api/research/runs/' + result['run_id'])
         assert trace.status_code == 200 and trace.json()['status'] == 'completed'

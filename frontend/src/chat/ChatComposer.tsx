@@ -1,5 +1,4 @@
 import { useEffect, useRef } from 'react'
-import type { ChatMode } from '../api'
 
 export type EditingTarget = { id: string; original: string } | null
 export type ComposerChannel = { id: string; name: string; model: string; models: string[]; context_tokens?: number | null }
@@ -9,11 +8,9 @@ function tokensLabel(value: number) { return value >= 10000 ? `${Math.round(valu
 // 下拉选项值编码：''=跟随全局；'|model'=覆盖全局配置上的模型；'channelId|model'=指定渠道的模型；'channelId|'=渠道默认模型
 function selectValue(model: string, channelId: string) { return channelId ? `${channelId}|${model}` : model ? `|${model}` : '' }
 
-export function ChatComposer({ input, onInputChange, mode, onModeChange, model, llmChannel = '', modelChannels = [], globalModels = [], onModelChange, running, awaiting, onStop, onSend, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, showMode = true, modeLabel = '公司资料研究', locked = '', scopeName = '全项目资料', contextTokens = 0, contextWindow = 128000, compressing = false, hasConversation = false, canCompress = true, onCompress }: {
+export function ChatComposer({ input, onInputChange, model, llmChannel = '', modelChannels = [], globalModels = [], onModelChange, running, awaiting, onStop, onSend, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, scopeLabel = '全项目', onExpandScope, locked = '', scopeName = '全项目资料', contextTokens = 0, contextWindow = 128000, compressing = false, hasConversation = false, canCompress = true, onCompress }: {
   input: string
   onInputChange: (value: string) => void
-  mode: ChatMode
-  onModeChange: (mode: ChatMode) => void
   model: string
   llmChannel?: string
   modelChannels?: ComposerChannel[]
@@ -29,8 +26,8 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
   editing: EditingTarget
   onCancelEdit: () => void
   onManageExtensions?: () => void
-  showMode?: boolean
-  modeLabel?: string
+  scopeLabel?: string
+  onExpandScope?: () => void
   locked?: string
   scopeName?: string
   contextTokens?: number
@@ -48,12 +45,9 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
     node.style.height = `${Math.min(200, Math.max(48, node.scrollHeight))}px`
   }, [input])
 
-  const blocked = Boolean(locked) || awaiting || (mode === 'general' && !modelConfigured)
-  const placeholder = locked
-    ? locked
-    : awaiting ? '等待工具确认后再继续对话…'
-      : mode === 'general' && !modelConfigured ? '通用 Agent 需要先在模型设置中配置对话模型'
-        : mode === 'general' ? '描述要完成的任务，Agent 会按需调用工具…' : `检索${scopeName}的资料，支持引用与出处…`
+  const blocked = Boolean(locked) || awaiting || compressing || !modelConfigured
+  const placeholder = locked || (compressing ? '正在压缩上下文…' : awaiting ? '等待工具确认后再继续对话…'
+    : !modelConfigured ? '请先在模型设置中配置对话模型' : `围绕${scopeName}提问，Agent 会按需调用工具…`)
 
   function trySend() {
     if (running || blocked || !input.trim()) return
@@ -91,11 +85,10 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
         : <button type="button" className="composer-send" onClick={trySend} disabled={blocked || !input.trim()} aria-label="发送消息">发送</button>}
     </div>
     <div className="composer-toolbar">
-      {showMode && <div className="composer-mode" role="group" aria-label="工作模式">
-        <button type="button" aria-pressed={mode === 'research'} onClick={() => onModeChange('research')} disabled={running || awaiting}>资料研究</button>
-        <button type="button" aria-pressed={mode === 'general'} onClick={() => onModeChange('general')} disabled={running || awaiting} title={modelConfigured ? '通用 Agent · 工具调用 / MCP / Skills' : '需要先配置对话模型'}>通用 Agent</button>
-      </div>}
-      {!showMode && <span className="composer-scope-tag">{modeLabel}</span>}
+      <div className="composer-scope" aria-label="资料检索范围">
+        <span className="composer-scope-tag" title={scopeLabel}>{scopeLabel}</span>
+        {onExpandScope && <button type="button" className="composer-expand" disabled={running || awaiting || compressing || !hasConversation || Boolean(locked)} onClick={onExpandScope}>扩大范围 ↗</button>}
+      </div>
       <label className="composer-model">
         <span>模型</span>
         <select value={selectValue(model, llmChannel)} onChange={event => pickModel(event.target.value)} disabled={running || awaiting}>
@@ -116,7 +109,7 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
         <input type="checkbox" checked={showReasoning} onChange={event => onToggleReasoning(event.target.checked)} />
         <span>思维链</span>
       </label>
-      {showMode && onManageExtensions && <button type="button" className="composer-extensions" onClick={onManageExtensions}>MCP 与 Skills</button>}
+      {onManageExtensions && <button type="button" className="composer-extensions" onClick={onManageExtensions}>MCP 与 Skills</button>}
       {onCompress && <div className="context-meter-group">
         <div className={`context-meter ${level}`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}
           aria-label="当前会话上下文估算用量" title={`当前会话上下文估算 ${tokensLabel(contextTokens)} / ${tokensLabel(contextWindow)} tokens（${percent}%，按字符数估算）`}>
@@ -128,7 +121,7 @@ export function ChatComposer({ input, onInputChange, mode, onModeChange, model, 
           {compressing ? '压缩中…' : '压缩上下文'}
         </button>
       </div>}
-      <span className="composer-hint">Enter 发送 · Shift + Enter 换行{mode === 'general' ? ' · 外部工具按配置确认' : ' · 回答标注证据出处'}</span>
+      <span className="composer-hint">Enter 发送 · Shift + Enter 换行 · 外部工具按配置确认</span>
     </div>
   </div>
 }

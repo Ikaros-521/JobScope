@@ -53,7 +53,7 @@ def build_history(client, rounds=3):
     """未配置模型时研究模式走本地摘录兜底，快速堆出 user/assistant 成对历史。"""
     conversation_id = None
     for index in range(rounds):
-        body = {'message': f'历史问题{index + 1}'}
+        body = {'message': f'历史问题{index + 1}', 'agent_mode': 'research'}
         if conversation_id:
             body['conversation_id'] = conversation_id
         run = client.post('/api/chat/runs', json=body).json()
@@ -168,7 +168,8 @@ def test_recompression_uses_previous_summary_and_new_messages(client, monkeypatc
     configure(client)
     fake_summary_post(monkeypatch, summary='### 📋 上下文压缩摘要\n\n第一轮摘要：用户在比较岗位薪资。')
     assert client.post(f'/api/conversations/{conversation_id}/compress').status_code == 200
-    # 继续对话，产生摘要之后的新消息。
+    # 继续对话，产生摘要之后的新消息；统一 Agent 使用流式模型调用。
+    stream_scripted(monkeypatch, [[sse_chunk({'delta': {'content': '继续回答'}}), 'data: [DONE]'] for _ in range(3)])
     for index in range(3):
         run = client.post('/api/chat/runs', json={'message': f'压缩后问题{index + 1}', 'conversation_id': conversation_id}).json()
         await_run(client, run['run_id'])

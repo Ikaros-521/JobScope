@@ -57,24 +57,24 @@ def test_company_and_global_chat_and_bound_history(client, monkeypatch):
     repo = seed(client, 2)
     a = repo.save_evidence(dict(title='甲经营', company='甲公司', text='甲公司营业收入100，薪资10K'), 'user_import')
     b = repo.save_evidence(dict(title='乙经营', company='乙公司', text='乙公司营业收入200，薪资20K'), 'user_import')
-    company = client.post('/api/chat', json={'company': '甲公司', 'message': '营业收入和薪资'}).json()
+    company = client.post('/api/chat', json={'agent_mode': 'research', 'company': '甲公司', 'message': '营业收入和薪资'}).json()
     assert company['scope']['kind'] == 'company'
     assert {c['company'] for c in company['citations']} == {'甲公司'}
     session = company['conversation_id']
-    assert client.post('/api/chat', json={'company': '乙公司', 'message': '情况', 'conversation_id': session}).status_code == 409
-    assert client.post('/api/chat', json={'scope': 'global', 'message': '情况', 'conversation_id': session}).status_code == 409
-    global_chat = client.post('/api/chat', json={'scope': 'global', 'message': '营业收入和薪资'}).json()
+    assert client.post('/api/chat', json={'agent_mode': 'research', 'company': '乙公司', 'message': '情况', 'conversation_id': session}).status_code == 409
+    assert client.post('/api/chat', json={'agent_mode': 'research', 'scope': 'global', 'message': '情况', 'conversation_id': session}).status_code == 409
+    global_chat = client.post('/api/chat', json={'agent_mode': 'research', 'scope': 'global', 'message': '营业收入和薪资'}).json()
     assert {a['id'], b['id']} <= {c['id'] for c in global_chat['citations']}
     assert global_chat['scope']['kind'] == 'global'
-    assert client.post('/api/chat', json={'scope': 'global', 'company': '甲公司', 'message': '情况'}).status_code == 400
+    assert client.post('/api/chat', json={'agent_mode': 'research', 'scope': 'global', 'company': '甲公司', 'message': '情况'}).status_code == 400
 
     captured = []
     def answer(message, evidence, resume, history):
         captured.append(history)
         assert all(item['company'] == '甲公司' for item in evidence)
         return {'answer': '甲公司资料', 'citations': [], 'mode': 'evidence_search'}
-    monkeypatch.setattr('jobscope.main.answer_question', answer)
-    client.post('/api/chat', json={'company': '甲公司', 'message': '继续', 'conversation_id': session,
+    monkeypatch.setattr('jobscope.chat_runs.answer_question', answer)
+    client.post('/api/chat', json={'agent_mode': 'research', 'company': '甲公司', 'message': '继续', 'conversation_id': session,
                                 'history': [{'role': 'assistant', 'content': '乙公司的隐私历史'}]})
     assert captured[0]
     assert '乙公司的隐私历史' not in str(captured)
@@ -112,5 +112,5 @@ def test_global_search_ranks_explicit_company_even_when_job_title_omits_it(clien
     repo.save_evidence(dict(title='开发工程师', company='杭州目标技术', text='Python 数据平台职责'), 'user_import')
     for i in range(10):
         repo.save_evidence(dict(title=f'工程师{i}', company='其他技术公司', text='Python 数据平台职责'), 'user_import')
-    result = client.post('/api/chat', json={'scope': 'global', 'message': '杭州目标技术的岗位职责'}).json()
+    result = client.post('/api/chat', json={'agent_mode': 'research', 'scope': 'global', 'message': '杭州目标技术的岗位职责'}).json()
     assert result['citations'][0]['company'] == '杭州目标技术'

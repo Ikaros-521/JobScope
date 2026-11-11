@@ -36,14 +36,18 @@ export type StoredMessage = {
   reasoning?: string; mode?: string; interrupted?: boolean;
   // kind='compaction' 是压缩检查点；compacted 表示该消息已被压缩折叠（仅 UI 呈现，不进模型上下文）
   kind?: string; compacted_count?: number; compacted?: boolean;
-  citations?: Citation[]; trace?: ResearchRun; metrics?: SalaryMetrics | null
+  citations?: Citation[]; trace?: ResearchRun; metrics?: SalaryMetrics | null; actions?: ScopeExpansion[]
 }
-export type ToolStep = { step: number; tool: string; duration_ms: number; label?: string; status?: string; arguments?: Record<string, unknown>; result_preview?: string; selected?: number; matched_jobs?: number; calls?: number }
+export type ConversationScope = { kind: 'global' } | { kind: 'company'; company: string } | { kind: 'job'; company: string; job_id: string }
+export type ScopeExpansion = { id: string; type: 'scope_expansion'; source_scope: ConversationScope; target_scope: ConversationScope; reason: string; target_conversation_id: string | null }
+export type ConversationNavigation = { requestId: string; conversationId: string; scope: ConversationScope }
+export type ScopeExpansionResult = { conversation_id: string; scope: ConversationScope; source_conversation_id: string; action_id: string }
+export type ToolStep = { step: number; tool: string; duration_ms: number; label?: string; status?: string; arguments?: Record<string, unknown>; result_preview?: string; selected?: number; matched_jobs?: number; calls?: number; action?: ScopeExpansion }
 export type ApprovalRequest = { approval_id: string; tool: string; arguments: Record<string, unknown>; reason: string; run_id?: string }
 export type ChatRunStatus = { run_id: string; conversation_id: string; done: boolean; cancelled: boolean; awaiting_approval: boolean; pending_approval: ApprovalRequest | null }
 export type ChatScope = { kind: 'global' } | { kind: 'company'; company: string } | { kind: 'job'; jobId: string; company: string; title?: string }
 export type ConversationSummary = { id: string; title: string; mode: ChatMode; model: string; llm_channel: string; updated_at: string; message_count: number; preview: string }
-export type ConversationDetail = { id: string; scope: { kind: string; company?: string; job_id?: string }; title: string; mode: ChatMode; model: string; llm_channel: string; created_at: string; updated_at: string; messages: StoredMessage[]; active_run: ChatRunStatus | null }
+export type ConversationDetail = { id: string; scope: { kind: string; company?: string; job_id?: string }; title: string; mode: ChatMode; model: string; llm_channel: string; created_at: string; updated_at: string; messages: StoredMessage[]; active_run: ChatRunStatus | null; scope_expansions?: ScopeExpansion[]; lineage?: { source_conversation_id: string; action_id: string } | null }
 export type ChatRunStart = { run_id: string; conversation_id: string; user_message_id: string; title: string | null }
 export type ModelProvider = { mode: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model: string; key_set: boolean; source: string; context_tokens?: number | null; saved_channel_id?: string }
 export type Channel = { id: string; name: string; url: string; protocol: 'openai' | 'anthropic'; models: string[]; embeddings: string[] }
@@ -107,6 +111,12 @@ export function listConversations(scope: ChatScope = { kind: 'global' }) {
   return api<{ conversations: ConversationSummary[] }>(`/conversations?${params}`)
 }
 export function getConversation(id: string) { return api<ConversationDetail>(`/conversations/${encodeURIComponent(id)}`) }
+export function proposeScopeExpansion(id: string, target: 'company' | 'global') {
+  return post<ScopeExpansion>(`/conversations/${encodeURIComponent(id)}/scope-expansions`, { target })
+}
+export function acceptScopeExpansion(id: string, actionId: string) {
+  return post<ScopeExpansionResult>(`/conversations/${encodeURIComponent(id)}/scope-expansions/${encodeURIComponent(actionId)}/accept`)
+}
 export function patchConversation(id: string, body: { title?: string; mode?: ChatMode; model?: string; llm_channel?: string }) {
   return api<ConversationSummary>(`/conversations/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) })
 }

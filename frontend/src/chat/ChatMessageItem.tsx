@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { safeUrl } from '../api'
-import type { StoredMessage } from '../api'
+import type { ScopeExpansion, StoredMessage } from '../api'
+import { ScopeExpansionCard } from './ScopeExpansionCard'
 import { Markdown } from './Markdown'
 import { ToolTimeline } from './ToolTimeline'
 
@@ -23,7 +24,7 @@ export function ReasoningBlock({ text, live }: { text: string; live?: boolean })
   </details>
 }
 
-export function ChatMessageItem({ message, live, showReasoning, editing, canMutate, onStartEdit, onEditSubmit, onEditCancel, onResend, onDelete }: {
+export function ChatMessageItem({ message, live, showReasoning, editing, canMutate, onStartEdit, onEditSubmit, onEditCancel, onResend, onDelete, actionsDisabled = false, onAcceptScope }: {
   message: StoredMessage
   live?: boolean
   showReasoning: boolean
@@ -34,6 +35,8 @@ export function ChatMessageItem({ message, live, showReasoning, editing, canMuta
   onEditCancel: () => void
   onResend: (message: StoredMessage) => void
   onDelete: (message: StoredMessage) => void
+  actionsDisabled?: boolean
+  onAcceptScope?: (action: ScopeExpansion) => Promise<void>
 }) {
   const [copied, setCopied] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -91,6 +94,7 @@ export function ChatMessageItem({ message, live, showReasoning, editing, canMuta
       {reasoning && <ReasoningBlock text={reasoning} live={live} />}
       {message.trace?.events?.length ? <ToolTimeline steps={message.trace.events} /> : null}
       <div className="message-content"><Markdown content={message.content} /></div>
+      {onAcceptScope && message.actions?.map(action => <ScopeExpansionCard key={action.id} action={action} disabled={actionsDisabled} onAccept={onAcceptScope} />)}
       {message.metrics && <p className="tiny-label">薪资统计基于 {message.metrics.matched_jobs} 个符合筛选条件的岗位，招聘报价不代表实际工资。</p>}
       {message.citations?.map(citation => <details className="citation" key={citation.id}>
         <summary>{citation.company && <span className="citation-company">{citation.company} · </span>}{citation.title}</summary>
