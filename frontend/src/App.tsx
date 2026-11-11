@@ -101,6 +101,7 @@ export default function App() {
   const [descExpanded, setDescExpanded] = useState(false)
   const [companyPage, setCompanyPage] = useState(0)
   const [paneFocus, setPaneFocus] = useState<'archive' | 'info' | 'chat'>('info')
+  const [focusHint, setFocusHint] = useState(() => { try { return localStorage.getItem('jobscope.pane-focus-hint') !== 'off' } catch { return true } })
   const [resumeText, setResumeText] = useState('')
   const [resumeFormat, setResumeFormat] = useState('text')
   const [resumeRevision, setResumeRevision] = useState<number | null>(null)
@@ -427,6 +428,7 @@ export default function App() {
           <div className="search-footnote"><span><span className="small-dot" />{selectedSource?.description || '标注“需浏览器”的来源，需要先在项目 Chrome 中登录。'}</span></div>
         </section>
 
+        {focusHint && <div className="pane-focus-hint" role="note"><span>提示：点击任意一栏可聚焦放大，点其他栏切换焦点</span><button className="icon-button" aria-label="知道了，不再提示" onClick={() => { setFocusHint(false); try { localStorage.setItem('jobscope.pane-focus-hint', 'off') } catch { /* 隐私模式下无法持久化，本次会话内不再显示 */ } }}><Icon name="close" size={13} /></button></div>}
         <div className={`research-layout focus-${paneFocus}${job ? '' : ' no-chat'}`}>
           <section className="job-list-panel" aria-labelledby="archive-heading" onClick={() => setPaneFocus('archive')}><div className="panel-title"><h2 id="archive-heading">岗位档案 <span>{jobsInfo.total.toLocaleString()}</span></h2>{hasArchiveFilters ? <button className="text-button archive-reset" disabled={Boolean(busy)} onClick={clearArchiveFilters}>清除筛选</button> : <span className="archive-scope">本地资料库</span>}</div>
             <form className="job-archive-filters" aria-label="岗位档案筛选" onSubmit={event => { event.preventDefault(); void perform('filter', async () => { await loadJobs({ ...archiveDraft }, 1) }) }}>

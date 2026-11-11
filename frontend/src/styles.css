@@ -280,6 +280,9 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .search-footnote button { font-size: 12px; white-space: nowrap; color: #525252; padding: 0; align-self: start; min-height: 24px; }
 .research-layout { display: grid; grid-template-columns: minmax(340px, .48fr) minmax(0, 1fr); gap: 20px; align-items: start; }
 .research-layout > .job-chat { grid-column: 1 / -1; }
+.pane-focus-hint { display: flex; align-items: center; justify-content: center; gap: 2px; margin: 0 0 8px; }
+.pane-focus-hint span { font-size: 12px; line-height: 1.7; color: var(--green); background: var(--selected); border: 1px solid #cfe0d6; border-radius: 16px; padding: 3px 12px; }
+.pane-focus-hint .icon-button { min-height: 24px; width: 24px; color: var(--muted); }
 .job-list-panel, .detail-panel { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; min-width: 0; overflow: hidden; box-shadow: var(--shadow-panel); }
 .panel-title { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 8px 12px; border-bottom: 1px solid var(--line); padding: 16px; }
 .panel-title h2 { display: flex; align-items: center; gap: 8px; font-size: 15px; }
@@ -1358,6 +1361,12 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
   .main-workbench .research-layout.no-chat.focus-archive { grid-template-columns: minmax(380px, 1fr) minmax(280px, 380px); }
   .main-workbench .research-layout > .job-chat { display: flex; min-height: 0; grid-column: auto; }
   .main-workbench .research-layout > .job-chat .chat-page { flex: 1; height: auto; min-height: 0; }
+  /* 三列点击聚焦的可发现性：悬停高亮示意可点，聚焦列绿边标记当前焦点。 */
+  .main-workbench .research-layout > section { cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease; }
+  .main-workbench .research-layout > section:hover { border-color: #9db8aa; box-shadow: 0 0 0 1px #9db8aa66; }
+  .main-workbench .research-layout.focus-archive > .job-list-panel,
+  .main-workbench .research-layout.focus-info > .detail-panel,
+  .main-workbench .research-layout.focus-chat > .job-chat { border-color: var(--green); box-shadow: 0 0 0 1px #173e3522; }
   /* 公司资料库一屏工作台：控件行紧凑，来源列表/公司对话内部滚动，底部重复分页隐藏。 */
   .main-workbench > .evidence-view:not([hidden]) { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
   .main-workbench > .evidence-view:not([hidden]) > * { flex-shrink: 0; }
