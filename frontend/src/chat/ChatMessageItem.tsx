@@ -128,14 +128,6 @@ export function ChatMessageItem({ message, live, showReasoning, editing, canMuta
       <span className="message-author">{author}</span>
       {message.compacted && <span className="archived-chip">已折叠 · 不进模型上下文</span>}
       {message.interrupted && <span className="interrupted-chip">已手动停止</span>}
-      <div className="msg-actions">
-        <button type="button" onClick={() => void copy()}>{copied ? '已复制' : '复制'}</button>
-        {canMutate && isUser && <button type="button" className="msg-edit-toggle" onClick={() => onStartEdit(message)}>编辑</button>}
-        {canMutate && <button type="button" onClick={() => onResend(message)}>重发</button>}
-        {canMutate && (confirmDelete
-          ? <button type="button" className="danger" onClick={() => onDelete(message)}>确认删除</button>
-          : <button type="button" onClick={() => { setConfirmDelete(true); window.setTimeout(() => setConfirmDelete(false), 3000) }}>删除</button>)}
-      </div>
     </div>
 
     {editing ? <div className="msg-editing">
@@ -157,5 +149,13 @@ export function ChatMessageItem({ message, live, showReasoning, editing, canMuta
         {safeUrl(citation.url) ? <a className="external-link" href={safeUrl(citation.url)} target="_blank" rel="noreferrer">原始来源</a> : <span className="tiny-label">未提供原始链接</span>}
       </details>)}
     </>}
+    <div className="msg-actions">
+      <button type="button" onClick={() => void copy()}>{copied ? '已复制' : '复制'}</button>
+      {canMutate && isUser && <button type="button" className="msg-edit-toggle" onClick={() => onStartEdit(message)}>编辑</button>}
+      {canMutate && <button type="button" onClick={() => onResend(message)}>重发</button>}
+      {canMutate && (confirmDelete
+        ? <button type="button" className="danger" onClick={() => onDelete(message)}>确认删除</button>
+        : <button type="button" onClick={() => { setConfirmDelete(true); window.setTimeout(() => setConfirmDelete(false), 3000) }}>删除</button>)}
+    </div>
   </article>
 }

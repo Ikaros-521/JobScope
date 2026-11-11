@@ -1190,16 +1190,17 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .live-bubble .chat-avatar { animation: chat-pulse 1.2s ease-in-out infinite; }
 .chat-bubble.user { text-align: right; }
 .chat-bubble.user .chat-bubble-head { justify-content: flex-end; }
-.chat-bubble.user .msg-actions { margin-left: 0; margin-right: auto; order: -1; }
 .chat-bubble.user .message-content { background: #e9efeb; border-radius: 12px; display: inline-block; padding: 12px 14px; max-width: 78%; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; color: #262626; }
 .chat-bubble.assistant .message-content { color: #333; overflow-wrap: anywhere; }
 .message-author { font-size: 12px; color: var(--muted); }
 .interrupted-chip { font-size: 11px; color: #755622; background: #f8f2e5; border-radius: 999px; padding: 2px 10px; }
-.msg-actions { margin-left: auto; display: flex; gap: 4px; opacity: 0; transition: opacity .15s ease; }
-.chat-bubble:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
-.msg-actions button { font-size: 11px; padding: 4px 8px; min-height: 24px; background: #fff; border: 1px solid #d4d4d4; border-radius: 6px; color: #525252; }
-.msg-actions button:hover { border-color: #737373; color: #262626; }
-.msg-actions button.danger { color: #8c3a2a; border-color: #ecd8d0; }
+/* 操作按钮常驻气泡下方：用户消息右对齐、助手消息左对齐，避免 hover 藏在头部难以发现。 */
+.msg-actions { display: flex; gap: 2px; margin-top: 2px; flex-wrap: wrap; }
+.chat-bubble.user .msg-actions { justify-content: flex-end; }
+.msg-actions button { font-size: 11px; padding: 2px 8px; min-height: 24px; background: none; border: 0; border-radius: 6px; color: #8a8f8a; }
+.msg-actions button:hover { background: #f0f0f0; color: #262626; }
+.msg-actions button.danger { color: #8c3a2a; }
+.msg-actions button.danger:hover { background: #fbf4f1; }
 .msg-editing textarea { width: 100%; border: 1px solid #d4d4d4; border-radius: 8px; padding: 10px 12px; font-size: 14px; background: #fafafa; }
 .msg-editing textarea:focus { outline: 2px solid #547c70; outline-offset: 0; }
 .msg-editing-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
