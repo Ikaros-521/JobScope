@@ -71,6 +71,8 @@ class Repository:
             ('mode', "TEXT NOT NULL DEFAULT 'research'"),
             ('model', "TEXT NOT NULL DEFAULT ''"),
             ('llm_channel', "TEXT NOT NULL DEFAULT ''"),
+            # 工具权限档位：confirm=逐次确认 autonomous=只读/白名单自动 full=全部自动；存量会话迁移为自主，兼容 auto_tools 现状。
+            ('permission_mode', "TEXT NOT NULL DEFAULT 'autonomous'"),
         ):
             if name not in columns:
                 conn.execute(f'ALTER TABLE conversations ADD COLUMN {name} {definition}')
@@ -372,14 +374,14 @@ class Repository:
                     raise ValueError('会话范围不匹配，请为当前范围新建对话')
                 return conversation_id, json.loads(row['messages'])
             conversation_id = 'C-' + uuid.uuid4().hex
-            conn.execute('INSERT INTO conversations VALUES (?,?,?,?,?,?,?,?,?)', (conversation_id, encoded, '[]', '', now(), now(), 'research', '', ''))
+            conn.execute('INSERT INTO conversations VALUES (?,?,?,?,?,?,?,?,?,?)', (conversation_id, encoded, '[]', '', now(), now(), 'research', '', '', 'autonomous'))
         return conversation_id, []
 
-    def create_conversation(self, scope, mode='research', model='', llm_channel=''):
+    def create_conversation(self, scope, mode='research', model='', llm_channel='', permission_mode='autonomous'):
         conversation_id = 'C-' + uuid.uuid4().hex
         encoded = json.dumps(scope, sort_keys=True, ensure_ascii=False)
         with self.connection() as conn:
-            conn.execute('INSERT INTO conversations VALUES (?,?,?,?,?,?,?,?,?)', (conversation_id, encoded, '[]', '', now(), now(), mode, model, llm_channel))
+            conn.execute('INSERT INTO conversations VALUES (?,?,?,?,?,?,?,?,?,?)', (conversation_id, encoded, '[]', '', now(), now(), mode, model, llm_channel, permission_mode))
         return conversation_id
 
     @staticmethod
@@ -416,12 +418,12 @@ class Repository:
     def list_conversations(self, scope, limit=200):
         encoded = json.dumps(scope, sort_keys=True, ensure_ascii=False)
         with self.connection() as conn:
-            rows = conn.execute('SELECT id,title,mode,model,llm_channel,updated_at,messages FROM conversations WHERE scope=? ORDER BY updated_at DESC LIMIT ?', (encoded, limit)).fetchall()
+            rows = conn.execute('SELECT id,title,mode,model,llm_channel,permission_mode,updated_at,messages FROM conversations WHERE scope=? ORDER BY updated_at DESC LIMIT ?', (encoded, limit)).fetchall()
         result = []
         for row in rows:
             messages = json.loads(row['messages'])
             preview = next((m['content'][:80] for m in messages if m.get('role') == 'user'), '')
-            result.append(dict(id=row['id'], title=row['title'] or preview or '新对话', mode=row['mode'] or 'research', model=row['model'], llm_channel=row['llm_channel'] or '', updated_at=row['updated_at'], message_count=len(messages), preview=preview))
+            result.append(dict(id=row['id'], title=row['title'] or preview or '新对话', mode=row['mode'] or 'research', model=row['model'], llm_channel=row['llm_channel'] or '', permission_mode=row['permission_mode'] or 'autonomous', updated_at=row['updated_at'], message_count=len(messages), preview=preview))
         return result
 
     def get_conversation(self, conversation_id, scope=None):
@@ -433,7 +435,7 @@ class Repository:
         if self._fill_message_ids(messages):
             with self.connection() as conn:
                 conn.execute('UPDATE conversations SET messages=? WHERE id=?', (json.dumps(messages, ensure_ascii=False), conversation_id))
-        return dict(id=row['id'], scope=json.loads(row['scope']), title=row['title'] or '新对话', mode=row['mode'] or 'research', model=row['model'], llm_channel=row['llm_channel'] or '', created_at=row['created_at'], updated_at=row['updated_at'], messages=messages)
+        return dict(id=row['id'], scope=json.loads(row['scope']), title=row['title'] or '新对话', mode=row['mode'] or 'research', model=row['model'], llm_channel=row['llm_channel'] or '', permission_mode=row['permission_mode'] or 'autonomous', created_at=row['created_at'], updated_at=row['updated_at'], messages=messages)
 
     def _conversation_row(self, conn, conversation_id, scope=None):
         row = conn.execute('SELECT scope,title,messages FROM conversations WHERE id=?', (conversation_id,)).fetchone()
@@ -441,7 +443,7 @@ class Repository:
             raise ValueError('会话不存在或范围不匹配')
         return row
 
-    def update_conversation(self, conversation_id, scope=None, *, title=None, mode=None, model=None, llm_channel=None):
+    def update_conversation(self, conversation_id, scope=None, *, title=None, mode=None, model=None, llm_channel=None, permission_mode=None):
         fields, values = [], []
         if title is not None:
             fields.append('title=?')
@@ -455,6 +457,9 @@ class Repository:
         if llm_channel is not None:
             fields.append('llm_channel=?')
             values.append(llm_channel[:100])
+        if permission_mode is not None:
+            fields.append('permission_mode=?')
+            values.append(permission_mode)
         if not fields:
             return
         clause = ' AND scope=?' if scope is not None else ''

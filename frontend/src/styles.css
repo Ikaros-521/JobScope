@@ -63,9 +63,6 @@
   --shadow-panel: 0 2px 6px rgba(23, 62, 53, .035);
   --sidebar-width: 216px;
 }
-.agent-mode-select { display: flex; align-items: center; gap: 16px; margin: 20px 0; }
-.agent-mode-select label { font-size: 13px; white-space: nowrap; }
-.agent-mode-select select { flex: 1; }
 .manage-extensions { margin: 0 0 20px; }
 .extensions-workspace .agent-extension-body { border: 1px solid var(--line); border-radius: 12px; background: var(--paper); padding: 0; overflow: hidden; }
 .extensions-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 20px 24px; border-bottom: 1px solid var(--line); }
@@ -148,7 +145,7 @@
 .agent-approval p { font-size: 12px; line-height: 1.6; margin: 0 0 8px; }
 .agent-approval pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 120px; overflow: auto; background: #fff; border: 1px solid #efe8d3; padding: 6px 10px; font-size: 12px; margin: 0 0 8px; }
 .agent-approval > div { display: flex; gap: 12px; justify-content: flex-end; }
-@media (max-width: 600px) { .agent-extension-body { padding: 14px; } .agent-extension-body fieldset { padding: 14px; } .agent-field-grid { grid-template-columns: 1fr; gap: 0; } .agent-tool { grid-template-columns: 1fr 1fr; gap: 10px; } .agent-tool > div { grid-column: 1 / -1; } .agent-mode-select { align-items: start; flex-direction: column; gap: 8px; } .agent-mode-select select { width: 100%; } .agent-skill { flex-wrap: wrap; } .agent-skill > div { flex-basis: 100%; } }
+@media (max-width: 600px) { .agent-extension-body { padding: 14px; } .agent-extension-body fieldset { padding: 14px; } .agent-field-grid { grid-template-columns: 1fr; gap: 0; } .agent-tool { grid-template-columns: 1fr 1fr; gap: 10px; } .agent-tool > div { grid-column: 1 / -1; } .agent-skill { flex-wrap: wrap; } .agent-skill > div { flex-basis: 100%; } }
 * { box-sizing: border-box; }
 body { margin: 0; }
 button, input, textarea, select { font: inherit; }
@@ -685,6 +682,9 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .modal { width: 640px; max-width: 100%; max-height: calc(100dvh - 48px); overflow-y: auto; box-shadow: 0 16px 48px #17171726; }
 .modal input, .modal textarea, .modal select { display: block; width: 100%; }
 .modal .section-heading { margin-bottom: 12px; }
+/* 权限升档确认框：比通用 640px 弹窗更小 */
+.mode-modal { width: 420px; }
+.mode-modal .modal-actions { margin-top: 16px; }
 .form-two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }
 .alert { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; margin: 16px 0; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
@@ -1271,6 +1271,13 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .scope-expansion-card p.scope-expansion-error { color: #8c3a2a; }
 .composer-model { display: inline-flex; align-items: center; gap: 6px; color: #525252; }
 .composer-model select { min-height: 32px; font-size: 12px; padding: 4px 8px; border-radius: 8px; max-width: 220px; }
+/* 三档工具权限分段控件：当前档白底绿字，运行/待确认期间禁切 */
+.composer-mode { display: inline-flex; align-items: center; gap: 6px; color: #525252; }
+.composer-mode-seg { display: inline-flex; align-items: center; padding: 2px; background: #f0f2f0; border: 1px solid #dce4df; border-radius: 8px; }
+.composer-mode-seg button { min-height: 26px; padding: 2px 10px; font-size: 11px; color: #525252; background: none; border: 0; border-radius: 6px; white-space: nowrap; }
+.composer-mode-seg button:hover:not(:disabled):not(.active) { color: var(--green); }
+.composer-mode-seg button.active { background: #fff; color: var(--green); font-weight: 600; box-shadow: 0 1px 3px rgba(23,62,53,.18); }
+.composer-mode-seg button:disabled { opacity: .55; cursor: not-allowed; }
 .composer-switch { display: inline-flex; align-items: center; gap: 8px; color: #525252; cursor: pointer; }
 .composer-switch input { appearance: none; width: 34px; height: 18px; border: 0; padding: 0; border-radius: 999px; background: #d4d4d4; position: relative; cursor: pointer; margin: 0; transition: background .15s ease; min-width: 34px; min-height: 18px; }
 .composer-switch input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; border-radius: 50%; background: #fff; transition: left .15s ease; }

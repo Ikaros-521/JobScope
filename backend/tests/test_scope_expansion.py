@@ -195,7 +195,7 @@ def test_all_configured_entry_points_use_scoped_general_runtime_and_persist_acti
     job = repo.save_job(dict(title='Python', company='甲公司', description='Python', external_id='runtime-job'), 'user_import')
     client.put('/api/settings/models', json={'llm': dict(mode='remote', url='https://fixture.example/v1', model='fixture')})
     calls = []
-    def start(self, message, history, conversation_id, hooks=None, run_id=None, scope=None):
+    def start(self, message, history, conversation_id, hooks=None, run_id=None, scope=None, permission_mode='autonomous'):
         calls.append(scope)
         action = ScopeExpansionStore(repo).propose(conversation_id, 'company', '查看公司资料')
         if hooks:

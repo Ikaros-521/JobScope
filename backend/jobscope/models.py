@@ -127,6 +127,8 @@ class ChatRunInput(RequestModel):
     # 省略=沿用会话已保存的模型/渠道；空串=重置为渠道默认或全局默认。
     model: str | None = Field(default=None, max_length=200)
     llm_channel: str | None = Field(default=None, max_length=100)
+    # 工具权限档位：省略=沿用会话已保存值（新会话默认 autonomous）。
+    permission_mode: Literal['confirm', 'autonomous', 'full'] | None = None
     edit_message_id: str | None = Field(default=None, max_length=50)
     company: str = Field(default='', max_length=300)
     job_id: str | None = Field(default=None, max_length=100)
@@ -143,6 +145,8 @@ class ConversationPatch(RequestModel):
     model: str | None = Field(default=None, max_length=200)
     # 空串=跟随全局配置；非空=使用已保存渠道，llm_channels 表里必须存在
     llm_channel: str | None = Field(default=None, max_length=100)
+    # 工具权限档位：confirm=逐次确认 autonomous=只读/白名单自动 full=全部自动
+    permission_mode: Literal['confirm', 'autonomous', 'full'] | None = None
 
 
 class ReliabilityInput(RequestModel):
