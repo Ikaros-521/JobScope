@@ -255,7 +255,10 @@ def test_skill_and_unknown_citations_never_grant_execution_authority(client, mon
     configure(client)
     scripted(monkeypatch, [final('事实 [E-invented]')])
     result = client.post('/api/chat', json=dict(scope='global', agent_mode='general', message='回答')).json()
-    assert '阻止展示' in result['answer'] and not result['citations']
+    # 回答照常展示：编造引用被就地标注且不产生引用卡片，警示与降级记录可见。
+    assert '事实' in result['answer'] and '[E-invented 未读取]' in result['answer']
+    assert result['answer'].startswith('> ⚠️') and not result['citations']
+    assert any('E-invented' in note for note in result['trace']['degraded'])
 
 
 def test_resume_access_taints_later_turns_even_with_auto_tool(client, monkeypatch):

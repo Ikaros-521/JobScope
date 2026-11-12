@@ -381,10 +381,17 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
         # Cite only sources actually read by a tool in this run.
         answer = re.sub(r'[\[【]\s*(?:证据\s*(?:ID)?\s*[:：]?\s*)?(E-[A-Za-z0-9_-]+)\s*[\]】]', r'[\1]', answer)
         ids = list(dict.fromkeys(re.findall(r'\bE-[A-Za-z0-9_-]+', answer)))
-        if any(eid not in state['evidence'] for eid in ids):
-            answer = '模型回答包含未读取或不存在的项目引用，已阻止展示。请重新提问，或查看工具过程。'
-            run['degraded'].append('项目引用校验失败')
-            ids = []
+        # Fabricated citations never grant display authority, but no longer
+        # swallow the whole paid answer: mark them inline, drop them from the
+        # citation cards, and keep the run visibly degraded instead.
+        invalid = [eid for eid in ids if eid not in state['evidence']]
+        if invalid:
+            for eid in invalid:
+                answer = answer.replace(f'[{eid}]', f'[{eid} 未读取]')
+            answer = ('> ⚠️ 引用未通过校验：' + '、'.join(invalid) +
+                      ' 不是本轮工具实际读取的资料编号，已就地标注；相关结论请对照工具过程核实，其余内容照常展示。\n\n' + answer)
+            run['degraded'].append('回答含未读取引用：' + '、'.join(invalid))
+            ids = [eid for eid in ids if eid not in invalid]
         status = 'awaiting_approval' if pending else 'interrupted' if interrupted else 'completed'
         run.update(status=status, duration_ms=round((time.time() - state['started']) * 1000), context_characters=state['context_chars'], citation_ids=ids)
         self._save(run)

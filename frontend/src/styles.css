@@ -1320,6 +1320,9 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .md-body li > p:first-child { margin-top: 0; }
 .md-body li > p:last-child { margin-bottom: 0; }
 .md-body li ul, .md-body li ol { margin: 2px 0; }
+/* 引用校验降级警示行（回答顶部 blockquote） */
+.md-body blockquote { margin: 6px 0; padding: 4px 10px; border-left: 3px solid #d4a545; background: #faf7ed; border-radius: 4px; color: #8a6d1f; font-size: 13px; }
+.md-body blockquote p { margin: 2px 0; }
 .md-body p:empty, .md-body li:empty { display: none; }
 .md-body h1, .md-body h2, .md-body h3, .md-body h4 { margin: 14px 0 8px; line-height: 1.5; }
 .md-body h1 { font-size: 19px; }
