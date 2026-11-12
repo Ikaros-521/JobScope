@@ -1,5 +1,7 @@
 import { date } from './api'
 import type { ReliabilityDiff, ReliabilityFinding, ReliabilityHistory, ReliabilityReport } from './api'
+import { toast } from './toast'
+import { addCompareCompany } from './compareSelectionStore'
 
 // 措辞只能来自后端 wording.py 的模板：这个组件只排版，不替公司写任何结论。
 // 唯一允许自己写的文字是标签、按钮名和「这一步在做什么」的说明。
@@ -181,16 +183,18 @@ function TrendDiff({ diff }: { diff: ReliabilityDiff }) {
   </div>
 }
 
-export function CompanyReference({ report, history, busy, action, onCompute, onCoverage, onExtract, onOpenEvidence, onOpenEvidenceModal }: {
+export function CompanyReference({ report, history, busy, action, company, onCompute, onCoverage, onExtract, onOpenEvidence, onOpenEvidenceModal, onOpenCompare }: {
   report: ReliabilityReport | null
   history: ReliabilityHistory | null
   busy: boolean
   action: { label: string; status: string; message: string } | null
+  company: string
   onCompute: () => void
   onCoverage: () => void
   onExtract: () => void
   onOpenEvidence: (evidenceId: string) => void
   onOpenEvidenceModal: () => void
+  onOpenCompare?: () => void
 }) {
   const score = report?.score ?? null
   const gapActionHandler = (kind: 'local' | 'extract' | 'material') => {
@@ -198,10 +202,19 @@ export function CompanyReference({ report, history, busy, action, onCompute, onC
     else if (kind === 'extract') onExtract()
     else onOpenEvidenceModal()
   }
+  function joinCompare() {
+    const result = addCompareCompany(company)
+    if (result === 'exists') { toast('这家公司已在横评列表里。'); return }
+    if (result === 'full') { toast('横评最多 8 家，先在数据分析页移除几家再加入。'); return }
+    toast('已加入横评，可继续评估其他公司', 'notice', false, onOpenCompare ? { label: '去横评', onClick: onOpenCompare } : undefined)
+  }
   return <section className="reliability-panel" aria-label="求职参考">
     <div className="section-heading">
       <div><span className="section-label">求职参考</span><h3>{report ? `${report.company} · 主观参考` : '主观参考'}</h3></div>
-      <button type="button" className="button secondary small" disabled={Boolean(busy)} onClick={onCompute}>{busy ? '整理中…' : report ? '重新计算' : '生成参考'}</button>
+      <div className="purpose-heading-actions">
+        <button type="button" className="button secondary small" disabled={!company.trim()} onClick={joinCompare}>加入横评</button>
+        <button type="button" className="button secondary small" disabled={Boolean(busy)} onClick={onCompute}>{busy ? '整理中…' : report ? '重新计算' : '生成参考'}</button>
+      </div>
     </div>
 
     {/* 没有综合分时不画空环、不摆占位大数字，直接说明依据不足并交给下面的缺口清单。 */}

@@ -444,7 +444,7 @@ def create_app(data_dir=None):
                     if source in ('qcc', 'tyc'):
                         execute_lookup(source, company, task)
                     else:
-                        execute_collection(source, company, task, limit=10)
+                        execute_collection(source, company, task, limit=data.limit)
                 except Exception:
                     task.update(status="failed", message="该渠道检索失败，已跳过；不影响其他渠道")
                     repo.update_task(task)

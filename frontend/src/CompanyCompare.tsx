@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { computeReliability, getCompareCompanies, getCompanyLayers, getReliability } from './api'
-import type { CompareCompany, CompareLayer, CompareLayers, ReliabilityReport } from './api'
-import { toast } from './toast'
+import { api, computeReliability, getCompareCompanies, getCompanyLayers, getReliability, startCompanyResearch } from './api'
+import type { CompareCompany, CompareLayer, CompareLayers, ReliabilityReport, Task } from './api'
+import { toast, dismissToast } from './toast'
+import { addCompareCompany, removeCompareCompany, useCompareSelection } from './compareSelectionStore'
+import { MAX_COMPANIES } from './compareSelectionStore'
 import { EChart } from './EChart'
 import type { ChartOption } from './EChart'
 
@@ -11,12 +13,13 @@ const DIMENSIONS: [key: string, label: string][] = [
   ['stability', '稳定性'], ['pay', '薪资待遇'], ['operations', '实际经营'],
   ['people', '人员情况'], ['professional', '专业性'], ['industry', '行业前景'],
 ]
-// 最多 8 家：雷达图再多家就糊成一团，条形图也放不下。
-const MAX_COMPANIES = 8
 const PALETTE = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4', '#ec4899', '#84cc16']
 
-type Row = { company: string; report?: ReliabilityReport | null }
 type LayerRow = CompareLayers & { company: string }
+// 多平台检索的渠道短名（与后端 company-research 的 plan 一致），轮询汇总时给用户看。
+const CHANNEL_NAMES: Record<string, string> = {
+  cninfo: '巨潮公告', qcc: '企查查', tyc: '天眼查', boss: 'BOSS直聘', zhaopin: '智联', '51job': '前程无忧', liepin: '猎聘',
+}
 
 function tone(score: number) {
   const clamped = Math.max(0, Math.min(100, score))
@@ -38,6 +41,7 @@ function dimScore(report: ReliabilityReport | null | undefined, key: string) {
 }
 function layerKeyOf(layer: CompareLayer) { return `${layer.role}|${layer.experience}|${layer.education}` }
 function layerLabel(layer: CompareLayer) { return `${layer.role} · ${layer.experience} · ${layer.education}` }
+function fetchTask(id: string) { return api<{ task: Task }>(`/tasks/${encodeURIComponent(id)}`) }
 
 export function CompanyCompare() {
   const [query, setQuery] = useState('')
@@ -46,12 +50,17 @@ export function CompanyCompare() {
   const [searchOpen, setSearchOpen] = useState(false)
   const [highlight, setHighlight] = useState(0)
   const searchBox = useRef<HTMLDivElement>(null)
-  const [selected, setSelected] = useState<Row[]>([])
+  // 已选列表放共享 store（localStorage 持久化）：本页切走再回来不丢，公司资料库的「加入横评」也写同一份。
+  const selected = useCompareSelection()
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
   const [reports, setReports] = useState<Record<string, ReliabilityReport | null>>({})
   const [layers, setLayers] = useState<Record<string, LayerRow>>({})
   const [layerKey, setLayerKey] = useState('')
   const [computing, setComputing] = useState(false)
   const [progress, setProgress] = useState('')
+  // 正在补数据的公司（一次一家：后端多平台检索串行跑 7 渠道，多家并发会同时开多个浏览器抢资源）。
+  const [collecting, setCollecting] = useState<string | null>(null)
 
   useEffect(() => {
     let active = true
@@ -79,27 +88,36 @@ export function CompanyCompare() {
     if (!selected.length) { setLayers({}); return }
     let active = true
     const timer = window.setTimeout(() => {
-      getCompanyLayers(selected.map(item => item.company))
+      getCompanyLayers(selected)
         .then(data => { if (active) setLayers(Object.fromEntries(data.companies.map(row => [row.company, row]))) })
         .catch(() => { if (active) setLayers({}) })
     }, 300)
     return () => { active = false; clearTimeout(timer) }
   }, [selected])
 
-  const rows = useMemo(() => selected.map(item => ({ ...item, report: reports[item.company] })), [selected, reports])
+  // 参考报告只拉缺失的：新加入（含从资料库跨页加入、刷新后从 localStorage 恢复）逐家补，
+  // 已有结果（含重算后写回的）不覆盖，避免闪回 loading 态。
+  useEffect(() => {
+    for (const name of selected) {
+      if (reports[name] !== undefined) continue
+      getReliability(name)
+        .then(({ report }) => setReports(prev => (prev[name] === undefined ? { ...prev, [name]: report } : prev)))
+        .catch(() => setReports(prev => (prev[name] === undefined ? { ...prev, [name]: null } : prev)))
+    }
+    // reports 不进依赖：它只是「哪些已拉过」的记账，入依赖会在每次写回后重跑整段。
+  }, [selected]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const rows = useMemo(() => selected.map(name => ({ company: name, report: reports[name] })), [selected, reports])
 
   // 加入对比的唯一入口：下拉点选或回车选高亮项。刻意不做「按原文加入」——
   // 横评的数据面是已保存岗位与报告，未登记的公司加了也是空行；等检索请求返回再选。
   function pick(name: string) {
     const trimmed = name.trim()
     if (!trimmed) return
-    if (selected.some(item => item.company === trimmed)) { toast('这家公司已在对比列表里。'); return }
-    if (selected.length >= MAX_COMPANIES) { toast(`一次最多横评 ${MAX_COMPANIES} 家，先移除几家再加入。`); return }
-    setSelected(prev => [...prev, { company: trimmed }])
+    const result = addCompareCompany(trimmed)
+    if (result === 'exists') { toast('这家公司已在对比列表里。'); return }
+    if (result === 'full') { toast(`一次最多横评 ${MAX_COMPANIES} 家，先移除几家再加入。`); return }
     setQuery(''); setSearchOpen(false)
-    getReliability(trimmed)
-      .then(({ report }) => setReports(prev => ({ ...prev, [trimmed]: report })))
-      .catch(err => toast((err as Error).message, 'error'))
   }
   function submitSearch(event: FormEvent) {
     event.preventDefault()
@@ -116,24 +134,60 @@ export function CompanyCompare() {
     else if (event.key === 'Escape') setSearchOpen(false)
   }
   function removeCompany(name: string) {
-    setSelected(prev => prev.filter(item => item.company !== name))
+    removeCompareCompany(name)
   }
   async function recomputeAll() {
     if (!selected.length || computing) return
     setComputing(true)
     const done: string[] = []
     const failed: string[] = []
-    for (const [index, item] of selected.entries()) {
+    for (const [index, name] of selected.entries()) {
       setProgress(`重算中 ${index + 1}/${selected.length}`)
       try {
-        const report = await computeReliability(item.company)
-        setReports(prev => ({ ...prev, [item.company]: report }))
-        done.push(item.company)
-      } catch (err) { failed.push(`${item.company}：${(err as Error).message}`) }
+        const report = await computeReliability(name)
+        setReports(prev => ({ ...prev, [name]: report }))
+        done.push(name)
+      } catch (err) { failed.push(`${name}：${(err as Error).message}`) }
     }
     setComputing(false); setProgress('')
     toast(failed.length ? `重算完成 ${done.length} 家，失败 ${failed.length} 家：${failed.join('；')}` : `已重新计算 ${done.length} 家，图表已更新。`)
     getCompareCompanies(query.trim()).then(data => setSuggestions(data.companies)).catch(() => {})
+  }
+
+  // 单公司补数据：发起多平台检索（公告+快查+岗位渠道串行跑，每渠道独立成败），全部结束后
+  // 自动重算该公司并刷新分层——把「缺数据 → 补采 → 出分」闭环留在横评页里。一次只跑一家。
+  async function collectCompanyData(company: string) {
+    if (collecting) return
+    setCollecting(company)
+    const progressToast = toast(`正在为「${company}」补充岗位与资料（7 渠道串行，约需几分钟）…`, 'notice', true)
+    let failedChannels: string[] = []
+    try {
+      const started = await startCompanyResearch(company, 30)
+      const results = await Promise.all(started.tasks.map(async initial => {
+        for (let poll = 0; poll < 300; poll++) {
+          await new Promise(resolve => setTimeout(resolve, 2000))
+          const { task } = await fetchTask(initial.id)
+          if (task.status !== 'running' && task.status !== 'pending') return task
+        }
+        return initial
+      }))
+      failedChannels = results.filter(task => !(task.status === 'completed' || task.status === 'success')).map(task => CHANNEL_NAMES[task.source] || task.source)
+    } catch (err) {
+      toast(`补充数据发起失败：${(err as Error).message}`, 'error')
+    } finally {
+      dismissToast(progressToast)
+      setCollecting(null)
+    }
+    // 采集已落库，无论渠道成败都重算刷新一次；切页离开后请求照发，回来能看到新结果。
+    try {
+      const report = await computeReliability(company)
+      setReports(prev => ({ ...prev, [company]: report }))
+    } catch { /* 重算失败不额外提示，用户可手动点「重新计算所选」 */ }
+    getCompanyLayers(selectedRef.current)
+      .then(data => setLayers(Object.fromEntries(data.companies.map(row => [row.company, row]))))
+      .catch(() => {})
+    if (failedChannels.length) toast(`「${company}」补充完成，${failedChannels.length} 个渠道未出结果（${failedChannels.join('、')}），已重算本地材料。`, 'error')
+    else toast(`「${company}」补充完成，已重算并刷新图表。`)
   }
 
   // ── 图表 option 全部由 rows/layers 推导；没有可用数据时面板退成一句提示，不画空坐标系。 ──
@@ -183,7 +237,7 @@ export function CompanyCompare() {
 
   // 岗位构成：公司级薪资中位数不可比的根源在职类构成不同——先把构成摆出来。
   const mixOption = useMemo<ChartOption | null>(() => {
-    const entries = selected.map(item => ({ company: item.company, data: layers[item.company] }))
+    const entries = selected.map(name => ({ company: name, data: layers[name] }))
     if (!entries.some(entry => (entry.data?.total_jobs ?? 0) > 0)) return null
     const roles: string[] = []
     for (const entry of entries) for (const item of entry.data?.mix ?? []) if (!roles.includes(item.role)) roles.push(item.role)
@@ -217,10 +271,10 @@ export function CompanyCompare() {
   const activeLayer = layerOptions.find(item => item.key === layerKey) ?? layerOptions[0]
   const layerPayRows = useMemo(() => {
     if (!activeLayer) return []
-    return selected.map(item => {
-      const row = layers[item.company]
+    return selected.map(name => {
+      const row = layers[name]
       return {
-        company: item.company, city: row?.city ?? '',
+        company: name, city: row?.city ?? '',
         layer: row?.layers.find(item => layerKeyOf(item) === activeLayer.key),
       }
     })
@@ -317,7 +371,7 @@ export function CompanyCompare() {
           {searchOpen && suggestions.length > 0
             ? <div className="compare-search-panel" role="listbox">
                 {suggestions.map((item, index) => {
-                  const chosen = selected.some(row => row.company === item.company)
+                  const chosen = selected.includes(item.company)
                   return <button type="button" role="option" aria-selected={index === highlight} key={item.company}
                                   className={`compare-search-item${index === highlight ? ' active' : ''}`}
                                   disabled={chosen}
@@ -345,19 +399,25 @@ export function CompanyCompare() {
         <button className="button secondary" type="submit" disabled={!suggestions[highlight]}>加入所选</button>
       </form>
       {selected.length
-        ? <div className="compare-chips">{selected.map(item => (
-          <span key={item.company} className="compare-chip">
-            <span className="compare-chip-status" data-state={reports[item.company] === undefined ? 'loading' : reports[item.company] ? 'ready' : 'missing'} />
-            {item.company}
-            <button type="button" aria-label={`移除 ${item.company}`} onClick={() => removeCompany(item.company)}>×</button>
+        ? <div className="compare-chips">{selected.map(name => (
+          <span key={name} className="compare-chip">
+            <span className="compare-chip-status" data-state={reports[name] === undefined ? 'loading' : reports[name] ? 'ready' : 'missing'} />
+            {name}
+            <button type="button" className="compare-chip-collect" disabled={Boolean(collecting)}
+                    title={collecting && collecting !== name ? `正在补充「${collecting}」，完成后可继续` : '多平台检索该公司的岗位与公告（约几分钟），完成后自动重算'}
+                    aria-label={`补充 ${name} 的岗位与资料`}
+                    onClick={() => void collectCompanyData(name)}>
+              {collecting === name ? <span className="spinner" aria-hidden="true" /> : '↻'}
+            </button>
+            <button type="button" aria-label={`移除 ${name}`} onClick={() => removeCompany(name)}>×</button>
           </span>))}</div>
-        : <p className="tiny-label">还没有选择公司。加入后点「重新计算所选」会先自动刷新各家的本地统计——存过岗位就能出分。</p>}
+        : <p className="tiny-label">还没有选择公司。加入后点「重新计算所选」会先自动刷新各家的本地统计——存过岗位就能出分；缺数据的公司点胶囊上的 ↻ 直接补采。</p>}
     </section>
 
     {selected.length === 0
       ? <section className="paper-panel compare-empty">
           <h3>把几家公司放在一起看</h3>
-          <p className="body-small muted">在上方输入公司名加入对比（最多 {MAX_COMPANIES} 家）。候选来自公司资料库登记过的主体；从没算过参考分的公司会先显示「还没有参考报告」，加入后一键重算即可。薪资对比默认按岗位分层，公司级中位数只作构成参考。</p>
+          <p className="body-small muted">在上方输入公司名加入对比（最多 {MAX_COMPANIES} 家），或在公司资料库、岗位详情里点「加入横评」。候选来自公司资料库登记过的主体；从没算过参考分的公司会先显示「还没有参考报告」，加入后一键重算即可。薪资对比默认按岗位分层，公司级中位数只作构成参考。</p>
         </section>
       : <>
         <div className="compare-grid">

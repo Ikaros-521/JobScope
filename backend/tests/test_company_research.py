@@ -19,11 +19,15 @@ def client(tmp_path, monkeypatch):
 
 @pytest.fixture
 def stub_channels(monkeypatch):
-    """接口渠道：cninfo 抛错（单渠道失败样例）、liepin 正常；快查渠道 qcc 正常、tyc 抛错；浏览器渠道一律返回未启动。"""
+    """接口渠道：cninfo 抛错（单渠道失败样例）、liepin 正常；快查渠道 qcc 正常、tyc 抛错；浏览器渠道一律返回未启动。
+    返回 {source: [limit, ...]}：各岗位渠道收到的采集上限记录，供 limit 透传断言用。"""
+    limits: dict[str, list[int]] = {}
+
     connectors = types.ModuleType('jobscope.connectors')
     connectors.BROWSER_SOURCES = {'boss', 'zhaopin', '51job'}
 
     def fake_collect(source, query, location='', limit=20, cache_dir=None):
+        limits.setdefault(source, []).append(limit)
         if source == 'cninfo':
             raise RuntimeError('巨潮接口不可用')
         return {'status': 'completed', 'message': f'{source} 检索完成', 'jobs': [], 'evidence': []}
@@ -32,6 +36,7 @@ def stub_channels(monkeypatch):
     browser = types.ModuleType('jobscope.browser')
 
     def fake_browser_collect(source, query, location='', limit=20, data_dir=None, progress=None):
+        limits.setdefault(source, []).append(limit)
         return {'status': 'needs_login', 'message': '请先启动项目浏览器并登录。', 'jobs': [], 'evidence': []}
     browser.collect = fake_browser_collect
 
@@ -47,6 +52,7 @@ def stub_channels(monkeypatch):
     monkeypatch.setitem(sys.modules, 'jobscope.connectors', connectors)
     monkeypatch.setitem(sys.modules, 'jobscope.browser', browser)
     monkeypatch.setitem(sys.modules, 'jobscope.company_lookup', lookup)
+    return limits
 
 
 def wait_task(client, task_id, timeout=15):
@@ -84,3 +90,22 @@ def test_company_research_runs_all_channels_and_isolates_failures(client, stub_c
 def test_company_research_rejects_blank_company(client):
     assert client.post('/api/company-research', json={'company': ''}).status_code == 422
     assert client.post('/api/company-research', json={'company': '  '}).status_code == 422
+
+
+def test_company_research_limit_passthrough(client, stub_channels):
+    """limit 透传到全部岗位渠道（横评补数据传更大上限）；不传走默认 10（详情页行为不变）；越界拒绝。"""
+    started = client.post('/api/company-research', json={'company': '海宁辰曦科技有限公司', 'limit': 30})
+    assert started.status_code == 200
+    for item in started.json()['tasks']:
+        wait_task(client, item['id'])
+    for source in ('cninfo', 'boss', 'zhaopin', '51job', 'liepin'):
+        assert stub_channels[source] == [30], source
+
+    again = client.post('/api/company-research', json={'company': '海宁辰曦科技有限公司'})
+    assert again.status_code == 200
+    for item in again.json()['tasks']:
+        wait_task(client, item['id'])
+    assert stub_channels['liepin'][-1] == 10
+
+    assert client.post('/api/company-research', json={'company': '海宁辰曦科技有限公司', 'limit': 201}).status_code == 422
+    assert client.post('/api/company-research', json={'company': '海宁辰曦科技有限公司', 'limit': 0}).status_code == 422

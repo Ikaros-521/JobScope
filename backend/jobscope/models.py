@@ -57,6 +57,8 @@ class CollectInput(RequestModel):
 class CompanyResearchInput(RequestModel):
     """公司情报多平台检索：以精确公司名为关键词跑公告与岗位渠道。"""
     company: str = Field(min_length=1, max_length=100)
+    # 岗位渠道的采集上限；默认 10 与岗位详情页一致，横评补数据传更大值。
+    limit: int = Field(default=10, ge=1, le=200)
 
 
 class BrowserCollectInput(RequestModel):
