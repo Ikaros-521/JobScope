@@ -398,3 +398,41 @@ def test_run_approval_resumes_in_background_and_is_single_use(client, monkeypatc
     stored = stored_messages(client, run['conversation_id'])
     assert stored[-1]['role'] == 'assistant' and stored[-1]['content'] == '根据工具结果，可以继续核实。'
     assert client.post(f"/api/chat/runs/{run['run_id']}/approval", json={'approved': True, 'approval_id': approval_id}).status_code == 409
+
+
+def test_approval_keeps_stream_open_and_continues_on_same_log(client, monkeypatch):
+    # 审批挂起时流保持打开（done=False），允许后 resumed 及后续事件写入同一份日志；
+    # 客户端不重连即可续传，事件序列只有一份 start，不再整段重放重建。
+    from jobscope.extensions import MCPClient, tool_alias
+
+    async def inspect(config):
+        return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object', 'properties': {'q': {'type': 'string'}}})]
+
+    async def invoke(config, name, args):
+        return {'text': 'external evidence', 'is_error': False}
+
+    monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))
+    monkeypatch.setattr(MCPClient, 'call', staticmethod(invoke))
+    server = client.post('/api/agent/mcp', json=dict(name='需确认工具', transport='http', url='http://127.0.0.1:9000/mcp')).json()
+    client.post(f"/api/agent/mcp/{server['id']}/test")
+    client.patch(f"/api/agent/mcp/{server['id']}", json=dict(enabled=True, allowed_tools=['lookup']))
+    configure(client)
+    stream_scripted(monkeypatch, [stream_tool(tool_alias(server['id'], 'lookup'), {'q': 'test'}), stream_final('工具已确认执行。')])
+    run = client.post('/api/chat/runs', json={'message': '搜索外部数据', 'agent_mode': 'general'}).json()
+    deadline = time.time() + 10
+    status = {}
+    while time.time() < deadline:
+        status = client.get(f"/api/chat/runs/{run['run_id']}").json()
+        if status.get('awaiting_approval'):
+            break
+        time.sleep(0.05)
+    # 挂起期间流未终结：客户端连着同一条流等待 resumed，无需重连重放。
+    assert status.get('awaiting_approval') and status.get('done') is False
+    approval_id = status['pending_approval']['approval_id']
+    assert client.post(f"/api/chat/runs/{run['run_id']}/approval", json={'approved': True, 'approval_id': approval_id}).status_code == 200
+    await_run(client, run['run_id'])
+    frames = read_stream(client, run['run_id'])
+    kinds = [kind for kind, _ in frames]
+    assert kinds.count('start') == 1 and kinds.count('resumed') == 1
+    assert kinds.index('approval_required') < kinds.index('resumed')
+    assert kinds[-2:] == ['done', 'end']

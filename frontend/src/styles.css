@@ -141,10 +141,12 @@
 .agent-skill-form > textarea { width: 100%; font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.8; }
 .agent-skill { display: flex; align-items: center; gap: 16px; border-top: 1px solid #e5e5e5; padding-top: 16px; }
 .agent-skill > div { margin-right: auto; }
-.agent-approval { background: #faf7ed; border: 1px solid #dfd4b6; border-radius: 8px; margin: 16px 0; padding: 18px; }
-.agent-approval h3 { font-size: 15px; margin-bottom: 10px; }
-.agent-approval p { font-size: 12px; line-height: 1.8; margin-bottom: 12px; }
-.agent-approval pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 240px; overflow: auto; background: #fff; padding: 12px; font-size: 12px; margin-bottom: 12px; }
+.agent-approval { background: #faf7ed; border: 1px solid #dfd4b6; border-radius: 8px; margin: 16px 0; padding: 10px 14px 12px; }
+.agent-approval-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.agent-approval-head h3 { font-size: 13px; margin: 0; }
+.agent-approval-tool { font-size: 12px; font-weight: 600; color: #5f5324; overflow-wrap: anywhere; }
+.agent-approval p { font-size: 12px; line-height: 1.6; margin: 0 0 8px; }
+.agent-approval pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 120px; overflow: auto; background: #fff; border: 1px solid #efe8d3; padding: 6px 10px; font-size: 12px; margin: 0 0 8px; }
 .agent-approval > div { display: flex; gap: 12px; justify-content: flex-end; }
 @media (max-width: 600px) { .agent-extension-body { padding: 14px; } .agent-extension-body fieldset { padding: 14px; } .agent-field-grid { grid-template-columns: 1fr; gap: 0; } .agent-tool { grid-template-columns: 1fr 1fr; gap: 10px; } .agent-tool > div { grid-column: 1 / -1; } .agent-mode-select { align-items: start; flex-direction: column; gap: 8px; } .agent-mode-select select { width: 100%; } .agent-skill { flex-wrap: wrap; } .agent-skill > div { flex-basis: 100%; } }
 * { box-sizing: border-box; }
@@ -1237,7 +1239,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .run-error { font-size: 13px; color: #8c3a2a; background: #fbf4f1; border: 1px solid #ecd8d0; border-radius: 8px; padding: 10px 12px; margin-top: 8px; }
 .chat-alert { margin: 0 0 12px; }
 .chat-page .agent-approval { margin: 0 0 12px; flex: none; }
-.chat-page .agent-approval pre { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; font-size: 12px; overflow-x: auto; max-height: 200px; }
+.chat-page .agent-approval pre { background: #fff; border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 12px; overflow-x: auto; max-height: 120px; }
 .chat-composer { flex: none; border-top: 1px solid var(--line); padding: 12px 16px 14px; background: #fff; }
 .composer-editing-note { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; color: #755622; background: #f8f2e5; border-radius: 8px; padding: 8px 12px; margin-bottom: 8px; }
 .composer-editing-note button { font-size: 12px; min-height: 26px; padding: 2px 10px; color: #755622; }

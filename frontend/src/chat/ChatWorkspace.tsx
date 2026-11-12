@@ -336,9 +336,12 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
       </div>
 
       {run?.approval && <section className="agent-approval" aria-label="待确认工具调用">
-        <h3>确认工具调用</h3>
-        <p>{run.approval.tool}</p>
-        <pre>{JSON.stringify(run.approval.arguments, null, 2)}</pre>
+        <div className="agent-approval-head">
+          <h3>确认工具调用</h3>
+          <span className="agent-approval-tool">{run.approval.tool}</span>
+        </div>
+        {/* 单行紧凑 JSON：完整保留待确认内容（可滚动查看），但不逐字段换行撑高卡片。 */}
+        <pre>{JSON.stringify(run.approval.arguments ?? {})}</pre>
         <p>{run.approval.reason}。确认后仅执行这一次调用。</p>
         <div>
           <button type="button" className="button secondary" onClick={() => void approve(false)}>拒绝并继续</button>
