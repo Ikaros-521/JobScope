@@ -1,13 +1,12 @@
 # 知根 JobScope
 
-本地岗位情报工作台：采集岗位和公司公开资料，保存来源，再结合简历生成适配分析并围绕资料提问。独立应用位于本目录，与仓库原有 ResumeLoom Skill 通过 `facts.yaml` 连接。
+本地岗位情报工作台：采集岗位和公司公开资料，保存来源，再结合简历生成适配分析并围绕资料提问。可直接导入 ResumeLoom 的 `facts.yaml` 简历事实文件。
 
 ## 安装与启动
 
-需要 Python 3.11+、Node.js 20+。在 Windows PowerShell 中运行：
+需要 Python 3.11+、Node.js 20+。在本仓库根目录（`start.ps1` 所在目录）打开 Windows PowerShell，运行：
 
 ```powershell
-cd E:\Github_Pro\ResumeLoom\jobscope
 .\start.ps1 -Install -Browser
 ```
 
@@ -17,7 +16,7 @@ cd E:\Github_Pro\ResumeLoom\jobscope
 .\start.ps1
 ```
 
-打开 http://127.0.0.1:8765 。服务仅监听本机；不应将此个人版本直接暴露到公网。默认运行数据在 `jobscope/.data/`，包括数据库和独立浏览器配置，不提交 Git。
+打开 http://127.0.0.1:8765 。服务仅监听本机；不应将此个人版本直接暴露到公网。默认运行数据在仓库根目录的 `.data/`（可用环境变量 `JOBSCOPE_DATA_DIR` 指到别处），包括数据库和独立浏览器配置，不提交 Git。
 
 其他系统可手动启动：
 
@@ -47,7 +46,7 @@ python -m uvicorn jobscope.main:app --host 127.0.0.1 --port 8765
 - **公司快查（企查查/天眼查网页）**：数据与采集的「公司快查」标签页输入公司名，由项目专属 Chrome 打开两家站点的公开搜索页，把可见的公司卡片（名称、法定代表人、注册资本、成立日期、经营状态、统一社会信用代码等；未登录字段更少）解析成企业信息快照，按解析出的精确主体名存入公司资料库，重复查询按同一出处去重。每次最多 5 张卡片，只读公开页可见内容，不走任何 API；遇登录墙或验证码会把页面留在浏览器前台，人工完成后重试，不会自动绕过。搜索地址、链接特征与字段正则是按公开页面通用写法预置的假设，尚未实测，解析不到时如实报「未解析出公司卡片」，实测结果记入[验证记录](docs/validation/jobscope-company-reliability.md)。
 - **手动导入**：可粘贴岗位和公司资料。来源标记为用户材料，不能冒充独立核验。“导入岗位”里的工作地点保留 JD 原文，不做候选限制。
 - **地点候选提示**：岗位研究的地点框和“数据与采集”的城市框输入即提示，可用汉字、全拼或首字母（杭州、hangzhou、hz）。候选分两组：「采集可用城市」取自 `/api/sources` 的 `cities`，随所选来源变化；「档案地点」取自 `/api/locations`（已保存岗位里出现过的地点原样统计，带岗位数），只用于本地筛选，Remotive 这类没有城市字典的来源靠它兜底。空输入先列 BOSS 的 15 个热门城市加档案地点，继续输入才展开全量，不会一次甩出 374 行。字典外城市仍可手输：采集会明确报“暂未映射”，本地筛选按关键词子串匹配。
-- **城市字典来自平台自身**：BOSS 读平台公开的 `wapi/zpCommon/data/city.json`，`python scripts/harvest_city_dictionary.py boss` 可重跑；落盘前逐条复现已回验的城市码，对不上就拒绝写入。全量 374 个城市（含全国）存在 `backend/jobscope/data/cities.json`；整词拼音取自平台，首字母由抓取脚本按整词读音一致才生成（373 个里 321 个可首字母命中，多音字读法与平台不一致的不给快捷写法）。智联、前程无忧、猎聘的字典不在这份平台数据里，也不手写猜测，仍是逐个回验的 10 城，要在各自会话内取到页面自身的城市表后再扩。
+- **城市字典来自平台自身**：BOSS 读平台公开的 `wapi/zpCommon/data/city.json`，`.venv\Scripts\python.exe scripts/harvest_city_dictionary.py boss` 可重跑；落盘前逐条复现已回验的城市码，对不上就拒绝写入。全量 374 个城市（含全国）存在 `backend/jobscope/data/cities.json`；整词拼音取自平台，首字母由抓取脚本按整词读音一致才生成（373 个里 321 个可首字母命中，多音字读法与平台不一致的不给快捷写法）。智联、前程无忧、猎聘的字典不在这份平台数据里，也不手写猜测，仍是逐个回验的 10 城，要在各自会话内取到页面自身的城市表后再扩。
 - **公司求职参考**：岗位档案的「公司情报」区块下，把本机已存的岗位、公告与你补充的材料按公司整理成一份参考：六个维度各自给出依据文字，只有能由固定规则评价的维度才给分，依据不足时直接写「依据不足，暂不出分」并列出缺口（每条缺口带「本地重算 / 从材料抽取 / 补资料」的行动入口），不画空环也不摆占位数字。薪资与专业性两维直接由已存岗位本地算出（同城报价中位数对比、完整岗位描述的具体程度），人员情况看团队规模自述的一致程度，实际经营看同一份公告里的营收/在职人数同比——样本不够就如实写清缺什么，绝不硬算；行业前景没有可信公开依据，只登记已存材料数量，不造分数。面板维度可展开看每条依据的出处、口径与采集时间，薪资中位数对比、岗位描述四项指标、公告两期数字都以事实条形呈现（只画持久化的原始数字，材料登记类不出图），报告底部是这家公司自己的历史趋势清单与折线（只对比同一家公司，不做跨公司对比或排名）。它是依据有限公开材料生成的**主观参考**，不构成对该公司的事实认定、信用评价或经营风险结论；每条依据都回指证据编号与抓取时间，个人自述与媒体报道只作说明并标记「未见独立核实」。官方公示页要靠你本机的项目 Chrome 会话人工完成验证后读取，付费数据源默认关闭、需要你自备密钥，密钥只存本机 SQLite 且任何接口都不回显原文；没有实测过的来源在页面上保持「待验证」状态。设计与现状见[公司求职参考设计](docs/proposals/2026-11-09-company-reliability-design.md)，实测与未验证清单见[验证记录](docs/validation/jobscope-company-reliability.md)。
 
 接口优先；依赖浏览器环境时由页面触发请求、监听结构化响应或读取页面自带数据。真实页面结构和接口可能变化，连接器会返回明确失败状态。三个平台的城市码与响应字段都按实际返回结果回验，来源改版后可能失效；应用会报出结构变化，而不是把零条当作采集成功。用户导入的链接用于出处，不让服务任意抓取内网或本机资源。
@@ -94,8 +93,8 @@ URL 是完整的 Chat Completions 兼容端点；支持 HTTPS 或本机 HTTP 模
 默认使用 BM25，不需要模型。在“模型设置 → 语义检索模型”可以选择兼容 API 或本地缓存模型，保存后到“数据与采集”构建语义向量。本地模型只读取已缓存文件，需要安装可选依赖。也可以用命令行配置：
 
 ```powershell
-pip install -r requirements-research.txt
-.\start.ps1 -LocalEmbeddingModel 'BAAI/bge-small-zh-v1.5'
+.\start.ps1 -Install -LocalEmbeddingModel 'BAAI/bge-small-zh-v1.5'
+# 依赖装入 .venv；已安装过时日常启动用 .\start.ps1 -LocalEmbeddingModel 'BAAI/bge-small-zh-v1.5'
 # 在“数据与采集”点击“构建语义向量”，之后查询自动融合
 ```
 
@@ -109,19 +108,19 @@ pip install -r requirements-research.txt
 .venv\Scripts\python.exe evals\run.py --dense --check
 ```
 
-报告写入 `output/research-evaluation*.json`，评测数据库与真实库隔离。合成集评测检索与范围，不评价生成回答质量。架构、面试演示与已知边界见[工程讲解](../docs/proposals/jobscope-agent-interview.md)，实测结果见[升级验证记录](../docs/validation/jobscope-research-agent.md)。
+报告写入 `output/research-evaluation*.json`，评测数据库与真实库隔离。合成集评测检索与范围，不评价生成回答质量。架构、面试演示与已知边界见[工程讲解](docs/proposals/jobscope-agent-interview.md)，实测结果见[升级验证记录](docs/validation/jobscope-research-agent.md)。
 
 ## 验证命令
 
 ```powershell
-python -m pytest backend/tests -q
+.venv\Scripts\python.exe -m pytest backend/tests -q
 cd frontend
 npm run build
 ```
 
-真实来源的验证记录见 [在线验证记录](../docs/validation/jobscope-live.md) 和 [国内三平台采集验证](../docs/validation/jobscope-domestic-sources.md)（含各平台城市码的逐个回验结果与走不通的入口清单）。UI 集成验收使用独立临时数据目录，虚构材料仅用于测试，不进入默认工作数据库。
+真实来源的验证记录见 [在线验证记录](docs/validation/jobscope-live.md) 和 [国内三平台采集验证](docs/validation/jobscope-domestic-sources.md)（含各平台城市码的逐个回验结果与走不通的入口清单）。UI 集成验收使用独立临时数据目录，虚构材料仅用于测试，不进入默认工作数据库。
 
-首版不包含自动投递、员工评价平台接入、自动定时刷新或云端多人权限系统。BOSS 完整 JD 已通过已登录会话实际读取验证；智联招聘、前程无忧、猎聘的采集按 2026-11-09 的实测通路实现，猎聘列表不含岗位职责，完整职责读取仍只覆盖 BOSS。站点结构变化或岗位下架仍可能导致读取失败。岗位与实际薪资样本缺失时直接显示未知，发展判断需要原始证据支持。分页、范围隔离与完整 JD 的验收记录见 [本次验证记录](../docs/validation/jobscope-scopes-pagination.md)。
+首版不包含自动投递、员工评价平台接入、自动定时刷新或云端多人权限系统。BOSS 完整 JD 已通过已登录会话实际读取验证；智联招聘、前程无忧、猎聘的采集按 2026-11-09 的实测通路实现，猎聘列表不含岗位职责，完整职责读取仍只覆盖 BOSS。站点结构变化或岗位下架仍可能导致读取失败。岗位与实际薪资样本缺失时直接显示未知，发展判断需要原始证据支持。分页、范围隔离与完整 JD 的验收记录见 [本次验证记录](docs/validation/jobscope-scopes-pagination.md)。
 
 
 ### 全局通用 Agent、MCP 和 Skills
