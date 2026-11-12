@@ -10,8 +10,8 @@ import { navigateTabs } from './tabNavigation'
 type Tab = 'mcp-market' | 'mcp' | 'skill-market' | 'skills'
 
 const TAB_DESCRIPTIONS: Record<Tab, string> = {
-  'mcp-market': '从内置目录与 npm 在线检索发现 MCP 服务，添加后在「MCP 工具」测试与授权。',
-  mcp: '先保存连接，再测试、授权并启用。',
+  'mcp-market': '从内置目录与 npm 在线检索发现 MCP 服务，添加后在「MCP 工具」测试与授权。接入「检索 / 网页」类服务（如 Tavily、Brave、Fetch）并设为自动授权后，对话 Agent 会在项目资料不足时主动联网核实外部信息。',
+  mcp: '先保存连接，再测试、授权并启用。搜索类服务设为自动授权后，Agent 无需逐次确认即可联网检索；已读取简历的会话仍会要求确认，防止个人资料外发。',
   'skill-market': '从内置目录与 GitHub 在线检索发现 Skills，安装后在「Skills」管理启用状态。',
   skills: '导入 SKILL.md，管理资源与启用状态。',
 }

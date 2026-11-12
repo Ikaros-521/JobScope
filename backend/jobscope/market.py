@@ -21,7 +21,7 @@ _SEARCH_CACHE: dict[str, tuple[float, dict]] = {}
 
 CURATED_MCP = [
     dict(id='cur-fetch', name='Fetch 网页抓取', icon='🌐', category='网页', official=True, transport='stdio',
-         command='uvx', args=['mcp-server-fetch'], desc='抓取公开网页并转为 Markdown 供 Agent 阅读，适合查岗位说明与公司公告。', repo='https://github.com/modelcontextprotocol/servers'),
+         command='uvx', args=['mcp-server-fetch'], desc='抓取公开网页并转为 Markdown 供 Agent 阅读，适合查岗位说明与公司公告。启用并设为自动授权后，Agent 会在需要时主动读取网页核实外部信息。', repo='https://github.com/modelcontextprotocol/servers'),
     dict(id='cur-time', name='Time 时间时区', icon='🕐', category='工具', official=True, transport='stdio',
          command='uvx', args=['mcp-server-time'], desc='查询当前时间与时区换算，安排面试和截止日期时使用。', repo='https://github.com/modelcontextprotocol/servers'),
     dict(id='cur-memory', name='Memory 知识记忆', icon='🧠', category='工具', official=True, transport='stdio',
@@ -31,9 +31,9 @@ CURATED_MCP = [
     dict(id='cur-fs', name='Filesystem 文件访问', icon='📁', category='工具', official=True, transport='stdio',
          command='npx', args=['-y', '@modelcontextprotocol/server-filesystem', '在此填入允许访问的目录'], desc='读写指定目录内文件。安装后必须把最后一个参数改成你信任的目录，范围越窄越安全。', repo='https://github.com/modelcontextprotocol/servers', needs_config=True),
     dict(id='cur-brave', name='Brave Search 网页搜索', icon='🔎', category='检索', official=True, transport='stdio',
-         command='npx', args=['-y', '@modelcontextprotocol/server-brave-search'], desc='联网搜索公开信息，需在环境变量中填入 BRAVE_API_KEY。', repo='https://github.com/modelcontextprotocol/servers', needs_key='BRAVE_API_KEY'),
+         command='npx', args=['-y', '@modelcontextprotocol/server-brave-search'], desc='联网搜索公开信息，需在环境变量中填入 BRAVE_API_KEY。启用并设为自动授权后，Agent 会在项目资料不足时主动联网核实公司与行业信息。', repo='https://github.com/modelcontextprotocol/servers', needs_key='BRAVE_API_KEY'),
     dict(id='cur-tavily', name='Tavily Search 深度搜索', icon='📡', category='检索', official=False, transport='stdio',
-         command='npx', args=['-y', 'tavily-mcp'], desc='面向研究与摘要的搜索服务，需在环境变量中填入 TAVILY_API_KEY。', repo='https://github.com/tavily-ai/tavily-mcp', needs_key='TAVILY_API_KEY'),
+         command='npx', args=['-y', 'tavily-mcp'], desc='面向研究与摘要的搜索服务，需在环境变量中填入 TAVILY_API_KEY。启用并设为自动授权后，Agent 会在项目资料不足时主动联网检索并汇总来源。', repo='https://github.com/tavily-ai/tavily-mcp', needs_key='TAVILY_API_KEY'),
     dict(id='cur-context7', name='Context7 文档检索', icon='📚', category='检索', official=False, transport='http',
          url='https://mcp.context7.com/mcp', desc='查询各类框架与库的最新官方文档，无需密钥。', repo='https://github.com/upstash/context7'),
     dict(id='cur-deepwiki', name='DeepWiki 仓库问答', icon='📖', category='检索', official=False, transport='http',
