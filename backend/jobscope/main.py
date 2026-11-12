@@ -19,6 +19,7 @@ from starlette.concurrency import run_in_threadpool
 from .analysis import analyze, parse_resume
 from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
+from . import collect_service
 from .bindings import ModelBindings, normalise_binding
 from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ModelBindingInput, ReliabilityInput, ResumeInput, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
 from .repository import Repository, now
@@ -405,36 +406,15 @@ def create_app(data_dir=None):
         except ModuleNotFoundError as exc:
             raise HTTPException(503, "采集模块或可选依赖尚未安装") from exc
 
+    # 采集编排已下沉 collect_service（页面端点与 Agent 内置工具共用一条管线），这里只保留端点签名。
     def persist_collection(task, result):
-        jobs = [repo.save_job(item, task["source"]) for item in result.get("jobs", [])]
-        evidence_count = 0
-        for item in result.get("evidence", []):
-            evidence = repo.save_evidence(item, task["source"])
-            if item.get("kind") != "job_posting":
-                evidence_count += 1
-            for job in jobs:
-                if item.get("url") and item.get("url") == job["url"] and item.get("company") == job["company"]:
-                    repo.link_evidence(job["id"], evidence["id"])
-        task.update(status=result.get("status", "failed"), message=result.get("message", "采集完成"), count=len(jobs) + evidence_count)
-        repo.update_task(task)
-        return {"task": task, "jobs": [repo.job(job["id"]) for job in jobs]}
+        return collect_service.persist_collection(repo, task, result)
 
     def execute_collection(source, query, task, location='', limit=10, use_browser=False):
-        connectors = load_module("connectors")
-        if use_browser or source in connectors.BROWSER_SOURCES:
-            result = load_module("browser").collect(source, query, location=location, limit=limit, data_dir=data_dir)
-        else:
-            result = connectors.collect(source, query, location=location, limit=limit, cache_dir=data_dir / "cache")
-        return persist_collection(task, result)
+        return collect_service.execute_collection(repo, data_dir, source, query, task, location, limit, use_browser)
 
     def run_collection(source, query, location, limit, use_browser=False):
-        task = repo.create_task(source, query)
-        try:
-            return execute_collection(source, query, task, location, limit, use_browser)
-        except Exception:
-            task.update(status="failed", message="采集未完成，请检查来源状态及本地依赖后重试")
-            repo.update_task(task)
-            return {"task": task, "jobs": []}
+        return collect_service.run_collection(repo, data_dir, source, query, location, limit, use_browser)
 
     @app.post("/api/company-research")
     def company_research(data: CompanyResearchInput):
@@ -509,17 +489,8 @@ def create_app(data_dir=None):
         return run_collection(data.source, data.query, data.location, data.limit)
 
     def execute_lookup(channel, company, task):
-        """企查查/天眼查公开页快查：卡片按解析出的精确主体名归档成证据（identity 去重，重复查询幂等）。"""
-        lookup = load_module("company_lookup")
-        outcome = lookup.collect(channel, company, browser_module=load_module("browser"), data_dir=data_dir)
-        saved = 0
-        for card in outcome.get('cards', []):
-            repo.save_evidence(dict(title=card['name'], company=card['name'], kind='web_company_profile',
-                                    text=card['text'], url=card.get('url', '')), channel)
-            saved += 1
-        task.update(status=outcome.get('status', 'failed'), message=outcome.get('message', '快查未完成'),
-                    count=saved)
-        repo.update_task(task)
+        """企查查/天眼查公开页快查：管线在 collect_service（与 Agent 的 company_web_lookup 工具共用）。"""
+        outcome, _ = collect_service.execute_lookup(repo, data_dir, channel, company, task)
         return outcome
 
     @app.post("/api/company/lookup")
