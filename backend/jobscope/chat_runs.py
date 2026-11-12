@@ -247,11 +247,11 @@ class RunManager:
             handle.finish()
             return handle.snapshot()
 
-    def approve(self, run_id, approved, approval_id):
+    def approve(self, run_id, approved, approval_id, grant=False):
         with self._lock:
-            return self._approve(run_id, approved, approval_id)
+            return self._approve(run_id, approved, approval_id, grant)
 
-    def _approve(self, run_id, approved, approval_id):
+    def _approve(self, run_id, approved, approval_id, grant=False):
         handle = self._runs.get(run_id)
         if handle is None or (handle.done and not handle.pending_approval):
             raise ValueError('运行不存在或已结束')
@@ -266,7 +266,7 @@ class RunManager:
         handle.cancel.clear()
         handle.reopen()
         handle.push('resumed', dict(run_id=handle.id))
-        handle.thread = threading.Thread(target=self._resume, args=(handle, approved, approval_id), daemon=True)
+        handle.thread = threading.Thread(target=self._resume, args=(handle, approved, approval_id, grant), daemon=True)
         handle.thread.start()
         return handle.snapshot()
 
@@ -308,10 +308,10 @@ class RunManager:
             handle.push('error', dict(message=handle.error))
             handle.finish()
 
-    def _resume(self, handle, approved, approval_id):
+    def _resume(self, handle, approved, approval_id, grant=False):
         try:
             with use_config(handle.config):
-                result = GeneralAgent(self.repo).resume(handle.id, approved, approval_id, self._hooks(handle))
+                result = GeneralAgent(self.repo).resume(handle.id, approved, approval_id, self._hooks(handle), grant=grant)
             self._settle(handle, result, 'general')
         except ValueError as exc:
             handle.error = str(exc)

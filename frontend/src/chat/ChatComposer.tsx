@@ -6,14 +6,14 @@ export type ComposerChannel = { id: string; name: string; model: string; models:
 
 // 三档工具权限：切换到完全访问由工作区弹确认框，这里只负责展示与回调。
 const PERMISSION_MODES: { value: PermissionMode; label: string; title: string }[] = [
-  { value: 'confirm', label: '确认', title: '变更前确认：所有外部工具（MCP）调用都先展示参数，确认后才执行' },
-  { value: 'autonomous', label: '自主', title: '自主模式：只读或已勾选「自动执行」的工具直接执行，其余逐次确认' },
+  { value: 'confirm', label: '确认', title: '变更前确认：所有外部工具（MCP）调用都先展示参数，确认后才执行；在确认卡上选「本会话始终允许」可给单个工具放行' },
+  { value: 'autonomous', label: '自主', title: '自主模式：只读、已勾选「自动执行」或本会话已授权的工具直接执行，其余逐次确认（确认时可选「本会话始终允许」）' },
   { value: 'full', label: '完全访问', title: '完全访问：外部工具全部自动执行，不再逐次确认（读取简历后的外发调用仍会确认）' },
 ]
 
 const MODE_HINTS: Record<PermissionMode, string> = {
   confirm: '外部工具逐次确认',
-  autonomous: '只读/自动执行工具免确认',
+  autonomous: '只读/自动执行/已授权工具免确认',
   full: '外部工具自动执行',
 }
 

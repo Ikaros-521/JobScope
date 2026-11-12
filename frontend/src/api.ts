@@ -130,8 +130,8 @@ export function startChatRun(body: { message: string; conversation_id?: string; 
   return post<ChatRunStart>('/chat/runs', body)
 }
 export function cancelChatRun(runId: string) { return post<ChatRunStatus>(`/chat/runs/${encodeURIComponent(runId)}/cancel`) }
-export function approveChatRun(runId: string, approved: boolean, approvalId: string) {
-  return post<ChatRunStatus>(`/chat/runs/${encodeURIComponent(runId)}/approval`, { approved, approval_id: approvalId })
+export function approveChatRun(runId: string, approved: boolean, approvalId: string, grant = false) {
+  return post<ChatRunStatus>(`/chat/runs/${encodeURIComponent(runId)}/approval`, { approved, approval_id: approvalId, grant })
 }
 export function getModelSettings() { return api<Record<'llm' | 'embedding', ModelProvider>>('/settings/models') }
 export function getChannels() { return api<{ channels: Channel[] }>('/settings/channels') }
