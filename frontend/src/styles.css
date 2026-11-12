@@ -1553,3 +1553,5 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 @media (max-width: 800px) {
   .system-limits-grid { grid-template-columns: 1fr 1fr; }
 }
+.compare-layer-select { font-size: 12px; padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--green); max-width: 58%; }
+.compare-layer-note { margin: 0; }

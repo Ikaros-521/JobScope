@@ -618,3 +618,37 @@ def test_compare_endpoint_lists_latest_snapshot_per_company(client, tmp_path):
     # 读路径不写行：列表查询本身不产生新的 companies 记录。
     with Repository(tmp_path).connection() as conn:
         assert conn.execute('SELECT count(*) FROM companies').fetchone()[0] == 2
+
+
+def test_compare_layers_endpoint_reports_stratified_pay_and_mix(client, tmp_path):
+    """companies 模式返回岗位分层概要：薪资对照按职类×经验×学历分层，样本不足的层照实标 gate。"""
+    repo = Repository(tmp_path)
+
+    def add_job(company, title, salary, description, index):
+        repo.save_job(dict(company=company, title=title, location='杭州', salary=salary,
+                           description_status='complete', description=description, source='boss',
+                           url=f'https://jobs.example.com/l{index}'), 'boss')
+
+    tech = '负责服务端开发\n经验：3-5年\n学历：本科'
+    hr = '负责招聘\n经验：3-5年\n学历：本科'
+    # 甲公司：3 条技术研发同层（够本公司闸门）+ 2 条人事（本公司不足 3 条）
+    for index in range(3):
+        add_job('甲公司', f'后端工程师{index}', f'{15 + index}-{18 + index}K', tech, index)
+    for index in range(2):
+        add_job('甲公司', f'招聘专员{index}', '9-12K', hr, 100 + index)
+    # 同城同层对照：乙公司 10 条技术研发·3-5年·本科
+    for index in range(10):
+        add_job('乙公司', f'开发工程师{index}', f'{20 + index % 5}-{25 + index % 5}K', tech, 200 + index)
+    rows = client.get('/api/reliability/compare?companies=甲公司|乙公司|丙公司').json()['companies']
+    by = {row['company']: row for row in rows}
+    assert by['甲公司']['city'] == '杭州' and by['甲公司']['total_jobs'] == 5
+    assert {item['role']: item['jobs'] for item in by['甲公司']['mix']} == {'技术研发': 3, '人事与财务': 2}
+    layers = {(item['role'], item['experience'], item['education']): item for item in by['甲公司']['layers']}
+    tech_layer = layers[('技术研发', '3-5年', '本科')]
+    # 同层同城池 = 甲 3 + 乙 10；两家闸门都过，中位数与比值给出。
+    assert tech_layer['gate'] == 'pass' and tech_layer['company_jobs'] == 3 and tech_layer['city_jobs'] == 13
+    assert tech_layer['ratio'] == round(tech_layer['company_median'] / tech_layer['city_median'], 3)
+    hr_layer = layers[('人事与财务', '3-5年', '本科')]
+    assert hr_layer['gate'] == 'few_company' and 'company_median' not in hr_layer
+    # 没有岗位的公司照实返回空概要，不伪造任何数字。
+    assert by['丙公司'] == dict(company='丙公司', city='', total_jobs=0, parseable=0, mix=[], layers=[])

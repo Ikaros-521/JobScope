@@ -705,8 +705,22 @@ def create_app(data_dir=None):
         return {'sources': SignalSourceStore(repo).public()}
 
     @app.get('/api/reliability/compare')
-    def reliability_compare(q: str = Query('', max_length=300), page_size: int = Query(50, ge=1, le=100)):
-        """横评候选列表：只读。实体表全量（含未算过的公司），分数照实 null，按名称排序。"""
+    def reliability_compare(q: str = Query('', max_length=300), page_size: int = Query(50, ge=1, le=100),
+                            companies: str = Query('', max_length=2000)):
+        """横评页的只读数据源，两种取法共用一条路径（可靠性面保持在登记过的七条上）：
+
+        - 不带 companies：候选列表。实体表全量（含未算过的公司），分数照实 null，按名称排序。
+        - 带 companies（'|' 分隔，≤8 家）：各家的岗位分层概要（职类构成 + 职类×经验×学历逐层
+          报价对照）。薪资依赖岗位构成，公司级中位数跨公司不可比——分层口径与 job_stats.pay_analysis
+          完全同源（同层同城、本公司 ≥3 条且同层 ≥10 条才给中位数），页面数字与报告口径一致。
+        """
+        if companies.strip():
+            from .reliability import job_stats
+            names = [name.strip() for name in companies.split('|') if name.strip()][:8]
+            all_jobs = repo.jobs()
+            return {'companies': [dict(company=name,
+                                       **job_stats.stratum_breakdown(all_jobs, {Repository.normalise_name(name)}))
+                                  for name in names]}
         return repo.compare_page(q, page_size)
 
 

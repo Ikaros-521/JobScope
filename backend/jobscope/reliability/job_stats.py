@@ -250,3 +250,50 @@ def jd_note(value):
             f'平均 {value["chars_mean"]} 字，职责/要求条目平均 {value["items_mean"]} 条，'
             f'可识别技术栈平均 {value["skills_mean"]} 项，含量化结果的条目占比 {value["quantified_share"]}；'
             '衡量的是岗位描述把要做什么讲得有多具体，不是技术实力。' + LOCAL_NOTE + '。')
+
+
+def stratum_breakdown(jobs, names):
+    """横评页的岗位分层概要：给「薪资依赖岗位构成」一个可读的对照面。
+
+    只读已存岗位，与 `pay_analysis` 同一套分层键（职类×经验档×学历档）、同一套闸门
+    （本公司 ≥3 条且同层同城 ≥10 条才给中位数）——横评页展示的数字必须与报告口径同源，
+    不在页面层另立一套「参考性中位数」。与打分路径的差别只有一点：这里逐层全列（含样本
+    不足的层，标 gate），缺什么一目了然；分数仍然只由 rubric 产生，本函数不评分。
+    mix 按职类统计全部已存岗位（含认不出职类的，记「未分类」），让「两家公司岗位构成
+    不同、公司级中位数不可比」这件事直接看得见。
+    """
+    company = [item for item in jobs if Repository.normalise_name(item['company']) in names]
+    if not company:
+        return dict(city='', total_jobs=0, parseable=0, mix=[], layers=[])
+    counts = Counter(city for city in map(_city_of, company) if city)
+    city = counts.most_common(1)[0][0] if counts else ''
+    pool, groups = {}, {}
+    for item in jobs:
+        if not city or _city_of(item) == city:
+            key = job_stratum(item)
+            if key:
+                pool.setdefault(key, []).append(item)
+    for item in company:
+        if not city or _city_of(item) == city:
+            key = job_stratum(item)
+            if key:
+                groups.setdefault(key, []).append(item)
+    mix_counter = Counter((role_family(item.get('title', '')) or '未分类') for item in company)
+    layers = []
+    for key in sorted(groups):
+        own, same = _midpoints(groups[key]), _midpoints(pool.get(key, []))
+        layer = dict(role=key[0], experience=key[1], education=key[2],
+                     company_jobs=len(own), city_jobs=len(same))
+        if len(own) >= 3 and len(same) >= 10:
+            company_median, city_median = round(median(own), 2), round(median(same), 2)
+            if company_median > 0 and city_median > 0:
+                layer.update(company_median=company_median, city_median=city_median,
+                             ratio=round(company_median / city_median, 3), gate='pass')
+                layers.append(layer)
+                continue
+        layer['gate'] = 'few_company' if len(own) < 3 else 'few_city'
+        layers.append(layer)
+    return dict(city=city, total_jobs=len(company), parseable=len(_midpoints(company)),
+                mix=[dict(role=role, jobs=count) for role, count in
+                     sorted(mix_counter.items(), key=lambda item: (-item[1], item[0]))],
+                layers=layers)

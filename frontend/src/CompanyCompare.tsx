@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { FormEvent } from 'react'
-import { computeReliability, getCompareCompanies, getReliability } from './api'
-import type { CompareCompany, ReliabilityReport } from './api'
+import { computeReliability, getCompareCompanies, getCompanyLayers, getReliability } from './api'
+import type { CompareCompany, CompareLayer, CompareLayers, ReliabilityReport } from './api'
 import { toast } from './toast'
 import { EChart } from './EChart'
 import type { ChartOption } from './EChart'
@@ -16,6 +16,7 @@ const MAX_COMPANIES = 8
 const PALETTE = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4', '#ec4899', '#84cc16']
 
 type Row = { company: string; report?: ReliabilityReport | null }
+type LayerRow = CompareLayers & { company: string }
 
 function tone(score: number) {
   const clamped = Math.max(0, Math.min(100, score))
@@ -35,12 +36,16 @@ function findingData(report: ReliabilityReport | null | undefined, rule: string)
 function dimScore(report: ReliabilityReport | null | undefined, key: string) {
   return report?.dimensions.find(item => item.dimension === key)?.score ?? null
 }
+function layerKeyOf(layer: CompareLayer) { return `${layer.role}|${layer.experience}|${layer.education}` }
+function layerLabel(layer: CompareLayer) { return `${layer.role} · ${layer.experience} · ${layer.education}` }
 
 export function CompanyCompare() {
   const [query, setQuery] = useState('')
   const [suggestions, setSuggestions] = useState<CompareCompany[]>([])
   const [selected, setSelected] = useState<Row[]>([])
   const [reports, setReports] = useState<Record<string, ReliabilityReport | null>>({})
+  const [layers, setLayers] = useState<Record<string, LayerRow>>({})
+  const [layerKey, setLayerKey] = useState('')
   const [computing, setComputing] = useState(false)
   const [progress, setProgress] = useState('')
 
@@ -51,6 +56,18 @@ export function CompanyCompare() {
     }, 250)
     return () => { active = false; clearTimeout(timer) }
   }, [query])
+
+  // 岗位分层概要随所选公司变化重取：薪资对比按 职类×经验×学历 分层，不依赖参考报告是否生成。
+  useEffect(() => {
+    if (!selected.length) { setLayers({}); return }
+    let active = true
+    const timer = window.setTimeout(() => {
+      getCompanyLayers(selected.map(item => item.company))
+        .then(data => { if (active) setLayers(Object.fromEntries(data.companies.map(row => [row.company, row]))) })
+        .catch(() => { if (active) setLayers({}) })
+    }, 300)
+    return () => { active = false; clearTimeout(timer) }
+  }, [selected])
 
   const rows = useMemo(() => selected.map(item => ({ ...item, report: reports[item.company] })), [selected, reports])
 
@@ -88,7 +105,7 @@ export function CompanyCompare() {
     getCompareCompanies(query.trim()).then(data => setSuggestions(data.companies)).catch(() => {})
   }
 
-  // 四张图的 option 全部由 rows 推导；没有可用数据时面板退成一句提示，不画空坐标系。
+  // ── 图表 option 全部由 rows/layers 推导；没有可用数据时面板退成一句提示，不画空坐标系。 ──
   const radarOption = useMemo<ChartOption | null>(() => {
     const usable = rows.filter(row => row.report?.dimensions.some(item => item.score != null))
     if (!usable.length) return null
@@ -133,24 +150,66 @@ export function CompanyCompare() {
     }
   }, [rows])
 
-  const payRows = useMemo(() => rows
-    .map(row => ({ company: row.company, data: findingData(row.report, 'pay_vs_city_median') }))
-    .filter(row => row.data && (row.data.company_median ?? 0) > 0), [rows])
-  const payOption = useMemo<ChartOption | null>(() => {
-    if (!payRows.length) return null
+  // 岗位构成：公司级薪资中位数不可比的根源在职类构成不同——先把构成摆出来。
+  const mixOption = useMemo<ChartOption | null>(() => {
+    const entries = selected.map(item => ({ company: item.company, data: layers[item.company] }))
+    if (!entries.some(entry => (entry.data?.total_jobs ?? 0) > 0)) return null
+    const roles: string[] = []
+    for (const entry of entries) for (const item of entry.data?.mix ?? []) if (!roles.includes(item.role)) roles.push(item.role)
+    return {
+      color: PALETTE,
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      legend: { top: 0, textStyle: { fontSize: 11 }, type: 'scroll' },
+      grid: { left: 8, right: 16, top: 30, bottom: 8, containLabel: true },
+      xAxis: { type: 'category', data: entries.map(entry => shortName(entry.company)),
+        axisLabel: { fontSize: 11, interval: 0, rotate: entries.length > 4 ? 15 : 0 } },
+      yAxis: { type: 'value', name: '已存岗位', nameTextStyle: { fontSize: 11 }, axisLabel: { fontSize: 11 } },
+      series: roles.map(role => ({
+        name: role, type: 'bar', stack: 'jobs', barWidth: 26,
+        data: entries.map(entry => entry.data?.mix.find(item => item.role === role)?.jobs ?? 0),
+      })),
+    }
+  }, [selected, layers])
+
+  // 同层薪资：选定 职类×经验×学历，比各公司该层报价中位数与同城同层对照；口径与报告同源同闸门。
+  const layerOptions = useMemo(() => {
+    const merged: Record<string, { key: string; label: string; total: number }> = {}
+    for (const row of Object.values(layers)) {
+      for (const item of row.layers) {
+        const key = layerKeyOf(item)
+        const entry = merged[key] ?? (merged[key] = { key, label: layerLabel(item), total: 0 })
+        entry.total += item.company_jobs
+      }
+    }
+    return Object.values(merged).sort((a, b) => b.total - a.total)
+  }, [layers])
+  const activeLayer = layerOptions.find(item => item.key === layerKey) ?? layerOptions[0]
+  const layerPayRows = useMemo(() => {
+    if (!activeLayer) return []
+    return selected.map(item => {
+      const row = layers[item.company]
+      return {
+        company: item.company, city: row?.city ?? '',
+        layer: row?.layers.find(item => layerKeyOf(item) === activeLayer.key),
+      }
+    })
+  }, [selected, layers, activeLayer])
+  const layerPayOption = useMemo<ChartOption | null>(() => {
+    const passing = layerPayRows.filter(row => row.layer?.gate === 'pass' && row.layer?.company_median)
+    if (!passing.length) return null
     return {
       tooltip: {
         trigger: 'axis', axisPointer: { type: 'shadow' },
         formatter: (params: unknown) => {
           const list = Array.isArray(params) ? params as { dataIndex: number }[] : [params as { dataIndex: number }]
           const index = list[0]?.dataIndex ?? 0
-          const row = payRows[index]
-          if (!row?.data) return ''
-          const d = row.data
+          const row = passing[index]
+          if (!row?.layer) return ''
+          const d = row.layer
           return [
-            `<b>${row.company}</b>`,
-            `公司报价中位数 ${fmt(d.company_median)} 元（${d.company_jobs} 条）`,
-            `同城 ${fmt(d.city_median)} 元（${d.city_jobs} 条）`,
+            `<b>${row.company}</b>（${row.city}）`,
+            `本公司该层 ${fmt(d.company_median!)} 元（${d.company_jobs} 条）`,
+            `同城同层 ${fmt(d.city_median!)} 元（${d.city_jobs} 条）`,
             `比值 ${d.ratio}`,
             '报价对比 ≠ 实际到手薪资',
           ].join('<br/>')
@@ -158,15 +217,23 @@ export function CompanyCompare() {
       },
       legend: { top: 0, textStyle: { fontSize: 11 } },
       grid: { left: 8, right: 16, top: 30, bottom: 8, containLabel: true },
-      xAxis: { type: 'category', data: payRows.map(row => shortName(row.company)),
-        axisLabel: { fontSize: 11, interval: 0, rotate: payRows.length > 3 ? 18 : 0 } },
+      xAxis: { type: 'category', data: passing.map(row => shortName(row.company)),
+        axisLabel: { fontSize: 11, interval: 0, rotate: passing.length > 3 ? 18 : 0 } },
       yAxis: { type: 'value', name: '元/月', nameTextStyle: { fontSize: 11 }, axisLabel: { fontSize: 11 } },
       series: [
-        { name: '公司报价中位数', type: 'bar', barWidth: 16, data: payRows.map(row => row.data!.company_median), itemStyle: { color: '#2f6f6f' } },
-        { name: '同城报价中位数', type: 'bar', barWidth: 16, data: payRows.map(row => row.data!.city_median), itemStyle: { color: '#c9b98a' } },
+        { name: '本公司该层中位数', type: 'bar', barWidth: 16, data: passing.map(row => row.layer!.company_median!), itemStyle: { color: '#2f6f6f' } },
+        { name: '同城同层中位数', type: 'bar', barWidth: 16, data: passing.map(row => row.layer!.city_median!), itemStyle: { color: '#c9b98a' } },
       ],
     }
-  }, [payRows])
+  }, [layerPayRows])
+  const layerGapNote = useMemo(() => {
+    const parts = layerPayRows.filter(row => row.layer?.gate !== 'pass').map(row => {
+      if (!row.layer) return `${row.company}（无此层岗位）`
+      if (row.layer.gate === 'few_company') return `${row.company}（本公司 ${row.layer.company_jobs} 条，需 ≥3 条）`
+      return `${row.company}（同城同层 ${row.layer.city_jobs} 条，需 ≥10 条）`
+    })
+    return parts.join(' · ')
+  }, [layerPayRows])
 
   const jdRows = useMemo(() => rows
     .map(row => ({ company: row.company, data: findingData(row.report, 'jd_specificity') }))
@@ -201,7 +268,7 @@ export function CompanyCompare() {
   }, [jdRows])
 
   return <div className="compare-page">
-    <section className="page-intro"><div><h1>数据分析 · 公司横评</h1><p>把几家公司放在一起看：六维参考、薪资报价、岗位描述具体度，全部来自本地已保存材料。</p></div><span className="revision-label">本地计算 · 不联网</span></section>
+    <section className="page-intro"><div><h1>数据分析 · 公司横评</h1><p>把几家公司放在一起看：六维参考、岗位构成、同层薪资与描述具体度。薪资对比按职类·经验·学历分层，全部来自本地已保存材料。</p></div><span className="revision-label">本地计算 · 不联网</span></section>
 
     <section className="paper-panel compare-controls">
       <div className="section-heading">
@@ -232,7 +299,7 @@ export function CompanyCompare() {
     {selected.length === 0
       ? <section className="paper-panel compare-empty">
           <h3>把几家公司放在一起看</h3>
-          <p className="body-small muted">在上方输入公司名加入对比（最多 {MAX_COMPANIES} 家）。候选来自公司资料库登记过的主体；从没算过参考分的公司会先显示「还没有参考报告」，加入后一键重算即可。</p>
+          <p className="body-small muted">在上方输入公司名加入对比（最多 {MAX_COMPANIES} 家）。候选来自公司资料库登记过的主体；从没算过参考分的公司会先显示「还没有参考报告」，加入后一键重算即可。薪资对比默认按岗位分层，公司级中位数只作构成参考。</p>
         </section>
       : <>
         <div className="compare-grid">
@@ -245,8 +312,22 @@ export function CompanyCompare() {
             {overallOption ? <EChart className="compare-chart" option={overallOption} /> : <p className="compare-chart-empty">还没有公司出综合分，先重算。</p>}
           </section>
           <section className="paper-panel compare-chart-panel">
-            <div className="compare-chart-title"><h3>薪资报价对比</h3><span className="tiny-label">招聘平台报价中位数，不是实际到手薪资</span></div>
-            {payOption ? <EChart className="compare-chart" option={payOption} /> : <p className="compare-chart-empty">还没有公司过薪资样本闸门（公司 ≥3 条、同城 ≥20 条可解析报价）。</p>}
+            <div className="compare-chart-title"><h3>岗位构成</h3><span className="tiny-label">职类分布不同，公司级薪资中位数不可直接比</span></div>
+            {mixOption ? <EChart className="compare-chart" option={mixOption} /> : <p className="compare-chart-empty">所选公司还没有已保存岗位。</p>}
+          </section>
+          <section className="paper-panel compare-chart-panel">
+            <div className="compare-chart-title">
+              <h3>同层薪资对比</h3>
+              {layerOptions.length
+                ? <select className="compare-layer-select" value={activeLayer?.key ?? ''} aria-label="选择对比层级"
+                          onChange={event => setLayerKey(event.target.value)}>
+                    {layerOptions.map(item => <option key={item.key} value={item.key}>{item.label}（合计 {item.total} 条）</option>)}
+                  </select>
+                : null}
+            </div>
+            <span className="tiny-label">同职类·同经验·同学历的报价中位数；各公司只与各自城市的同层对照</span>
+            {layerPayOption ? <EChart className="compare-chart" option={layerPayOption} /> : <p className="compare-chart-empty">{layerOptions.length ? '所选层级没有公司过闸（本公司 ≥3 条、同城同层 ≥10 条）。' : '所选公司还分不出可比层（岗位缺职类或经验/学历标注）。'}</p>}
+            {layerGapNote ? <p className="tiny-label compare-layer-note">未入图：{layerGapNote}</p> : null}
           </section>
           <section className="paper-panel compare-chart-panel">
             <div className="compare-chart-title"><h3>岗位描述具体度</h3><span className="tiny-label">只统计完整 JD；衡量讲得多具体，不是技术实力</span></div>
@@ -261,13 +342,14 @@ export function CompanyCompare() {
               <thead><tr>
                 <th>公司</th><th>综合分</th><th>覆盖</th>
                 {DIMENSIONS.map(([, label]) => <th key={label}>{label}</th>)}
-                <th>岗位样本</th><th>完整JD</th><th>报价中位数（公司/同城）</th><th>计算于</th>
+                <th>岗位样本</th><th>完整JD</th><th>薪资比值（报告口径）</th><th>计算于</th>
               </tr></thead>
               <tbody>{rows.map(row => {
                 const report = row.report
                 const pay = findingData(report, 'pay_vs_city_median')
                 const coverage = findingData(report, 'salary_quote_coverage')
                 const jd = findingData(report, 'jd_specificity')
+                const layersRow = layers[row.company]
                 return <tr key={row.company}>
                   <td className="compare-table-company">{row.company}</td>
                   <td>{report == null ? (report === undefined ? '读取中' : '暂不出分')
@@ -275,9 +357,9 @@ export function CompanyCompare() {
                       : <b style={{ color: tone(report.score) }}>{num(report.score)}</b>}</td>
                   <td>{report ? `${Math.round(report.confidence * 100)}%` : '—'}</td>
                   {DIMENSIONS.map(([key]) => <td key={key}>{dimScore(report, key) == null ? <span className="muted">—</span> : num(dimScore(report, key) as number)}</td>)}
-                  <td>{coverage ? `${coverage.known ?? 0}/${coverage.total ?? 0}` : '—'}</td>
+                  <td>{layersRow ? `${layersRow.parseable}/${layersRow.total_jobs}` : (coverage ? `${coverage.known ?? 0}/${coverage.total ?? 0}` : '—')}</td>
                   <td>{jd ? (jd.jobs ?? 0) : '—'}</td>
-                  <td>{pay && (pay.company_median ?? 0) > 0 ? `${fmt(pay.company_median)} / ${fmt(pay.city_median)}（${pay.ratio}）` : '—'}</td>
+                  <td>{pay && (pay.ratio ?? 0) > 0 ? `比值 ${pay.ratio}` : '—'}</td>
                   <td>{report ? date(report.computed_at) : '未生成'}</td>
                 </tr>})}</tbody>
             </table>
@@ -285,7 +367,7 @@ export function CompanyCompare() {
         </section>
 
         <section className="paper-panel compare-disclaimer">
-          <p className="tiny-label">对比图只呈现各公司本地已保存材料算出的主观参考值：维度覆盖低、样本量小的公司分数波动大（悬停图表可见样本数），图中 0 值维度表示「暂无依据」而不是负面信号。这是阅读辅助，不是公司排名，也不构成对任何公司的评价或结论。</p>
+          <p className="tiny-label">对比图只呈现各公司本地已保存材料算出的主观参考值：维度覆盖低、样本量小的公司分数波动大（悬停图表可见样本数），图中 0 值维度表示「暂无依据」而不是负面信号。薪资对比按职类·经验·学历分层——不同职类构成的公司之间，公司级中位数不可直接比。这是阅读辅助，不是公司排名，也不构成对任何公司的评价或结论。</p>
         </section>
       </>}
   </div>

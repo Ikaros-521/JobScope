@@ -109,6 +109,11 @@ export function getReliability(company: string) { return api<{ report: Reliabili
 // 横评候选：实体表全量（含未算过的公司），分数照实 null——没算过就是没算过；按名称排序，不带名次语义。
 export type CompareCompany = { company: string; credit_code: string; score: number | null; confidence: number | null; computed_at: string | null }
 export function getCompareCompanies(q = '') { return api<{ companies: CompareCompany[] }>(`/reliability/compare?q=${encodeURIComponent(q)}`) }
+// 岗位分层概要（compare 端点 companies 模式）：职类构成 + 职类×经验×学历逐层报价对照。
+// 中位数只在过闸层给出（本公司 ≥3 条、同城同层 ≥10 条），与报告 pay_vs_city_median 同源同闸门。
+export type CompareLayer = { role: string; experience: string; education: string; company_jobs: number; city_jobs: number; company_median?: number; city_median?: number; ratio?: number; gate: 'pass' | 'few_company' | 'few_city' }
+export type CompareLayers = { city: string; total_jobs: number; parseable: number; mix: { role: string; jobs: number }[]; layers: CompareLayer[] }
+export function getCompanyLayers(companies: string[]) { return api<{ companies: (CompareLayers & { company: string })[] }>(`/reliability/compare?companies=${encodeURIComponent(companies.join('|'))}`) }
 export function getReliabilityHistory(company: string) { return api<{ history: ReliabilityHistory | null }>(`/companies/${encodeURIComponent(company)}/reliability/history`) }
 export function computeReliability(company: string) { return post<ReliabilityReport>(`/companies/${encodeURIComponent(company)}/reliability`, { credit_code: '' }) }
 export function collectCompanySignals(company: string, source: string) { return post<SignalCollectResult>(`/companies/${encodeURIComponent(company)}/signals/collect`, { source }) }
