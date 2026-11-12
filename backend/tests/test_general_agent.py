@@ -132,6 +132,9 @@ def test_skills_are_imported_and_loaded_on_demand(client, monkeypatch):
 
 
 def test_unknown_tools_rejected_and_loop_bounded(client, monkeypatch):
+    # 默认限额已放宽到 50 次调用；本测试只验证循环有界，把限额压回脚本长度避免跑满 50 次。
+    monkeypatch.setattr('jobscope.general_agent.MAX_STEPS', 8)
+    monkeypatch.setattr('jobscope.general_agent.MAX_CALLS', 8)
     configure(client)
     calls = scripted(monkeypatch, [tool('shell_exec', {'command': 'anything'}, f'call{i}') for i in range(8)])
     result = client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'message': '测试'}).json()
