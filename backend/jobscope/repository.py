@@ -39,6 +39,16 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS company_reliability (company_id TEXT REFERENCES companies(id), input_hash TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(company_id, input_hash));
             """)
             self._migrate_conversations(conn)
+            # 读路径高频查询的二级索引（放在 _migrate_conversations 之后：conversations 的
+            # updated_at 等列由迁移补齐）。列表排序、公司过滤、取最新报告与最新会话不再随数据量
+            # 增长退化为全表扫描；首次对既有库建索引是一次性开销。
+            conn.executescript("""
+                CREATE INDEX IF NOT EXISTS idx_evidence_company ON evidence(company);
+                CREATE INDEX IF NOT EXISTS idx_jobs_updated ON jobs(updated_at);
+                CREATE INDEX IF NOT EXISTS idx_company_reliability_lookup ON company_reliability(company_id, created_at);
+                CREATE INDEX IF NOT EXISTS idx_company_signals_company ON company_signals(company_id);
+                CREATE INDEX IF NOT EXISTS idx_conversations_scope ON conversations(scope, updated_at);
+            """)
             self._backfill_salary_numbers(conn)
             # A previous process can no longer complete its in-flight synchronous tasks.
             for row in conn.execute("SELECT id,payload FROM tasks").fetchall():
@@ -153,9 +163,18 @@ class Repository:
             return item
 
     def jobs(self, q="", location=""):
+        # 全量读回是 compare/details-status/reliability 等重端点的底座：逐条 self.job() 是
+        # 每行一次新连接的 N+1，几千份档案就是几千次连接。这里单连接两次查询等价替换。
         with self.connection() as conn:
-            rows = conn.execute("SELECT id FROM jobs ORDER BY updated_at DESC").fetchall()
-        items = [self.job(r["id"]) for r in rows]
+            rows = conn.execute("SELECT payload FROM jobs ORDER BY updated_at DESC").fetchall()
+            linked = {}
+            for job_id, evidence_id in conn.execute("SELECT job_id, evidence_id FROM job_evidence ORDER BY rowid"):
+                linked.setdefault(job_id, []).append(evidence_id)
+            items = []
+            for row in rows:
+                item = json.loads(row["payload"])
+                item["evidence_ids"] = linked.get(item["id"], [])
+                items.append(item)
         return [item for item in items if q.casefold() in " ".join([item["title"], item["company"], item["description"]]).casefold() and location.casefold() in item["location"].casefold()]
 
     def evidence(self, company=None, q="", include_job_postings=True):
@@ -305,9 +324,47 @@ class Repository:
             cursor = conn.execute(f'DELETE FROM jobs WHERE id IN ({marks})', existing)
             return cursor.rowcount
 
+    @staticmethod
+    def _attach_evidence_ids(conn, items):
+        """分页后的岗位批量补 evidence_ids（保持 job_evidence 的 rowid 顺序），替代逐条回读。"""
+        ids = [item['id'] for item in items]
+        if not ids:
+            return items
+        marks = ','.join('?' * len(ids))
+        linked = {}
+        for job_id, evidence_id in conn.execute(f'SELECT job_id, evidence_id FROM job_evidence WHERE job_id IN ({marks}) ORDER BY rowid', ids):
+            linked.setdefault(job_id, []).append(evidence_id)
+        for item in items:
+            item['evidence_ids'] = linked.get(item['id'], [])
+        return items
+
+    @staticmethod
+    def _trim_evidence_text(items, q, trim_text):
+        """列表端点不回传全文正文：text 截断并打标，摘要命中窗口（text_hit）在截断前基于全文算出，
+        前端 EvidenceCard 用它渲染搜索摘要，展开时再按 id 取全文。"""
+        terms = [term.lower() for term in q.split() if term]
+        for item in items:
+            text = str(item.get('text') or '')
+            if terms:
+                lowered = text.lower()
+                hit_at = min((pos for pos in (lowered.find(term) for term in terms) if pos >= 0), default=-1)
+                if hit_at >= 0:
+                    start = max(0, hit_at - 60)
+                    end = min(len(text), hit_at + 200)
+                    item['text_hit'] = re.sub(r'\s+', ' ', f"{'…' if start > 0 else ''}{text[start:end]}{'…' if end < len(text) else ''}")
+            if len(text) > trim_text:
+                item['text'] = text[:trim_text]
+                item['text_truncated'] = True
+        return items
+
     def page(self, resource, page=1, page_size=20, q='', location='', source='', salary_min=None, salary_max=None,
-             company=None, job_id=None, linked_job_id=None, include_job_postings=True):
-        """Bounded SQL queries; filters run before count and pagination."""
+             company=None, job_id=None, linked_job_id=None, include_job_postings=True,
+             trim_description=None, trim_text=None):
+        """Bounded SQL queries; filters run before count and pagination.
+
+        trim_description / trim_text 仅供列表 HTTP 端点裁剪大字段（前端列表只渲染摘要，
+        全文走详情端点按需读取）；仓储内部调用方默认不裁剪，保持完整负载。
+        """
         where, params = [], []
         if resource == 'jobs':
             table, order = 'jobs', 'updated_at DESC, id DESC'
@@ -342,9 +399,17 @@ class Repository:
             page = min(page, pages)
             rows = conn.execute(f'SELECT payload FROM {table}' + clause + f' ORDER BY {order} LIMIT ? OFFSET ?',
                                 [*params, page_size, (page - 1) * page_size]).fetchall()
-        items = [json.loads(row[0]) for row in rows]
-        if resource == 'jobs':
-            items = [self.job(item['id']) for item in items]
+            items = [json.loads(row[0]) for row in rows]
+            if resource == 'jobs':
+                items = self._attach_evidence_ids(conn, items)
+                if trim_description:
+                    for item in items:
+                        description = str(item.get('description') or '')
+                        if len(description) > trim_description:
+                            item['description'] = description[:trim_description]
+                            item['description_truncated'] = True
+            elif resource == 'evidence' and trim_text:
+                items = self._trim_evidence_text(items, q, trim_text)
         return {resource: items, 'page': page, 'page_size': page_size, 'total': total, 'pages': pages}
 
     def companies_page(self, q='', page=1, page_size=20):
@@ -417,14 +482,20 @@ class Repository:
 
     def list_conversations(self, scope, limit=200):
         encoded = json.dumps(scope, sort_keys=True, ensure_ascii=False)
+        # 摘要字段（条数、首条用户消息）由 SQLite 的 JSON 函数在库侧计算：
+        # 会话 messages 含完整 trace，逐会话 json.loads 只为了数个数在这里是纯开销。
         with self.connection() as conn:
-            rows = conn.execute('SELECT id,title,mode,model,llm_channel,permission_mode,updated_at,messages FROM conversations WHERE scope=? ORDER BY updated_at DESC LIMIT ?', (encoded, limit)).fetchall()
-        result = []
-        for row in rows:
-            messages = json.loads(row['messages'])
-            preview = next((m['content'][:80] for m in messages if m.get('role') == 'user'), '')
-            result.append(dict(id=row['id'], title=row['title'] or preview or '新对话', mode=row['mode'] or 'research', model=row['model'], llm_channel=row['llm_channel'] or '', permission_mode=row['permission_mode'] or 'autonomous', updated_at=row['updated_at'], message_count=len(messages), preview=preview))
-        return result
+            rows = conn.execute('''
+                SELECT id,title,mode,model,llm_channel,permission_mode,updated_at,
+                       json_array_length(messages) AS message_count,
+                       (SELECT substr(CAST(json_extract(value,'$.content') AS TEXT),1,80)
+                        FROM json_each(conversations.messages)
+                        WHERE json_extract(value,'$.role')='user' LIMIT 1) AS preview
+                FROM conversations WHERE scope=? ORDER BY updated_at DESC LIMIT ?''', (encoded, limit)).fetchall()
+        return [dict(id=row['id'], title=row['title'] or row['preview'] or '新对话', mode=row['mode'] or 'research',
+                     model=row['model'], llm_channel=row['llm_channel'] or '',
+                     permission_mode=row['permission_mode'] or 'autonomous', updated_at=row['updated_at'],
+                     message_count=row['message_count'] or 0, preview=row['preview'] or '') for row in rows]
 
     def get_conversation(self, conversation_id, scope=None):
         with self.connection() as conn:
@@ -660,11 +731,12 @@ class Repository:
                            FROM company_reliability) r ON r.company_id = c.id AND r.rn = 1
                 WHERE instr(lower(c.name), lower(?)) > 0
                 ORDER BY c.name LIMIT ?""", (q, page_size)).fetchall()
-        counts = {}
-        for item in self.jobs():
-            name = Repository.normalise_name(item.get('company'))
-            if name:
-                counts[name] = counts.get(name, 0) + 1
+            # jobs_count 用一条 GROUP BY 在库侧归并，替代全量 jobs() 的逐行遍历。
+            counts = {}
+            for row in conn.execute("SELECT json_extract(payload,'$.company') AS company, count(*) AS n FROM jobs GROUP BY json_extract(payload,'$.company')"):
+                name = Repository.normalise_name(row['company'])
+                if name:
+                    counts[name] = counts.get(name, 0) + row['n']
         result = []
         for row in rows:
             item = dict(row)

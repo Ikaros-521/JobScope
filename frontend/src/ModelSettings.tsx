@@ -20,7 +20,7 @@ function splitModels(text: string) { return text.split('\n').map(item => item.tr
 
 export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
   const [tab, setTab] = useState<'channels' | 'purposes'>('channels')
-  const [channels, setChannels] = useState<LlmChannel[]>([])
+  const [channels, setChannels] = useState<LlmChannel[] | null>(null)
   const [catalog, setCatalog] = useState<Channel[]>([])
   const [bindings, setBindings] = useState<BindingsPayload | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -44,7 +44,7 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
 
   function refreshBindings() { return getBindings().then(setBindings) }
 
-  function channelById(id: string | null | undefined) { return channels.find(item => item.id === id) ?? null }
+  function channelById(id: string | null | undefined) { return (channels ?? []).find(item => item.id === id) ?? null }
   const selected = channelById(selectedId)
   const defaultChannelId = bindings?.agent.binding?.kind === 'channel' ? bindings.agent.binding.channel_id : null
 
@@ -144,14 +144,15 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
     {loadError ? <section className="paper-panel"><div role="alert"><h2>暂时无法读取模型配置</h2><p>{loadError}</p></div><button className="button secondary" type="button" onClick={() => { setLoadError(null); setLoadAttempt(current => current + 1) }}>重新加载</button></section>
       : <div className="model-settings-shell">
         <div className="management-tabs model-settings-tabs" role="tablist" aria-label="模型设置分区" onKeyDown={navigateTabs}>
-          <button id="channels-tab" role="tab" aria-controls="channels-panel" aria-selected={tab === 'channels'} tabIndex={tab === 'channels' ? 0 : -1} onClick={() => setTab('channels')}>模型渠道 <span>{channels.length}</span></button>
+          <button id="channels-tab" role="tab" aria-controls="channels-panel" aria-selected={tab === 'channels'} tabIndex={tab === 'channels' ? 0 : -1} onClick={() => setTab('channels')}>模型渠道 <span>{channels ? channels.length : '—'}</span></button>
           <button id="purposes-tab" role="tab" aria-controls="purposes-panel" aria-selected={tab === 'purposes'} tabIndex={tab === 'purposes' ? 0 : -1} onClick={() => setTab('purposes')}>功能与模型</button>
         </div>
 
         {tab === 'channels' && <section id="channels-panel" role="tabpanel" aria-labelledby="channels-tab" className="channels-layout">
           <aside className="channels-list" aria-label="已保存渠道">
             <button type="button" className="button secondary small channels-new" onClick={startCreate}>＋ 新建渠道</button>
-            {channels.map(item => {
+            {channels === null && <p className="body-small muted" role="status">正在读取渠道配置…</p>}
+            {channels?.map(item => {
               const isDefault = defaultChannelId === item.id
               return <button type="button" key={item.id} className={`channel-item ${selectedId === item.id && !draft ? 'selected' : ''} ${isDefault ? 'default' : ''}`} onClick={() => { setDraft(null); setSelectedId(item.id) }}>
                 <strong>{item.name}{isDefault && <span className="badge good channel-badge"><span />对话默认</span>}</strong>
@@ -159,11 +160,11 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
                 <span>{item.model || '未设默认模型'} · {item.models.length} 个模型{item.key_set ? ' · 密钥已存' : ''}</span>
               </button>
             })}
-            {channels.length === 0 && !draft && <p className="body-small muted">还没有渠道。新建一条，填入服务商地址与密钥，再把它的模型设为各功能的默认。</p>}
+            {channels !== null && channels.length === 0 && !draft && <p className="body-small muted">还没有渠道。新建一条，填入服务商地址与密钥，再把它的模型设为各功能的默认。</p>}
           </aside>
 
           {draft ? <section className="paper-panel channel-editor" aria-label={draft.id ? '编辑渠道' : '新建渠道'}>
-            <div className="section-heading"><div><h2>{draft.id ? '编辑渠道' : '新建渠道'}</h2><p className="body-small muted">密钥只存在这条渠道里；功能绑定指向它，改密钥即刻全局生效。</p></div><button type="button" className="text-button" onClick={() => { setDraft(null); setSelectedId(channels[0]?.id ?? null) }}>取消</button></div>
+            <div className="section-heading"><div><h2>{draft.id ? '编辑渠道' : '新建渠道'}</h2><p className="body-small muted">密钥只存在这条渠道里；功能绑定指向它，改密钥即刻全局生效。</p></div><button type="button" className="text-button" onClick={() => { setDraft(null); setSelectedId(channels?.[0]?.id ?? null) }}>取消</button></div>
             <div className="channel-editor-form" onKeyDown={event => {
               const target = event.target as HTMLElement
               if (event.key === 'Enter' && target.tagName !== 'TEXTAREA') event.preventDefault()
@@ -217,8 +218,9 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
         </section>}
 
         {tab === 'purposes' && <section id="purposes-panel" role="tabpanel" aria-labelledby="purposes-tab" className="purposes-layout" aria-label="功能与模型">
+          {bindings === null && <div className="paper-panel"><p className="body-small muted" role="status">正在读取功能绑定…</p></div>}
           {bindings && (Object.keys(PURPOSE_META) as ModelPurpose[]).map(purpose => <PurposeCard
-            key={purpose} purpose={purpose} meta={PURPOSE_META[purpose]} entry={bindings[purpose]} channels={channels} inFlight={inFlight.current}
+            key={purpose} purpose={purpose} meta={PURPOSE_META[purpose]} entry={bindings[purpose]} channels={channels ?? []} inFlight={inFlight.current}
             onChange={async binding => {
               if (inFlight.current) return
               inFlight.current = true

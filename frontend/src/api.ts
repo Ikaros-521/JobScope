@@ -2,8 +2,10 @@ export type Job = {
   id: string; title: string; company: string; location: string; salary: string;
   url: string; source: string; updated_at: string; description: string; evidence_ids: string[]; tags: string[]
   description_status?: string; detail_collected_at?: string; detail_source_url?: string
+  description_truncated?: boolean // 列表端点裁剪过正文；全文走 /jobs/{id}
 }
-export type Evidence = { id: string; title: string; url: string; source: string; kind: string; company: string; text: string; collected_at: string; published_at: string | null; content_hash: string }
+// 列表端点的 text 可能被裁剪（text_truncated），text_hit 是搜索命中处的全文摘要窗口。
+export type Evidence = { id: string; title: string; url: string; source: string; kind: string; company: string; text: string; collected_at: string; published_at: string | null; content_hash: string; text_truncated?: boolean; text_hit?: string }
 export type Source = { id: string; name: string; kind: string; transport_mode: string; status: string; description: string; cities: string[]; hot: string[]; browser_collectable?: boolean }
 export type Task = { id: string; source: string; query: string; status: string; message: string; created_at: string; count: number; kind?: string; total?: number; processed?: number; failed?: number }
 export type PageInfo = { page: number; page_size: number; total: number; pages: number }

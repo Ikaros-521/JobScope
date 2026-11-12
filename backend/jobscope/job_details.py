@@ -171,9 +171,11 @@ def save_detail(repo, output):
     return saved
 
 
-def pending_jobs(repo):
+def pending_jobs(repo, jobs=None):
     # detail_transport='page_state' 是旧版把搜索页截断摘要误标为完整的记录，也必须重读详情页。
-    return [j for j in repo.jobs() if j['source'] in DETAIL_SOURCES
+    # jobs 参数允许调用方复用已取的全量岗位（状态端点一次全量供过滤与计数两用）。
+    pool = repo.jobs() if jobs is None else jobs
+    return [j for j in pool if j['source'] in DETAIL_SOURCES
             and (j.get('description_status') != 'complete' or j.get('detail_transport') == 'page_state')]
 
 

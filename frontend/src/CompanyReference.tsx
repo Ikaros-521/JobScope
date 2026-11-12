@@ -183,10 +183,11 @@ function TrendDiff({ diff }: { diff: ReliabilityDiff }) {
   </div>
 }
 
-export function CompanyReference({ report, history, busy, action, company, onCompute, onCoverage, onExtract, onOpenEvidence, onOpenEvidenceModal, onOpenCompare }: {
+export function CompanyReference({ report, history, busy, loading, action, company, onCompute, onCoverage, onExtract, onOpenEvidence, onOpenEvidenceModal, onOpenCompare }: {
   report: ReliabilityReport | null
   history: ReliabilityHistory | null
   busy: boolean
+  loading?: boolean
   action: { label: string; status: string; message: string } | null
   company: string
   onCompute: () => void
@@ -217,9 +218,9 @@ export function CompanyReference({ report, history, busy, action, company, onCom
       </div>
     </div>
 
-    {/* 没有综合分时不画空环、不摆占位大数字，直接说明依据不足并交给下面的缺口清单。 */}
+    {/* 没有综合分时不画空环、不摆占位大数字；读取中先说明数据在路上，别让慢请求被误读成「没生成过」。 */}
     {score === null
-      ? <p className="reliability-empty"><strong>依据不足，暂不出分</strong><span className="muted body-small">{report ? report.summary : '这家公司的参考还没有生成过。生成只使用本项目已保存的信号，不会联网。'}</span></p>
+      ? <p className="reliability-empty"><strong>{loading ? '正在读取这家公司的参考…' : '依据不足，暂不出分'}</strong><span className="muted body-small">{loading ? '参考数据来自本地资料库，读取完成后会在这里展示。' : report ? report.summary : '这家公司的参考还没有生成过。生成只使用本项目已保存的信号，不会联网。'}</span></p>
       : <div className="reliability-score">
         <strong style={{ color: tone(score) }}>{number(score)}</strong>
         <span>综合参考分 · 维度覆盖 {Math.round((report?.confidence ?? 0) * 100)}%（按权重）</span>

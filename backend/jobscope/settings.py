@@ -119,59 +119,64 @@ class ModelSettings:
     def __init__(self, repo):
         self.repo = repo
         with repo.connection() as conn:
-            conn.execute('CREATE TABLE IF NOT EXISTS model_settings(target TEXT PRIMARY KEY,payload TEXT NOT NULL)')
+            # effective() 单连接读三表的前提：这里的建表口径与 ModelBindings/LlmChannelStore
+            # 各自的构造器完全一致（IF NOT EXISTS 幂等），避免组装配置时逐 store 再开连接建表。
+            conn.executescript('''
+                CREATE TABLE IF NOT EXISTS model_settings(target TEXT PRIMARY KEY,payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS model_bindings(purpose TEXT PRIMARY KEY,payload TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS llm_channels(id TEXT PRIMARY KEY,payload TEXT NOT NULL);
+            ''')
 
     def channel_payload(self, channel_id):
         return LlmChannelStore(self.repo).get(channel_id)
 
-    def resolve_purpose(self, purpose, bindings):
-        """Resolve one feature binding to a provider dict; None = inherit the default row.
-
-        Channels are the source of truth for credentials — the binding is a pointer,
-        so deleting/rotating a channel key takes effect without touching bindings.
-        """
-        binding = bindings.get(purpose)
-        if not binding or binding.get('kind') in (None, 'inherit'):
-            return None
-        kind = binding.get('kind')
-        if kind == 'disabled':
-            return dict(mode='disabled', channel='custom', protocol='openai', url='', model='', key='', local_model='', source='binding')
-        if kind == 'local':
-            return dict(mode='local', channel='custom', protocol='openai', url='', model='', key='', local_model=binding.get('local_model', ''), source='binding')
-        try:
-            payload = LlmChannelStore(self.repo).get(binding.get('channel_id', ''))
-        except ValueError:
-            return None  # 渠道已被删除：回落默认配置，绑定在功能页可见为“渠道已删除”
-        protocol = payload.get('protocol', 'openai')
-        if purpose == 'embedding' and protocol == 'anthropic':
-            return None
-        from .model_transport import endpoint
-        url = payload['url']
-        if purpose == 'embedding':
-            url = endpoint(url, 'openai', 'embedding')
-            protocol = 'openai'
-        return dict(mode='remote', channel=payload.get('channel', 'custom'), protocol=protocol, url=url,
-                    model=binding.get('model') or payload.get('model', ''), key=payload.get('key', ''),
-                    local_model='', context_tokens=payload.get('context_tokens'),
-                    saved_channel_id=payload['id'], source='binding')
-
     def effective(self):
+        """组装四个 purpose 的生效配置。中间件每个 /api 请求都会调用：单连接一次读齐
+        model_settings / model_bindings / llm_channels 三表，替代原先逐 store 各开连接
+        （外加两次构造器建表 DDL）的固定税。"""
         result = environment()
         with self.repo.connection() as conn:
             for row in conn.execute('SELECT target,payload FROM model_settings'):
                 saved = json.loads(row[1])
                 result[row[0]].update(**dict(channel='custom', protocol='openai') | saved, source='saved')
-        from .bindings import ModelBindings
-        bindings = ModelBindings(self.repo)
-        agent = self.resolve_purpose('agent', bindings)
+            bindings = {row['purpose']: json.loads(row['payload'])
+                        for row in conn.execute('SELECT purpose,payload FROM model_bindings')}
+            channels = {row['id']: json.loads(row['payload'])
+                        for row in conn.execute('SELECT id,payload FROM llm_channels')}
+
+        def resolve(purpose):
+            binding = bindings.get(purpose)
+            if not binding or binding.get('kind') in (None, 'inherit'):
+                return None
+            kind = binding.get('kind')
+            if kind == 'disabled':
+                return dict(mode='disabled', channel='custom', protocol='openai', url='', model='', key='', local_model='', source='binding')
+            if kind == 'local':
+                return dict(mode='local', channel='custom', protocol='openai', url='', model='', key='', local_model=binding.get('local_model', ''), source='binding')
+            payload = channels.get(binding.get('channel_id', ''))
+            if payload is None:
+                return None  # 渠道已被删除：回落默认配置，绑定在功能页可见为“渠道已删除”
+            protocol = payload.get('protocol', 'openai')
+            if purpose == 'embedding' and protocol == 'anthropic':
+                return None
+            from .model_transport import endpoint
+            url = payload['url']
+            if purpose == 'embedding':
+                url = endpoint(url, 'openai', 'embedding')
+                protocol = 'openai'
+            return dict(mode='remote', channel=payload.get('channel', 'custom'), protocol=protocol, url=url,
+                        model=binding.get('model') or payload.get('model', ''), key=payload.get('key', ''),
+                        local_model='', context_tokens=payload.get('context_tokens'),
+                        saved_channel_id=payload['id'], source='binding')
+
+        agent = resolve('agent')
         if agent:
             result['llm'] = agent
-        embedding = self.resolve_purpose('embedding', bindings)
+        embedding = resolve('embedding')
         if embedding:
             result['embedding'] = embedding
         for purpose in ('extraction', 'analysis'):
-            override = self.resolve_purpose(purpose, bindings)
-            result[purpose] = override or dict(result['llm'])
+            result[purpose] = resolve(purpose) or dict(result['llm'])
         return result
 
     @staticmethod

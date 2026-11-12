@@ -35,7 +35,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
   const company = scope.kind === 'company' ? scope.company.trim() : ''
   const jobCompany = scope.kind === 'job' ? scope.company : ''
   const {
-    sessions, conversation, messages, scopeActions, lineage, run, error, opening, starting, queue,
+    sessions, sessionsLoading, conversation, messages, scopeActions, lineage, run, error, opening, starting, queue,
     openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeModel, changePermissionMode, compress, clearError,
     enqueue, removeQueued, clearQueue, resumeQueue,
   } = useChatRun(scope, navigation, onOpened)
@@ -296,6 +296,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
       </div>
       <SessionList
         sessions={sessions}
+        loading={sessionsLoading}
         activeId={conversation.id}
         collapsed={sessionsCollapsed}
         onOpen={id => { if (!switching) { cancelEdit(); void openConversation(id) } }}
