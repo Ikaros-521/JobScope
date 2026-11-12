@@ -613,11 +613,23 @@ def test_compare_endpoint_lists_latest_snapshot_per_company(client, tmp_path):
     assert rows[0]['computed_at']
     # 乙公司只登记过实体、从没算过：仍可作为候选列出，但分数与时间是 null。
     Repository(tmp_path).resolve_company('乙公司')
+    # 岗位计数按实体口径归并：甲实体挂了别名「甲别称」，别名名下的岗位也计入甲。
+    repo = Repository(tmp_path)
+    repo.save_job(dict(company='甲公司', title='工程师', location='杭州', salary='15-18K',
+                       description_status='listing', description='列表摘要', source='boss', url=''), 'boss')
+    repo.save_job(dict(company='甲别称', title='审核员', location='杭州', salary='9-12K',
+                       description_status='listing', description='列表摘要', source='boss', url=''), 'boss')
+    repo.resolve_company('甲公司', aliases=['甲别称'])
     by_name = {item['company']: item for item in client.get('/api/reliability/compare').json()['companies']}
     assert by_name['乙公司']['score'] is None and by_name['乙公司']['computed_at'] is None
-    # 读路径不写行：列表查询本身不产生新的 companies 记录。
+    assert by_name['乙公司']['jobs_count'] == 0
+    assert by_name['甲公司']['jobs_count'] == 2
+    # 读路径不写行：列表查询本身不产生新的 companies 记录（甲别称是岗位落库时合法登记的）。
     with Repository(tmp_path).connection() as conn:
-        assert conn.execute('SELECT count(*) FROM companies').fetchone()[0] == 2
+        before = conn.execute('SELECT count(*) FROM companies').fetchone()[0]
+    client.get('/api/reliability/compare')
+    with Repository(tmp_path).connection() as conn:
+        assert conn.execute('SELECT count(*) FROM companies').fetchone()[0] == before
 
 
 def test_compare_layers_endpoint_reports_stratified_pay_and_mix(client, tmp_path):

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { computeReliability, getCompareCompanies, getCompanyLayers, getReliability } from './api'
 import type { CompareCompany, CompareLayer, CompareLayers, ReliabilityReport } from './api'
@@ -42,6 +42,10 @@ function layerLabel(layer: CompareLayer) { return `${layer.role} · ${layer.expe
 export function CompanyCompare() {
   const [query, setQuery] = useState('')
   const [suggestions, setSuggestions] = useState<CompareCompany[]>([])
+  const [searching, setSearching] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [highlight, setHighlight] = useState(0)
+  const searchBox = useRef<HTMLDivElement>(null)
   const [selected, setSelected] = useState<Row[]>([])
   const [reports, setReports] = useState<Record<string, ReliabilityReport | null>>({})
   const [layers, setLayers] = useState<Record<string, LayerRow>>({})
@@ -51,11 +55,24 @@ export function CompanyCompare() {
 
   useEffect(() => {
     let active = true
+    setSearching(true)
     const timer = window.setTimeout(() => {
-      getCompareCompanies(query.trim()).then(data => { if (active) setSuggestions(data.companies) }).catch(() => { if (active) setSuggestions([]) })
+      getCompareCompanies(query.trim())
+        .then(data => { if (active) { setSuggestions(data.companies); setSearching(false) } })
+        .catch(() => { if (active) { setSuggestions([]); setSearching(false) } })
     }, 250)
     return () => { active = false; clearTimeout(timer) }
   }, [query])
+
+  // 点到检索框外部就收起浮层；mousedown 阶段判断，点击结果项时不会先被 blur 吃掉。
+  useEffect(() => {
+    const onDocMouseDown = (event: MouseEvent) => {
+      if (searchBox.current && !searchBox.current.contains(event.target as Node)) setSearchOpen(false)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [])
+  useEffect(() => { setHighlight(0) }, [suggestions])
 
   // 岗位分层概要随所选公司变化重取：薪资对比按 职类×经验×学历 分层，不依赖参考报告是否生成。
   useEffect(() => {
@@ -71,18 +88,32 @@ export function CompanyCompare() {
 
   const rows = useMemo(() => selected.map(item => ({ ...item, report: reports[item.company] })), [selected, reports])
 
-  async function addCompany(event: FormEvent) {
-    event.preventDefault()
-    const name = query.trim()
-    if (!name) return
-    if (selected.some(item => item.company === name)) { toast('这家公司已在对比列表里。'); return }
+  // 加入对比的唯一入口：下拉点选或回车选高亮项。刻意不做「按原文加入」——
+  // 横评的数据面是已保存岗位与报告，未登记的公司加了也是空行；等检索请求返回再选。
+  function pick(name: string) {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    if (selected.some(item => item.company === trimmed)) { toast('这家公司已在对比列表里。'); return }
     if (selected.length >= MAX_COMPANIES) { toast(`一次最多横评 ${MAX_COMPANIES} 家，先移除几家再加入。`); return }
-    setSelected(prev => [...prev, { company: name }])
-    setQuery('')
-    try {
-      const { report } = await getReliability(name)
-      setReports(prev => ({ ...prev, [name]: report }))
-    } catch (err) { toast((err as Error).message, 'error') }
+    setSelected(prev => [...prev, { company: trimmed }])
+    setQuery(''); setSearchOpen(false)
+    getReliability(trimmed)
+      .then(({ report }) => setReports(prev => ({ ...prev, [trimmed]: report })))
+      .catch(err => toast((err as Error).message, 'error'))
+  }
+  function submitSearch(event: FormEvent) {
+    event.preventDefault()
+    if (suggestions[highlight]) pick(suggestions[highlight].company)
+  }
+  function onSearchKeyDown(event: React.KeyboardEvent) {
+    if (event.key === 'ArrowDown' && suggestions.length) { event.preventDefault(); setHighlight(index => (index + 1) % suggestions.length) }
+    else if (event.key === 'ArrowUp' && suggestions.length) { event.preventDefault(); setHighlight(index => (index - 1 + suggestions.length) % suggestions.length) }
+    else if (event.key === 'Enter') {
+      // 显式处理回车：不依赖浏览器对表单的默认提交行为（合成事件/某些输入法下不会触发）。
+      event.preventDefault()
+      if (suggestions[highlight]) pick(suggestions[highlight].company)
+    }
+    else if (event.key === 'Escape') setSearchOpen(false)
   }
   function removeCompany(name: string) {
     setSelected(prev => prev.filter(item => item.company !== name))
@@ -277,14 +308,41 @@ export function CompanyCompare() {
           {computing ? <span className="spinner" /> : null}{computing && progress ? progress : '重新计算所选'}
         </button>
       </div>
-      <form className="compare-add-row" onSubmit={addCompany}>
-        <input list="compare-companies" value={query} onChange={event => setQuery(event.target.value)}
-               placeholder="输入公司名，从候选里选择" maxLength={300} aria-label="公司名称" />
-        <datalist id="compare-companies">{suggestions.map(item => (
-          <option key={item.company} value={item.company}>
-            {item.score != null ? `参考分 ${num(item.score)} · 覆盖 ${Math.round((item.confidence ?? 0) * 100)}%` : '还没有参考报告'}
-          </option>))}</datalist>
-        <button className="button secondary" type="submit" disabled={!query.trim()}>加入对比</button>
+      <form className="compare-add-row" onSubmit={submitSearch}>
+        <div className="compare-search" ref={searchBox}>
+          <input value={query} onChange={event => { setQuery(event.target.value); setSearchOpen(true) }}
+                 onFocus={() => setSearchOpen(true)} onKeyDown={onSearchKeyDown}
+                 placeholder="检索公司名，点选结果加入对比" maxLength={300} aria-label="检索公司名称"
+                 aria-autocomplete="list" role="combobox" aria-expanded={searchOpen} />
+          {searchOpen && suggestions.length > 0
+            ? <div className="compare-search-panel" role="listbox">
+                {suggestions.map((item, index) => {
+                  const chosen = selected.some(row => row.company === item.company)
+                  return <button type="button" role="option" aria-selected={index === highlight} key={item.company}
+                                  className={`compare-search-item${index === highlight ? ' active' : ''}`}
+                                  disabled={chosen}
+                                  onMouseEnter={() => setHighlight(index)}
+                                  onClick={() => pick(item.company)}>
+                    <span className="compare-search-name">{item.company}</span>
+                    <span className="compare-search-meta">
+                      {item.jobs_count > 0 ? <>{item.jobs_count} 条岗位</> : <span className="muted">无岗位</span>}
+                      {item.score != null
+                        ? <span className="compare-search-score"> · 参考分 {num(item.score)} · 覆盖 {Math.round((item.confidence ?? 0) * 100)}%</span>
+                        : <span className="muted"> · 未出分</span>}
+                      {chosen ? <span className="compare-search-chosen">已加入</span> : null}
+                    </span>
+                  </button>
+                })}
+              </div>
+            : null}
+          {searchOpen && searching && query.trim() && suggestions.length === 0
+            ? <div className="compare-search-panel compare-search-none">搜索中…</div>
+            : null}
+          {searchOpen && !searching && query.trim() && suggestions.length === 0
+            ? <div className="compare-search-panel compare-search-none">没有匹配「{query.trim()}」的已登记公司。先在岗位研究里采集该公司的岗位，或等资料库登记后再来。</div>
+            : null}
+        </div>
+        <button className="button secondary" type="submit" disabled={!suggestions[highlight]}>加入所选</button>
       </form>
       {selected.length
         ? <div className="compare-chips">{selected.map(item => (

@@ -645,10 +645,12 @@ class Repository:
 
         分数与覆盖度照实带出 null——没算过就是没算过，绝不补 0 伪装成低分；按名称排序，
         这个列表是选择器不是榜单，名次语义留给页面上的图表与用户自己。
+        jobs_count 是该实体口径（名称+别名规范化归并）下的已存岗位数：横评的主要数据面就是
+        岗位，检索时看得见哪家有料、哪家只是登记过主体。
         """
         with self.connection() as conn:
             rows = conn.execute("""
-                SELECT c.name AS company, c.credit_code AS credit_code,
+                SELECT c.name AS company, c.credit_code AS credit_code, c.aliases AS aliases,
                        json_extract(r.payload, '$.score') AS score,
                        json_extract(r.payload, '$.confidence') AS confidence,
                        r.created_at AS computed_at
@@ -658,4 +660,19 @@ class Repository:
                            FROM company_reliability) r ON r.company_id = c.id AND r.rn = 1
                 WHERE instr(lower(c.name), lower(?)) > 0
                 ORDER BY c.name LIMIT ?""", (q, page_size)).fetchall()
-        return dict(companies=[dict(row) for row in rows])
+        counts = {}
+        for item in self.jobs():
+            name = Repository.normalise_name(item.get('company'))
+            if name:
+                counts[name] = counts.get(name, 0) + 1
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                aliases = json.loads(item.pop('aliases') or '[]')
+            except ValueError:
+                aliases = []
+            names = {Repository.normalise_name(value) for value in [item['company'], *aliases] if str(value or '').strip()}
+            item['jobs_count'] = sum(counts.get(name, 0) for name in names)
+            result.append(item)
+        return dict(companies=result)

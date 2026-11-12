@@ -107,7 +107,8 @@ export type SignalSource = { name: string; tier: 'free' | 'paid'; transport: str
 
 export function getReliability(company: string) { return api<{ report: ReliabilityReport | null }>(`/companies/${encodeURIComponent(company)}/reliability`) }
 // 横评候选：实体表全量（含未算过的公司），分数照实 null——没算过就是没算过；按名称排序，不带名次语义。
-export type CompareCompany = { company: string; credit_code: string; score: number | null; confidence: number | null; computed_at: string | null }
+// jobs_count 是实体口径（名称+别名归并）下的已存岗位数，检索时判断哪家有数据用。
+export type CompareCompany = { company: string; credit_code: string; score: number | null; confidence: number | null; computed_at: string | null; jobs_count: number }
 export function getCompareCompanies(q = '') { return api<{ companies: CompareCompany[] }>(`/reliability/compare?q=${encodeURIComponent(q)}`) }
 // 岗位分层概要（compare 端点 companies 模式）：职类构成 + 职类×经验×学历逐层报价对照。
 // 中位数只在过闸层给出（本公司 ≥3 条、同城同层 ≥10 条），与报告 pay_vs_city_median 同源同闸门。
