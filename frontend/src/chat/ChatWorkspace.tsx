@@ -132,6 +132,9 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
 
   const running = Boolean(run)
   const busy = running || opening || starting || compressing || cloning || proposing
+  // 生成中的 run 在服务端继续执行，切走只是断开 SSE、切回经 active_run 重挂；
+  // 新建/切换会话只被在途的瞬态请求锁住（发送在途切走会把新 run 的流挂错会话）。
+  const switching = opening || starting || compressing || cloning || proposing
   const canMutate = conversation.id !== null && !busy
   const selectedChannel = modelChannels.find(item => item.id === conversation.llm_channel)
   const effectiveConfigured = conversation.llm_channel ? Boolean(selectedChannel && (conversation.model || selectedChannel.model)) : modelConfigured
@@ -270,7 +273,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
   return <div className={`chat-page chat-${scope.kind} ${sessionsCollapsed ? 'sessions-collapsed' : ''}`}>
     <aside className="chat-sidebar">
       <div className="chat-sidebar-top">
-        <button type="button" className="button primary small chat-new-button" onClick={() => { void openConversation(null); cancelEdit() }} disabled={busy || (scope.kind === 'company' && !company)}>
+        <button type="button" className="button primary small chat-new-button" onClick={() => { void openConversation(null); cancelEdit() }} disabled={switching || (scope.kind === 'company' && !company)}>
           {sessionsCollapsed ? '＋' : '＋ 新对话'}
         </button>
         <button type="button" className="icon-button" aria-label={sessionsCollapsed ? '展开会话列表' : '收起会话列表'} onClick={toggleSessions}>
@@ -281,7 +284,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
         sessions={sessions}
         activeId={conversation.id}
         collapsed={sessionsCollapsed}
-        onOpen={id => { if (!busy) { cancelEdit(); void openConversation(id) } }}
+        onOpen={id => { if (!switching) { cancelEdit(); void openConversation(id) } }}
         onRename={(id, title) => void renameSession(id, title)}
         onDelete={id => void removeSession(id)}
       />
