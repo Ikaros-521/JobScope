@@ -48,7 +48,8 @@ export type ConversationNavigation = { requestId: string; conversationId: string
 export type ScopeExpansionResult = { conversation_id: string; scope: ConversationScope; source_conversation_id: string; action_id: string }
 export type ToolStep = { step: number; tool: string; duration_ms: number; label?: string; status?: string; arguments?: Record<string, unknown>; result_preview?: string; selected?: number; matched_jobs?: number; calls?: number; action?: ScopeExpansion }
 // 顺序显示模式的分段：思维链/正文按段追加，工具步骤穿插其间，与发生顺序一致。
-export type ChatSegment = { kind: 'reasoning' | 'text'; text: string } | { kind: 'step'; step: ToolStep }
+// step 段有两种来源：流式增量（step 键）与落库回放（event 键，general_agent._event），渲染层两个键都兼容。
+export type ChatSegment = { kind: 'reasoning' | 'text'; text: string } | { kind: 'step'; step?: ToolStep; event?: ToolStep }
 // 系统设置：存服务端（跨浏览器一致），含聊天显示模式、思维链显隐与 Agent 执行限额。
 export type AgentLimits = { max_model_calls: number; max_tool_calls: number; context_characters: number; max_seconds: number }
 export type SystemSettings = { chat_display_mode: 'merged' | 'sequential'; show_reasoning: boolean; agent_limits: AgentLimits }
