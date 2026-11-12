@@ -269,12 +269,12 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
     void refreshSessions()
   }, [refreshSessions])
 
-  const approve = useCallback(async (approved: boolean) => {
+  const approve = useCallback(async (approved: boolean, grant = false) => {
     const runId = runIdRef.current
     const approval = run?.approval
     if (!runId || !approval) return
     try {
-      await approveChatRun(runId, approved, approval.approval_id)
+      await approveChatRun(runId, approved, approval.approval_id, grant)
       // 审批挂起时流保持打开，resumed 及后续事件沿原流续传，无需重连；
       // 只有流已断开或正在重连（如后台面板被冻结、服务重启）时才回退到重放整份日志重建状态。
       if (!sourceRef.current || sourceRef.current.readyState !== EventSource.OPEN) attach(runId)

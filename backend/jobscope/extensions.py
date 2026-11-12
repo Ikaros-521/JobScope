@@ -150,6 +150,8 @@ class ApprovalInput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     approved: bool
     approval_id: str = Field(min_length=1, max_length=100)
+    # True 时同时把该工具加入当前会话白名单：本会话内后续调用不再逐次确认。
+    grant: bool = False
 
 
 def validate_schema(schema):
@@ -258,6 +260,10 @@ class ExtensionStore:
                 CREATE TABLE IF NOT EXISTS agent_pending(run_id TEXT PRIMARY KEY,state TEXT NOT NULL,payload TEXT NOT NULL,created REAL NOT NULL);
                 CREATE TABLE IF NOT EXISTS agent_market(payload TEXT NOT NULL,fetched_at REAL NOT NULL);''')
             conn.execute('CREATE TABLE IF NOT EXISTS agent_private_conversations(id TEXT PRIMARY KEY)')
+            # 会话级工具授权：审批卡「本会话始终允许」写入；权限按会话隔离，不跨会话蔓延。
+            conn.execute('''CREATE TABLE IF NOT EXISTS agent_tool_grants(
+                conversation_id TEXT NOT NULL, server_id TEXT NOT NULL, tool_name TEXT NOT NULL,
+                created REAL NOT NULL, PRIMARY KEY(conversation_id, server_id, tool_name))''')
 
     def mark_private(self, conversation_id):
         with self.repo.connection() as conn:
@@ -266,6 +272,19 @@ class ExtensionStore:
     def is_private(self, conversation_id):
         with self.repo.connection() as conn:
             return conn.execute('SELECT 1 FROM agent_private_conversations WHERE id=?', (conversation_id,)).fetchone() is not None
+
+    def grant_tool(self, conversation_id, server_id, tool_name):
+        with self.repo.connection() as conn:
+            conn.execute('INSERT OR IGNORE INTO agent_tool_grants VALUES (?,?,?,?)', (conversation_id, server_id, tool_name, time.time()))
+
+    def has_grant(self, conversation_id, server_id, tool_name):
+        with self.repo.connection() as conn:
+            return conn.execute('SELECT 1 FROM agent_tool_grants WHERE conversation_id=? AND server_id=? AND tool_name=?',
+                                (conversation_id, server_id, tool_name)).fetchone() is not None
+
+    def clear_grants(self, conversation_id):
+        with self.repo.connection() as conn:
+            conn.execute('DELETE FROM agent_tool_grants WHERE conversation_id=?', (conversation_id,))
 
     def _all(self, table):
         with self.repo.connection() as conn:

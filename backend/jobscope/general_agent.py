@@ -84,8 +84,10 @@ class GeneralAgent:
                     continue
                 alias = tool_alias(server['id'], tool['name'])
                 tools.append(dict(name=alias, description=f"MCP {server['name']} / {tool['name']}: {tool['description']}"[:1800], parameters=tool['inputSchema']))
-                # readOnlyHint 是服务方声明的只读标记：自主档据此放行，不改变 allowed/auto 白名单校验。
-                registry[alias] = dict(server_id=server['id'], tool_name=tool['name'], binding=fingerprint(server), label=f"{server['name']} / {tool['name']}", read_only=bool((tool.get('annotations') or {}).get('readOnlyHint')))
+                # readOnlyHint/destructiveHint 是服务方声明：自主档放行只读，审批 reason 提示破坏性。
+                annotations = tool.get('annotations') or {}
+                registry[alias] = dict(server_id=server['id'], tool_name=tool['name'], binding=fingerprint(server), label=f"{server['name']} / {tool['name']}",
+                                       read_only=bool(annotations.get('readOnlyHint')), destructive=bool(annotations.get('destructiveHint')))
                 haystack = (server.get('name', '') + ' ' + tool.get('name', '') + ' ' + tool.get('description', '')).lower()
                 if any(keyword in haystack for keyword in self.WEB_TOOL_KEYWORDS):
                     web_tools = True
@@ -332,10 +334,13 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             server = self.extensions.mcp(binding['server_id'])
             if not server or fingerprint(server) != binding['binding'] or not server['enabled'] or binding['tool_name'] not in server['allowed_tools']:
                 raise ValueError('MCP配置或权限已改变，请重新提问')
-            # 会话级权限档位是主策略；resume 红线在任何档位都强制逐次确认（含恢复执行的老状态默认自主档）。
+            # 优先级：简历红线 > 会话内授权 > 权限档位。授权是用户在审批卡上显式授予的，confirm 档也认。
             mode = state.get('permission_mode', 'autonomous')
+            granted = self.extensions.has_grant(state['conversation_id'], binding['server_id'], binding['tool_name'])
             if state['resume_loaded']:
                 needs_approval = True
+            elif granted:
+                needs_approval = False
             elif mode == 'full':
                 needs_approval = False
             elif mode == 'confirm':
@@ -345,7 +350,8 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             if needs_approval and not approved:
                 reason = ('本轮已读取简历，需确认发送给外部工具的参数' if state['resume_loaded']
                           else '当前处于「变更前确认」模式，每次外部工具调用都需确认' if mode == 'confirm'
-                          else '该工具未声明只读、也未勾选自动执行，需确认后调用')
+                          else ('该工具被服务方标记为可能修改外部数据或页面状态，需确认后调用' if binding.get('destructive')
+                                else '该工具未声明只读、也未勾选自动执行，需确认后调用'))
                 state['run'].update(status='awaiting_approval', pending=dict(approval_id=uuid.uuid4().hex, tool=binding['label'], arguments=args, reason=reason))
                 state['pending_call'] = call
                 state['paused_at'] = time.time()
@@ -452,7 +458,7 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             self.extensions.finish_pending(state['run']['id'])
             raise ValueError(str(exc)) from None
 
-    def resume(self, run_id, approved, approval_id, hooks=None):
+    def resume(self, run_id, approved, approval_id, hooks=None, grant=False):
         state = self.extensions.claim(run_id, approval_id)
         try:
             # A paused MCP approval cannot retain permissions after a scope edit
@@ -470,6 +476,10 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             state['run'].pop('pending', None)
             state['run']['status'] = 'running'
             call = state.pop('pending_call')
+            # 「本会话始终允许」：批准时即登记授权，之后同会话同工具不再逐次确认。
+            grant_binding = state['registry'].get(call['function']['name'])
+            if approved and grant and grant_binding:
+                self.extensions.grant_tool(state['conversation_id'], grant_binding['server_id'], grant_binding['tool_name'])
             if approved:
                 try:
                     self._execute(state, call, approved=True, hooks=hooks)

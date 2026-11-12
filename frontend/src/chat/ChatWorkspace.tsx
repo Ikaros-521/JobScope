@@ -350,9 +350,10 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
         </div>
         {/* 单行紧凑 JSON：完整保留待确认内容（可滚动查看），但不逐字段换行撑高卡片。 */}
         <pre>{JSON.stringify(run.approval.arguments ?? {})}</pre>
-        <p>{run.approval.reason}。确认后仅执行这一次调用。</p>
+        <p>{run.approval.reason}。确认后仅执行这一次调用；选择「本会话始终允许」后，本会话内该工具的后续调用不再确认。</p>
         <div>
           <button type="button" className="button secondary" onClick={() => void approve(false)}>拒绝并继续</button>
+          <button type="button" className="button secondary" onClick={() => void approve(true, true)}>本会话始终允许</button>
           <button type="button" className="button primary" onClick={() => void approve(true)}>确认执行</button>
         </div>
       </section>}

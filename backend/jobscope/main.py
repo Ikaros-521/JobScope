@@ -215,12 +215,12 @@ def create_app(data_dir=None):
         try:
             handle = runs.get(run_id)
             if handle is not None:
-                runs.approve(run_id, data.approved, data.approval_id)
+                runs.approve(run_id, data.approved, data.approval_id, data.grant)
                 handle.thread.join()
                 if hasattr(handle, 'error'):
                     raise ValueError(handle.error)
                 return handle.result
-            result = GeneralAgent(repo).resume(run_id, data.approved, data.approval_id)
+            result = GeneralAgent(repo).resume(run_id, data.approved, data.approval_id, grant=data.grant)
             if result['trace']['status'] != 'awaiting_approval':
                 repo.append_conversation(result['conversation_id'], result['trace']['question'], result['answer'])
             return result
@@ -924,7 +924,7 @@ def create_app(data_dir=None):
     @app.post('/api/chat/runs/{run_id}/approval')
     def approve_chat_run(run_id: str, data: ApprovalInput):
         try:
-            return runs.approve(run_id, data.approved, data.approval_id)
+            return runs.approve(run_id, data.approved, data.approval_id, data.grant)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
 
@@ -988,6 +988,7 @@ def create_app(data_dir=None):
             repo.delete_conversation(conversation_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
+        extensions.clear_grants(conversation_id)
         return dict(ok=True)
 
     @app.delete('/api/conversations/{conversation_id}/messages/{message_id}')
