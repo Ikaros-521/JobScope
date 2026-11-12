@@ -7,11 +7,18 @@ import { SkillManager } from './SkillManager'
 import type { MarketMcp, MarketSkill } from './api'
 import { navigateTabs } from './tabNavigation'
 
-type Tab = 'market' | 'mcp' | 'skills'
+type Tab = 'mcp-market' | 'mcp' | 'skill-market' | 'skills'
+
+const TAB_DESCRIPTIONS: Record<Tab, string> = {
+  'mcp-market': '从内置目录与 npm 在线检索发现 MCP 服务，添加后在「MCP 工具」测试与授权。',
+  mcp: '先保存连接，再测试、授权并启用。',
+  'skill-market': '从内置目录与 GitHub 在线检索发现 Skills，安装后在「Skills」管理启用状态。',
+  skills: '导入 SKILL.md，管理资源与启用状态。',
+}
 
 export function AgentExtensions() {
   const [data, setData] = useState<Extensions>({ servers: [], skills: [] })
-  const [tab, setTab] = useState<Tab>('market')
+  const [tab, setTab] = useState<Tab>('mcp-market')
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [busy, setBusy] = useState('')
@@ -64,16 +71,18 @@ export function AgentExtensions() {
     <div className="agent-extension-body">
       <div className="extensions-toolbar">
         <div className="agent-tabs" role="tablist" aria-label="扩展类型" onKeyDown={navigateTabs}>
-          <button id="extensions-tab-market" type="button" role="tab" aria-controls="extensions-panel" aria-selected={tab === 'market'} tabIndex={tab === 'market' ? 0 : -1} onClick={() => setTab('market')}>市场</button>
+          <button id="extensions-tab-mcp-market" type="button" role="tab" aria-controls="extensions-panel" aria-selected={tab === 'mcp-market'} tabIndex={tab === 'mcp-market' ? 0 : -1} onClick={() => setTab('mcp-market')}>MCP 市场</button>
           <button id="extensions-tab-mcp" type="button" role="tab" aria-controls="extensions-panel" aria-selected={tab === 'mcp'} tabIndex={tab === 'mcp' ? 0 : -1} onClick={() => { setTab('mcp'); setFocusServer(null) }}>MCP 工具 <span>{countsReady ? data.servers.length : '—'}</span></button>
+          <button id="extensions-tab-skill-market" type="button" role="tab" aria-controls="extensions-panel" aria-selected={tab === 'skill-market'} tabIndex={tab === 'skill-market' ? 0 : -1} onClick={() => setTab('skill-market')}>Skills 市场</button>
           <button id="extensions-tab-skills" type="button" role="tab" aria-controls="extensions-panel" aria-selected={tab === 'skills'} tabIndex={tab === 'skills' ? 0 : -1} onClick={() => setTab('skills')}>Skills <span>{countsReady ? data.skills.length : '—'}</span></button>
         </div>
       </div>
       {loading && <p className="alert" role="status">正在读取扩展配置…</p>}
       {loadError && <div className="alert" role="alert"><p>扩展配置读取失败：{loadError}</p><button type="button" className="button secondary small" disabled={Boolean(busy)} onClick={() => void load()}>重试</button></div>}
       <div id="extensions-panel" role="tabpanel" aria-labelledby={`extensions-tab-${tab}`} tabIndex={0}>
-        <div className="extensions-description"><p>{tab === 'market' ? '发现工具与工作方法，添加后在对应列表管理。' : tab === 'mcp' ? '先保存连接，再测试、授权并启用。' : '导入 SKILL.md，管理资源与启用状态。'}</p></div>
-        {tab === 'market' && <MarketView busy={busy} onInstallMcp={entry => void installMcp(entry)} onInstallSkill={entry => void installSkill(entry)} onTemplate={useTemplate} />}
+        <div className="extensions-description"><p>{TAB_DESCRIPTIONS[tab]}</p></div>
+        {tab === 'mcp-market' && <MarketView kind="mcp" busy={busy} onInstallMcp={entry => void installMcp(entry)} onInstallSkill={entry => void installSkill(entry)} onTemplate={useTemplate} />}
+        {tab === 'skill-market' && <MarketView kind="skill" busy={busy} onInstallMcp={entry => void installMcp(entry)} onInstallSkill={entry => void installSkill(entry)} onTemplate={useTemplate} />}
         {tab === 'mcp' && countsReady && <McpManager servers={data.servers} busy={busy} act={act} focusId={focusServer} onFocusConsumed={() => setFocusServer(null)} />}
         {tab === 'skills' && countsReady && <SkillManager skills={data.skills} busy={busy} act={act} prefill={skillPrefill} onPrefillConsumed={() => setSkillPrefill('')} />}
       </div>

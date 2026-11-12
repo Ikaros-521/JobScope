@@ -303,7 +303,7 @@ def search_online(term: str):
             skills = _search_skills(client, term)
             skills_error = None
         except Exception:
-            skills, skills_error = [], 'Skills 在线检索失败（GitHub 不可达或超出限额），MCP 结果不受影响。'
+            skills, skills_error = [], 'Skills 在线检索失败（GitHub 不可达或超出限额），请稍后重试。'
     payload = dict(term=term, mcp=results, skills=skills, skills_error=skills_error, fetched_at=now_ts)
     _SEARCH_CACHE[key] = (now_ts, payload)
     return payload
