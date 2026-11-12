@@ -31,6 +31,9 @@ function appendSegment(segments: ChatSegment[], kind: 'reasoning' | 'text', piec
 
 export type ChatConversation = { id: string | null; title: string; mode: ChatMode; model: string; llm_channel: string; permission_mode: PermissionMode }
 
+// 排队消息：生成中发送的待发内容，本轮完成后自动逐条发送（IDE 队列行为）。
+export type QueuedMessage = { id: string; content: string }
+
 function scopeMatches(stored: { kind: string; company?: string; job_id?: string } | undefined, scope: ChatScope) {
   if (!stored) return false
   if (scope.kind === 'global') return stored.kind === 'global'
@@ -57,11 +60,16 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
   const runIdRef = useRef<string | null>(null)
   const conversationIdRef = useRef<string | null>(null)
   const reloadRef = useRef<(id: string | null) => Promise<void>>(async () => {})
+  const resumeQueueRef = useRef<() => Promise<void>>(async () => {})
   const scopeRef = useRef(scope)
   scopeRef.current = scope
   const scopeKey = scope.kind === 'global' ? 'global' : scope.kind === 'job' ? `job:${scope.jobId}` : `company:${scope.company}`
   const storageKeyRef = useRef('')
   storageKeyRef.current = `jobscope-conversation:${scopeKey}`
+  const [queue, setQueue] = useState<QueuedMessage[]>([])
+  const queueRef = useRef<QueuedMessage[]>([])
+  const queueKeyRef = useRef('')
+  queueKeyRef.current = `jobscope-chat-queue:${scopeKey}`
 
   conversationIdRef.current = conversation.id
 
@@ -69,6 +77,30 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
     sourceRef.current?.close()
     sourceRef.current = null
     runIdRef.current = null
+  }
+
+  // 队列与会话绑定落 sessionStorage：切视图/刷新回来只要还是同一会话就恢复排队消息，换会话即丢弃。
+  function persistQueue() {
+    const items = queueRef.current
+    if (!items.length) { sessionStorage.removeItem(queueKeyRef.current); return }
+    sessionStorage.setItem(queueKeyRef.current, JSON.stringify({ conversation: conversationIdRef.current, items }))
+  }
+
+  function applyQueue(updater: (current: QueuedMessage[]) => QueuedMessage[]) {
+    queueRef.current = updater(queueRef.current)
+    setQueue(queueRef.current)
+    persistQueue()
+  }
+
+  function syncQueueToConversation(id: string | null) {
+    let parsed: { conversation: string | null; items?: QueuedMessage[] } | null = null
+    try { parsed = JSON.parse(sessionStorage.getItem(queueKeyRef.current) || 'null') } catch { parsed = null }
+    const items = parsed && parsed.conversation === id && Array.isArray(parsed.items)
+      ? parsed.items.filter(item => typeof item?.content === 'string' && item.content.trim())
+      : []
+    queueRef.current = items
+    setQueue(items)
+    if (!items.length) sessionStorage.removeItem(queueKeyRef.current)
   }
 
   const refreshSessions = useCallback(async () => {
@@ -130,6 +162,8 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
         setRun(null)
         void reloadRef.current(conversationIdRef.current)
         void refreshSessions()
+        // 本轮正常完成：稍等历史落库刷新先走一步，再自动发送队首排队消息（如有）。
+        window.setTimeout(() => void resumeQueueRef.current(), 400)
         return
       }
       if (event === 'end') {
@@ -182,7 +216,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
     setScopeActions([])
     setLineage(null)
     setConversation({ id: null, title: '新对话', mode: 'general', model: '', llm_channel: '', permission_mode: 'autonomous' })
-    if (!id) { sessionStorage.removeItem(storedKey); setOpening(false); openingRef.current = false; return true }
+    if (!id) { sessionStorage.removeItem(storedKey); syncQueueToConversation(null); setOpening(false); openingRef.current = false; return true }
     setOpening(true)
     openingRef.current = true
     try {
@@ -191,10 +225,12 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
       if (!scopeMatches(detail.scope, scopeRef.current)) throw new Error('该会话属于其他对话范围，已改为新会话')
       sessionStorage.setItem(storedKey, id)
       applyDetail(detail)
+      syncQueueToConversation(id)
       return true
     } catch (err) {
       if (selection !== selectionRef.current || storedKey !== storageKeyRef.current) return false
       sessionStorage.removeItem(storedKey)
+      syncQueueToConversation(null)
       setError((err as Error).message)
       return false
     } finally {
@@ -248,6 +284,8 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
       setConversation(current => ({ ...current, id: started.conversation_id, title: started.title || current.title }))
       conversationIdRef.current = started.conversation_id
       sessionStorage.setItem(storageKeyRef.current, started.conversation_id)
+      // 新会话刚拿到 id：把排队消息的绑定从 null 刷成该会话，切走再回来不丢。
+      persistQueue()
       setMessages(current => {
         const withoutTemp = current.filter(item => item.id !== tempId)
         const entry: StoredMessage = { id: started.user_message_id, ts: '', role: 'user', content }
@@ -268,6 +306,30 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
     } finally { startingRef.current = false; setStarting(false) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attach, conversation, refreshSessions])
+
+  // 排队消息的写入/移除/清空：任何变更同步 ref、state 与 sessionStorage。
+  const enqueue = useCallback((content: string) => {
+    const text = content.trim()
+    if (!text) return
+    applyQueue(current => [...current, { id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, content: text }])
+  }, [])
+
+  const removeQueued = useCallback((id: string) => {
+    applyQueue(current => current.filter(item => item.id !== id))
+  }, [])
+
+  const clearQueue = useCallback(() => { applyQueue(() => []) }, [])
+
+  // 发送队首排队消息（done 自动触发或空闲时手动触发）：启动失败（被瞬态锁挡下）则塞回队首，等下次触发。
+  const resumeQueue = useCallback(async () => {
+    const first = queueRef.current[0]
+    if (!first || runIdRef.current || startingRef.current || openingRef.current) return
+    applyQueue(current => current.filter(item => item.id !== first.id))
+    const ok = await send(first.content)
+    if (!ok) applyQueue(current => current.some(item => item.id === first.id) ? current : [first, ...current])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [send])
+  resumeQueueRef.current = resumeQueue
 
   const stop = useCallback(async () => {
     const runId = runIdRef.current
@@ -365,7 +427,8 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
   const clearError = useCallback(() => setError(''), [])
 
   return {
-    sessions, conversation, messages, scopeActions, lineage, run, error, opening, starting,
+    sessions, conversation, messages, scopeActions, lineage, run, error, opening, starting, queue,
     openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeMode, changeModel, changePermissionMode, compress, refreshSessions, clearError,
+    enqueue, removeQueued, clearQueue, resumeQueue,
   }
 }
