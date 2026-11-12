@@ -146,7 +146,7 @@ class RunManager:
         with self._lock:
             return conversation_id in self._compressing
 
-    def start(self, *, message, conversation_id=None, mode='general', model=None, edit_message_id=None, scope=None, llm_channel=None, background=True):
+    def start(self, *, message, conversation_id=None, mode='general', model=None, edit_message_id=None, scope=None, llm_channel=None, permission_mode=None, background=True):
         scope = scope or GLOBAL_SCOPE
         title = None
         # Reserve history edits, appends and registration against compression and cloning.
@@ -168,13 +168,15 @@ class RunManager:
             mode = 'general' if configured else 'research'
             effective_channel = (llm_channel if llm_channel is not None else (conversation or {}).get('llm_channel', '')) or ''
             effective_model = (model if model is not None else (conversation or {}).get('model', '')) or ''
+            # 权限档位同模型语义：None=沿用会话已存值；显式值随本轮写回会话。
+            effective_permission = permission_mode if permission_mode is not None else (conversation or {}).get('permission_mode', 'autonomous')
             if conversation is None:
-                conversation_id = self.repo.create_conversation(scope, mode=mode, model=effective_model, llm_channel=effective_channel)
+                conversation_id = self.repo.create_conversation(scope, mode=mode, model=effective_model, llm_channel=effective_channel, permission_mode=effective_permission)
                 history = []
                 title = message[:30]
             else:
                 history = self.repo.truncate_for_edit(conversation_id, scope, edit_message_id) if edit_message_id else conversation['messages']
-                self.repo.update_conversation(conversation_id, scope, mode=mode)
+                self.repo.update_conversation(conversation_id, scope, mode=mode, permission_mode=effective_permission)
             history = [m for m in history if not m.get('compacted')]
             handle = RunHandle('R-' + uuid.uuid4().hex, conversation_id, config, scope)
             handle.streaming = background
@@ -184,13 +186,13 @@ class RunManager:
             self._register(handle)
             handle.push('start', dict(run_id=handle.id, conversation_id=conversation_id, user_message_id=user_message['id'], mode=mode))
             if background:
-                handle.thread = threading.Thread(target=self._execute, args=(handle, message, history, mode), daemon=True)
+                handle.thread = threading.Thread(target=self._execute, args=(handle, message, history, mode, effective_permission), daemon=True)
                 handle.thread.start()
             else:
                 handle.thread = threading.current_thread()
         if not background:
             try:
-                self._execute(handle, message, history, mode)
+                self._execute(handle, message, history, mode, effective_permission)
             finally:
                 # FastAPI reuses its worker thread; it is not this run's live worker.
                 handle.thread = None
@@ -278,11 +280,11 @@ class RunManager:
             should_stop=handle.cancel.is_set,
         )
 
-    def _execute(self, handle, message, history, mode):
+    def _execute(self, handle, message, history, mode, permission_mode='autonomous'):
         try:
             with use_config(handle.config):
                 if mode == 'general':
-                    result = GeneralAgent(self.repo).start(message, history, handle.conversation_id, self._hooks(handle), run_id=handle.id, scope=handle.scope)
+                    result = GeneralAgent(self.repo).start(message, history, handle.conversation_id, self._hooks(handle), run_id=handle.id, scope=handle.scope, permission_mode=permission_mode)
                 else:
                     from .research.agent import ResearchAgent
                     saved = self.repo.resume()

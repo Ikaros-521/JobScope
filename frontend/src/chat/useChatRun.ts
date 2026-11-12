@@ -3,7 +3,7 @@ import {
   approveChatRun, cancelChatRun, compressConversation, deleteConversation, deleteConversationMessage, getConversation,
   listConversations, openRunStream, patchConversation, startChatRun,
 } from '../api'
-import type { ApprovalRequest, ChatMode, ChatScope, ConversationDetail, ConversationNavigation, ConversationSummary, CompressResult, ScopeExpansion, StoredMessage, ToolStep } from '../api'
+import type { ApprovalRequest, ChatMode, ChatScope, ConversationDetail, ConversationNavigation, ConversationSummary, CompressResult, PermissionMode, ScopeExpansion, StoredMessage, ToolStep } from '../api'
 
 export type RunState = {
   id: string
@@ -15,7 +15,7 @@ export type RunState = {
   notice?: string
 }
 
-export type ChatConversation = { id: string | null; title: string; mode: ChatMode; model: string; llm_channel: string }
+export type ChatConversation = { id: string | null; title: string; mode: ChatMode; model: string; llm_channel: string; permission_mode: PermissionMode }
 
 function scopeMatches(stored: { kind: string; company?: string; job_id?: string } | undefined, scope: ChatScope) {
   if (!stored) return false
@@ -26,7 +26,7 @@ function scopeMatches(stored: { kind: string; company?: string; job_id?: string 
 
 export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: ConversationNavigation | null, onOpened?: (requestId: string) => void) {
   const [sessions, setSessions] = useState<ConversationSummary[]>([])
-  const [conversation, setConversation] = useState<ChatConversation>({ id: null, title: '新对话', mode: 'general', model: '', llm_channel: '' })
+  const [conversation, setConversation] = useState<ChatConversation>({ id: null, title: '新对话', mode: 'general', model: '', llm_channel: '', permission_mode: 'autonomous' })
   const [messages, setMessages] = useState<StoredMessage[]>([])
   const [scopeActions, setScopeActions] = useState<ScopeExpansion[]>([])
   const [lineage, setLineage] = useState<ConversationDetail['lineage']>(null)
@@ -132,7 +132,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
     setMessages(detail.messages)
     setScopeActions(detail.scope_expansions || [])
     setLineage(detail.lineage || null)
-    setConversation({ id: detail.id, title: detail.title, mode: 'general', model: detail.model, llm_channel: detail.llm_channel || '' })
+    setConversation({ id: detail.id, title: detail.title, mode: 'general', model: detail.model, llm_channel: detail.llm_channel || '', permission_mode: detail.permission_mode || 'autonomous' })
     if (detail.active_run && (!detail.active_run.done || detail.active_run.awaiting_approval) && runIdRef.current !== detail.active_run.run_id) {
       attach(detail.active_run.run_id)
     }
@@ -165,7 +165,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
     setMessages([])
     setScopeActions([])
     setLineage(null)
-    setConversation({ id: null, title: '新对话', mode: 'general', model: '', llm_channel: '' })
+    setConversation({ id: null, title: '新对话', mode: 'general', model: '', llm_channel: '', permission_mode: 'autonomous' })
     if (!id) { sessionStorage.removeItem(storedKey); setOpening(false); openingRef.current = false; return true }
     setOpening(true)
     openingRef.current = true
@@ -224,6 +224,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
         // 显式传空串表示“跟随全局/渠道默认”：后端据此区分“未指定（沿用会话）”与“重置”。
         model: conversation.model,
         llm_channel: conversation.llm_channel,
+        permission_mode: conversation.permission_mode,
         edit_message_id: options?.editMessageId,
         ...(company ? { company } : {}),
         ...(jobId ? { job_id: jobId } : {}),
@@ -324,6 +325,14 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation.id])
 
+  const changePermissionMode = useCallback(async (permissionMode: PermissionMode) => {
+    setConversation(current => ({ ...current, permission_mode: permissionMode }))
+    if (conversation.id) {
+      try { await patchConversation(conversation.id, { permission_mode: permissionMode }) } catch (err) { setError((err as Error).message) }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [conversation.id])
+
   const compress = useCallback(async (): Promise<CompressResult & { ok: boolean; message?: string }> => {
     const id = conversation.id
     if (!id) return { ok: false, compacted_count: 0, summary_message_id: '', message_count: 0, message: '新对话还没有可压缩的历史' }
@@ -341,6 +350,6 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
 
   return {
     sessions, conversation, messages, scopeActions, lineage, run, error, opening, starting,
-    openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeMode, changeModel, compress, refreshSessions, clearError,
+    openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeMode, changeModel, changePermissionMode, compress, refreshSessions, clearError,
   }
 }

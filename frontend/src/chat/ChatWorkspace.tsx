@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, TouchEvent as ReactTouchEvent, WheelEvent as ReactWheelEvent } from 'react'
 import { acceptScopeExpansion, estimateTokens, getChannels, getModelSettings, listLlmChannels, proposeScopeExpansion } from '../api'
-import type { ChatScope, ConversationNavigation, LlmChannel, ScopeExpansion, StoredMessage } from '../api'
+import type { ChatScope, ConversationNavigation, LlmChannel, PermissionMode, ScopeExpansion, StoredMessage } from '../api'
 import { toast } from '../toast'
 import { ChatComposer } from './ChatComposer'
 import type { ComposerChannel, EditingTarget } from './ChatComposer'
@@ -34,7 +34,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
   const jobCompany = scope.kind === 'job' ? scope.company : ''
   const {
     sessions, conversation, messages, scopeActions, lineage, run, error, opening, starting,
-    openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeModel, compress, clearError,
+    openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeModel, changePermissionMode, compress, clearError,
   } = useChatRun(scope, navigation, onOpened)
   const [input, setInput] = useState('')
   const [editing, setEditing] = useState<EditingTarget>(null)
@@ -48,6 +48,8 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
   const [showScopeOptions, setShowScopeOptions] = useState(false)
   const [proposing, setProposing] = useState(false)
   const [cloning, setCloning] = useState(false)
+  // 升档到「完全访问」前先弹确认：降档与自主档间切换不需要确认。
+  const [modeDialog, setModeDialog] = useState(false)
   const cloningRef = useRef(false)
   const proposingRef = useRef(false)
   const conversationIdRef = useRef(conversation.id)
@@ -259,6 +261,12 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
     ? ` · ${channelName || '渠道已删除'} · ${conversation.model || '默认模型'}`
     : conversation.model ? ` · ${conversation.model}` : ''
 
+  function pickPermissionMode(mode: PermissionMode) {
+    if (mode === conversation.permission_mode) return
+    if (mode === 'full') { setModeDialog(true); return }
+    void changePermissionMode(mode)
+  }
+
   return <div className={`chat-page chat-${scope.kind} ${sessionsCollapsed ? 'sessions-collapsed' : ''}`}>
     <aside className="chat-sidebar">
       <div className="chat-sidebar-top">
@@ -368,6 +376,8 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
         modelChannels={modelChannels}
         globalModels={globalModels}
         onModelChange={(model, channelId) => void changeModel(model, channelId)}
+        permissionMode={conversation.permission_mode}
+        onPermissionModeChange={pickPermissionMode}
         running={running}
         awaiting={Boolean(run?.approval)}
         onStop={() => void stop()}
@@ -390,6 +400,18 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
         onCompress={() => void compressContext()}
       />
     </section>
+
+    {modeDialog && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget) setModeDialog(false) }}>
+      <section className="modal paper-panel mode-modal" role="dialog" aria-modal="true" aria-labelledby="mode-dialog-title"
+        onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); setModeDialog(false) } }}>
+        <div className="section-heading"><div><h2 id="mode-dialog-title">切换到「完全访问」？</h2></div></div>
+        <p className="muted body-small">此后本会话的外部工具（MCP）调用将不再逐次确认，直接自动执行；调用参数仍会发送到已启用的外部服务。读取简历后的外发调用仍会要求确认。</p>
+        <div className="modal-actions">
+          <button type="button" className="button secondary" onClick={() => setModeDialog(false)}>取消</button>
+          <button type="button" className="button primary" autoFocus onClick={() => { setModeDialog(false); void changePermissionMode('full') }}>确认切换</button>
+        </div>
+      </section>
+    </div>}
   </div>
 }
 

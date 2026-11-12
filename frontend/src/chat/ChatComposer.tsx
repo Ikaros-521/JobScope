@@ -1,14 +1,28 @@
 import { useEffect, useRef } from 'react'
+import type { PermissionMode } from '../api'
 
 export type EditingTarget = { id: string; original: string } | null
 export type ComposerChannel = { id: string; name: string; model: string; models: string[]; context_tokens?: number | null }
+
+// 三档工具权限：切换到完全访问由工作区弹确认框，这里只负责展示与回调。
+const PERMISSION_MODES: { value: PermissionMode; label: string; title: string }[] = [
+  { value: 'confirm', label: '确认', title: '变更前确认：所有外部工具（MCP）调用都先展示参数，确认后才执行' },
+  { value: 'autonomous', label: '自主', title: '自主模式：只读或已勾选「自动执行」的工具直接执行，其余逐次确认' },
+  { value: 'full', label: '完全访问', title: '完全访问：外部工具全部自动执行，不再逐次确认（读取简历后的外发调用仍会确认）' },
+]
+
+const MODE_HINTS: Record<PermissionMode, string> = {
+  confirm: '外部工具逐次确认',
+  autonomous: '只读/自动执行工具免确认',
+  full: '外部工具自动执行',
+}
 
 function tokensLabel(value: number) { return value >= 10000 ? `${Math.round(value / 1000)}k` : value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value) }
 
 // 下拉选项值编码：''=跟随全局；'|model'=覆盖全局配置上的模型；'channelId|model'=指定渠道的模型；'channelId|'=渠道默认模型
 function selectValue(model: string, channelId: string) { return channelId ? `${channelId}|${model}` : model ? `|${model}` : '' }
 
-export function ChatComposer({ input, onInputChange, model, llmChannel = '', modelChannels = [], globalModels = [], onModelChange, running, awaiting, onStop, onSend, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, scopeLabel = '全项目', onExpandScope, locked = '', scopeName = '全项目资料', contextTokens = 0, contextWindow = 128000, compressing = false, hasConversation = false, canCompress = true, onCompress }: {
+export function ChatComposer({ input, onInputChange, model, llmChannel = '', modelChannels = [], globalModels = [], onModelChange, permissionMode = 'autonomous', onPermissionModeChange, running, awaiting, onStop, onSend, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, scopeLabel = '全项目', onExpandScope, locked = '', scopeName = '全项目资料', contextTokens = 0, contextWindow = 128000, compressing = false, hasConversation = false, canCompress = true, onCompress }: {
   input: string
   onInputChange: (value: string) => void
   model: string
@@ -16,6 +30,8 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
   modelChannels?: ComposerChannel[]
   globalModels?: string[]
   onModelChange: (model: string, channelId: string) => void
+  permissionMode?: PermissionMode
+  onPermissionModeChange: (mode: PermissionMode) => void
   running: boolean
   awaiting: boolean
   onStop: () => void
@@ -105,6 +121,19 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
           {llmChannel && !modelChannels.some(channel => channel.id === llmChannel) && <option value={selectValue(model, llmChannel)}>{`渠道已删除 · ${model || '默认模型'}`}</option>}
         </select>
       </label>
+      <div className="composer-mode" role="group" aria-label="外部工具权限模式">
+        <span>模式</span>
+        <div className="composer-mode-seg">
+          {PERMISSION_MODES.map(item => (
+            <button key={item.value} type="button" className={permissionMode === item.value ? 'active' : ''}
+              title={item.title} disabled={running || awaiting}
+              aria-pressed={permissionMode === item.value}
+              onClick={() => { if (permissionMode !== item.value) onPermissionModeChange(item.value) }}>
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </div>
       <label className="composer-switch">
         <input type="checkbox" checked={showReasoning} onChange={event => onToggleReasoning(event.target.checked)} />
         <span>思维链</span>
@@ -121,7 +150,7 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
           {compressing ? '压缩中…' : '压缩上下文'}
         </button>
       </div>}
-      <span className="composer-hint">Enter 发送 · Shift + Enter 换行 · 外部工具按配置确认</span>
+      <span className="composer-hint">Enter 发送 · Shift + Enter 换行 · {MODE_HINTS[permissionMode]}</span>
     </div>
   </div>
 }

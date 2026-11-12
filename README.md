@@ -1,14 +1,13 @@
 # 知根 JobScope
 
-本地岗位情报工作台：采集岗位和公司公开资料，保存来源，再结合简历生成适配分析并围绕资料提问。仓库可独立运行，简历支持导入 ResumeLoom 的 `facts.yaml`。
+本地岗位情报工作台：采集岗位和公司公开资料，保存来源，再结合简历生成适配分析并围绕资料提问。独立应用位于本目录，与仓库原有 ResumeLoom Skill 通过 `facts.yaml` 连接。
 
 ## 安装与启动
 
 需要 Python 3.11+、Node.js 20+。在 Windows PowerShell 中运行：
 
 ```powershell
-git clone https://github.com/Ikaros-521/JobScope.git
-cd JobScope
+cd E:\Github_Pro\ResumeLoom\jobscope
 .\start.ps1 -Install -Browser
 ```
 
@@ -18,7 +17,7 @@ cd JobScope
 .\start.ps1
 ```
 
-打开 http://127.0.0.1:8765 。服务仅监听本机；不应将此个人版本直接暴露到公网。默认运行数据在 `.data/`，包括数据库和独立浏览器配置，不提交 Git。
+打开 http://127.0.0.1:8765 。服务仅监听本机；不应将此个人版本直接暴露到公网。默认运行数据在 `jobscope/.data/`，包括数据库和独立浏览器配置，不提交 Git。
 
 其他系统可手动启动：
 
@@ -110,7 +109,7 @@ pip install -r requirements-research.txt
 .venv\Scripts\python.exe evals\run.py --dense --check
 ```
 
-报告写入 `output/research-evaluation*.json`，评测数据库与真实库隔离。合成集评测检索与范围，不评价生成回答质量。架构、面试演示与已知边界见[工程讲解](docs/proposals/jobscope-agent-interview.md)，实测结果见[升级验证记录](docs/validation/jobscope-research-agent.md)。
+报告写入 `output/research-evaluation*.json`，评测数据库与真实库隔离。合成集评测检索与范围，不评价生成回答质量。架构、面试演示与已知边界见[工程讲解](../docs/proposals/jobscope-agent-interview.md)，实测结果见[升级验证记录](../docs/validation/jobscope-research-agent.md)。
 
 ## 验证命令
 
@@ -120,9 +119,9 @@ cd frontend
 npm run build
 ```
 
-真实来源的验证记录见 [在线验证记录](docs/validation/jobscope-live.md) 和 [国内三平台采集验证](docs/validation/jobscope-domestic-sources.md)（含各平台城市码的逐个回验结果与走不通的入口清单）。UI 集成验收使用独立临时数据目录，虚构材料仅用于测试，不进入默认工作数据库。
+真实来源的验证记录见 [在线验证记录](../docs/validation/jobscope-live.md) 和 [国内三平台采集验证](../docs/validation/jobscope-domestic-sources.md)（含各平台城市码的逐个回验结果与走不通的入口清单）。UI 集成验收使用独立临时数据目录，虚构材料仅用于测试，不进入默认工作数据库。
 
-首版不包含自动投递、员工评价平台接入、自动定时刷新或云端多人权限系统。BOSS 完整 JD 已通过已登录会话实际读取验证；智联招聘、前程无忧、猎聘的采集按 2026-11-09 的实测通路实现，猎聘列表不含岗位职责，完整职责读取仍只覆盖 BOSS。站点结构变化或岗位下架仍可能导致读取失败。岗位与实际薪资样本缺失时直接显示未知，发展判断需要原始证据支持。分页、范围隔离与完整 JD 的验收记录见 [本次验证记录](docs/validation/jobscope-scopes-pagination.md)。
+首版不包含自动投递、员工评价平台接入、自动定时刷新或云端多人权限系统。BOSS 完整 JD 已通过已登录会话实际读取验证；智联招聘、前程无忧、猎聘的采集按 2026-11-09 的实测通路实现，猎聘列表不含岗位职责，完整职责读取仍只覆盖 BOSS。站点结构变化或岗位下架仍可能导致读取失败。岗位与实际薪资样本缺失时直接显示未知，发展判断需要原始证据支持。分页、范围隔离与完整 JD 的验收记录见 [本次验证记录](../docs/validation/jobscope-scopes-pagination.md)。
 
 
 ### 全局通用 Agent、MCP 和 Skills
@@ -133,15 +132,10 @@ npm run build
 
 **市场**：精选目录离线可用，收录约 12 个常用 MCP 服务（标注官方/社区、是否需要密钥）和若干自带的求职 Skills（面试演练、JD 拆解、公司研究简报、谈薪准备等），可一键添加或“基于此创建”改成自己的版本。在搜索框输入 2 个以上字符会**实时检索**：MCP 走 npm 注册表（关键词自动附加 mcp，最多 12 条），Skills 走 GitHub 仓库搜索（免凭证、自动附加 skill、定位仓库内 SKILL.md 并校验 frontmatter，最多 8 条，带 Star 数与来源仓库）；结果本机缓存 5 分钟。另可手动「刷新在线目录」获取推荐技能仓库（如 anthropics/skills）的 Skills，缓存 15 分钟，刷新失败会明确报错并保留精选目录。远程服务添加后仍需测试与授权；stdio 条目测试时会启动本地命令，请只添加信任的服务。
 
-**MCP 连接**：支持远程 Streamable HTTP、旧版 SSE 和本机 stdio 三种传输；认证支持 Bearer 令牌与自定义请求头（值只保存不回显，Authorization 二选一）。粘贴常见 `mcpServers` 或单连接 JSON 自动填表，支持 `type: "sse"` 与自定义头。保存后点击“测试并发现工具”，选择允许调用的工具，再启用连接。工具默认逐次展示参数并确认，可按工具授权自动执行。读取过简历的会话在外部调用前仍需确认。连接可导出为通用 `mcpServers` JSON（凭证不导出，仅保留键名占位）。
+**MCP 连接**：支持远程 Streamable HTTP、旧版 SSE 和本机 stdio 三种传输；认证支持 Bearer 令牌与自定义请求头（值只保存不回显，Authorization 二选一）。粘贴常见 `mcpServers` 或单连接 JSON 自动填表，支持 `type: "sse"` 与自定义头。保存后点击“测试并发现工具”，选择允许调用的工具，再启用连接。工具是否自动执行由会话权限档位与按工具授权共同决定（见下）。连接可导出为通用 `mcpServers` JSON（凭证不导出，仅保留键名占位）。
+
+**工具权限档位**：对话输入区可按会话切换三档模式。「变更前确认」所有 MCP 调用都先展示参数、确认后执行；「自主」（默认）下只读（服务方声明 `readOnlyHint`）或勾选了“自动执行”的工具直接运行，其余逐次确认；「完全访问」下已允许的工具全部自动执行，不再逐次确认（切换前会弹确认框）。读取过简历的会话在任何档位下外发调用前仍需确认。档位保存在会话上，只影响 MCP 等外部工具，项目内置检索工具始终直接执行。
 
 **Skills**：支持粘贴 SKILL.md、上传 .zip 压缩包或选择本地文件夹导入多文件 Skill。SKILL.md 须有 YAML name/description，可选 category/author/keywords/icon 元数据；文本资源（≤20 个文件、单个 ≤60000 字符）随 Skill 保存，Agent 通过 `skill_resource` 工具按清单分页读取；脚本文件仅登记路径，不执行、不保存内容。同名重新导入会覆盖旧版本，导出为 .zip（含 SKILL.md、文本资源与清单，不含脚本内容）。
 
 执行过程展示工具动作、耗时、失败和引用。每次最多8轮模型调用、12次工具、48000字符工具结果，达到上限后停止。MCP结果不会自动写入公司证据库。凭证保存在本机数据库且不加密，页面不回读；本地MCP进程具有当前系统用户权限。MCP 暂不提供 OAuth 交互与自定义 cwd/timeout 字段，导入时会明确提示。
-
-## 开源协议与商业授权
-
-本项目采用双重许可模式（Dual-Licensing），全文见 [LICENSE](LICENSE)。
-
-- **开源使用（GNU AGPLv3）**：遵循 [GNU Affero General Public License v3.0](LICENSE)，可免费使用、复制、修改和分发。按 AGPLv3 条款，基于本项目衍生、修改、集成或通过计算机网络提供服务的软件系统，必须以相同的 AGPLv3 协议向公众开放其全部源代码。
-- **商业闭源授权（Commercial License）**：希望用于闭源商业产品、进行专有分发、不愿公开自身衍生系统的源代码，或无法遵守 AGPLv3 开源义务的，须向版权所有者购买商业授权。商务合作请联系 `327209194@qq.com`，版权所有者 `Ikaros-521`。

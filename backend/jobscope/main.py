@@ -893,6 +893,7 @@ def create_app(data_dir=None):
         try:
             return runs.start(message=data.message, conversation_id=data.conversation_id or None,
                               mode=data.agent_mode, model=data.model, llm_channel=data.llm_channel,
+                              permission_mode=data.permission_mode,
                               edit_message_id=data.edit_message_id, scope=scope)
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
@@ -969,7 +970,7 @@ def create_app(data_dir=None):
     @app.patch('/api/conversations/{conversation_id}')
     def patch_conversation(conversation_id: str, data: ConversationPatch):
         try:
-            repo.update_conversation(conversation_id, title=data.title, mode=data.mode, model=data.model, llm_channel=data.llm_channel)
+            repo.update_conversation(conversation_id, title=data.title, mode=data.mode, model=data.model, llm_channel=data.llm_channel, permission_mode=data.permission_mode)
             conversation = repo.get_conversation(conversation_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None

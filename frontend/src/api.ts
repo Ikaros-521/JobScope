@@ -31,6 +31,8 @@ export type MarketPayload = { curated_mcp: MarketMcp[]; curated_skills: MarketSk
 
 // 全局对话：run-based 流式会话
 export type ChatMode = 'research' | 'general'
+// 会话级工具权限档位：confirm=外部工具逐次确认；autonomous=只读/自动执行白名单直跑；full=全部自动执行
+export type PermissionMode = 'confirm' | 'autonomous' | 'full'
 export type StoredMessage = {
   id: string; ts: string; role: 'user' | 'assistant'; content: string;
   reasoning?: string; mode?: string; interrupted?: boolean;
@@ -46,8 +48,8 @@ export type ToolStep = { step: number; tool: string; duration_ms: number; label?
 export type ApprovalRequest = { approval_id: string; tool: string; arguments: Record<string, unknown>; reason: string; run_id?: string }
 export type ChatRunStatus = { run_id: string; conversation_id: string; done: boolean; cancelled: boolean; awaiting_approval: boolean; pending_approval: ApprovalRequest | null }
 export type ChatScope = { kind: 'global' } | { kind: 'company'; company: string } | { kind: 'job'; jobId: string; company: string; title?: string }
-export type ConversationSummary = { id: string; title: string; mode: ChatMode; model: string; llm_channel: string; updated_at: string; message_count: number; preview: string }
-export type ConversationDetail = { id: string; scope: { kind: string; company?: string; job_id?: string }; title: string; mode: ChatMode; model: string; llm_channel: string; created_at: string; updated_at: string; messages: StoredMessage[]; active_run: ChatRunStatus | null; scope_expansions?: ScopeExpansion[]; lineage?: { source_conversation_id: string; action_id: string } | null }
+export type ConversationSummary = { id: string; title: string; mode: ChatMode; model: string; llm_channel: string; permission_mode: PermissionMode; updated_at: string; message_count: number; preview: string }
+export type ConversationDetail = { id: string; scope: { kind: string; company?: string; job_id?: string }; title: string; mode: ChatMode; model: string; llm_channel: string; permission_mode: PermissionMode; created_at: string; updated_at: string; messages: StoredMessage[]; active_run: ChatRunStatus | null; scope_expansions?: ScopeExpansion[]; lineage?: { source_conversation_id: string; action_id: string } | null }
 export type ChatRunStart = { run_id: string; conversation_id: string; user_message_id: string; title: string | null }
 export type ModelProvider = { mode: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model: string; key_set: boolean; source: string; context_tokens?: number | null; saved_channel_id?: string }
 export type Channel = { id: string; name: string; url: string; protocol: 'openai' | 'anthropic'; models: string[]; embeddings: string[] }
@@ -117,14 +119,14 @@ export function proposeScopeExpansion(id: string, target: 'company' | 'global') 
 export function acceptScopeExpansion(id: string, actionId: string) {
   return post<ScopeExpansionResult>(`/conversations/${encodeURIComponent(id)}/scope-expansions/${encodeURIComponent(actionId)}/accept`)
 }
-export function patchConversation(id: string, body: { title?: string; mode?: ChatMode; model?: string; llm_channel?: string }) {
+export function patchConversation(id: string, body: { title?: string; mode?: ChatMode; model?: string; llm_channel?: string; permission_mode?: PermissionMode }) {
   return api<ConversationSummary>(`/conversations/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) })
 }
 export function deleteConversation(id: string) { return api<{ ok: boolean }>(`/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
 export function deleteConversationMessage(conversationId: string, messageId: string) {
   return api<{ ok: boolean }>(`/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`, { method: 'DELETE' })
 }
-export function startChatRun(body: { message: string; conversation_id?: string; agent_mode?: ChatMode; model?: string; llm_channel?: string; edit_message_id?: string; company?: string; job_id?: string }) {
+export function startChatRun(body: { message: string; conversation_id?: string; agent_mode?: ChatMode; model?: string; llm_channel?: string; permission_mode?: PermissionMode; edit_message_id?: string; company?: string; job_id?: string }) {
   return post<ChatRunStart>('/chat/runs', body)
 }
 export function cancelChatRun(runId: string) { return post<ChatRunStatus>(`/chat/runs/${encodeURIComponent(runId)}/cancel`) }
