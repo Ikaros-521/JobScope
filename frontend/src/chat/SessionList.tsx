@@ -2,8 +2,9 @@ import { useState } from 'react'
 import { date } from '../api'
 import type { ConversationSummary } from '../api'
 
-export function SessionList({ sessions, activeId, onOpen, onRename, onDelete, collapsed }: {
+export function SessionList({ sessions, loading, activeId, onOpen, onRename, onDelete, collapsed }: {
   sessions: ConversationSummary[]
+  loading?: boolean
   activeId: string | null
   onOpen: (id: string) => void
   onRename: (id: string, title: string) => void
@@ -22,7 +23,8 @@ export function SessionList({ sessions, activeId, onOpen, onRename, onDelete, co
 
   if (collapsed) return null
   return <aside className="chat-sessions" aria-label="会话列表">
-    {sessions.length === 0 && <p className="chat-sessions-empty">还没有会话记录。发送第一条消息后会自动保存到这里。</p>}
+    {loading && sessions.length === 0 && <p className="chat-sessions-empty" role="status"><span className="spinner" aria-hidden="true" />正在读取会话记录…</p>}
+    {!loading && sessions.length === 0 && <p className="chat-sessions-empty">还没有会话记录。发送第一条消息后会自动保存到这里。</p>}
     <ul>
       {sessions.map(item => <li key={item.id} className={item.id === activeId ? 'active' : ''}>
         {editingId === item.id ? <div className="session-rename">

@@ -42,6 +42,10 @@ def scope_clause(scope, plan=None, alias='d'):
 class ResearchIndex:
     def __init__(self, repo):
         self.repo = repo
+        # DDL 只在同一个 repo 实例上跑一次：状态端点每次请求都构造 ResearchIndex，
+        # 稳态下 10 条 IF NOT EXISTS 只是重复的 schema 检查。
+        if getattr(repo, '_research_schema_ready', False):
+            return
         with repo.connection() as c:
             c.executescript('''
                 CREATE TABLE IF NOT EXISTS research_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
@@ -60,6 +64,24 @@ class ResearchIndex:
                     PRIMARY KEY(model,content_hash));
                 CREATE TABLE IF NOT EXISTS research_runs(id TEXT PRIMARY KEY,payload TEXT NOT NULL,created_at TEXT NOT NULL);
             ''')
+        repo._research_schema_ready = True
+
+    def needs_sync(self):
+        """只读探测是否有未并入索引的变更（与 sync 的检测口径一致）。
+
+        False 时状态端点可直接读 status()，不必进 sync 起手的 BEGIN IMMEDIATE 写事务——
+        后台采集正在写库时，GET 抢写锁会把「看一眼状态」卡成等锁。
+        """
+        with self.repo.connection() as c:
+            version = c.execute("SELECT value FROM research_meta WHERE key='version'").fetchone()
+            if not version or version[0] != VERSION:
+                return True
+            marker = c.execute("SELECT value FROM research_meta WHERE key='evidence_cursor'").fetchone()
+            cursor = int(marker[0]) if marker else 0
+            if c.execute('SELECT 1 FROM evidence WHERE rowid>? LIMIT 1', (cursor,)).fetchone():
+                return True
+            return bool(c.execute('''SELECT 1 FROM jobs j LEFT JOIN research_jobs r ON r.job_id=j.id
+                                     WHERE r.job_id IS NULL OR r.updated_at!=j.updated_at LIMIT 1''').fetchone())
 
     def _remove(self, c, evidence_id):
         c.execute('DELETE FROM research_fts WHERE rowid IN (SELECT id FROM research_chunks WHERE evidence_id=?)', (evidence_id,))

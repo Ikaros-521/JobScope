@@ -56,6 +56,8 @@ export function CompanyCompare() {
   selectedRef.current = selected
   const [reports, setReports] = useState<Record<string, ReliabilityReport | null>>({})
   const [layers, setLayers] = useState<Record<string, LayerRow>>({})
+  // 岗位构成/分层图的数据在途时给出提示，避免图表区被误读成「没有已保存岗位」
+  const [layersLoading, setLayersLoading] = useState(false)
   const [layerKey, setLayerKey] = useState('')
   const [computing, setComputing] = useState(false)
   const [progress, setProgress] = useState('')
@@ -85,12 +87,14 @@ export function CompanyCompare() {
 
   // 岗位分层概要随所选公司变化重取：薪资对比按 职类×经验×学历 分层，不依赖参考报告是否生成。
   useEffect(() => {
-    if (!selected.length) { setLayers({}); return }
+    if (!selected.length) { setLayers({}); setLayersLoading(false); return }
     let active = true
+    setLayersLoading(true)
     const timer = window.setTimeout(() => {
       getCompanyLayers(selected)
         .then(data => { if (active) setLayers(Object.fromEntries(data.companies.map(row => [row.company, row]))) })
         .catch(() => { if (active) setLayers({}) })
+        .finally(() => { if (active) setLayersLoading(false) })
     }, 300)
     return () => { active = false; clearTimeout(timer) }
   }, [selected])
@@ -108,6 +112,8 @@ export function CompanyCompare() {
   }, [selected]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const rows = useMemo(() => selected.map(name => ({ company: name, report: reports[name] })), [selected, reports])
+  // 还有公司的报告在途：报告类图表的空窗期先说明数据在路上，别下「没有维度分」的结论
+  const reportsLoading = selected.some(name => reports[name] === undefined)
 
   // 加入对比的唯一入口：下拉点选或回车选高亮项。刻意不做「按原文加入」——
   // 横评的数据面是已保存岗位与报告，未登记的公司加了也是空行；等检索请求返回再选。
@@ -423,15 +429,15 @@ export function CompanyCompare() {
         <div className="compare-grid">
           <section className="paper-panel compare-chart-panel">
             <div className="compare-chart-title"><h3>六维参考对比</h3><span className="tiny-label">雷达 · 0 值表示该维度暂无依据，不代表负面信号</span></div>
-            {radarOption ? <EChart className="compare-chart" option={radarOption} /> : <p className="compare-chart-empty">所选公司都还没有可绘制的维度分，先重算。</p>}
+            {radarOption ? <EChart className="compare-chart" option={radarOption} /> : <p className="compare-chart-empty">{reportsLoading ? '正在读取参考报告…' : '所选公司都还没有可绘制的维度分，先重算。'}</p>}
           </section>
           <section className="paper-panel compare-chart-panel">
             <div className="compare-chart-title"><h3>综合参考分与维度覆盖</h3><span className="tiny-label">排列只是阅读顺序；覆盖低的公司分数波动大</span></div>
-            {overallOption ? <EChart className="compare-chart" option={overallOption} /> : <p className="compare-chart-empty">还没有公司出综合分，先重算。</p>}
+            {overallOption ? <EChart className="compare-chart" option={overallOption} /> : <p className="compare-chart-empty">{reportsLoading ? '正在读取参考报告…' : '还没有公司出综合分，先重算。'}</p>}
           </section>
           <section className="paper-panel compare-chart-panel">
             <div className="compare-chart-title"><h3>岗位构成</h3><span className="tiny-label">职类分布不同，公司级薪资中位数不可直接比</span></div>
-            {mixOption ? <EChart className="compare-chart" option={mixOption} /> : <p className="compare-chart-empty">所选公司还没有已保存岗位。</p>}
+            {mixOption ? <EChart className="compare-chart" option={mixOption} /> : <p className="compare-chart-empty">{layersLoading ? '正在读取岗位构成…' : '所选公司还没有已保存岗位。'}</p>}
           </section>
           <section className="paper-panel compare-chart-panel">
             <div className="compare-chart-title">
@@ -444,12 +450,12 @@ export function CompanyCompare() {
                 : null}
             </div>
             <span className="tiny-label">同职类·同经验·同学历的报价中位数；各公司只与各自城市的同层对照</span>
-            {layerPayOption ? <EChart className="compare-chart" option={layerPayOption} /> : <p className="compare-chart-empty">{layerOptions.length ? '所选层级没有公司过闸（本公司 ≥3 条、同城同层 ≥10 条）。' : '所选公司还分不出可比层（岗位缺职类或经验/学历标注）。'}</p>}
+            {layerPayOption ? <EChart className="compare-chart" option={layerPayOption} /> : <p className="compare-chart-empty">{layersLoading ? '正在读取岗位构成…' : layerOptions.length ? '所选层级没有公司过闸（本公司 ≥3 条、同城同层 ≥10 条）。' : '所选公司还分不出可比层（岗位缺职类或经验/学历标注）。'}</p>}
             {layerGapNote ? <p className="tiny-label compare-layer-note">未入图：{layerGapNote}</p> : null}
           </section>
           <section className="paper-panel compare-chart-panel">
             <div className="compare-chart-title"><h3>岗位描述具体度</h3><span className="tiny-label">只统计完整 JD；衡量讲得多具体，不是技术实力</span></div>
-            {jdOption ? <EChart className="compare-chart" option={jdOption} /> : <p className="compare-chart-empty">还没有公司有完整岗位描述（列表摘要不参与评估）。</p>}
+            {jdOption ? <EChart className="compare-chart" option={jdOption} /> : <p className="compare-chart-empty">{reportsLoading ? '正在读取参考报告…' : '还没有公司有完整岗位描述（列表摘要不参与评估）。'}</p>}
           </section>
         </div>
 

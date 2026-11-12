@@ -83,8 +83,8 @@ def create_app(data_dir=None):
     settings = ModelSettings(repo)
     llm_channels = LlmChannelStore(repo)
     bindings = ModelBindings(repo)
-    bindings.migrate_legacy_activation(settings)
     system_settings = SystemSettingsStore(repo)
+    bindings.migrate_legacy_activation(settings)
     runs = RunManager(repo)
     scope_expansions = ScopeExpansionStore(repo)
     app.state.runs = runs  # exposed for tests: join worker threads to avoid cross-test leaks
@@ -231,6 +231,9 @@ def create_app(data_dir=None):
 
     @app.middleware('http')
     async def model_configuration(request: Request, call_next):
+        # 静态资源与 /api 无关：不组装模型配置（effective 含多次库读），contextvar 落到默认兜底。
+        if not request.url.path.startswith('/api/'):
+            return await call_next(request)
         token = _active.set(settings.effective())
         try:
             return await call_next(request)
@@ -527,7 +530,8 @@ def create_app(data_dir=None):
     def jobs(q: str = Query(default="", max_length=300), location: str = Query(default="", max_length=300), source: str = Query(default="", max_length=100),
              salary_min: float | None = Query(default=None, ge=0), salary_max: float | None = Query(default=None, ge=0),
              page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
-        return repo.page('jobs', page, page_size, q=q, location=location, source=source, salary_min=salary_min, salary_max=salary_max)
+        # 列表卡片只渲染摘要：description 裁剪后整页响应从 MB 级降到几十 KB，全文走 /jobs/{id}。
+        return repo.page('jobs', page, page_size, q=q, location=location, source=source, salary_min=salary_min, salary_max=salary_max, trim_description=600)
 
     @app.get("/api/jobs/ids")
     def job_ids(q: str = Query(default="", max_length=300), location: str = Query(default="", max_length=300), source: str = Query(default="", max_length=100),
@@ -743,15 +747,16 @@ def create_app(data_dir=None):
     def job_detail(job_id: str):
         job = get_job(job_id)
         related = repo.page('evidence', job_id=job_id, page_size=1)
-        snapshots = repo.page('evidence', linked_job_id=job_id, company=job['company'], page_size=10)
-        company = repo.page('evidence', company=job['company'], include_job_postings=False, page_size=12)
+        # 关联证据列表同样裁正文：详情页一次带 22 条卡片，全文字段会把响应撑到 MB 级。
+        snapshots = repo.page('evidence', linked_job_id=job_id, company=job['company'], page_size=10, trim_text=600)
+        company = repo.page('evidence', company=job['company'], include_job_postings=False, page_size=12, trim_text=600)
         return {"job": job, "evidence": snapshots['evidence'], "company_evidence": company['evidence'],
                 'evidence_total': related['total']}
 
     @app.get('/api/jobs/{job_id}/evidence')
     def job_evidence_page(job_id: str, page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=100)):
         get_job(job_id)
-        return repo.page('evidence', page, page_size, job_id=job_id)
+        return repo.page('evidence', page, page_size, job_id=job_id, trim_text=600)
 
     @app.post("/api/import/job")
     def import_job(data: JobInput):
@@ -759,7 +764,15 @@ def create_app(data_dir=None):
 
     @app.get("/api/evidence")
     def evidence(company: str | None = Query(default=None, max_length=300), q: str = Query(default="", max_length=300), page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=100)):
-        return repo.page('evidence', page, page_size, q=q, company=company)
+        # 50 条/页的公司资料库：正文裁剪 + 命中窗口，展开全文时前端按 id 走下面的详情端点。
+        return repo.page('evidence', page, page_size, q=q, company=company, trim_text=600)
+
+    @app.get('/api/evidence/{evidence_id}')
+    def read_evidence(evidence_id: str):
+        item = repo.get_evidence(evidence_id)
+        if item is None:
+            raise HTTPException(404, "证据不存在")
+        return {"evidence": item}
 
     @app.post("/api/evidence")
     def import_evidence(data: EvidenceInput):
@@ -1043,7 +1056,8 @@ def create_app(data_dir=None):
         from .research.index import ResearchIndex
         from .research.providers import EmbeddingProvider
         index = ResearchIndex(repo)
-        status = index.sync()
+        # 稳态（无新证据、无岗位变更）只读返回，不进 sync 的写事务，避免与后台采集抢锁。
+        status = index.sync() if index.needs_sync() else dict(updated=0, **index.status())
         provider = EmbeddingProvider()
         return dict(**status, embedding_configured=provider.configured, embedding_local=bool(provider.local_model), model_configured=model_configured(),
                     dense_engine='exact_cosine', lexical_engine='fts5_bm25')
@@ -1086,9 +1100,11 @@ def create_app(data_dir=None):
     @app.get('/api/browser/details/status')
     def details_status():
         details = load_module('job_details')
-        jobs = [j for j in repo.jobs() if j['source'] in details.DETAIL_SOURCES]
+        # 一次全量岗位同时供平台过滤与 pending 计数（原先 repo.jobs() 跑两遍）。
+        all_jobs = repo.jobs()
+        jobs = [j for j in all_jobs if j['source'] in details.DETAIL_SOURCES]
         tasks = [t for t in repo.tasks() if t.get('kind') == 'job_details' and t.get('total') is not None]
-        pending = len(details.pending_jobs(repo))
+        pending = len(details.pending_jobs(repo, jobs=all_jobs))
         return dict(total=len(jobs), complete=len(jobs) - pending, pending=pending, task=tasks[0] if tasks else None)
 
     @app.post('/api/browser/details')

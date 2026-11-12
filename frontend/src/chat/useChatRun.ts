@@ -43,6 +43,8 @@ function scopeMatches(stored: { kind: string; company?: string; job_id?: string 
 
 export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: ConversationNavigation | null, onOpened?: (requestId: string) => void) {
   const [sessions, setSessions] = useState<ConversationSummary[]>([])
+  // 列表在途时给「正在读取」而不是空态：慢请求与"没有历史"必须可区分
+  const [sessionsLoading, setSessionsLoading] = useState(false)
   const [conversation, setConversation] = useState<ChatConversation>({ id: null, title: '新对话', mode: 'general', model: '', llm_channel: '', permission_mode: 'autonomous' })
   const [messages, setMessages] = useState<StoredMessage[]>([])
   const [scopeActions, setScopeActions] = useState<ScopeExpansion[]>([])
@@ -106,7 +108,9 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
   const refreshSessions = useCallback(async () => {
     const current = scopeRef.current
     if (current.kind === 'company' && !current.company) { setSessions([]); return }
+    setSessionsLoading(true)
     try { setSessions((await listConversations(current)).conversations) } catch { /* 会话列表失败不阻塞对话 */ }
+    finally { setSessionsLoading(false) }
   }, [scopeKey])
 
   useEffect(() => { void refreshSessions(); return closeStream }, [refreshSessions])
@@ -427,7 +431,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
   const clearError = useCallback(() => setError(''), [])
 
   return {
-    sessions, conversation, messages, scopeActions, lineage, run, error, opening, starting, queue,
+    sessions, sessionsLoading, conversation, messages, scopeActions, lineage, run, error, opening, starting, queue,
     openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeMode, changeModel, changePermissionMode, compress, refreshSessions, clearError,
     enqueue, removeQueued, clearQueue, resumeQueue,
   }
