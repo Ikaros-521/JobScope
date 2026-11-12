@@ -53,7 +53,7 @@ def install_server(client, monkeypatch, tools, auto_tools=()):
                      annotations={**(dict(readOnlyHint=True) if read_only else {}), **(dict(destructiveHint=True) if destructive else {})})
                  for name, read_only, destructive in normalized]
     executed = []
-    async def invoke(config, name, args):
+    def invoke(config, name, args):
         executed.append((name, args))
         return dict(text='external result', is_error=False)
     monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))
@@ -246,3 +246,35 @@ def test_destructive_hint_shows_in_approval_reason(client, monkeypatch):
     result = client.post('/api/chat', json=dict(scope='global', agent_mode='general', conversation_id=conversation_id, message='查')).json()
     assert result['trace']['status'] == 'awaiting_approval'
     assert '修改外部数据' in result['pending_approval']['reason']
+
+
+def _stdio_config():
+    return dict(transport='stdio', command=sys.executable, args=[str(Path(__file__).resolve().parents[2] / 'scripts' / 'fixture_mcp.py')], env={}, token='')
+
+
+def test_mcp_session_pool_reuses_process_across_calls(client):
+    from jobscope.extensions import SESSION_POOL
+    config = _stdio_config()
+    try:
+        first = SESSION_POOL.execute(config, lambda session: session.call_tool('proc_pid', {}))
+        second = SESSION_POOL.execute(config, lambda session: session.call_tool('proc_pid', {}))
+        assert first.content[0].text == second.content[0].text, '同一配置必须复用同一 MCP 进程'
+    finally:
+        SESSION_POOL.shutdown_all()
+
+
+def test_mcp_session_pool_rebuilds_on_config_change_and_idle(client, monkeypatch):
+    from jobscope.extensions import SESSION_POOL
+    base = _stdio_config()
+    changed = dict(base, token='different')
+    try:
+        first = SESSION_POOL.execute(base, lambda session: session.call_tool('proc_pid', {}))
+        other = SESSION_POOL.execute(changed, lambda session: session.call_tool('proc_pid', {}))
+        assert first.content[0].text != other.content[0].text, '配置指纹变化必须新建会话'
+        monkeypatch.setattr(SESSION_POOL, 'idle_seconds', 0.05)
+        import time as _time
+        _time.sleep(0.2)
+        rebuilt = SESSION_POOL.execute(base, lambda session: session.call_tool('proc_pid', {}))
+        assert rebuilt.content[0].text != first.content[0].text, '空闲超时会话必须被回收重建'
+    finally:
+        SESSION_POOL.shutdown_all()

@@ -171,7 +171,7 @@ def test_mcp_tool_approval_is_single_use_and_resumable(client, monkeypatch):
     async def inspect(config):
         return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object', 'properties': {'q': {'type': 'string'}}})]
     executed = []
-    async def invoke(config, name, args):
+    def invoke(config, name, args):
         executed.append((name, args))
         return {'text': 'external evidence', 'is_error': False}
     monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))
@@ -193,12 +193,15 @@ def test_mcp_tool_approval_is_single_use_and_resumable(client, monkeypatch):
 
 def test_real_stdio_mcp_sdk_initialize_list_and_call():
     import anyio
-    from jobscope.extensions import MCPClient
+    from jobscope.extensions import MCPClient, SESSION_POOL
     config = dict(transport='stdio', command=sys.executable, args=[str(Path(__file__).resolve().parents[2] / 'scripts' / 'fixture_mcp.py')], env={}, token='')
     tools = anyio.run(MCPClient.discover, config)
     assert tools[0]['name'] == 'lookup_topic'
-    result = anyio.run(MCPClient.call, config, 'lookup_topic', {'query': 'Agent'})
-    assert not result['is_error'] and 'MCP fixture result: Agent' in result['text']
+    try:
+        result = MCPClient.call(config, 'lookup_topic', {'query': 'Agent'})
+        assert not result['is_error'] and 'MCP fixture result: Agent' in result['text']
+    finally:
+        SESSION_POOL.shutdown_all()
 
 
 @pytest.mark.parametrize('keyword', ['$ref', '$dynamicRef', '$recursiveRef'])
@@ -220,7 +223,7 @@ def test_approval_is_bound_to_each_call_and_config_changes_invalidate(client, mo
     async def inspect(config):
         return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object', 'properties': {'q': {'type': 'string'}}})]
     executed = []
-    async def invoke(config, name, args):
+    def invoke(config, name, args):
         executed.append(args)
         return {'text': 'result', 'is_error': False}
     monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))
@@ -257,7 +260,7 @@ def test_resume_access_taints_later_turns_even_with_auto_tool(client, monkeypatc
     async def inspect(config):
         return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object', 'properties': {'q': {'type': 'string'}}})]
     executed = []
-    async def invoke(config, name, args):
+    def invoke(config, name, args):
         executed.append(args)
         return dict(text='result', is_error=False)
     monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))
@@ -278,7 +281,7 @@ def test_approved_tool_failure_recovers_and_denial_does_not_execute(client, monk
     async def inspect(config):
         return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object'})]
     calls = []
-    async def fail(config, name, args):
+    def fail(config, name, args):
         calls.append(name)
         raise ValueError('fixture-secret-error')
     monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))

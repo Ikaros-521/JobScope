@@ -1138,6 +1138,12 @@ def create_app(data_dir=None):
             response.headers['Cache-Control'] = 'no-cache'
         return response
 
+    @app.on_event('shutdown')
+    def close_mcp_sessions():
+        # 常驻 MCP 会话（stdio 子进程/浏览器）随应用退出优雅回收。
+        from .extensions import SESSION_POOL
+        SESSION_POOL.shutdown_all()
+
     return app
 
 
