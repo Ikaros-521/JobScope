@@ -76,7 +76,8 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
         return
       }
       if (event === 'resumed') {
-        setRun(current => current && current.id === data.run_id ? { ...current, steps: [], answer: '', reasoning: '', approval: undefined, error: undefined, notice: undefined } : current)
+        // 审批通过后沿原流续传：只清掉确认卡，保留已有时间线与流式内容，避免整段重放闪空。
+        setRun(current => current && current.id === data.run_id ? { ...current, approval: undefined, error: undefined, notice: undefined } : current)
         return
       }
       if (event === 'step') {
@@ -96,7 +97,8 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
         return
       }
       if (event === 'error') {
-        setRun(current => current ? { ...current, error: String(data.message ?? '生成失败') } : current)
+        // 出错时同步撤下确认卡：失败后卡片已不可用，留着只会让人反复点到 409。
+        setRun(current => current ? { ...current, error: String(data.message ?? '生成失败'), approval: undefined } : current)
         return
       }
       if (event === 'cancelled') {
@@ -115,7 +117,9 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
         return
       }
       if (event === 'end') {
+        // 流终止于 error 时（done 路径已提前 closeStream），这里补解锁发送：不清理会让会话永远锁在“生成中”。
         source.close()
+        runIdRef.current = null
         if (sourceRef.current === source) sourceRef.current = null
       }
     })
@@ -270,7 +274,9 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
     if (!runId || !approval) return
     try {
       await approveChatRun(runId, approved, approval.approval_id)
-      attach(runId) // 重连后事件日志全量回放，自动重建执行时间线
+      // 审批挂起时流保持打开，resumed 及后续事件沿原流续传，无需重连；
+      // 只有流已断开或正在重连（如后台面板被冻结、服务重启）时才回退到重放整份日志重建状态。
+      if (!sourceRef.current || sourceRef.current.readyState !== EventSource.OPEN) attach(runId)
     } catch (err) { setError((err as Error).message) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [attach, run])

@@ -332,8 +332,9 @@ class RunManager:
             if result.get('pending_approval'):
                 handle.pending_approval = True
                 handle.pending_payload = dict(run_id=result['trace']['id'], **result['pending_approval'])
+                # 保持流打开：审批通过后 resumed 及后续事件沿同一条 SSE 续传，
+                # 客户端无需重连重放整份事件日志（重放会闪现已消费的审批卡并清空实时气泡）。
                 handle.push('approval_required', handle.pending_payload)
-                handle.finish()
                 return
             stored = self._persist(handle, result)[0]
             handle.push('done', dict(message_id=stored['id'], answer=result['answer'], mode=result.get('mode', 'agent'),
