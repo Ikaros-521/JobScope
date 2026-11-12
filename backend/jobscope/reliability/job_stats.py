@@ -37,6 +37,82 @@ def normalise_city(location):
     return text
 
 
+# ── 分层对比（R1 公平性）───────────────────────────────────────────────
+# 薪资与职类、经验要求、学历要求强相关：把审核员（大专/经验不限）和 AI 开发（本科/3-5年）
+# 混进同一个中位数里比，是在拿低层级岗位对标同城的高层级基线，比值天然偏低且无法解读。
+# 三张分类表只认材料里明确写出的标注；缺任何一层标注的岗位不参与评分，只进缺口说明。
+ROLE_FAMILIES = (
+    ('审核认证', ('审核', '认证', '体系', 'ccaa', '外审', '验厂')),
+    ('技术研发', ('前端', '后端', 'java', 'python', '算法', '开发', '工程师', '测试', '运维', '架构', 'golang', 'php', 'ai')),
+    ('产品与设计', ('设计', '视觉', '交互', '产品经理', 'ui', 'ux')),
+    ('销售与市场', ('销售', '市场', '商务', '客户经理', '渠道', '电销', '电商')),
+    ('人事与财务', ('人事', '招聘', '行政', '财务', '会计', '人力')),
+    ('运营与客服', ('运营', '客服', '文员', '助理', '支持')),
+)
+# 两个来源的标注写法都收：boss 是「5-10年、本科」或「杭州 · 5-10年 · 本科」，智联是
+# 「经验：经验不限\n学历：大专」。匹配只看写出的标注，不从职位名称里的「高级」猜级别——
+# 「高级招聘专员」不是高级技术岗。
+EXP_TEXT = re.compile(r'经验[：:]\s*([^\n]{1,12})|(\d+\s*[-–~至]\s*\d+年|\d+年以上|\d+年以下|\d+年以内|经验不限|无经验|应届生?|在校生)')
+EDU_TEXT = re.compile(r'学历[：:]\s*([^\n]{1,8})|(学历不限|博士|硕士|研究生|本科|大专|中专|中技|高中|初中)')
+
+
+def experience_bucket(text):
+    """把标注文本归一到经验档位；档位名保留原文数字，不同的档位就是不同的层，不归并不猜。"""
+    if not text:
+        return None
+    if re.search(r'不限|无经验', text):
+        return '不限'
+    if re.search(r'应届|在校', text):
+        return '应届'
+    match = re.search(r'(\d+)\s*[-–~至]\s*(\d+)年', text)
+    if match:
+        return f'{match.group(1)}-{match.group(2)}年'
+    for pattern, label in ((r'(\d+)\s*年以上', '{}年以上'), (r'(\d+)\s*年以下', '{}年以下'), (r'(\d+)\s*年以内', '{}年以内')):
+        match = re.search(pattern, text)
+        if match:
+            return label.format(match.group(1))
+    return None
+
+
+def education_bucket(text):
+    """把标注文本归一到学历档位；「研究生」并入「硕士」，中专/中技/高中/初中并成一层。"""
+    if not text:
+        return None
+    if '不限' in text:
+        return '不限'
+    for token, bucket in (('博士', '博士'), ('硕士', '硕士'), ('研究生', '硕士'), ('本科', '本科'),
+                          ('大专', '大专'), ('中专', '高中及以下'), ('中技', '高中及以下'),
+                          ('高中', '高中及以下'), ('初中', '高中及以下')):
+        if token in text:
+            return bucket
+    return None
+
+
+def role_family(title):
+    """职位名称 → 职类。中文关键词用普通子串匹配——`contains` 的字母词边界会把
+    「工程师0」「审核员1」这类数字化标题挡掉；字母词（ai/java/php…）仍走 `contains`，
+    'ai' 不会命中别的字母词。认不出就返回 None。"""
+    text = str(title or '')
+    for family, keywords in ROLE_FAMILIES:
+        for keyword in keywords:
+            if contains(text, keyword) if keyword.isascii() else keyword in text:
+                return family
+    return None
+
+
+def job_stratum(item):
+    """可比层键 =（职类，经验档，学历档）。缺任何一层标注返回 None：拿不到层级一致的证据，
+    就不做「要求相当」的断言——未标注的岗位和谁都不保证同层。"""
+    description = item.get('description') or ''
+    exp_match, edu_match = EXP_TEXT.search(description), EDU_TEXT.search(description)
+    family = role_family(item.get('title', ''))
+    exp = experience_bucket(exp_match.group(0) if exp_match else None)
+    edu = education_bucket(edu_match.group(0) if edu_match else None)
+    if not family or not exp or not edu:
+        return None
+    return (family, exp, edu)
+
+
 def _city_of(job):
     return normalise_city(job.get('location', ''))
 
@@ -52,12 +128,16 @@ def _midpoints(jobs):
     return mids
 
 
-def pay_value(jobs, names):
-    """R1 `pay_vs_city_median` 的统计量。城市取该公司岗位里出现次数最多的可归一城市。
+def pay_analysis(jobs, names):
+    """R1 `pay_vs_city_median` 的统计量：同城 + 同职类 + 同经验档 + 同学历档的分层报价中位数对比。
 
-    返回 None 只出现在「该公司没有任何已存岗位或归一不出城市」时；有岗位但一条可解析报价都
-    没有时返回全零统计量，让闸门缺口说明样本不够，而不是留一句无从着手的「尚无来源」。
-    样本闸门（公司 ≥3 条、同城 ≥20 条、中位数大于 0）不在这一层判——出不出分归 rubric。
+    与旧口径（公司全体岗位 vs 同城全库）的差别是分层：混层中位数会让审核员对标技术岗基线。
+    - 城市取该公司岗位里出现次数最多的可归一城市；本公司只取该市的岗位（苏州的审核员不进
+      杭州的对比），同城对照也只取同层岗位。
+    - 每层闸门：本公司 ≥3 条、同城同层 ≥10 条、两个中位数都大于 0；过闸的层按本公司样本数
+      加权出总比值。出不出分仍归 rubric（合计 ≥3/≥20 与分档在 scorer）。
+    - 缺城市/职类/要求标注的岗位与样本不足的层不参与评分，逐条写进 note 让缺口可行动。
+    返回 None 只在「该公司没有任何已存岗位或归一不出城市」时；分不出可比层时返回全零统计量。
     """
     company = [item for item in jobs if Repository.normalise_name(item['company']) in names]
     if not company:
@@ -66,20 +146,66 @@ def pay_value(jobs, names):
     if not counts:
         return None
     city = counts.most_common(1)[0][0]
-    own_mids = _midpoints(company)
-    city_mids = _midpoints([item for item in jobs if _city_of(item) == city])
-    company_median = round(median(own_mids), 2) if own_mids else 0
-    city_median = round(median(city_mids), 2) if city_mids else 0
-    ratio = round(company_median / city_median, 3) if company_median > 0 and city_median > 0 else 0
-    return dict(company_median=company_median, city_median=city_median, ratio=ratio,
-                company_jobs=len(own_mids), city_jobs=len(city_mids)), city
+    local_company = [item for item in company if _city_of(item) == city]
+    pool = {}
+    for item in jobs:
+        if _city_of(item) == city:
+            key = job_stratum(item)
+            if key:
+                pool.setdefault(key, []).append(item)
+    groups = {}
+    for item in local_company:
+        key = job_stratum(item)
+        if key:
+            groups.setdefault(key, []).append(item)
+    ratios, detail, covered_own, covered_same = [], [], [], []
+    for key in sorted(groups):
+        own, same = _midpoints(groups[key]), _midpoints(pool.get(key, []))
+        label = '·'.join(key)
+        if len(own) >= 3 and len(same) >= 10:
+            company_median, city_median = round(median(own), 2), round(median(same), 2)
+            if company_median > 0 and city_median > 0:
+                ratio = round(company_median / city_median, 3)
+                ratios.append((len(own), ratio))
+                covered_own.extend(own)
+                covered_same.extend(same)
+                detail.append(f'{label}：本公司 {len(own)} 条中位 {company_median} 元 / 同城同层 {len(same)} 条中位 '
+                              f'{city_median} 元，比值 {ratio}')
+                continue
+        detail.append(f'{label}：本公司 {len(own)} 条、同城同层 {len(same)} 条，样本不够（本公司需 ≥3 条、同层 ≥10 条），不比')
+    excluded_city = len(company) - len(local_company)
+    excluded_unstratified = len(local_company) - sum(len(group) for group in groups.values())
+    excluded = []
+    if excluded_city:
+        excluded.append(f'{excluded_city} 条不在{city}')
+    if excluded_unstratified:
+        excluded.append(f'{excluded_unstratified} 条职类或经验/学历标注缺失')
+    if ratios:
+        weighted = round(sum(count * ratio for count, ratio in ratios) / sum(count for count, _ in ratios), 3)
+        value = dict(ratio=weighted, company_jobs=len(covered_own), city_jobs=len(covered_same))
+        # 中位数只在单层覆盖时给出：多层合并的中位数会把不同层混在一起，正是这次分层要除掉的误导。
+        # 前端事实小图拿不到这两个键就不画，句子与口径正文照常说明。
+        if len(ratios) == 1:
+            value.update(company_median=round(median(covered_own), 2), city_median=round(median(covered_same), 2))
+    else:
+        # 分不出可比层：全零统计量，让闸门缺口说清「分层凑不齐」，而不是无声无息。
+        value = dict(ratio=0, company_jobs=0, city_jobs=0)
+    lines = [f'pay_vs_city_median 口径：按职类、经验要求、学历要求分层对比已存岗位的月薪报价中位数，'
+             f'单条报价取区间中点，年薪、时薪与外币报价不计入。']
+    lines.extend(f'第 {index} 层 {line}' for index, line in enumerate(detail, 1))
+    if excluded:
+        lines.append('另有' + '、'.join(excluded) + '，未参与对比。')
+    if ratios:
+        lines.append(f'{len(ratios)} 个可比分层按本公司样本数加权得总比值 {value["ratio"]}。')
+    lines.append('只对比标注相当（同职类、同经验要求、同学历要求）的样本；这是招聘平台报价对比，'
+                 '不是实际到手薪资，不含奖金与股票，要求相当也不等于职级完全一致。' + LOCAL_NOTE + '。')
+    return dict(value=value, city=city, note='\n'.join(lines))
 
 
-def pay_note(value, city):
-    return (f'pay_vs_city_median 口径：本公司 {value["company_jobs"]} 条已存岗位的可解析人民币月薪报价中位数 '
-            f'{value["company_median"]} 元，与同城（{city}）{value["city_jobs"]} 条已存岗位报价中位数 '
-            f'{value["city_median"]} 元对比；单条报价取月薪区间中点，年薪、时薪与外币报价不计入；'
-            '这是招聘平台报价对比，不是实际到手薪资，同城样本也不是同职级同技能样本。' + LOCAL_NOTE + '。')
+def pay_value(jobs, names):
+    """兼容入口：只要（统计量，城市）。需要分层明细与口径正文时用 `pay_analysis`。"""
+    analysis = pay_analysis(jobs, names)
+    return None if analysis is None else (analysis['value'], analysis['city'])
 
 
 def _jd_stats(description):

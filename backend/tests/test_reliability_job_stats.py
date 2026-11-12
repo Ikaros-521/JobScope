@@ -31,29 +31,127 @@ def test_known_city_words_normalise_and_unknown_stay_verbatim():
     assert job_stats.normalise_city('') == ''
 
 
-def test_pay_value_compares_the_company_median_with_the_whole_city_sample(tmp_path):
-    repo, identity = seed(tmp_path, [('北京', '20-35K', '负责服务端开发', 'listing')] * 4
-                          + [('北京', '10-15K', '负责客服', 'listing')] * 4)
-    # 同城样本来自全库：乙公司的北京岗位也进分母，上海的岗位不进。
-    repo.save_job(dict(title='别家岗位', company='乙公司', description='负责其他', location='北京',
-                       salary='30-50K', url='https://jobs.example.com/other'), 'test_jobs')
-    repo.save_job(dict(title='上海岗位', company='乙公司', description='负责华东', location='上海',
-                       salary='30-50K', url='https://jobs.example.com/sh'), 'test_jobs')
+def job(title, company, location, salary, description, status='complete'):
+    return dict(title=title, company=company, description=description, location=location,
+                salary=salary, url='', description_status=status)
+
+
+def save_jobs(repo, jobs, source='test_jobs'):
+    for index, item in enumerate(jobs):
+        item = dict(item)
+        item.setdefault('url', f'https://jobs.example.com/{index}')
+        repo.save_job(item, source)
+
+
+TECH_DESC = '负责服务端开发\n经验：3-5年\n学历：本科'
+
+
+def test_stratum_requires_role_experience_and_education_annotations():
+    # 四重标注缺一不可：未标注的岗位和谁都不保证同层，绝不硬算「要求相当」。
+    assert job_stats.job_stratum(dict(title='后端工程师', description=TECH_DESC)) == ('技术研发', '3-5年', '本科')
+    assert job_stats.job_stratum(dict(title='体系审核员', description='经验：经验不限\n学历：大专')) == ('审核认证', '不限', '大专')
+    # 「高级」头衔不抬级别：级别只看写出的经验要求；招聘专员归人事类，不影响层级判断。
+    assert job_stats.job_stratum(dict(title='高级招聘专员', description=TECH_DESC)) == ('人事与财务', '3-5年', '本科')
+    assert job_stats.job_stratum(dict(title='神秘岗位', description='负责一些事情')) is None
+    assert job_stats.job_stratum(dict(title='后端工程师', description='')) is None
+    # 档位归一：研究生并入硕士；「高级」头衔不抬级别，级别只看写出的经验要求。
+    assert job_stats.education_bucket('学历：研究生') == '硕士'
+    assert job_stats.experience_bucket('经验：5-10年') == '5-10年'
+    assert job_stats.experience_bucket('经验：经验不限') == '不限'
+    assert job_stats.experience_bucket('3年以上') == '3年以上'
+
+
+def test_pay_value_compares_only_within_matched_strata(tmp_path):
+    """分层对比：本公司「技术·本科·3-5年」的 3 条只和同城同层的对照比；混层岗位不进分母。"""
+    repo, identity = seed(tmp_path, [])
+    repo.save_job(dict(title='后端工程师A', company='甲公司', description=TECH_DESC, location='北京',
+                       salary='15-18K', url='a1', description_status='complete'), 'test_jobs')
+    repo.save_job(dict(title='算法工程师B', company='甲公司', description=TECH_DESC, location='北京',
+                       salary='16-19K', url='a2', description_status='complete'), 'test_jobs')
+    repo.save_job(dict(title='测试工程师C', company='甲公司', description=TECH_DESC, location='北京',
+                       salary='17-20K', url='a3', description_status='complete'), 'test_jobs')
+    # 同职类同层但缺标注的岗位（30-35K 的管理层）：不参与评分，绝不混进本公司样本。
+    for index in range(4):
+        repo.save_job(dict(title=f'神秘高管{index}', company='甲公司', description='带团队',
+                           location='北京', salary='30-35K', url=f'n{index}',
+                           description_status='listing'), 'test_jobs')
+    # 同城同层对照 12 条，中位 25000；上海的同层岗位不进北京分母。
+    for index in range(12):
+        repo.save_job(dict(title=f'工程师{index}', company='乙公司', description=TECH_DESC,
+                           location='北京', salary='20-30K', url=f'c{index}',
+                           description_status='listing'), 'test_jobs')
+    repo.save_job(dict(title='上海工程师', company='乙公司', description=TECH_DESC, location='上海',
+                       salary='50-60K', url='sh', description_status='listing'), 'test_jobs')
+    analysis = job_stats.pay_analysis(repo.jobs(), names_of(identity))
+    assert analysis['city'] == '北京'
+    # 对照池含本公司同层岗位（12 乙 + 3 甲 = 15 条）：中位仍是 25000，比值不变。
+    # 合并中位数（17500/25000）只给前端图表当量纲，分数由分层比值决定。
+    assert analysis['value'] == {'ratio': round(17500 / 25000, 3), 'company_jobs': 3, 'city_jobs': 15,
+                                 'company_median': 17500.0, 'city_median': 25000.0}
+    # 口径正文写明分层明细与排除数量，且不带时刻（证据身份含内容哈希）。
+    assert '技术研发·3-5年·本科' in analysis['note']
+    assert '4 条职类或经验/学历标注缺失' in analysis['note']
+    assert '不访问网络' in analysis['note']
+    import re
+    assert not re.search(r'\d{2}:\d{2}', analysis['note'])
+    # 兼容入口保持（统计量，城市）二元组。
     value, city = job_stats.pay_value(repo.jobs(), names_of(identity))
-    assert city == '北京'
-    # 甲：4×27500 与 4×12500 → 中位数 20000；北京全市 9 条 → 中位数排序后第 5 个 = 27500。
-    assert value['company_jobs'] == 8 and value['city_jobs'] == 9
-    assert value['company_median'] == 20000.0 and value['city_median'] == 27500.0
-    assert value['ratio'] == round(20000 / 27500, 3)
+    assert city == '北京' and value == analysis['value']
+
+
+def test_pay_value_with_no_comparable_stratum_reports_the_zero_sample(tmp_path):
+    # 同城同层对照不足（需 ≥10 条）：分不出可比层 → 全零统计量，缺口正文写明差在哪。
+    repo, identity = seed(tmp_path, [])
+    for index in range(3):
+        repo.save_job(dict(title=f'后端工程师{index}', company='甲公司', description=TECH_DESC,
+                           location='北京', salary='20-35K', url=f'a{index}',
+                           description_status='complete'), 'test_jobs')
+    for index in range(2):  # 同层对照只有 2 条，凑不齐闸门
+        repo.save_job(dict(title=f'对照工程师{index}', company='乙公司', description=TECH_DESC,
+                           location='北京', salary='30-50K', url=f'c{index}',
+                           description_status='listing'), 'test_jobs')
+    analysis = job_stats.pay_analysis(repo.jobs(), names_of(identity))
+    assert analysis['city'] == '北京'
+    assert analysis['value'] == {'ratio': 0, 'company_jobs': 0, 'city_jobs': 0}
+    assert '样本不够' in analysis['note']
 
 
 def test_pay_value_without_any_parsable_quote_still_reports_the_zero_sample(tmp_path):
     # 一条可解析报价都没有：统计量全零，闸门缺口据此说清「样本不够」，而不是无声无息。
     repo, identity = seed(tmp_path, [('北京', '年薪 60 万元', '负责服务端开发', 'listing')])
-    value, city = job_stats.pay_value(repo.jobs(), names_of(identity))
-    assert city == '北京'
-    assert value == {'company_median': 0, 'city_median': 0, 'ratio': 0,
-                     'company_jobs': 0, 'city_jobs': 0}
+    analysis = job_stats.pay_analysis(repo.jobs(), names_of(identity))
+    assert analysis['city'] == '北京'
+    assert analysis['value'] == {'ratio': 0, 'company_jobs': 0, 'city_jobs': 0}
+
+
+def test_pay_value_weights_multiple_strata_by_company_sample(tmp_path):
+    """两个可比分层按本公司样本数加权；每层的闸门独立判定，不足的层只留说明。"""
+    repo, identity = seed(tmp_path, [])
+    audit_desc = '负责体系审核\n经验：经验不限\n学历：大专'
+    for index in range(4):   # 技术层 4 条
+        repo.save_job(dict(title=f'工程师{index}', company='甲公司', description=TECH_DESC,
+                           location='杭州', salary='15-18K', url=f't{index}',
+                           description_status='complete'), 'test_jobs')
+    for index in range(3):   # 审核层 3 条
+        repo.save_job(dict(title=f'体系审核员{index}', company='甲公司', description=audit_desc,
+                           location='杭州', salary='10-15K', url=f'u{index}',
+                           description_status='complete'), 'test_jobs')
+    for index in range(12):  # 技术层同城对照
+        repo.save_job(dict(title=f'工程师{index}', company='乙公司', description=TECH_DESC,
+                           location='杭州', salary='20-30K', url=f'c{index}',
+                           description_status='listing'), 'test_jobs')
+    for index in range(10):  # 审核层同城对照
+        repo.save_job(dict(title=f'审核员{index}', company='乙公司', description=audit_desc,
+                           location='杭州', salary='10-14K', url=f'd{index}',
+                           description_status='listing'), 'test_jobs')
+    analysis = job_stats.pay_analysis(repo.jobs(), names_of(identity))
+    # 技术：16500/25000 = 0.66（同层 16 条含本公司 4 条）；审核：12500/12000 = 1.042（同层 13 条
+    # 含本公司 3 条）→ 按本公司样本数加权 (4×0.66 + 3×1.042)/7
+    tech, audit = round(16500 / 25000, 3), round(12500 / 12000, 3)
+    # 多层覆盖不给合并中位数：跨层合并会把审核层与技术层混在一起，图表宁缺勿误导。
+    assert analysis['value'] == {'ratio': round((4 * tech + 3 * audit) / 7, 3),
+                                 'company_jobs': 7, 'city_jobs': 29}
+    assert '审核认证·不限·大专' in analysis['note']
 
 
 def test_jd_value_counts_only_complete_descriptions(tmp_path):
@@ -84,9 +182,10 @@ def test_notes_are_stable_and_carry_no_timestamp(tmp_path):
     # 用两个独立库跑同一份输入：正文必须逐字一致，且没有时刻形态的数字。
     first_repo, first_identity = seed(tmp_path / 'first', [('北京', '20-35K', '负责开发', 'complete')])
     second_repo, second_identity = seed(tmp_path / 'second', [('北京', '20-35K', '负责开发', 'complete')])
-    first_value, first_city = job_stats.pay_value(first_repo.jobs(), names_of(first_identity))
-    second_value, second_city = job_stats.pay_value(second_repo.jobs(), names_of(second_identity))
-    assert job_stats.pay_note(first_value, first_city) == job_stats.pay_note(second_value, second_city)
+    first_pay = job_stats.pay_analysis(first_repo.jobs(), names_of(first_identity))
+    second_pay = job_stats.pay_analysis(second_repo.jobs(), names_of(second_identity))
+    assert first_pay['note'] == second_pay['note'] and first_pay['value'] == second_pay['value']
+    assert not re.search(r'\d{2}:\d{2}', first_pay['note'])
     first_jd = job_stats.jd_value(first_repo.jobs(), names_of(first_identity))
     assert not re.search(r'\d{2}:\d{2}', job_stats.jd_note(first_jd))
     assert '不访问网络' in job_stats.jd_note(first_jd)

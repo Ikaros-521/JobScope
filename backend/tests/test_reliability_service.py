@@ -23,7 +23,8 @@ def add_job(repo, company, title='后端工程师', location='杭州', salary='1
             status='complete', description=None):
     payload = dict(company=company, title=title, location=location, salary=salary,
                    description_status=status,
-                   description=description or '负责服务端开发\n1、按需求实现接口\n2、排查线上问题',
+                   # 薪资分层对比要求同层可比：默认描述带经验/学历标注，岗位名带职类关键词。
+                   description=description or '负责服务端开发\n经验：3-5年\n学历：本科',
                    source='boss', url='')
     return repo.save_job(payload, 'boss')
 
@@ -185,9 +186,10 @@ def test_recompute_refreshes_local_signals_before_scoring(tmp_path):
     for index in range(3):
         add_job(repo, '丙公司', title=f'后端工程师{index}', salary=f'{15 + index}-{18 + index}K')
     for index in range(20):
-        add_job(repo, '同城对照公司', title=f'工程师{index}', salary=f'{20 + index % 5}-{25 + index % 5}K')
+        add_job(repo, '同城对照公司', title=f'工程师{index}', salary=f'{20 + index % 5}-{25 + index % 5}K',
+                status='listing', description='列表摘要\n经验：3-5年\n学历：本科')
     report = service.recompute('丙公司')
-    # 本地统计在打分前已刷新：collection 报告来源与样本，薪资维度直接过闸门出分。
+    # 本地统计在打分前已刷新：collection 报告来源与样本，薪资维度同层可比直接过闸门出分。
     assert report['collection']['status'] == 'completed' and report['collection']['count'] >= 2
     assert report['score'] is not None and dimension(report, 'pay')['score'] is not None
     assert dimension(report, 'professional')['score'] is not None  # 3 条完整 JD 过闸门

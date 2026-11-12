@@ -92,11 +92,12 @@ def collect(source_id, company, *, repo, identity=None, browser_module=None, dat
     ]
     message = (f'{LOCAL_NOTE}：{len(jobs)} 条已存岗位里 {known} 条能解析出人民币月薪区间，'
                f'已存公告类证据 {len(materials)} 份')
-    pay = job_stats.pay_value(all_jobs, names) if jobs else None
+    pay = job_stats.pay_analysis(all_jobs, names) if jobs else None
     if pay is not None:
-        value, city = pay
-        signals.append(_signal(source_id, 'pay_vs_city_median', value, stamp, job_stats.pay_note(value, city)))
-        message += f'，同城报价对比样本为本公司 {value["company_jobs"]} 条、{city}全市 {value["city_jobs"]} 条'
+        value = pay['value']
+        signals.append(_signal(source_id, 'pay_vs_city_median', value, stamp, pay['note']))
+        message += (f'，{pay["city"]}分层报价对比覆盖本公司 {value["company_jobs"]} 条、'
+                    f'同层对照 {value["city_jobs"]} 条')
     jd = job_stats.jd_value(jobs, names) if jobs else None
     if jd is not None:
         signals.append(_signal(source_id, 'jd_specificity', jd, stamp, job_stats.jd_note(jd)))

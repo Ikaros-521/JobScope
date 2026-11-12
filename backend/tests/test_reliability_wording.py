@@ -107,10 +107,10 @@ def test_sample_count_never_carries_a_size_judgement():
 
 def test_pay_template_declares_its_caliber():
     text = render(next(iter(score([sig('pay_vs_city_median', VALUES['pay_vs_city_median'])]).findings)))
-    # 规格要求的口径声明必须逐字在句子里：报价对比、非到手薪资、不含奖金股票、样本口径。
+    # 规格要求的口径声明必须逐字在句子里：分层只比标注相当的样本、报价对比、非到手薪资、不含奖金股票。
     assert '报价的对比' in text and '不是实际到手薪资' in text
-    assert '不含奖金与股票' in text and '同城样本也不等于同职级同技能样本' in text
-    assert '20000' in text and '18000' in text and lint(text) == []
+    assert '不含奖金与股票' in text and '只对比标注相当的样本' in text
+    assert '要求相当也不等于职级完全一致' in text and '1.11' in text and lint(text) == []
 
 
 def test_jd_specificity_template_measures_clarity_not_strength():

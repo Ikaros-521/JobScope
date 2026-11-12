@@ -38,8 +38,8 @@ const number = (value: number) => value.toLocaleString('zh-CN', { maximumFractio
 // 条形只陈述事实（数字 + 口径 + 样本数），条长不做任何好坏暗示；没有数据就不画，不留空坐标轴。
 const FACT_BARS: Record<string, { key: string; label: string; cap?: number }[]> = {
   pay_vs_city_median: [
-    { key: 'company_median', label: '本公司报价中位数' },
-    { key: 'city_median', label: '同城中位数' },
+    { key: 'company_median', label: '本公司同层中位数' },
+    { key: 'city_median', label: '同城同层中位数' },
   ],
   jd_specificity: [
     { key: 'chars_mean', label: '描述均长（字）', cap: 600 },

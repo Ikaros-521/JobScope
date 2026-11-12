@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 
 from .models import Dimension, RuleFinding, SignalInput, can_stand_alone
 
-RUBRIC_VERSION = 'rubric-3'
+RUBRIC_VERSION = 'rubric-4'
 
 # assessment 才允许产生维度分。material 衡量的只是本项目手上有多少材料：
 # 把「9/10 条岗位能解析出月薪」算成薪资待遇 90 分，用户读到的是「薪资给得好」，这是静默的谎言。
@@ -51,13 +51,18 @@ def band(value, table, fallback):
 
 
 def _pay_points(value):
-    """报价中位数对比。闸门不满足就返回 None，靠 gate_note 说清缺什么，绝不硬算。"""
-    company_median, city_median = value.get('company_median'), value.get('city_median')
-    if company_median is None or company_median <= 0 or city_median is None or city_median <= 0:
+    """报价中位数分层比值。比值由统计层按「同城+同职类+同经验档+同学历档」分层加权得出；
+    付费接口只给聚合中位数时退回未分层比值（口径不同，出处说明里写明来源）。
+    闸门不满足就返回 None，靠 gate_note 说清缺什么，绝不硬算。"""
+    ratio = value.get('ratio')
+    if not ratio:
+        company_median, city_median = value.get('company_median'), value.get('city_median')
+        ratio = company_median / city_median if company_median and city_median and city_median > 0 else None
+    if not ratio or ratio <= 0:
         return None
     if (value.get('company_jobs') or 0) < 3 or (value.get('city_jobs') or 0) < 20:
         return None
-    return band(company_median / city_median, [(1.2, 0.95), (1.0, 0.8), (0.85, 0.6), (0.7, 0.45)], 0.3)
+    return band(ratio, [(1.2, 0.95), (1.0, 0.8), (0.85, 0.6), (0.7, 0.45)], 0.3)
 
 
 def _jd_points(value):
@@ -102,10 +107,11 @@ RULES: dict[str, RuleSpec] = {
                                     scorer=lambda v: band(v['ratio'], [(25, 0.3), (10, 0.55), (3, 0.75)], 0.9) if v.get('ratio') else None),
     'salary_quote_coverage': RuleSpec('pay', '%', 120, 'salary_quote_coverage', kind=MATERIAL,
                                       scorer=lambda v: (v.get('known') or 0) / max(v.get('total') or 1, 1)),
-    # R1：本公司可解析人民币月薪报价中位数对比同城全部已存岗位的中位数。样本闸门在 scorer 里，
-    # 闸门不满足就不出分——小样本硬算出来的「比值」比不出分更误导。
+    # R1：同城同层（职类/经验档/学历档一致）的报价中位数分层比值。样本闸门分两层：统计层
+    # 每层本公司 ≥3 条、同层 ≥10 条，scorer 合计 ≥3/≥20；分层凑不齐就不出分——混层中位数
+    # 是拿低层级岗位对标高层级基线，比不出分更误导。
     'pay_vs_city_median': RuleSpec('pay', '元', 90, 'pay_vs_city_median',
-                                   gate_note='出分需要本公司 ≥3 条可解析报价、同城 ≥20 条可解析报价，且两组报价中位数都大于 0；样本不够就不比',
+                                   gate_note='出分需要可比分层：同城、同职类、同经验与学历要求下本公司 ≥3 条、同层 ≥10 条，且合计本公司 ≥3 条、同层 ≥20 条；分层凑不齐就不比，缺口会写明缺哪一层',
                                    scorer=_pay_points),
     # R2：只统计完整 JD（description_status=complete），列表摘要不参与——半截描述评不了「讲清楚没有」。
     'jd_specificity': RuleSpec('professional', '条', 180, 'jd_specificity',
@@ -179,11 +185,14 @@ def _for_signal(signal: SignalInput, spec: RuleSpec):
 
 def score(signals, stale_rules=()):
     """Aggregate observed assessment rules only. Everything else is removed from both sides of the average."""
-    findings, notes = [], {}
+    findings, notes, sourced = [], {}, set()
     for signal in signals:
         spec = RULES.get(signal.rule)
         if spec is None:
             continue
+        # 「尚无来源」只留给真的没有信号的规则：有信号但过期/闸门不满足的，缺口已有
+        # 专属说明（已过期 / gate_note），不再叠加一句自相矛盾的「尚无来源」。
+        sourced.add(signal.rule)
         if signal.rule in stale_rules:
             notes.setdefault(spec.dimension, []).append(f'{signal.rule}（已过期，超出 {spec.ttl_days} 天）')
             continue
@@ -212,8 +221,7 @@ def score(signals, stale_rules=()):
             if not ASSESSING_BY_DIMENSION[name]:
                 # 没有可评价的规则时也要留下可行动的说明，否则用户看到一个空白维度。
                 notes.setdefault(name, []).append('该维度还没有可评价的规则，下面只是已收集到的材料')
-        collected = {item.rule for item in observed}
-        gaps = [f'{rule}（尚无来源）' for rule in ASSESSING_BY_DIMENSION[name] if rule not in collected]
+        gaps = [f'{rule}（尚无来源）' for rule in ASSESSING_BY_DIMENSION[name] if rule not in sourced]
         dimensions.append(DimensionOutcome(
             dimension=name, label=spec.label, score=value, confidence=confidence,
             findings=usable + blocked,

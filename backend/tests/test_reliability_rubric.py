@@ -79,7 +79,7 @@ def test_pay_gate_fails_when_the_city_sample_is_below_twenty():
                                                'ratio': 1.11, 'company_jobs': 5, 'city_jobs': 15})])
     pay = next(item for item in result.dimensions if item.dimension == 'pay')
     assert pay.score is None and pay.confidence == 0
-    assert any('pay_vs_city_median' in line and '同城 ≥20 条' in line for line in pay.missing)
+    assert any('pay_vs_city_median' in line and '同层 ≥20 条' in line for line in pay.missing)
 
 
 def test_pay_gate_fails_when_the_company_sample_is_below_three():
@@ -90,11 +90,13 @@ def test_pay_gate_fails_when_the_company_sample_is_below_three():
     assert any('本公司 ≥3 条' in line for line in pay.missing)
 
 
-def test_pay_gate_fails_without_a_positive_city_median():
+def test_pay_gate_fails_without_a_positive_ratio_or_median():
+    # 比值与中位数都不成立时闸门必须拦住：没有正的分母就不出分，缺口由 gate_note 说清。
     result = score([sig('pay_vs_city_median', {'company_median': 20000, 'city_median': 0,
                                                'ratio': 0, 'company_jobs': 5, 'city_jobs': 30})])
     pay = next(item for item in result.dimensions if item.dimension == 'pay')
-    assert pay.score is None and any('中位数都大于 0' in line for line in pay.missing)
+    assert pay.score is None and pay.confidence == 0
+    assert any('pay_vs_city_median' in line and '分层' in line for line in pay.missing)
 
 
 def test_team_size_gate_fails_with_fewer_than_two_statements():

@@ -342,7 +342,8 @@ def test_twelve_local_jobs_score_pay_and_professional_offline(client, tmp_path):
     """P1 验收：12 条已存岗位（≥3 完整 JD、≥8 同城可解析报价），不联网、不配模型，
     只跑本地采集与重算，pay 与 professional 必须出分，综合覆盖度显著高于 P0 的 0.22。"""
     full_jd = ('岗位职责：\n负责核心服务开发，支撑日活 500 万的业务\n'
-               '任职要求：\n3 年以上 Python 后端经验，熟悉 MySQL、Redis 与 Kubernetes')
+               '任职要求：\n3 年以上 Python 后端经验，熟悉 MySQL、Redis 与 Kubernetes\n'
+               '经验：3-5年\n学历：本科')
     repo = Repository(tmp_path)
     for index in range(8):
         repo.save_job(dict(title=f'后端工程师{index}', company='甲公司', location='北京',
@@ -356,12 +357,12 @@ def test_twelve_local_jobs_score_pay_and_professional_offline(client, tmp_path):
                            description_status='listing'), 'test_jobs')
     for index in range(7):
         repo.save_job(dict(title=f'测试工程师{index}', company='乙公司', location='北京',
-                           salary='15-25K', description='负责测试', url=f'https://jobs.example.com/t{index}',
-                           description_status='listing'), 'test_jobs')
+                           salary='15-25K', description='负责测试\n经验：3-5年\n学历：本科',
+                           url=f'https://jobs.example.com/t{index}', description_status='listing'), 'test_jobs')
     for index in range(7):
         repo.save_job(dict(title=f'运维工程师{index}', company='乙公司', location='北京',
-                           salary='25-35K', description='负责运维', url=f'https://jobs.example.com/o{index}',
-                           description_status='listing'), 'test_jobs')
+                           salary='25-35K', description='负责运维\n经验：3-5年\n学历：本科',
+                           url=f'https://jobs.example.com/o{index}', description_status='listing'), 'test_jobs')
 
     collected = client.post('/api/companies/甲公司/signals/collect', json=dict(source='jobscope_jobs')).json()
     assert collected['status'] == 'completed'
@@ -369,8 +370,9 @@ def test_twelve_local_jobs_score_pay_and_professional_offline(client, tmp_path):
         'salary_quote_coverage', 'disclosure_available', 'pay_vs_city_median', 'jd_specificity',
         'industry_media_count'}
     pay_signal = next(item for item in collected['signals'] if item['rule'] == 'pay_vs_city_median')
-    assert pay_signal['value'] == {'company_median': 40000.0, 'city_median': 30000.0, 'ratio': 1.333,
-                                   'company_jobs': 8, 'city_jobs': 22}
+    # 分层口径：同层（技术·3-5年·本科）8 条本公司 vs 同城同层 22 条（含本公司），中位 40000/30000。
+    assert pay_signal['value'] == {'ratio': 1.333, 'company_jobs': 8, 'city_jobs': 22,
+                                   'company_median': 40000.0, 'city_median': 30000.0}
 
     report = client.post('/api/companies/甲公司/reliability', json=dict()).json()
     dimensions = {item['dimension']: item for item in report['dimensions']}
@@ -587,11 +589,11 @@ def test_recompute_refreshes_local_coverage_through_the_api(client, tmp_path):
     for index in range(3):
         repo.save_job(dict(company='丙公司', title=f'后端工程师{index}', location='杭州',
                            salary=f'{15 + index}-{18 + index}K', description_status='complete',
-                           description='负责服务端开发\n1、按需求实现接口', source='boss', url=''), 'boss')
+                           description='负责服务端开发\n经验：3-5年\n学历：本科', source='boss', url=''), 'boss')
     for index in range(20):
         repo.save_job(dict(company='同城对照公司', title=f'工程师{index}', location='杭州',
                            salary=f'{20 + index % 5}-{25 + index % 5}K', description_status='listing',
-                           description='列表摘要', source='boss', url=''), 'boss')
+                           description='列表摘要\n经验：3-5年\n学历：本科', source='boss', url=''), 'boss')
     report = client.post('/api/companies/丙公司/reliability', json=dict()).json()
     assert report['collection']['status'] == 'completed' and report['collection']['count'] >= 2
     assert report['score'] is not None

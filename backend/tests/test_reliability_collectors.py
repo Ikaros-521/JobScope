@@ -296,12 +296,24 @@ def test_the_industry_counter_only_takes_media_and_announcement_kinds(tmp_path):
 
 
 def test_the_pay_rule_carries_both_sides_of_the_city_sample(tmp_path):
-    # 甲 4 条北京报价；乙的岗位在上海，不进北京样本——城市归一宁可漏并不可错并。
-    repo, identity = store(tmp_path, jobs=['20-35K'] * 4)
+    # 甲 4 条北京「技术·3-5年·本科」报价，只与同城同层对比；乙的岗位在上海，不进北京样本——
+    # 城市归一宁可漏并不可错并，分层标注缺失的岗位同样不硬算。
+    repo = Repository(tmp_path)
+    desc = '负责服务端开发\n经验：3-5年\n学历：本科'
+    for index in range(4):
+        repo.save_job(dict(title=f'后端工程师{index}', company='甲公司', description=desc,
+                           location='北京', salary='20-35K', url=f'https://jobs.example.com/{index}'), 'test_jobs')
+    repo.save_job(dict(title='别家的岗位', company='乙公司', description=desc, location='上海',
+                       salary='30k-50k', url='https://jobs.example.com/other'), 'test_jobs')
+    # 12 条同城同层对照：过统计层的 ≥10 闸门，但合计 <20，rubric 的闸门照样拦——计数如实落库。
+    for index in range(12):
+        repo.save_job(dict(title=f'对照工程师{index}', company='乙公司', description=desc,
+                           location='北京', salary='20-35K', url=f'https://jobs.example.com/c{index}'), 'test_jobs')
+    identity = repo.resolve_company('甲公司')
     outcome = local.collect('jobscope_jobs', identity['name'], repo=repo, identity=identity)
     pay = next(item for item in outcome['signals'] if item['rule'] == 'pay_vs_city_median')
     assert pay['dimension'] == 'pay' and pay['unit'] == '元'
-    assert pay['value']['company_jobs'] == 4 and pay['value']['city_jobs'] == 4
+    assert pay['value']['company_jobs'] == 4 and pay['value']['city_jobs'] == 16
     assert pay['value']['company_median'] == 27500.0 and pay['value']['ratio'] == 1.0
     # 样本闸门不在采集层判：计数如实落库，出不出分由 rubric 说清原因。
     assert pay['value']['city_jobs'] < 20
