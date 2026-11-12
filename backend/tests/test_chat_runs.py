@@ -462,7 +462,63 @@ def test_legacy_research_mode_uses_scoped_general_and_streams_answer_deltas(clie
     assert '认证服务' in streamed
 
 
-def test_run_approval_resumes_in_background_and_is_single_use(client, monkeypatch):
+def test_general_run_persists_ordered_timeline(client, monkeypatch):
+    configure(client)
+    job = client.post('/api/import/job', json=dict(title='Agent工程师', company='甲', description='Python RAG 岗位', salary='20-30K')).json()['job']
+    evidence_id = job['evidence_ids'][0]
+    streams = [stream_tool('project_search', {'query': 'Python'}), stream_final(f'岗位涉及 Python [证据ID：{evidence_id}]。')]
+    stream_scripted(monkeypatch, streams)
+    run = client.post('/api/chat/runs', json={'message': '帮我找 Python 相关岗位', 'agent_mode': 'general'}).json()
+    await_run(client, run['run_id'])
+    stored = stored_messages(client, run['conversation_id'])[1]
+    timeline = stored['timeline']
+    # 顺序模式分段日志：思维链被工具打断即分段，正文与 step 按发生顺序穿插。
+    assert [segment['kind'] for segment in timeline] == ['reasoning', 'step', 'step', 'reasoning', 'text', 'step']
+    assert timeline[0]['text'] == '先检索项目资料。'
+    assert timeline[1]['event']['tool'] == 'agent_model'
+    assert timeline[2]['event']['tool'] == 'project_search' and timeline[2]['event']['arguments'] == {'query': 'Python'}
+    assert timeline[3]['text'] == '推理完成。'
+    assert timeline[4]['text'] == f'岗位涉及 Python [证据ID：{evidence_id}]。'
+    assert timeline[5]['event']['tool'] == 'agent_model'
+
+
+def test_timeline_survives_approval_pause_and_resume(client, monkeypatch):
+    from jobscope.extensions import MCPClient, tool_alias
+
+    async def inspect(config):
+        return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object', 'properties': {'q': {'type': 'string'}}})]
+
+    def invoke(config, name, args, should_stop=None):
+        return {'text': 'external evidence', 'is_error': False}
+
+    monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))
+    monkeypatch.setattr(MCPClient, 'call', staticmethod(invoke))
+    server = client.post('/api/agent/mcp', json=dict(name='需确认工具', transport='http', url='http://127.0.0.1:9000/mcp')).json()
+    client.post(f"/api/agent/mcp/{server['id']}/test")
+    client.patch(f"/api/agent/mcp/{server['id']}", json={'enabled': True, 'allowed_tools': ['lookup']})
+    configure(client)
+    stream_scripted(monkeypatch, [stream_tool(tool_alias(server['id'], 'lookup'), {'q': 'test'}), stream_final('工具已确认执行。')])
+    run = client.post('/api/chat/runs', json={'message': '搜索外部数据', 'agent_mode': 'general'}).json()
+    deadline = time.time() + 10
+    status = {}
+    while time.time() < deadline:
+        status = client.get(f"/api/chat/runs/{run['run_id']}").json()
+        if status.get('awaiting_approval'):
+            break
+        time.sleep(0.05)
+    assert status.get('awaiting_approval')
+    assert client.post(f"/api/chat/runs/{run['run_id']}/approval", json={'approved': True, 'approval_id': status['pending_approval']['approval_id']}).status_code == 200
+    await_run(client, run['run_id'])
+    stored = stored_messages(client, run['conversation_id'])[-1]
+    timeline = stored['timeline']
+    tools = [segment['event']['tool'] for segment in timeline if segment['kind'] == 'step']
+    # 审批暂停前后同一条分段日志：tool_approval 与实际执行按真实顺序保留。
+    assert tools == ['agent_model', 'tool_approval', tool_alias(server['id'], 'lookup'), 'agent_model']
+    assert [segment['kind'] for segment in timeline] == ['reasoning', 'step', 'step', 'step', 'reasoning', 'text', 'step']
+    assert timeline[5]['text'] == '工具已确认执行。'
+
+
+
     from jobscope.extensions import MCPClient, tool_alias
 
     async def inspect(config):

@@ -137,3 +137,21 @@ def test_url_validation_names_the_specific_failure(client, url, reason):
 def test_url_validation_accepts_supported_addresses(client, url):
     result = client.put('/api/settings/models', json={'llm': dict(mode='remote', url=url, model='fixture')})
     assert result.status_code == 200
+
+
+def test_system_settings_defaults_persist_and_clamp(client, tmp_path):
+    defaults = client.get('/api/settings/system').json()
+    assert defaults == {'chat_display_mode': 'merged', 'show_reasoning': True,
+                        'agent_limits': {'max_model_calls': 60, 'max_tool_calls': 50, 'context_characters': 160000, 'max_seconds': 900}}
+    saved = client.put('/api/settings/system', json={'chat_display_mode': 'sequential', 'show_reasoning': False,
+                                                     'agent_limits': {'max_model_calls': 0, 'max_tool_calls': 9999, 'context_characters': 20000, 'max_seconds': 300}})
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body['chat_display_mode'] == 'sequential' and body['show_reasoning'] is False
+    # 越界值一律钳回允许范围，不报错也不落原值。
+    assert body['agent_limits'] == {'max_model_calls': 1, 'max_tool_calls': 300, 'context_characters': 20000, 'max_seconds': 300}
+    with TestClient(create_app(tmp_path)) as restarted:
+        assert restarted.get('/api/settings/system').json()['chat_display_mode'] == 'sequential'
+    assert client.put('/api/settings/system', json={'chat_display_mode': 'other', 'show_reasoning': True,
+                                                    'agent_limits': dict(max_model_calls=60, max_tool_calls=50, context_characters=160000, max_seconds=900)}).status_code == 422
+    assert client.get('/api/settings/system').json()['chat_display_mode'] == 'sequential'

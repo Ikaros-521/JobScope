@@ -1486,3 +1486,34 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
   .main-workbench .detail-heading-bottom { margin-top: 8px; }
   .main-workbench .jd-state { padding: 8px 20px; }
 }
+
+/* ===== 对话顺序显示模式 + 系统设置页 v1 — 只追加新类，不改上方任何既有规则 ===== */
+/* 顺序模式分段流：左侧细轨道线贯穿思维链/正文/工具卡，紧凑间距贴合一屏工作台习惯。 */
+.chat-segments { position: relative; display: flex; flex-direction: column; gap: 6px; padding-left: 14px; }
+.chat-segments::before { content: ''; position: absolute; left: 4px; top: 6px; bottom: 6px; width: 2px; border-radius: 1px; background: var(--line); }
+.chat-segments > * { position: relative; }
+.chat-segments > *::before { content: ''; position: absolute; left: -13px; top: 14px; width: 8px; height: 8px; border-radius: 50%; background: var(--paper); border: 2px solid var(--line); }
+.chat-segments > .reasoning-block::before { border-color: var(--muted); }
+.chat-segments > .tool-step::before { border-color: var(--green); }
+.chat-segments .segment-text { margin: 0; }
+.chat-segments .reasoning-block + .reasoning-block summary::after { content: '（续）'; color: var(--muted); font-weight: 400; }
+
+/* 系统设置页：两张纸面板纵排，保持管理页一屏节奏。 */
+.system-settings { display: flex; flex-direction: column; gap: 12px; max-width: 860px; }
+.system-panel { padding: 16px 18px; }
+.display-mode-picks { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.display-mode-picks button { display: flex; flex-direction: column; gap: 4px; min-height: 0; padding: 12px 14px; }
+.display-mode-picks button strong { font-size: 13px; }
+.display-mode-picks button span { font-size: 12px; font-weight: 400; line-height: 1.6; color: var(--muted); }
+.display-mode-picks button[aria-pressed="true"] span { color: var(--green); }
+.system-reasoning-toggle { margin-top: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); white-space: normal; }
+.system-reasoning-toggle span:last-child { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--green); }
+.system-reasoning-toggle .muted { font-size: 12px; font-weight: 400; }
+.system-limits-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.system-limit-field { display: flex; flex-direction: column; gap: 4px; }
+.system-limit-field input { min-height: 40px; }
+.system-limit-field .field-help { margin: 0; }
+.system-limits-actions { margin-top: 12px; }
+@media (max-width: 800px) {
+  .system-limits-grid { grid-template-columns: 1fr 1fr; }
+}

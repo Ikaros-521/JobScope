@@ -3,9 +3,11 @@ import type { KeyboardEvent as ReactKeyboardEvent, TouchEvent as ReactTouchEvent
 import { acceptScopeExpansion, estimateTokens, getChannels, getModelSettings, listLlmChannels, proposeScopeExpansion } from '../api'
 import type { ChatScope, ConversationNavigation, LlmChannel, PermissionMode, ScopeExpansion, StoredMessage } from '../api'
 import { toast } from '../toast'
+import { updateSystemSettings, useSystemSettings } from '../systemSettingsStore'
 import { ChatComposer } from './ChatComposer'
 import type { ComposerChannel, EditingTarget } from './ChatComposer'
 import { ChatMessageItem, ReasoningBlock } from './ChatMessageItem'
+import { ChatSegments } from './ChatSegments'
 import { SessionList } from './SessionList'
 import { ToolTimeline } from './ToolTimeline'
 import { Markdown } from './Markdown'
@@ -42,7 +44,10 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
   const [globalModels, setGlobalModels] = useState<string[]>([])
   const [modelChannels, setModelChannels] = useState<ComposerChannel[]>([])
   const [contextWindow, setContextWindow] = useState(128000)
-  const [showReasoning, setShowReasoning] = useState(() => localStorage.getItem('jobscope-reasoning') !== 'off')
+  // 思维链显隐与显示模式来自系统设置（服务端持久化），输入框开关只是快捷入口。
+  const system = useSystemSettings()
+  const showReasoning = system.show_reasoning
+  const sequential = system.chat_display_mode === 'sequential'
   const [showJump, setShowJump] = useState(false)
   const [compressing, setCompressing] = useState(false)
   const [showScopeOptions, setShowScopeOptions] = useState(false)
@@ -126,8 +131,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
   }
 
   function toggleReasoning(value: boolean) {
-    setShowReasoning(value)
-    localStorage.setItem('jobscope-reasoning', value ? 'on' : 'off')
+    void updateSystemSettings({ show_reasoning: value }).catch(err => toast((err as Error).message || '设置保存失败，请稍后重试', 'error'))
   }
 
   const running = Boolean(run)
@@ -335,9 +339,11 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
               <span className="chat-avatar" aria-hidden="true">知</span>
               <span className="message-author">{run.approval ? '知根 Agent · 等待确认' : '知根 Agent · 正在工作'}</span>
             </div>
-            {showReasoning && run.reasoning && <ReasoningBlock text={run.reasoning} live={!run.approval} />}
-            <ToolTimeline steps={run.steps} running />
-            {run.answer && <div className="message-content"><Markdown content={run.answer} /></div>}
+            {sequential && run.segments.length ? <ChatSegments segments={run.segments} live={!run.approval} showReasoning={showReasoning} /> : <>
+              {showReasoning && run.reasoning && <ReasoningBlock text={run.reasoning} live={!run.approval} />}
+              <ToolTimeline steps={run.steps} running />
+              {run.answer && <div className="message-content"><Markdown content={run.answer} /></div>}
+            </>}
             {run.error && <div className="run-error">{run.error}</div>}
             {Array.from(new Map(liveActions.map(action => [action.id, action])).values()).map(action => <ScopeExpansionCard key={action.id} action={resolveAction(action)} disabled onAccept={acceptExpansion} />)}
           </article>}

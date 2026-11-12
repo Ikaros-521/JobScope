@@ -39,12 +39,19 @@ export type StoredMessage = {
   // kind='compaction' 是压缩检查点；compacted 表示该消息已被压缩折叠（仅 UI 呈现，不进模型上下文）
   kind?: string; compacted_count?: number; compacted?: boolean;
   citations?: Citation[]; trace?: ResearchRun; metrics?: SalaryMetrics | null; actions?: ScopeExpansion[]
+  // 顺序显示模式的分段日志：思维链/正文/工具步骤按发生顺序穿插（旧消息没有，回落合并显示）
+  timeline?: ChatSegment[]
 }
 export type ConversationScope = { kind: 'global' } | { kind: 'company'; company: string } | { kind: 'job'; company: string; job_id: string }
 export type ScopeExpansion = { id: string; type: 'scope_expansion'; source_scope: ConversationScope; target_scope: ConversationScope; reason: string; target_conversation_id: string | null }
 export type ConversationNavigation = { requestId: string; conversationId: string; scope: ConversationScope }
 export type ScopeExpansionResult = { conversation_id: string; scope: ConversationScope; source_conversation_id: string; action_id: string }
 export type ToolStep = { step: number; tool: string; duration_ms: number; label?: string; status?: string; arguments?: Record<string, unknown>; result_preview?: string; selected?: number; matched_jobs?: number; calls?: number; action?: ScopeExpansion }
+// 顺序显示模式的分段：思维链/正文按段追加，工具步骤穿插其间，与发生顺序一致。
+export type ChatSegment = { kind: 'reasoning' | 'text'; text: string } | { kind: 'step'; step: ToolStep }
+// 系统设置：存服务端（跨浏览器一致），含聊天显示模式、思维链显隐与 Agent 执行限额。
+export type AgentLimits = { max_model_calls: number; max_tool_calls: number; context_characters: number; max_seconds: number }
+export type SystemSettings = { chat_display_mode: 'merged' | 'sequential'; show_reasoning: boolean; agent_limits: AgentLimits }
 export type ApprovalRequest = { approval_id: string; tool: string; arguments: Record<string, unknown>; reason: string; run_id?: string }
 export type ChatRunStatus = { run_id: string; conversation_id: string; done: boolean; cancelled: boolean; awaiting_approval: boolean; pending_approval: ApprovalRequest | null }
 export type ChatScope = { kind: 'global' } | { kind: 'company'; company: string } | { kind: 'job'; jobId: string; company: string; title?: string }
@@ -136,6 +143,10 @@ export function approveChatRun(runId: string, approved: boolean, approvalId: str
   return post<ChatRunStatus>(`/chat/runs/${encodeURIComponent(runId)}/approval`, { approved, approval_id: approvalId, grant })
 }
 export function getModelSettings() { return api<Record<'llm' | 'embedding', ModelProvider>>('/settings/models') }
+export function getSystemSettings() { return api<SystemSettings>('/settings/system') }
+export function saveSystemSettings(settings: SystemSettings) {
+  return api<SystemSettings>('/settings/system', { method: 'PUT', body: JSON.stringify(settings) })
+}
 export function getChannels() { return api<{ channels: Channel[] }>('/settings/channels') }
 export function listLlmChannels() { return api<{ channels: LlmChannel[] }>('/settings/llm-channels') }
 export function saveLlmChannel(draft: LlmChannelDraft) { return post<{ channel: LlmChannel; channels: LlmChannel[] }>('/settings/llm-channels', draft) }

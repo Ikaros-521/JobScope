@@ -41,6 +41,22 @@ class ConnectionInput(BaseModel):
     channel_id: str | None = Field(default=None, max_length=100)
 
 
+class AgentLimitsInput(BaseModel):
+    """Agent 执行限额：只做类型校验，范围钳制在 SystemSettingsStore.save 里统一处理。"""
+    model_config = ConfigDict(extra='forbid')
+    max_model_calls: int = Field(ge=0, le=100000)
+    max_tool_calls: int = Field(ge=0, le=100000)
+    context_characters: int = Field(ge=0, le=10000000)
+    max_seconds: int = Field(ge=0, le=100000)
+
+
+class SystemSettingsInput(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    chat_display_mode: Literal['merged', 'sequential']
+    show_reasoning: bool
+    agent_limits: AgentLimitsInput
+
+
 class LlmChannelInput(BaseModel):
     """一条可保存的对话渠道：密钥与连接信息的唯一事实源，功能绑定指向它。"""
     model_config = ConfigDict(extra='forbid')
@@ -362,3 +378,55 @@ class LlmChannelStore:
         if not payload.get('model'):
             raise ValueError('该渠道还没有默认模型，请先在渠道里填写默认模型')
         return bindings.save('agent', dict(kind='channel', channel_id=channel_id, model=payload.get('model')))
+
+
+# Agent 执行限额默认值：general_agent 的模块常量从这里取，保证设置页与代码同一份事实。
+AGENT_LIMIT_DEFAULTS = dict(max_model_calls=60, max_tool_calls=50, context_characters=160000, max_seconds=900)
+
+
+class SystemSettingsStore:
+    """系统级参数（聊天显示模式、思维链显隐、Agent 执行限额）：默认值合并，保存时钳制范围。"""
+
+    DISPLAY_MODES = ('merged', 'sequential')
+    # 误填 0 会直接废掉 Agent，天文数字会撑爆上下文/时限，保存时一律钳回该范围。
+    LIMIT_RANGES = dict(max_model_calls=(1, 200), max_tool_calls=(1, 300),
+                        context_characters=(10000, 1000000), max_seconds=(60, 7200))
+
+    def __init__(self, repo):
+        self.repo = repo
+        with repo.connection() as conn:
+            conn.execute('CREATE TABLE IF NOT EXISTS system_settings(key TEXT PRIMARY KEY,payload TEXT NOT NULL)')
+
+    @staticmethod
+    def _sanitize_limits(value):
+        limits = dict(AGENT_LIMIT_DEFAULTS)
+        for key, (low, high) in SystemSettingsStore.LIMIT_RANGES.items():
+            try:
+                limits[key] = min(high, max(low, int(value.get(key, limits[key]))))
+            except (TypeError, ValueError):
+                continue
+        return limits
+
+    def effective(self):
+        result = dict(chat_display_mode='merged', show_reasoning=True, agent_limits=dict(AGENT_LIMIT_DEFAULTS))
+        with self.repo.connection() as conn:
+            for row in conn.execute('SELECT key,payload FROM system_settings'):
+                saved = json.loads(row[1])
+                if row[0] == 'agent_limits':
+                    result['agent_limits'].update(self._sanitize_limits(saved))
+                elif row[0] in result:
+                    result[row[0]] = saved
+        return result
+
+    def save(self, data):
+        if data.chat_display_mode not in self.DISPLAY_MODES:
+            raise ValueError('未知的聊天显示模式')
+        limits = self._sanitize_limits(data.agent_limits.model_dump())
+        with self.repo.connection() as conn:
+            conn.execute('INSERT OR REPLACE INTO system_settings VALUES (?,?)',
+                         ('chat_display_mode', json.dumps(data.chat_display_mode)))
+            conn.execute('INSERT OR REPLACE INTO system_settings VALUES (?,?)',
+                         ('show_reasoning', json.dumps(bool(data.show_reasoning))))
+            conn.execute('INSERT OR REPLACE INTO system_settings VALUES (?,?)',
+                         ('agent_limits', json.dumps(limits, ensure_ascii=False)))
+        return self.effective()

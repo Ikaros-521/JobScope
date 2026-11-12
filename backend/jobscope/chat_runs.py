@@ -384,6 +384,8 @@ class RunManager:
             entry['citations'] = result['citations']
         if result.get('trace'):
             entry['trace'] = result['trace']
+        if result.get('timeline'):
+            entry['timeline'] = result['timeline']
         if result.get('metrics'):
             entry['metrics'] = result['metrics']
         if result.get('actions'):

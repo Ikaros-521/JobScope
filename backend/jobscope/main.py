@@ -24,7 +24,7 @@ from .bindings import ModelBindings, normalise_binding
 from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ModelBindingInput, ReliabilityInput, ResumeInput, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
-from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, ConnectionInput, _active, get_model_config, purpose_configured
+from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, SystemSettingsInput, SystemSettingsStore, ConnectionInput, _active, get_model_config, purpose_configured
 
 
 SUMMARY_SYSTEM = ('你是求职情报工作台的对话上下文压缩引擎，把早期对话提炼为高密度结构化摘要。'
@@ -84,6 +84,7 @@ def create_app(data_dir=None):
     llm_channels = LlmChannelStore(repo)
     bindings = ModelBindings(repo)
     bindings.migrate_legacy_activation(settings)
+    system_settings = SystemSettingsStore(repo)
     runs = RunManager(repo)
     scope_expansions = ScopeExpansionStore(repo)
     app.state.runs = runs  # exposed for tests: join worker threads to avoid cross-test leaks
@@ -239,6 +240,17 @@ def create_app(data_dir=None):
     @app.get('/api/settings/models')
     def read_model_settings():
         return settings.public(settings.effective())
+
+    @app.get('/api/settings/system')
+    def read_system_settings():
+        return system_settings.effective()
+
+    @app.put('/api/settings/system')
+    def save_system_settings(data: SystemSettingsInput):
+        try:
+            return system_settings.save(data)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
 
     @app.get('/api/settings/channels')
     def model_channels():

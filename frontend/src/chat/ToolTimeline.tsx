@@ -21,7 +21,7 @@ function stepName(step: ToolStep) {
   return step.label || toolNames[step.tool] || step.tool
 }
 
-function StepRow({ step, open }: { step: ToolStep; open: boolean }) {
+export function StepRow({ step, open }: { step: ToolStep; open: boolean }) {
   const failed = step.status === 'error'
   const waiting = step.status === 'waiting'
   const detail = stepDetail(step)

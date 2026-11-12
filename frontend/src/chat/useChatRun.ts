@@ -3,16 +3,30 @@ import {
   approveChatRun, cancelChatRun, compressConversation, deleteConversation, deleteConversationMessage, getConversation,
   listConversations, openRunStream, patchConversation, startChatRun,
 } from '../api'
-import type { ApprovalRequest, ChatMode, ChatScope, ConversationDetail, ConversationNavigation, ConversationSummary, CompressResult, PermissionMode, ScopeExpansion, StoredMessage, ToolStep } from '../api'
+import type { ApprovalRequest, ChatMode, ChatScope, ChatSegment, ConversationDetail, ConversationNavigation, ConversationSummary, CompressResult, PermissionMode, ScopeExpansion, StoredMessage, ToolStep } from '../api'
 
 export type RunState = {
   id: string
   steps: ToolStep[]
   answer: string
   reasoning: string
+  // 顺序显示模式：与 steps/answer/reasoning 同源的事件流，但保留三类内容的相对顺序。
+  segments: ChatSegment[]
   approval?: ApprovalRequest
   error?: string
   notice?: string
+}
+
+// 追加一段思维链/正文：相邻同 kind 合并（同轮内的增量）；被 step 打断后自然开新段。
+function appendSegment(segments: ChatSegment[], kind: 'reasoning' | 'text', piece: string): ChatSegment[] {
+  if (!piece) return segments
+  const last = segments[segments.length - 1]
+  if (last && last.kind === kind) {
+    const copy = segments.slice()
+    copy[copy.length - 1] = { kind, text: last.text + piece }
+    return copy
+  }
+  return [...segments, { kind, text: piece }]
 }
 
 export type ChatConversation = { id: string | null; title: string; mode: ChatMode; model: string; llm_channel: string; permission_mode: PermissionMode }
@@ -68,11 +82,11 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
   const attach = useCallback((runId: string) => {
     closeStream()
     runIdRef.current = runId
-    setRun({ id: runId, steps: [], answer: '', reasoning: '' })
+    setRun({ id: runId, steps: [], answer: '', reasoning: '', segments: [] })
     const source = openRunStream(runId, (event, data) => {
       if (conversationIdRef.current === null || runIdRef.current !== runId) return // 会话已切换，静默丢弃迟到事件
       if (event === 'start') {
-        setRun(current => current && current.id === data.run_id ? { ...current, steps: [], answer: '', reasoning: '', approval: undefined, error: undefined, notice: undefined } : current)
+        setRun(current => current && current.id === data.run_id ? { ...current, steps: [], answer: '', reasoning: '', segments: [], approval: undefined, error: undefined, notice: undefined } : current)
         return
       }
       if (event === 'resumed') {
@@ -81,15 +95,17 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
         return
       }
       if (event === 'step') {
-        setRun(current => current ? { ...current, steps: [...current.steps, data as unknown as ToolStep] } : current)
+        setRun(current => current ? { ...current, steps: [...current.steps, data as unknown as ToolStep], segments: [...current.segments, { kind: 'step', step: data as unknown as ToolStep }] } : current)
         return
       }
       if (event === 'delta') {
-        setRun(current => current ? { ...current, answer: current.answer + String(data.text ?? '') } : current)
+        const piece = String(data.text ?? '')
+        setRun(current => current ? { ...current, answer: current.answer + piece, segments: appendSegment(current.segments, 'text', piece) } : current)
         return
       }
       if (event === 'reasoning_delta') {
-        setRun(current => current ? { ...current, reasoning: current.reasoning + String(data.text ?? '') } : current)
+        const piece = String(data.text ?? '')
+        setRun(current => current ? { ...current, reasoning: current.reasoning + piece, segments: appendSegment(current.segments, 'reasoning', piece) } : current)
         return
       }
       if (event === 'approval_required') {

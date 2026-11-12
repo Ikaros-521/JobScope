@@ -1,81 +1,17 @@
-import { useEffect, useRef, useState } from 'react'
-import type { KeyboardEvent as ReactKeyboardEvent, TouchEvent as ReactTouchEvent, WheelEvent as ReactWheelEvent } from 'react'
+import { useEffect, useState } from 'react'
 import { safeUrl } from '../api'
 import type { ScopeExpansion, StoredMessage } from '../api'
+import { useSystemSettings } from '../systemSettingsStore'
 import { ScopeExpansionCard } from './ScopeExpansionCard'
 import { Markdown } from './Markdown'
 import { ToolTimeline } from './ToolTimeline'
+import { ChatSegments } from './ChatSegments'
+import { ReasoningBlock } from './ReasoningBlock'
+
+export { ReasoningBlock }
 
 async function copyText(text: string): Promise<boolean> {
   try { await navigator.clipboard.writeText(text); return true } catch { return false }
-}
-
-// 与主聊天线程同一套阈值吸底策略：距底 ≤80px 跟随，上翻解除，滚回恢复。
-const REASONING_STICK_THRESHOLD = 80
-
-export function ReasoningBlock({ text, live }: { text: string; live?: boolean }) {
-  const [open, setOpen] = useState(Boolean(live))
-  const [showJump, setShowJump] = useState(false)
-  const wasLive = useRef(Boolean(live))
-  const bodyRef = useRef<HTMLDivElement>(null)
-  const stickRef = useRef(true)
-  const touchYRef = useRef<number | null>(null)
-  useEffect(() => {
-    if (live && !wasLive.current) setOpen(true)
-    if (!live && wasLive.current) setOpen(false)
-    wasLive.current = Boolean(live)
-  }, [live])
-
-  const measureStick = () => {
-    const body = bodyRef.current
-    if (!body) return
-    const distance = body.scrollHeight - body.scrollTop - body.clientHeight
-    const stick = distance <= REASONING_STICK_THRESHOLD
-    stickRef.current = stick
-    // 只在流式思维链里提供回到底部；历史内容用户自由阅读。
-    setShowJump(Boolean(live) && open && !stick)
-  }
-  const scrollToBottom = () => {
-    const body = bodyRef.current
-    // 即时滚动：内嵌浏览器后台面板会冻结 smooth 动画。
-    if (body) body.scrollTop = body.scrollHeight
-  }
-  const pauseStick = () => { stickRef.current = false; setShowJump(true) }
-  const measureDeferred = () => window.setTimeout(measureStick, 60)
-  const onWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
-    if (event.deltaY < 0) pauseStick()
-    else measureDeferred()
-  }
-  const onTouchStart = (event: ReactTouchEvent<HTMLDivElement>) => { touchYRef.current = event.touches[0]?.clientY ?? null }
-  const onTouchMove = (event: ReactTouchEvent<HTMLDivElement>) => {
-    const current = event.touches[0]?.clientY ?? null
-    if (touchYRef.current !== null && current !== null && current > touchYRef.current) pauseStick()
-    touchYRef.current = current
-    measureDeferred()
-  }
-  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (['PageUp', 'Home', 'ArrowUp'].includes(event.key)) pauseStick()
-    else if (['PageDown', 'End', 'ArrowDown'].includes(event.key)) measureDeferred()
-  }
-
-  // 流式文本增长时跟随；details 从折叠到展开后高度才真实存在，也要落一次底。
-  useEffect(() => {
-    if (!open || !live || !stickRef.current) return
-    scrollToBottom()
-    const timer = window.setTimeout(() => { if (stickRef.current && live) scrollToBottom() }, 120)
-    return () => window.clearTimeout(timer)
-  }, [text, open, live])
-
-  if (!text) return null
-  return <details className="reasoning-block" open={open} onToggle={event => setOpen((event.target as HTMLDetailsElement).open)}>
-    <summary>{live ? '正在思考…' : '思考过程'}<span className="reasoning-meta">{text.length.toLocaleString()} 字符</span></summary>
-    <div className="reasoning-body-wrap">
-      <div className="reasoning-body" ref={bodyRef} tabIndex={-1}
-        onScroll={measureStick} onWheel={onWheel} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onKeyDown={onKeyDown}
-      >{text}</div>
-      {showJump && <button type="button" className="reasoning-jump" onClick={() => { stickRef.current = true; setShowJump(false); scrollToBottom() }}>↓ 回到底部</button>}
-    </div>
-  </details>
 }
 
 export function ChatMessageItem({ message, live, showReasoning, editing, canMutate, onStartEdit, onEditSubmit, onEditCancel, onResend, onDelete, actionsDisabled = false, onAcceptScope }: {
@@ -107,6 +43,9 @@ export function ChatMessageItem({ message, live, showReasoning, editing, canMuta
 
   const reasoning = showReasoning ? message.reasoning || '' : ''
   const author = isUser ? '我' : message.mode === 'evidence_search' ? '资料检索' : message.mode === 'model' ? '资料问答' : '知根 Agent'
+  // 顺序显示模式只对带分段日志的消息生效；旧消息（含资料问答等历史模式）回落合并布局。
+  const system = useSystemSettings()
+  const sequential = system.chat_display_mode === 'sequential' && Boolean(message.timeline?.length)
 
   if (message.kind === 'compaction') {
     // 一键压缩产出的摘要检查点：不按普通气泡渲染，只提供可展开的摘要卡。
@@ -137,9 +76,11 @@ export function ChatMessageItem({ message, live, showReasoning, editing, canMuta
         <button type="button" className="button primary small" disabled={!draft.trim()} onClick={() => onEditSubmit(message, draft.trim())}>保存并重新生成</button>
       </div>
     </div> : isUser ? <div className="message-content">{message.content}</div> : <>
-      {reasoning && <ReasoningBlock text={reasoning} live={live} />}
-      {message.trace?.events?.length ? <ToolTimeline steps={message.trace.events} /> : null}
-      <div className="message-content"><Markdown content={message.content} /></div>
+      {sequential ? <ChatSegments segments={message.timeline || []} showReasoning={showReasoning} /> : <>
+        {reasoning && <ReasoningBlock text={reasoning} live={live} />}
+        {message.trace?.events?.length ? <ToolTimeline steps={message.trace.events} /> : null}
+        <div className="message-content"><Markdown content={message.content} /></div>
+      </>}
       {onAcceptScope && message.actions?.map(action => <ScopeExpansionCard key={action.id} action={action} disabled={actionsDisabled} onAccept={onAcceptScope} />)}
       {message.metrics && <p className="tiny-label">薪资统计基于 {message.metrics.matched_jobs} 个符合筛选条件的岗位，招聘报价不代表实际工资。</p>}
       {message.citations?.map(citation => <details className="citation" key={citation.id}>

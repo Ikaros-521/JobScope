@@ -132,14 +132,38 @@ def test_skills_are_imported_and_loaded_on_demand(client, monkeypatch):
 
 
 def test_unknown_tools_rejected_and_loop_bounded(client, monkeypatch):
-    # 默认限额已放宽到 50 次调用；本测试只验证循环有界，把限额压回脚本长度避免跑满 50 次。
-    monkeypatch.setattr('jobscope.general_agent.MAX_STEPS', 8)
-    monkeypatch.setattr('jobscope.general_agent.MAX_CALLS', 8)
+    # 限额从系统设置读取；压到脚本长度验证循环有界，不再跑满默认 50 次。
+    saved = client.put('/api/settings/system', json={'chat_display_mode': 'merged', 'show_reasoning': True,
+                                                     'agent_limits': {'max_model_calls': 8, 'max_tool_calls': 8, 'context_characters': 160000, 'max_seconds': 900}})
+    assert saved.status_code == 200
     configure(client)
     calls = scripted(monkeypatch, [tool('shell_exec', {'command': 'anything'}, f'call{i}') for i in range(8)])
     result = client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'message': '测试'}).json()
     assert len(calls) <= 8 and result['trace']['status'] == 'completed'
+    assert result['trace']['limits']['max_model_calls'] == 8
     assert result['trace']['degraded'] and '上限' in result['answer']
+
+
+def test_non_stream_runs_record_timeline_segments(client, monkeypatch):
+    # 非流式路径没有增量回调：每轮正文整体记一段，step 事件按发生顺序穿插。
+    configure(client)
+    scripted(monkeypatch, [tool('project_search', {'query': 'Python'}), final('检索完成，可以回答。')])
+    result = client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'message': 'Python要求'}).json()
+    timeline = result['timeline']
+    assert [segment['kind'] for segment in timeline] == ['step', 'step', 'text', 'step']
+    assert timeline[0]['event']['tool'] == 'agent_model'
+    assert timeline[1]['event']['tool'] == 'project_search'
+    assert timeline[2]['text'] == '检索完成，可以回答。'
+
+
+def test_agent_limits_come_from_system_settings(client, monkeypatch):
+    configure(client)
+    assert client.put('/api/settings/system', json={'chat_display_mode': 'merged', 'show_reasoning': True,
+                                                    'agent_limits': {'max_model_calls': 1, 'max_tool_calls': 50, 'context_characters': 160000, 'max_seconds': 900}}).status_code == 200
+    calls = scripted(monkeypatch, [tool('project_search', {'query': 'Python'}), final('不会再有第二轮。')])
+    result = client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'message': '测试'}).json()
+    # 轮数上限 1：第一轮工具调用后循环终止，第二份脚本不会发出。
+    assert len(calls) == 1 and '上限' in result['answer']
 
 
 def test_anthropic_native_tool_roundtrip(client, monkeypatch):
