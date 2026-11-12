@@ -106,6 +106,9 @@ export type SignalExtractResult = SignalActionResult & { accepted: number; signa
 export type SignalSource = { name: string; tier: 'free' | 'paid'; transport: string; status: string; rules: string[]; description: string; mode: 'disabled' | 'enabled'; url?: string; updated_at?: string; key_set?: boolean }
 
 export function getReliability(company: string) { return api<{ report: ReliabilityReport | null }>(`/companies/${encodeURIComponent(company)}/reliability`) }
+// 横评候选：实体表全量（含未算过的公司），分数照实 null——没算过就是没算过；按名称排序，不带名次语义。
+export type CompareCompany = { company: string; credit_code: string; score: number | null; confidence: number | null; computed_at: string | null }
+export function getCompareCompanies(q = '') { return api<{ companies: CompareCompany[] }>(`/reliability/compare?q=${encodeURIComponent(q)}`) }
 export function getReliabilityHistory(company: string) { return api<{ history: ReliabilityHistory | null }>(`/companies/${encodeURIComponent(company)}/reliability/history`) }
 export function computeReliability(company: string) { return post<ReliabilityReport>(`/companies/${encodeURIComponent(company)}/reliability`, { credit_code: '' }) }
 export function collectCompanySignals(company: string, source: string) { return post<SignalCollectResult>(`/companies/${encodeURIComponent(company)}/signals/collect`, { source }) }

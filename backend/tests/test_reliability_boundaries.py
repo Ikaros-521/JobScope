@@ -30,7 +30,9 @@ PAID_URL = 'https://vendor.example/qcc/company'
 PAID_PAYLOAD = {'data': {'establish_date': '2015-04-01', 'insured_num': 240, 'insured_num_last': 312, 'case_num': 3}}
 
 # 对外形态的词：本项目是本地单人自用情报整理，路径里出现任何一条都等于把它变成公开评价工具。
-PUBLIC_SHAPE_WORDS = ('share', 'rank', 'public', 'leaderboard', 'blacklist', 'rating', 'scoreboard', 'compare')
+# 2026-11-12 起 compare 从禁词里移除：项目所有者明确要求本地「数据分析 · 公司横评」页。边界相应收窄为
+# 「不得出现分享/公开/名次榜单形态」——横评入口是本地阅读辅助，只读 GET，报告口径仍是主观参考。
+PUBLIC_SHAPE_WORDS = ('share', 'rank', 'public', 'leaderboard', 'blacklist', 'rating', 'scoreboard')
 
 
 @pytest.fixture
@@ -126,9 +128,11 @@ def test_app_exposes_no_sharing_ranking_or_public_route(tmp_path):
     assert offenders == []
 
 
-def test_reliability_surface_is_exactly_the_six_local_paths(tmp_path):
-    """本功能对外只有这六个路径；多一条都得先过法律红线这条关。
-    history 也只收一个公司：单公司趋势是允许的，任何跨公司对比都没有入口。"""
+def test_reliability_surface_is_exactly_the_seven_local_paths(tmp_path):
+    """本功能对外只有这七个路径；多一条都得先过法律红线这条关。
+    history 仍只收一个公司：单公司趋势不受横评影响。跨公司入口唯一且刻意收窄：
+    /api/reliability/compare 是只读候选列表（2026-11-12 项目所有者决定加入的本地横评阅读辅助），
+    它不产生任何新的评价语义，报告口径与免责仍由 reliability 子模块统一把关。"""
     app = create_app(tmp_path / 'boundary_surface')
     surface = {}
     for route in app.routes:
@@ -140,7 +144,8 @@ def test_reliability_surface_is_exactly_the_six_local_paths(tmp_path):
                             '/api/companies/{company}/signals/collect',
                             '/api/companies/{company}/signals/extract',
                             '/api/reliability/sources',
-                            '/api/reliability/sources/{source_id}'}
+                            '/api/reliability/sources/{source_id}',
+                            '/api/reliability/compare'}
     # 读只有 GET、写只有 POST/PUT：没有删除类动词，也没有对外匿名访问的入口。
     assert surface['/api/companies/{company}/reliability'] == {'GET', 'POST'}
     assert surface['/api/companies/{company}/reliability/history'] == {'GET'}
@@ -148,6 +153,7 @@ def test_reliability_surface_is_exactly_the_six_local_paths(tmp_path):
     assert surface['/api/companies/{company}/signals/extract'] == {'POST'}
     assert surface['/api/reliability/sources'] == {'GET'}
     assert surface['/api/reliability/sources/{source_id}'] == {'PUT'}
+    assert surface['/api/reliability/compare'] == {'GET'}
 
 
 # --- 法律红线：主观参考 + 免责声明 + 限制条件，每一份报告都要有 ---

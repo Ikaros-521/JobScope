@@ -639,3 +639,23 @@ class Repository:
     def reliability_history(self, company_id):
         with self.connection() as conn:
             return [json.loads(row['payload']) for row in conn.execute('SELECT payload FROM company_reliability WHERE company_id=? ORDER BY created_at', (company_id,)).fetchall()]
+
+    def compare_page(self, q='', page_size=50):
+        """横评选择器的候选列表：实体表全量（含还没算过参考分的），LEFT JOIN 各自最新一份报告概要。
+
+        分数与覆盖度照实带出 null——没算过就是没算过，绝不补 0 伪装成低分；按名称排序，
+        这个列表是选择器不是榜单，名次语义留给页面上的图表与用户自己。
+        """
+        with self.connection() as conn:
+            rows = conn.execute("""
+                SELECT c.name AS company, c.credit_code AS credit_code,
+                       json_extract(r.payload, '$.score') AS score,
+                       json_extract(r.payload, '$.confidence') AS confidence,
+                       r.created_at AS computed_at
+                FROM companies c
+                LEFT JOIN (SELECT company_id, payload, created_at, rowid,
+                                  ROW_NUMBER() OVER (PARTITION BY company_id ORDER BY created_at DESC, rowid DESC) AS rn
+                           FROM company_reliability) r ON r.company_id = c.id AND r.rn = 1
+                WHERE instr(lower(c.name), lower(?)) > 0
+                ORDER BY c.name LIMIT ?""", (q, page_size)).fetchall()
+        return dict(companies=[dict(row) for row in rows])

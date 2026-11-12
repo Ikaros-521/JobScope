@@ -1486,6 +1486,42 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
   .main-workbench .detail-heading-bottom { margin-top: 8px; }
   .main-workbench .jd-state { padding: 8px 20px; }
 }
+/* 数据分析 · 公司横评 */
+.compare-page { display: grid; gap: 12px; }
+.compare-controls { padding: 16px 20px; display: grid; gap: 10px; }
+.compare-controls .section-heading { margin-bottom: 0; }
+.compare-add-row { display: flex; gap: 8px; }
+.compare-add-row input { flex: 1; min-width: 0; }
+.compare-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.compare-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); font-size: 12.5px; max-width: 100%; }
+.compare-chip > button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 14px; line-height: 1; }
+.compare-chip > button:hover { color: var(--green); }
+.compare-chip-status { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; background: var(--line); }
+.compare-chip-status[data-state="ready"] { background: #2f8f6f; }
+.compare-chip-status[data-state="missing"] { background: #d9a441; }
+.compare-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.compare-chart-panel { padding: 14px 18px; display: grid; gap: 6px; min-width: 0; }
+.compare-chart-title { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.compare-chart-title h3 { margin: 0; font-size: 14px; }
+.compare-chart-title .tiny-label { max-width: 60%; text-align: right; }
+.compare-chart { height: 288px; min-width: 0; }
+.compare-chart-empty { margin: 0; color: var(--muted); font-size: 12.5px; padding: 24px 8px; text-align: center; }
+.compare-empty { padding: 26px 20px; display: grid; gap: 6px; justify-items: start; }
+.compare-empty h3 { margin: 0; }
+.compare-table-panel { padding: 16px 20px; display: grid; gap: 10px; }
+.compare-table-panel .section-heading { margin-bottom: 0; }
+.compare-table-wrap { overflow-x: auto; }
+.compare-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+.compare-table th, .compare-table td { padding: 7px 10px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+.compare-table th { color: var(--muted); font-weight: 500; font-size: 11.5px; }
+.compare-table th:first-child, .compare-table td:first-child { text-align: left; position: sticky; left: 0; background: var(--paper); }
+.compare-table-company { font-weight: 600; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.compare-table tbody tr:hover td { background: #f6faf7; }
+.compare-disclaimer { padding: 12px 18px; }
+@media (max-width: 1080px) {
+  .compare-grid { grid-template-columns: 1fr; }
+  .compare-chart-title .tiny-label { max-width: none; text-align: left; }
+}
 
 /* ===== 对话顺序显示模式 + 系统设置页 v1 — 只追加新类，不改上方任何既有规则 ===== */
 /* 顺序模式分段流：左侧细轨道线贯穿思维链/正文/工具卡，紧凑间距贴合一屏工作台习惯。 */

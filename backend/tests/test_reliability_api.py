@@ -599,3 +599,22 @@ def test_recompute_refreshes_local_coverage_through_the_api(client, tmp_path):
     assert report['score'] is not None
     pay = next(item for item in report['dimensions'] if item['dimension'] == 'pay')
     assert pay['score'] is not None and '尚无来源' not in ''.join(pay['missing'])
+
+
+def test_compare_endpoint_lists_latest_snapshot_per_company(client, tmp_path):
+    """横评候选列表：每家公司只带最新一份报告的概要；没算过的公司照实给 null，不伪造 0。"""
+    disable_local_source(tmp_path)
+    add_signal(tmp_path, 'company_age', {'years': 8}, 'E-' + 'a' * 24)
+    client.post('/api/companies/甲公司/reliability', json=dict())
+    rows = client.get('/api/reliability/compare?q=甲').json()['companies']
+    assert [item['company'] for item in rows] == ['甲公司']
+    # 顶层 confidence 是按权重算的维度覆盖度：只有稳定性（权重 0.22）出分，覆盖就是 0.22。
+    assert rows[0]['score'] == 80.0 and rows[0]['confidence'] == pytest.approx(0.22)
+    assert rows[0]['computed_at']
+    # 乙公司只登记过实体、从没算过：仍可作为候选列出，但分数与时间是 null。
+    Repository(tmp_path).resolve_company('乙公司')
+    by_name = {item['company']: item for item in client.get('/api/reliability/compare').json()['companies']}
+    assert by_name['乙公司']['score'] is None and by_name['乙公司']['computed_at'] is None
+    # 读路径不写行：列表查询本身不产生新的 companies 记录。
+    with Repository(tmp_path).connection() as conn:
+        assert conn.execute('SELECT count(*) FROM companies').fetchone()[0] == 2

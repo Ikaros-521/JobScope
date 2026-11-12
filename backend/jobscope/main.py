@@ -704,6 +704,12 @@ def create_app(data_dir=None):
         from .reliability.sources import SignalSourceStore
         return {'sources': SignalSourceStore(repo).public()}
 
+    @app.get('/api/reliability/compare')
+    def reliability_compare(q: str = Query('', max_length=300), page_size: int = Query(50, ge=1, le=100)):
+        """横评候选列表：只读。实体表全量（含未算过的公司），分数照实 null，按名称排序。"""
+        return repo.compare_page(q, page_size)
+
+
     @app.put('/api/reliability/sources/{source_id}')
     def save_reliability_source(data: SignalSourceInput, source_id: str = PathParam(min_length=2, max_length=40)):
         from .reliability.sources import SIGNAL_SOURCES, SignalSourceInput as SourceSettings, SignalSourceStore

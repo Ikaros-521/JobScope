@@ -8,6 +8,7 @@ import { EvidenceWorkspace } from './EvidenceWorkspace'
 import { EvidenceCard } from './EvidenceCard'
 import { DetailBatch } from './DetailBatch'
 import { CompanyLookup } from './CompanyLookup'
+import { CompanyCompare } from './CompanyCompare'
 import { CityInput } from './CityInput'
 import type { SavedLocation } from './CityInput'
 import { ResearchIndex } from './ResearchIndex'
@@ -53,6 +54,7 @@ function Icon({ name, size = 18 }: { name: string; size?: number }) {
     chevron: <path d="m9 5 7 7-7 7" />,
     book: <><path d="M12 5C8 2 3 3 3 3v16s5-1 9 2c4-3 9-2 9-2V3s-5-1-9 2ZM12 5v16" /></>,
     globe: <><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><path d="M3 12h18" /></>,
+    chart: <><path d="M4 20h16" /><path d="M7 16v-5M12 16V5M17 16v-8" /></>,
   }
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.book}</svg>
 }
@@ -62,7 +64,7 @@ function Badge({ value }: { value: string }) { return <span className={`badge ${
 function External({ url, children }: { url: string; children: ReactNode }) { const href = safeUrl(url); return href ? <a className="external-link" href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={13} /></a> : <span className="muted">无来源链接</span> }
 
 export default function App() {
-  const [view, setView] = useState<'jobs' | 'resume' | 'sources' | 'evidence' | 'global' | 'settings' | 'extensions' | 'system'>('jobs')
+  const [view, setView] = useState<'jobs' | 'resume' | 'sources' | 'evidence' | 'compare' | 'global' | 'settings' | 'extensions' | 'system'>('jobs')
   const [navigationOpen, setNavigationOpen] = useState(false)
   const [chatNavigation, setChatNavigation] = useState<ConversationNavigation | null>(null)
   const navigateConversation = useCallback((request: ConversationNavigation) => {
@@ -432,6 +434,7 @@ export default function App() {
         <button aria-current={view === 'jobs' ? 'page' : undefined} className={view === 'jobs' ? 'active' : ''} onClick={() => setView('jobs')}><Icon name="jobs" />岗位研究<span className="nav-count">{jobsTotal}</span></button>
         <button aria-current={view === 'resume' ? 'page' : undefined} className={view === 'resume' ? 'active' : ''} onClick={() => setView('resume')}><Icon name="resume" />我的简历{resumeSaved && <span className="nav-dot" />}</button>
         <button aria-current={view === 'evidence' ? 'page' : undefined} className={view === 'evidence' ? 'active' : ''} onClick={() => setView('evidence')}><Icon name="book" />公司资料库</button>
+        <button aria-current={view === 'compare' ? 'page' : undefined} className={view === 'compare' ? 'active' : ''} onClick={() => setView('compare')}><Icon name="chart" />数据分析</button>
         <button aria-current={view === 'global' ? 'page' : undefined} className={view === 'global' ? 'active' : ''} onClick={() => setView('global')}><Icon name="chat" />全局对话</button>
         <div className="sidebar-caption nav-settings-caption">工作区管理</div>
         <button aria-current={view === 'sources' ? 'page' : undefined} className={view === 'sources' ? 'active' : ''} onClick={() => setView('sources')}><Icon name="source" />数据与采集</button>
@@ -443,11 +446,13 @@ export default function App() {
       <div className="sidebar-bottom"><span className={`connection-dot ${online ? 'connected' : ''}`} />{online ? '本地工作区已连接' : '等待本地服务'}<span className="version">v0.1</span></div>
     </aside>
 
-    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'extensions' || view === 'settings' || view === 'system' ? 'main main-compact' : 'main'}>
-      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'resume' ? '我的简历' : view === 'evidence' ? '公司资料库' : view === 'global' ? '全局对话' : view === 'extensions' ? 'Agent 扩展' : view === 'settings' ? '模型设置' : view === 'system' ? '系统设置' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
+    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'extensions' || view === 'settings' || view === 'compare' || view === 'system' ? 'main main-compact' : 'main'}>
+      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'resume' ? '我的简历' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'extensions' ? 'Agent 扩展' : view === 'settings' ? '模型设置' : view === 'system' ? '系统设置' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
       <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} /></div>
 
       {view === 'global' && <><section className="page-intro chat-intro"><div><h1>全局对话</h1><p>跨岗位、跨公司检索项目资料，回答标注公司与出处</p></div><span className="revision-label">会话保存在本机</span></section><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onManageExtensions={() => setView('extensions')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} /></>}
+
+      {view === 'compare' && <CompanyCompare />}
 
       {view === 'jobs' && <>
         <section className="page-intro"><div><h1>岗位研究</h1><p>把岗位要求、公司证据和你的经历逐项核对</p></div><Button className="button secondary" onClick={() => openModal('job')}><Icon name="plus" size={17} />导入岗位</Button></section>
