@@ -176,10 +176,23 @@ def answer_question(message, evidence, resume=None, history=None, *, preselected
     if not isinstance(result, dict) or not isinstance(result.get("answer"), str) or not isinstance(result.get("evidence_ids"), list):
         raise ValueError("模型返回格式无效")
     allowed = {e["id"]: e for e in selected}
-    cited = result["evidence_ids"]
-    inline = re.findall(r"\[(E-[A-Za-z0-9_-]+)\]", result["answer"])
-    if not cited or any(not isinstance(ref, str) or ref not in allowed for ref in cited + inline):
-        raise ValueError("模型引用无效或超出当前资料范围，已阻止展示")
-    if set(inline) != set(cited):
-        raise ValueError("模型引用列表与正文不一致，已阻止展示")
-    return dict(answer=result["answer"], mode="model", citations=[citation(allowed[ref]) for ref in dict.fromkeys(cited)], citation_validation="范围已校验，语义支持关系仍需阅读原文确认")
+    cited = [ref for ref in result["evidence_ids"] if isinstance(ref, str)]
+    answer = result["answer"]
+    inline = re.findall(r"\[(E-[A-Za-z0-9_-]+)\]", answer)
+    warnings = []
+    # 越界或编造的引用就地标注并从引用卡片剔除；不再吞掉整条已付费回答。
+    unknown = [ref for ref in dict.fromkeys(cited + inline) if ref not in allowed]
+    if unknown:
+        for ref in unknown:
+            answer = answer.replace(f'[{ref}]', f'[{ref} 越界]')
+        warnings.append('回答中的 ' + '、'.join(unknown) + ' 不在本次给定资料范围内，已就地标注，相关结论请回原文核实')
+    valid = [ref for ref in dict.fromkeys(cited + inline) if ref in allowed]
+    if not valid:
+        warnings.append('本轮回答未附带任何有效资料引用，内容未经资料范围校验，请谨慎核实')
+    elif set(inline) != set(cited):
+        warnings.append('模型引用列表与正文不完全一致，已按实际通过校验的引用生成卡片')
+    if warnings:
+        answer = '> ⚠️ ' + '；'.join(warnings) + '。\n\n' + answer
+    return dict(answer=answer, mode="model", citations=[citation(allowed[ref]) for ref in valid],
+                citation_validation=('引用范围校验存在降级情形，详见回答顶部说明' if warnings
+                                     else '范围已校验，语义支持关系仍需阅读原文确认'))

@@ -114,15 +114,18 @@ def test_model_url_rejects_plain_http_remote():
     assert validate_model_url("http://127.0.0.1:8001/v1/chat/completions")
 
 
-def test_model_chat_rejects_out_of_scope_citations(monkeypatch):
+def test_model_chat_marks_out_of_scope_citations_instead_of_blocking(monkeypatch):
     import httpx
     monkeypatch.setenv("JOBSCOPE_LLM_URL", "https://example.com/v1/chat/completions")
     monkeypatch.setenv("JOBSCOPE_LLM_MODEL", "test-model")
     def fake_post(self, *args, **kwargs):
         return httpx.Response(200, json={"choices": [{"message": {"content": '{"answer":"泄漏 [E-foreign]","evidence_ids":["E-foreign"]}'}}]}, request=httpx.Request("POST", args[0]))
     monkeypatch.setattr(httpx.Client, "post", fake_post)
-    with pytest.raises(ValueError, match="引用"):
-        answer_question("情况", [dict(id="E-1", title="当前资料", text="内容", url="", company="甲")], resume=None)
+    result = answer_question("情况", [dict(id="E-1", title="当前资料", text="内容", url="", company="甲")], resume=None)
+    # 回答不再被整体吞掉：越界引用就地标注，引用卡片为空，警示可见。
+    assert "泄漏" in result["answer"] and "[E-foreign 越界]" in result["answer"]
+    assert result["answer"].startswith("> ⚠️") and "E-foreign" in result["answer"]
+    assert result["citations"] == [] and "降级" in result["citation_validation"]
 
 
 def test_search_can_retrieve_later_pdf_pages_with_page_marker(monkeypatch):
@@ -201,7 +204,9 @@ def test_answer_question_streaming_keeps_final_validation(monkeypatch):
             return FakeBadResponse()
     monkeypatch.setattr(httpx, 'Client', FakeBadClient)
     seen2 = []
-    with pytest.raises(ValueError, match='引用'):
-        answer_question("情况", [dict(id="E-1", title="当前资料", text="内容", url="", company="甲")], resume=None,
-                        on_delta=seen2.append)
-    assert seen2  # preview streamed, but the invalid citation set blocks the final answer
+    result2 = answer_question("情况", [dict(id="E-1", title="当前资料", text="内容", url="", company="甲")], resume=None,
+                              on_delta=seen2.append)
+    # 预览照常流式；无效引用不再拦截最终答案，而是顶部警示 + 引用卡片只保留有效项。
+    assert seen2 and ''.join(seen2) == '有效回答 [E-1]。'
+    assert result2['answer'].startswith('> ⚠️') and 'E-9' in result2['answer'] and '有效回答 [E-1]。' in result2['answer']
+    assert [c['id'] for c in result2['citations']] == ['E-1']
