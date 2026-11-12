@@ -4,7 +4,6 @@ import re
 import time
 import uuid
 
-import anyio
 from .analysis import parse_resume
 from .agent_scope import AgentScope, CROSS_COMPANY_RULES, resolve_scope
 from .scope_expansion import ScopeExpansionStore
@@ -359,7 +358,7 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                 self.extensions.pending(state['run']['id'], state)
                 return False
             state['calls'] += 1
-            result = anyio.run(MCPClient.call, server, binding['tool_name'], args)
+            result = MCPClient.call(server, binding['tool_name'], args)
             label = binding['label']
             for secret in [server.get('token', ''), *server.get('env', {}).values()]:
                 if len(secret) >= 4:

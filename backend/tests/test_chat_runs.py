@@ -369,7 +369,7 @@ def test_run_approval_resumes_in_background_and_is_single_use(client, monkeypatc
         return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object', 'properties': {'q': {'type': 'string'}}})]
     executed = []
 
-    async def invoke(config, name, args):
+    def invoke(config, name, args):
         executed.append((name, args))
         return {'text': 'external evidence', 'is_error': False}
 
@@ -408,7 +408,7 @@ def test_approval_keeps_stream_open_and_continues_on_same_log(client, monkeypatc
     async def inspect(config):
         return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object', 'properties': {'q': {'type': 'string'}}})]
 
-    async def invoke(config, name, args):
+    def invoke(config, name, args):
         return {'text': 'external evidence', 'is_error': False}
 
     monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))

@@ -1,9 +1,11 @@
 """Workspace extensions: explicit MCP connections and instruction-only skills."""
+import asyncio
 import hashlib
 import io
 import json
 import os
 import re
+import threading
 import time
 import uuid
 import zipfile
@@ -194,7 +196,24 @@ class MCPClient:
         return merged
 
     @staticmethod
-    async def _request(config, operation, name=None, args=None):
+    async def _list_via_session(session):
+        tools, cursor = [], None
+        for _ in range(5):
+            result = await session.list_tools(cursor=cursor)
+            for item in result.tools:
+                if len(tools) >= 50:
+                    break
+                schema = validate_schema(item.inputSchema)
+                tools.append(dict(name=item.name[:200], description=(item.description or '')[:1500], inputSchema=schema, annotations=item.annotations.model_dump(exclude_none=True) if item.annotations else {}))
+            if not result.nextCursor or len(tools) >= 50 or result.nextCursor == cursor:
+                break
+            cursor = result.nextCursor
+        return tools
+
+    @staticmethod
+    async def _request(config, operation):
+        # 仅用于「测试并发现工具」的一次性连接；工具调用走 SESSION_POOL 常驻会话，
+        # 否则 stdio 子进程会在调用后退出，@playwright/mcp 这类有状态服务无法跨调用保持浏览器。
         from contextlib import AsyncExitStack
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
@@ -215,24 +234,7 @@ class MCPClient:
                         streams = await stack.enter_async_context(streamablehttp_client(config['url'], headers=headers, timeout=timedelta(seconds=25), sse_read_timeout=timedelta(seconds=25), httpx_client_factory=factory))
                 session = await stack.enter_async_context(ClientSession(streams[0], streams[1], read_timeout_seconds=timedelta(seconds=25)))
                 await session.initialize()
-                if operation == 'list':
-                    tools, cursor = [], None
-                    for _ in range(5):
-                        result = await session.list_tools(cursor=cursor)
-                        for item in result.tools:
-                            if len(tools) >= 50:
-                                break
-                            schema = validate_schema(item.inputSchema)
-                            tools.append(dict(name=item.name[:200], description=(item.description or '')[:1500], inputSchema=schema, annotations=item.annotations.model_dump(exclude_none=True) if item.annotations else {}))
-                        if not result.nextCursor or len(tools) >= 50 or result.nextCursor == cursor:
-                            break
-                        cursor = result.nextCursor
-                    return tools
-                result = await session.call_tool(name, args, read_timeout_seconds=timedelta(seconds=25))
-                text = '\n'.join(block.text for block in result.content if getattr(block, 'type', '') == 'text')
-                if result.structuredContent:
-                    text += '\n' + json.dumps(result.structuredContent, ensure_ascii=False)
-                return dict(text=text[:10000] or '工具未返回文本内容', is_error=bool(result.isError), truncated=len(text) > 10000)
+                return await MCPClient._list_via_session(session)
 
     @staticmethod
     async def discover(config):
@@ -243,12 +245,141 @@ class MCPClient:
                 raise ValueError('MCP 连接或工具发现失败。请检查服务是否启动、传输方式（Streamable HTTP / SSE / stdio）、命令/地址和认证。') from None
 
     @staticmethod
-    async def call(config, name, args):
+    def call(config, name, args):
+        # 常驻会话执行：同一服务器的调用复用同一 MCP 进程/连接（会话状态可串接）。
         try:
-            with anyio.fail_after(35):
-                return await MCPClient._request(config, 'call', name, args)
+            result = SESSION_POOL.execute(config, lambda session: session.call_tool(name, args, read_timeout_seconds=timedelta(seconds=25)))
         except Exception:
             raise ValueError('MCP 工具执行失败或超时；未自动重试，请检查服务状态。') from None
+        text = '\n'.join(block.text for block in result.content if getattr(block, 'type', '') == 'text')
+        if result.structuredContent:
+            text += '\n' + json.dumps(result.structuredContent, ensure_ascii=False)
+        return dict(text=text[:10000] or '工具未返回文本内容', is_error=bool(result.isError), truncated=len(text) > 10000)
+
+
+class _MCPSession:
+    """一个常驻 MCP 会话：专用线程 + 常驻事件循环 + 长命 AsyncExitStack。
+
+    之前每次工具调用新建 AsyncExitStack 并在调用后销毁：stdio 子进程随之退出，
+    浏览器等有状态服务被关闭，下一次调用只能拿到全新会话，多步操作无法串接。
+    """
+
+    def __init__(self, key, config):
+        self.key = key
+        self.config = config
+        self.lock = threading.Lock()
+        self.loop = asyncio.new_event_loop()
+        self.stack = None
+        self.session = None
+        self.last_used = time.time()
+        self.thread = threading.Thread(target=self._run, daemon=True, name=f'mcp-{key[:8]}')
+        self.thread.start()
+
+    def _run(self):
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_forever()
+
+    async def _setup(self):
+        from contextlib import AsyncExitStack
+        from mcp import ClientSession, StdioServerParameters
+        from mcp.client.stdio import stdio_client
+        from mcp.client.sse import sse_client
+        from mcp.client.streamable_http import streamablehttp_client
+        stack = AsyncExitStack()
+        try:
+            config = self.config
+            if config['transport'] == 'stdio':
+                errlog = open(os.devnull, 'w')
+                stack.callback(errlog.close)
+                streams = await stack.enter_async_context(stdio_client(StdioServerParameters(command=config['command'], args=config['args'], env=config['env']), errlog=errlog))
+            else:
+                def factory(headers=None, timeout=None, auth=None):
+                    return httpx.AsyncClient(headers=headers, timeout=timeout or 25, auth=auth, trust_env=False, follow_redirects=False)
+                headers = MCPClient._headers(config)
+                if config['transport'] == 'sse':
+                    streams = await stack.enter_async_context(sse_client(config['url'], headers=headers, timeout=timedelta(seconds=25), sse_read_timeout=timedelta(seconds=25), httpx_client_factory=factory))
+                else:
+                    streams = await stack.enter_async_context(streamablehttp_client(config['url'], headers=headers, timeout=timedelta(seconds=25), sse_read_timeout=timedelta(seconds=25), httpx_client_factory=factory))
+            session = await stack.enter_async_context(ClientSession(streams[0], streams[1], read_timeout_seconds=timedelta(seconds=25)))
+            await session.initialize()
+            self.stack, self.session = stack, session
+        except Exception:
+            try:
+                await stack.aclose()
+            except Exception:
+                pass
+            raise
+
+    def call(self, coro_factory, timeout=45):
+        with self.lock:
+            self.last_used = time.time()
+            if self.session is None:
+                asyncio.run_coroutine_threadsafe(self._setup(), self.loop).result(timeout)
+            return asyncio.run_coroutine_threadsafe(coro_factory(self.session), self.loop).result(timeout)
+
+    def close(self):
+        with self.lock:
+            self.session = None
+            if self.loop.is_closed():
+                return
+            if self.loop.is_running():
+                async def _aclose():
+                    if self.stack is not None:
+                        try:
+                            await self.stack.aclose()
+                        except Exception:
+                            pass
+                try:
+                    # 先优雅关闭传输（终止 stdio 子进程）；超时则放弃收尾，daemon 线程随进程退出。
+                    asyncio.run_coroutine_threadsafe(_aclose(), self.loop).result(10)
+                except Exception:
+                    pass
+                self.loop.call_soon_threadsafe(self.loop.stop)
+            self.thread.join(timeout=3)
+            self.loop.close()
+
+
+class MCPSessionPool:
+    """按配置指纹复用常驻 MCP 会话；空闲超时回收，进程退出由 daemon 线程自然终止。"""
+
+    def __init__(self, idle_seconds=600):
+        self.idle_seconds = idle_seconds
+        self.entries = {}
+        self._lock = threading.Lock()
+
+    def _reap(self):
+        stale = [key for key, entry in self.entries.items() if time.time() - entry.last_used > self.idle_seconds]
+        for key in stale:
+            self.drop(key, self.entries.get(key))
+
+    def execute(self, config, coro_factory, timeout=45):
+        with self._lock:
+            self._reap()
+            key = fingerprint(config)
+            entry = self.entries.get(key)
+            if entry is None:
+                entry = _MCPSession(key, config)
+                self.entries[key] = entry
+        try:
+            return entry.call(coro_factory, timeout)
+        except Exception:
+            # 传输断开/超时：丢弃该会话，下次调用重建；MCP 业务错误（isError 结果）不抛异常、不丢弃。
+            self.drop(key, entry)
+            raise
+
+    def drop(self, key, entry):
+        if entry is not None and self.entries.get(key) is entry:
+            self.entries.pop(key, None)
+        if entry is not None:
+            entry.close()
+
+    def shutdown_all(self):
+        with self._lock:
+            for key, entry in list(self.entries.items()):
+                self.drop(key, entry)
+
+
+SESSION_POOL = MCPSessionPool()
 
 
 class ExtensionStore:
