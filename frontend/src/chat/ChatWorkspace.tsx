@@ -35,8 +35,9 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
   const company = scope.kind === 'company' ? scope.company.trim() : ''
   const jobCompany = scope.kind === 'job' ? scope.company : ''
   const {
-    sessions, conversation, messages, scopeActions, lineage, run, error, opening, starting,
+    sessions, conversation, messages, scopeActions, lineage, run, error, opening, starting, queue,
     openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeModel, changePermissionMode, compress, clearError,
+    enqueue, removeQueued, clearQueue, resumeQueue,
   } = useChatRun(scope, navigation, onOpened)
   const [input, setInput] = useState('')
   const [editing, setEditing] = useState<EditingTarget>(null)
@@ -119,7 +120,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
     // 会话恢复时消息与布局可能分两拍到位：补一次延迟滚动，避免停在顶部。
     const timer = window.setTimeout(() => { if (stickRef.current) scrollToBottom() }, 150)
     return () => window.clearTimeout(timer)
-  }, [messages.length, localActions.length, scopeActions.length, run?.answer, run?.reasoning, run?.steps.length, run?.approval])
+  }, [messages.length, localActions.length, scopeActions.length, queue.length, run?.answer, run?.reasoning, run?.steps.length, run?.approval])
 
   // 切换会话时恢复吸底并直接落到最新消息。
   useEffect(() => { stickRef.current = true; setShowJump(false); scrollToBottom() }, [conversation.id])
@@ -227,6 +228,15 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
   async function submit() {
     const text = input.trim()
     if (!text) return
+    // 生成中（或本轮正在启动）发送 = 排队：不打断当前生成，本轮完成后自动发送。
+    if (running || starting) {
+      enqueue(text)
+      setInput('')
+      stickRef.current = true
+      setShowJump(false)
+      toast('已加入队列，本轮完成后自动发送')
+      return
+    }
     stickRef.current = true
     setShowJump(false)
     const ok = await send(text, editing ? { editMessageId: editing.id } : undefined)
@@ -348,6 +358,12 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
             {Array.from(new Map(liveActions.map(action => [action.id, action])).values()).map(action => <ScopeExpansionCard key={action.id} action={resolveAction(action)} disabled onAccept={acceptExpansion} />)}
           </article>}
           {floatingActions.map(action => <ScopeExpansionCard key={action.id} action={resolveAction(action)} disabled={busy} onAccept={acceptExpansion} />)}
+
+          {queue.map((item, index) => <div className="queued-message" key={item.id} title={item.content}>
+            <span className="queued-index">{running ? `第 ${index + 1} 位待发送` : '待发送'}</span>
+            <span className="queued-text">{item.content}</span>
+            <button type="button" className="queued-remove" aria-label="移除这条排队消息" onClick={() => removeQueued(item.id)}>×</button>
+          </div>)}
         </div>
         {showJump && <button type="button" className="jump-bottom" onClick={jumpToBottom}>↓ 回到底部</button>}
       </div>
@@ -378,9 +394,18 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
         <button type="button" className="text-button" onClick={() => setShowScopeOptions(false)}>取消</button>
       </div>}
 
+      {/* 空闲但队列还有剩（停止/出错/刷新恢复后）：手动续发或清空，不自动发。 */}
+      {queue.length > 0 && !busy && <div className="queue-actions" role="status">
+        <span>队列中还有 {queue.length} 条消息</span>
+        <button type="button" className="button secondary small" onClick={() => void resumeQueue()}>发送队首消息</button>
+        <button type="button" className="text-button" onClick={clearQueue}>清空队列</button>
+      </div>}
+
       <ChatComposer
         input={input}
         onInputChange={setInput}
+        onQueue={() => void submit()}
+        queueCount={queue.length}
         model={conversation.model}
         llmChannel={conversation.llm_channel}
         modelChannels={modelChannels}

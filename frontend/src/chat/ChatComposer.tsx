@@ -22,7 +22,7 @@ function tokensLabel(value: number) { return value >= 10000 ? `${Math.round(valu
 // 下拉选项值编码：''=跟随全局；'|model'=覆盖全局配置上的模型；'channelId|model'=指定渠道的模型；'channelId|'=渠道默认模型
 function selectValue(model: string, channelId: string) { return channelId ? `${channelId}|${model}` : model ? `|${model}` : '' }
 
-export function ChatComposer({ input, onInputChange, model, llmChannel = '', modelChannels = [], globalModels = [], onModelChange, permissionMode = 'autonomous', onPermissionModeChange, running, awaiting, onStop, onSend, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, scopeLabel = '全项目', onExpandScope, locked = '', scopeName = '全项目资料', contextTokens = 0, contextWindow = 128000, compressing = false, hasConversation = false, canCompress = true, onCompress }: {
+export function ChatComposer({ input, onInputChange, model, llmChannel = '', modelChannels = [], globalModels = [], onModelChange, permissionMode = 'autonomous', onPermissionModeChange, running, awaiting, onStop, onSend, onQueue, queueCount = 0, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, scopeLabel = '全项目', onExpandScope, locked = '', scopeName = '全项目资料', contextTokens = 0, contextWindow = 128000, compressing = false, hasConversation = false, canCompress = true, onCompress }: {
   input: string
   onInputChange: (value: string) => void
   model: string
@@ -36,6 +36,9 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
   awaiting: boolean
   onStop: () => void
   onSend: () => void
+  // 生成中发送：不直发而是进队列（工作区 submit 决定入队），完成后自动发送。
+  onQueue?: () => void
+  queueCount?: number
   modelConfigured: boolean
   showReasoning: boolean
   onToggleReasoning: (value: boolean) => void
@@ -63,10 +66,14 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
 
   const blocked = Boolean(locked) || awaiting || compressing || !modelConfigured
   const placeholder = locked || (compressing ? '正在压缩上下文…' : awaiting ? '等待工具确认后再继续对话…'
+    : running && onQueue ? '生成中…输入下一条，Enter 加入队列，完成后自动发送'
     : !modelConfigured ? '请先在模型设置中配置对话模型' : `围绕${scopeName}提问，Agent 会按需调用工具…`)
 
   function trySend() {
-    if (running || blocked || !input.trim()) return
+    if (!input.trim()) return
+    // 生成中 Enter 不再无效：有内容且支持排队就走队列（IDE 队列行为），否则维持禁用。
+    if (running) { if (onQueue) onQueue(); return }
+    if (blocked) return
     onSend()
   }
 
@@ -150,6 +157,7 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
           {compressing ? '压缩中…' : '压缩上下文'}
         </button>
       </div>}
+      {queueCount > 0 && <span className="composer-queue-count" title="生成完成后按顺序自动发送">已排队 {queueCount} 条</span>}
       <span className="composer-hint">Enter 发送 · Shift + Enter 换行 · {MODE_HINTS[permissionMode]}</span>
     </div>
   </div>

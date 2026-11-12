@@ -1286,6 +1286,14 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .composer-extensions { font-size: 12px; color: #525252; min-height: 30px; padding: 4px 8px; }
 .composer-extensions:hover { color: var(--green); text-decoration: underline; }
 .composer-hint { margin-left: auto; font-size: 11px; color: #a3a3a3; }
+.composer-queue-count { font-size: 11px; color: var(--green); white-space: nowrap; }
+/* 排队消息：生成中发送的待发内容，完成后自动逐条发送；单行省略防长文撑高线程 */
+.queued-message { display: flex; align-items: center; gap: 8px; margin: -4px 0 14px; padding: 8px 12px; border: 1px dashed #b9c6c0; border-radius: 10px; background: rgba(233, 239, 235, .45); font-size: 13px; }
+.queued-index { flex: none; font-size: 12px; color: var(--green); white-space: nowrap; }
+.queued-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #525252; }
+.queued-remove { flex: none; border: 0; background: none; color: #737373; cursor: pointer; font-size: 15px; line-height: 1; padding: 2px 4px; border-radius: 6px; }
+.queued-remove:hover { color: #b3492f; }
+.queue-actions { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font-size: 13px; color: #525252; }
 .jump-bottom { position: absolute; right: 20px; bottom: 14px; z-index: 5; font-size: 12px; padding: 6px 12px; border-radius: 999px; background: #fff; border: 1px solid #d4d4d4; color: #404040; box-shadow: 0 4px 14px rgba(0,0,0,.12); }
 .jump-bottom:hover { border-color: var(--green); color: var(--green); }
 .context-meter-group { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
