@@ -245,10 +245,11 @@ class MCPClient:
                 raise ValueError('MCP 连接或工具发现失败。请检查服务是否启动、传输方式（Streamable HTTP / SSE / stdio）、命令/地址和认证。') from None
 
     @staticmethod
-    def call(config, name, args):
+    def call(config, name, args, should_stop=None):
         # 常驻会话执行：同一服务器的调用复用同一 MCP 进程/连接（会话状态可串接）。
         try:
-            result = SESSION_POOL.execute(config, lambda session: session.call_tool(name, args, read_timeout_seconds=timedelta(seconds=25)))
+            result = SESSION_POOL.execute(config, lambda session: session.call_tool(name, args, read_timeout_seconds=timedelta(seconds=25)),
+                                          should_stop=should_stop)
         except Exception:
             raise ValueError('MCP 工具执行失败或超时；未自动重试，请检查服务状态。') from None
         text = '\n'.join(block.text for block in result.content if getattr(block, 'type', '') == 'text')
@@ -310,12 +311,34 @@ class _MCPSession:
                 pass
             raise
 
-    def call(self, coro_factory, timeout=45):
+    def call(self, coro_factory, timeout=45, should_stop=None):
         with self.lock:
             self.last_used = time.time()
             if self.session is None:
-                asyncio.run_coroutine_threadsafe(self._setup(), self.loop).result(timeout)
-            return asyncio.run_coroutine_threadsafe(coro_factory(self.session), self.loop).result(timeout)
+                self._await(asyncio.run_coroutine_threadsafe(self._setup(), self.loop), timeout, should_stop, 'MCP 会话启动')
+            future = asyncio.run_coroutine_threadsafe(coro_factory(self.session), self.loop)
+            return self._await(future, timeout, should_stop, 'MCP 工具执行')
+
+    @staticmethod
+    def _await(future, timeout, should_stop, label):
+        if should_stop is None:
+            return future.result(timeout)
+        # 停止感知等待：用户点停止后放弃阻塞等待（放弃时整个会话由池丢弃），
+        # 否则思考型/浏览器型工具的长调用会一直占着这把会话锁，拖住停止后的下一轮调用。
+        import concurrent.futures
+        deadline = time.time() + timeout
+        while True:
+            if should_stop():
+                future.cancel()
+                raise ValueError(f'{label}已随本轮停止而中止')
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                future.cancel()
+                raise TimeoutError(f'{label}超时')
+            try:
+                return future.result(min(0.25, remaining))
+            except concurrent.futures.TimeoutError:
+                continue
 
     def close(self):
         with self.lock:
@@ -352,7 +375,7 @@ class MCPSessionPool:
         for key in stale:
             self.drop(key, self.entries.get(key))
 
-    def execute(self, config, coro_factory, timeout=45):
+    def execute(self, config, coro_factory, timeout=45, should_stop=None):
         with self._lock:
             self._reap()
             key = fingerprint(config)
@@ -361,9 +384,10 @@ class MCPSessionPool:
                 entry = _MCPSession(key, config)
                 self.entries[key] = entry
         try:
-            return entry.call(coro_factory, timeout)
+            return entry.call(coro_factory, timeout, should_stop)
         except Exception:
-            # 传输断开/超时：丢弃该会话，下次调用重建；MCP 业务错误（isError 结果）不抛异常、不丢弃。
+            # 传输断开/超时/随停止放弃：丢弃该会话（终止其 stdio 子进程/浏览器），下次调用重建；
+            # MCP 业务错误（isError 结果）不抛异常、不丢弃。
             self.drop(key, entry)
             raise
 

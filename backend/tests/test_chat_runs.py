@@ -56,6 +56,9 @@ class FakeStreamResponse:
     def raise_for_status(self):
         return None
 
+    def close(self):
+        return None
+
     def iter_lines(self):
         return iter(self._lines)
 
@@ -267,6 +270,103 @@ def test_cancel_interrupts_general_run_and_discards_partial(client, monkeypatch)
     assert kinds.count('cancelled') == 1 and 'done' not in kinds
 
 
+class SlowStreamResponse:
+    """Mimics a thinking model that sits silent between chunks; close() from the
+    cancelling thread must break the blocked iteration like a dropped connection
+    (verified against real httpx: close() unblocks the reader with a ReadError)."""
+
+    def __init__(self, lines, gap):
+        self._lines, self._gap = lines, gap
+        self.status_code = 200
+        self._interrupted = threading.Event()
+
+    def raise_for_status(self):
+        return None
+
+    def close(self):
+        self._interrupted.set()
+
+    def iter_lines(self):
+        for index, line in enumerate(self._lines):
+            if index and self._interrupted.wait(self._gap):
+                raise httpx.ReadError('connection closed while waiting for the next chunk')
+            yield line
+
+
+def stream_slow(monkeypatch, lines, gap):
+    original = httpx.Client.stream
+
+    def stream(self, method, url, **kwargs):
+        if isinstance(self, TestClient):
+            return original(self, method, url, **kwargs)
+
+        class _Ctx:
+            def __enter__(self):
+                return SlowStreamResponse(lines, gap)
+
+            def __exit__(self, *args):
+                return False
+
+        return _Ctx()
+
+    monkeypatch.setattr(httpx.Client, 'stream', stream)
+
+
+def test_cancel_cuts_slow_model_stream_immediately(client, monkeypatch):
+    configure(client)
+    # First chunk (reasoning) arrives at once, then the stream goes silent for 5s.
+    stream_slow(monkeypatch, [sse_chunk({'delta': {'reasoning_content': '思考中'}})] + stream_final('很慢的回答'), gap=5.0)
+    run = client.post('/api/chat/runs', json={'message': '慢思考问题', 'agent_mode': 'general'}).json()
+    # Wait until the worker is blocked waiting for the second chunk, then cancel.
+    # (Observing the event log directly: consuming the sync SSE response would block
+    # the TestClient until the run finishes naturally.)
+    handle = client.app.state.runs.get(run['run_id'])
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        with handle.condition:
+            if 'reasoning_delta' in [kind for kind, _ in handle.events]:
+                break
+        time.sleep(0.05)
+    else:
+        raise AssertionError('未观察到 reasoning_delta，worker 未进入流式等待')
+    cancelled = client.post(f"/api/chat/runs/{run['run_id']}/cancel").json()
+    assert cancelled['done'] and cancelled['cancelled']
+    # The abort closes the model stream, so the worker exits without waiting out
+    # the 5s chunk gap (the pre-abort behaviour was to coast until the next chunk).
+    handle.thread.join(timeout=2.5)
+    assert not handle.thread.is_alive()
+    # The cut stream surfaces as cancellation, never as a broadcast error.
+    frames = read_stream(client, run['run_id'])
+    kinds = [kind for kind, _ in frames]
+    assert 'cancelled' in kinds and 'error' not in kinds
+
+
+def test_mcp_session_call_aborts_on_stop_and_releases_lock():
+    import asyncio
+
+    from jobscope.extensions import _MCPSession
+
+    session = _MCPSession('test-abort', {'transport': 'stdio', 'command': 'x', 'args': [], 'env': {}})
+    session.session = object()  # skip the real stdio spawn; the coroutine ignores the session
+    try:
+        async def slow(_session):
+            await asyncio.sleep(8)
+            return 'done'
+
+        started = time.perf_counter()
+        with pytest.raises(ValueError, match='停止'):
+            session.call(lambda s: slow(s), timeout=10, should_stop=lambda: True)
+        assert time.perf_counter() - started < 2
+
+        async def quick(_session):
+            return 'ok'
+
+        # Abandoning released the session lock: the next caller is not stuck behind the zombie wait.
+        assert session.call(lambda s: quick(s), timeout=5) == 'ok'
+    finally:
+        session.close()
+
+
 def test_cancel_stops_research_run_without_answer(client, monkeypatch):
     from jobscope.research.index import ResearchIndex
 
@@ -369,7 +469,7 @@ def test_run_approval_resumes_in_background_and_is_single_use(client, monkeypatc
         return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object', 'properties': {'q': {'type': 'string'}}})]
     executed = []
 
-    def invoke(config, name, args):
+    def invoke(config, name, args, should_stop=None):
         executed.append((name, args))
         return {'text': 'external evidence', 'is_error': False}
 
@@ -408,7 +508,7 @@ def test_approval_keeps_stream_open_and_continues_on_same_log(client, monkeypatc
     async def inspect(config):
         return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object', 'properties': {'q': {'type': 'string'}}})]
 
-    def invoke(config, name, args):
+    def invoke(config, name, args, should_stop=None):
         return {'text': 'external evidence', 'is_error': False}
 
     monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))

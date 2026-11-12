@@ -174,7 +174,7 @@ def test_mcp_tool_approval_is_single_use_and_resumable(client, monkeypatch):
     async def inspect(config):
         return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object', 'properties': {'q': {'type': 'string'}}})]
     executed = []
-    def invoke(config, name, args):
+    def invoke(config, name, args, should_stop=None):
         executed.append((name, args))
         return {'text': 'external evidence', 'is_error': False}
     monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))
@@ -226,7 +226,7 @@ def test_approval_is_bound_to_each_call_and_config_changes_invalidate(client, mo
     async def inspect(config):
         return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object', 'properties': {'q': {'type': 'string'}}})]
     executed = []
-    def invoke(config, name, args):
+    def invoke(config, name, args, should_stop=None):
         executed.append(args)
         return {'text': 'result', 'is_error': False}
     monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))
@@ -266,7 +266,7 @@ def test_resume_access_taints_later_turns_even_with_auto_tool(client, monkeypatc
     async def inspect(config):
         return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object', 'properties': {'q': {'type': 'string'}}})]
     executed = []
-    def invoke(config, name, args):
+    def invoke(config, name, args, should_stop=None):
         executed.append(args)
         return dict(text='result', is_error=False)
     monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))
@@ -287,7 +287,7 @@ def test_approved_tool_failure_recovers_and_denial_does_not_execute(client, monk
     async def inspect(config):
         return [dict(name='lookup', description='Lookup', inputSchema={'type': 'object'})]
     calls = []
-    def fail(config, name, args):
+    def fail(config, name, args, should_stop=None):
         calls.append(name)
         raise ValueError('fixture-secret-error')
     monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))

@@ -283,7 +283,7 @@ def mcp_fixture(agent, monkeypatch):
     server = dict(id='m1', name='fixture', enabled=True, tested=True, tools=[spec], allowed_tools=['lookup'], auto_tools=[], token='', env={})
     agent.extensions._put('agent_mcp', server)
     executed = []
-    def invoke(config, name, args):
+    def invoke(config, name, args, should_stop=None):
         executed.append(args)
         return dict(text='external result', is_error=False)
     monkeypatch.setattr(MCPClient, 'call', staticmethod(invoke))

@@ -53,7 +53,7 @@ def install_server(client, monkeypatch, tools, auto_tools=()):
                      annotations={**(dict(readOnlyHint=True) if read_only else {}), **(dict(destructiveHint=True) if destructive else {})})
                  for name, read_only, destructive in normalized]
     executed = []
-    def invoke(config, name, args):
+    def invoke(config, name, args, should_stop=None):
         executed.append((name, args))
         return dict(text='external result', is_error=False)
     monkeypatch.setattr(MCPClient, 'discover', staticmethod(inspect))

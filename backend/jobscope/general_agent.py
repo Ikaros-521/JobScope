@@ -33,11 +33,13 @@ def schema(properties, required=()):
 class RunHooks:
     """Optional live callbacks for run-based execution; None keeps the synchronous path unchanged."""
 
-    def __init__(self, on_event=None, on_delta=None, on_reasoning=None, should_stop=None):
+    def __init__(self, on_event=None, on_delta=None, on_reasoning=None, should_stop=None, register_abort=None):
         self.on_event = on_event
         self.on_delta = on_delta
         self.on_reasoning = on_reasoning
         self.should_stop = should_stop
+        # register_abort(fn)->unregister：把「从取消线程关闭底层连接」的钩子挂到运行上。
+        self.register_abort = register_abort
 
 
 QUERY = dict(type='string', minLength=1, maxLength=1500, description='独立完整的查询，包含公司/技能/薪资条件')
@@ -361,7 +363,8 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                 self.extensions.pending(state['run']['id'], state)
                 return False
             state['calls'] += 1
-            result = MCPClient.call(server, binding['tool_name'], args)
+            result = MCPClient.call(server, binding['tool_name'], args,
+                                    should_stop=hooks.should_stop if hooks else None)
             label = binding['label']
             for secret in [server.get('token', ''), *server.get('env', {}).values()]:
                 if len(secret) >= 4:
@@ -431,7 +434,8 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                     state['partial'] = ''
                     assistant, usage, reasoning = stream_turn(get_model_config(), state['messages'], state['tools'],
                                                               on_delta=on_delta, on_reasoning=hooks.on_reasoning,
-                                                              should_stop=hooks.should_stop)
+                                                              should_stop=hooks.should_stop,
+                                                              register_abort=hooks.register_abort)
                 else:
                     assistant, usage = tool_turn(get_model_config(), state['messages'], state['tools'])
                 state['turns'] += 1
@@ -462,6 +466,9 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             state['run']['degraded'].append('达到轮数、工具次数、上下文或时间上限')
             return self._result(state, '本轮已达到执行上限，已停止继续调用工具。请缩小问题范围或分步继续；已完成的调用可在执行过程查看。')
         except ValueError as exc:
+            if hooks and hooks.should_stop and hooks.should_stop():
+                # 取消线程关闭了模型流/MCP 会话，把断流异常按中断收尾而不是失败落库。
+                return self._interrupt(state)
             state['run']['status'] = 'failed'
             self._save(state['run'])
             self.extensions.finish_pending(state['run']['id'])

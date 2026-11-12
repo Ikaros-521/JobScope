@@ -247,13 +247,16 @@ def _sse_payloads(response):
             yield payload
 
 
-def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, should_stop=None, timeout=60):
+def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, should_stop=None, timeout=60, register_abort=None):
     """Streaming tool_turn: content and reasoning deltas go to the callbacks as they arrive.
 
     Returns (assistant_message, usage, reasoning) with the same message shape as tool_turn.
     should_stop is polled between chunks: when the user stops the run the stream is
     abandoned immediately; the partial turn either validates truncated or raises,
     and the caller discards the outcome either way.
+    register_abort(fn) -> unregister lets the caller close this response from the
+    cancelling thread, so a stop also interrupts the wait for the *next* chunk
+    (thinking models can sit silent between chunks for tens of seconds).
     """
     from .chat import validate_model_url
     import json
@@ -266,59 +269,64 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, sh
         with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
             with client.stream('POST', validate_model_url(endpoint(config['url'], protocol)), headers=headers(config), json=body) as response:
                 response.raise_for_status()
-                for payload in _sse_payloads(response):
-                    if should_stop is not None and should_stop():
-                        break
-                    data = json.loads(payload)
-                    if protocol == 'anthropic':
-                        usage = data.get('usage', usage) or usage
-                        kind = data.get('type')
-                        if kind == 'content_block_start':
-                            block = data.get('content_block') or {}
-                            if block.get('type') == 'tool_use':
-                                anthropic_tools[data.get('index')] = dict(id=block.get('id'), name=block.get('name'), arguments='')
-                        elif kind == 'content_block_delta':
-                            delta = data.get('delta') or {}
-                            if delta.get('type') == 'text_delta' and isinstance(delta.get('text'), str):
-                                text += delta['text']
+                unregister = register_abort(response.close) if register_abort else None
+                try:
+                    for payload in _sse_payloads(response):
+                        if should_stop is not None and should_stop():
+                            break
+                        data = json.loads(payload)
+                        if protocol == 'anthropic':
+                            usage = data.get('usage', usage) or usage
+                            kind = data.get('type')
+                            if kind == 'content_block_start':
+                                block = data.get('content_block') or {}
+                                if block.get('type') == 'tool_use':
+                                    anthropic_tools[data.get('index')] = dict(id=block.get('id'), name=block.get('name'), arguments='')
+                            elif kind == 'content_block_delta':
+                                delta = data.get('delta') or {}
+                                if delta.get('type') == 'text_delta' and isinstance(delta.get('text'), str):
+                                    text += delta['text']
+                                    if on_delta:
+                                        on_delta(delta['text'])
+                                elif delta.get('type') == 'thinking_delta' and isinstance(delta.get('thinking'), str):
+                                    reasoning += delta['thinking']
+                                    if on_reasoning:
+                                        on_reasoning(delta['thinking'])
+                                elif delta.get('type') == 'input_json_delta' and isinstance(delta.get('partial_json'), str):
+                                    pending = anthropic_tools.get(data.get('index'))
+                                    if pending:
+                                        pending['arguments'] += delta['partial_json']
+                            elif kind == 'message_delta':
+                                usage.update(data.get('usage') or {})
+                        else:
+                            choices = data.get('choices') or []
+                            if data.get('usage'):
+                                usage = data['usage']
+                            if not choices:
+                                continue
+                            delta = choices[0].get('delta') or {}
+                            if isinstance(delta.get('content'), str):
+                                text += delta['content']
                                 if on_delta:
-                                    on_delta(delta['text'])
-                            elif delta.get('type') == 'thinking_delta' and isinstance(delta.get('thinking'), str):
-                                reasoning += delta['thinking']
-                                if on_reasoning:
-                                    on_reasoning(delta['thinking'])
-                            elif delta.get('type') == 'input_json_delta' and isinstance(delta.get('partial_json'), str):
-                                pending = anthropic_tools.get(data.get('index'))
-                                if pending:
-                                    pending['arguments'] += delta['partial_json']
-                        elif kind == 'message_delta':
-                            usage.update(data.get('usage') or {})
-                    else:
-                        choices = data.get('choices') or []
-                        if data.get('usage'):
-                            usage = data['usage']
-                        if not choices:
-                            continue
-                        delta = choices[0].get('delta') or {}
-                        if isinstance(delta.get('content'), str):
-                            text += delta['content']
-                            if on_delta:
-                                on_delta(delta['content'])
-                        for key in ('reasoning_content', 'reasoning'):
-                            if isinstance(delta.get(key), str):
-                                reasoning += delta[key]
-                                if on_reasoning:
-                                    on_reasoning(delta[key])
-                        for item in delta.get('tool_calls') or []:
-                            index = item.get('index', 0)
-                            slot = openai_calls.setdefault(index, dict(id='', type='function', function=dict(name='', arguments='')))
-                            if isinstance(item.get('id'), str):
-                                slot['id'] = item['id']
-                            function = item.get('function') or {}
-                            if isinstance(function.get('name'), str):
-                                slot['function']['name'] += function['name']
-                            if isinstance(function.get('arguments'), str):
-                                slot['function']['arguments'] += function['arguments']
+                                    on_delta(delta['content'])
+                            for key in ('reasoning_content', 'reasoning'):
+                                if isinstance(delta.get(key), str):
+                                    reasoning += delta[key]
+                                    if on_reasoning:
+                                        on_reasoning(delta[key])
+                            for item in delta.get('tool_calls') or []:
+                                index = item.get('index', 0)
+                                slot = openai_calls.setdefault(index, dict(id='', type='function', function=dict(name='', arguments='')))
+                                if isinstance(item.get('id'), str):
+                                    slot['id'] = item['id']
+                                function = item.get('function') or {}
+                                if isinstance(function.get('name'), str):
+                                    slot['function']['name'] += function['name']
+                                if isinstance(function.get('arguments'), str):
+                                    slot['function']['arguments'] += function['arguments']
+                finally:
+                    if unregister:
+                        unregister()
     except (httpx.HTTPError, json.JSONDecodeError, ValueError, KeyError, TypeError, IndexError):
         traceback.print_exc(file=sys.stderr)
         raise ValueError('Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。') from None

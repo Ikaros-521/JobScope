@@ -42,6 +42,9 @@ class RunHandle:
         self.pending_approval = False
         self.pending_payload = None
         self.thread = None
+        # 活动的底层连接关闭钩子（当前模型流）；cancel 时在独立线程里执行，
+        # 让等待下一个 chunk 的 worker 立刻收到断流而不是拖到 chunk 间隔结束。
+        self.aborters = []
 
     def push(self, kind, payload):
         with self.condition:
@@ -61,6 +64,22 @@ class RunHandle:
             self.done = False
             self.closed = False
             self.condition.notify_all()
+
+    def add_abort(self, fn):
+        """Register a connection-close hook fired by cancel(); returns its unregister."""
+        with self.condition:
+            if self.closed:
+                fn()  # Race: cancelled between the check and the registration — close now.
+                return lambda: None
+            self.aborters.append(fn)
+
+        def unregister():
+            with self.condition:
+                try:
+                    self.aborters.remove(fn)
+                except ValueError:
+                    pass
+        return unregister
 
     def snapshot(self):
         with self.condition:
@@ -236,6 +255,10 @@ class RunManager:
             if handle.done and not handle.pending_approval:
                 return handle.snapshot()
             handle.cancel.set()
+            aborters, handle.aborters = handle.aborters, []
+            if aborters:
+                # 关连接可能在网络栈里稍作等待；放到旁路线程执行，cancel 应答保持即时。
+                threading.Thread(target=lambda: [fn() for fn in aborters], daemon=True).start()
             if handle.pending_approval:
                 handle.pending_approval = False
                 handle.pending_payload = None
@@ -278,6 +301,7 @@ class RunManager:
             on_delta=lambda piece: handle.push('delta', dict(text=piece)),
             on_reasoning=lambda piece: handle.push('reasoning_delta', dict(text=piece)),
             should_stop=handle.cancel.is_set,
+            register_abort=handle.add_abort,
         )
 
     def _execute(self, handle, message, history, mode, permission_mode='autonomous'):
@@ -300,10 +324,15 @@ class RunManager:
             # Already acknowledged by cancel(); the worker just reached its checkpoint.
             return
         except ValueError as exc:
+            if handle.cancel.is_set():
+                # 取消线程关闭模型流/MCP 会话引发的断流：停止已被确认，不广播错误。
+                return
             handle.error = str(exc)
             handle.push('error', dict(message=handle.error))
             handle.finish()
         except Exception:
+            if handle.cancel.is_set():
+                return
             handle.error = '生成失败，请稍后重试'
             handle.push('error', dict(message=handle.error))
             handle.finish()
@@ -314,10 +343,14 @@ class RunManager:
                 result = GeneralAgent(self.repo).resume(handle.id, approved, approval_id, self._hooks(handle), grant=grant)
             self._settle(handle, result, 'general')
         except ValueError as exc:
+            if handle.cancel.is_set():
+                return
             handle.error = str(exc)
             handle.push('error', dict(message=handle.error))
             handle.finish()
         except Exception:
+            if handle.cancel.is_set():
+                return
             handle.error = '生成失败，请稍后重试'
             handle.push('error', dict(message=handle.error))
             handle.finish()
