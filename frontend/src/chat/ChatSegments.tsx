@@ -1,4 +1,4 @@
-import type { ChatSegment } from '../api'
+import type { ChatSegment, ToolStep } from '../api'
 import { Markdown } from './Markdown'
 import { ReasoningBlock } from './ReasoningBlock'
 import { StepRow } from './ToolTimeline'
@@ -10,7 +10,12 @@ export function ChatSegments({ segments, live, showReasoning }: { segments: Chat
   const streamingIndex = live ? segments.length - 1 : -1
   return <div className="chat-segments">
     {segments.map((segment, index) => {
-      if (segment.kind === 'step') return <StepRow key={`step-${segment.step.step}`} step={segment.step} open={false} />
+      if (segment.kind === 'step') {
+        // 落库的 step 段把 ToolStep 挂在 event 键下（general_agent._event），流式增量的 step 段才是 step 键：两种形状都认。
+        const step = (segment.step ?? segment.event) as ToolStep | undefined
+        if (!step) return null
+        return <StepRow key={`step-${step.step}`} step={step} open={false} />
+      }
       if (segment.kind === 'reasoning') {
         if (!showReasoning) return null
         return <ReasoningBlock key={`reasoning-${index}`} text={segment.text} live={index === streamingIndex} />
