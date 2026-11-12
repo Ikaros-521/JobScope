@@ -57,6 +57,13 @@ def add_material(client, company='甲公司'):
                                                   text='2024 年度报告：参保人数由 312 人变为 240 人')).json()['evidence']
 
 
+def disable_local_source(tmp_path):
+    """重新计算默认会先自动刷新本地统计；验证「手动信号如何进报告」的用例先关掉它，
+    回到只对既有信号打分的口径，测试意图才不被自动刷新产出的信号盖住。"""
+    from jobscope.reliability.sources import SignalSourceInput, SignalSourceStore
+    SignalSourceStore(Repository(tmp_path)).save('jobscope_jobs', SignalSourceInput(mode='disabled'))
+
+
 def extract_tasks(client):
     return [task for task in client.get('/api/tasks').json()['tasks'] if task.get('kind') == 'reliability_extract']
 
@@ -388,6 +395,7 @@ def test_twelve_local_jobs_score_pay_and_professional_offline(client, tmp_path):
 
 def test_history_endpoint_serves_one_company_trend_only(client, tmp_path):
     """单公司历史趋势：diff 只归因到这家公司自己两次快照之间变了的规则，读路径不写任何行。"""
+    disable_local_source(tmp_path)
     assert client.get('/api/companies/甲公司/reliability/history').json() == {'history': None}
     add_signal(tmp_path, 'company_age', {'years': 8}, 'E-' + 'a' * 24)
     client.post('/api/companies/甲公司/reliability', json=dict())
@@ -511,8 +519,9 @@ def test_extract_records_degraded_status_and_keeps_the_raw(client, monkeypatch):
     assert '这家公司整体不错' in task['raw'] and len(task['raw']) <= 4000
 
 
-def test_extract_accepted_signal_carries_the_evidence_kind_source_class(client, monkeypatch):
+def test_extract_accepted_signal_carries_the_evidence_kind_source_class(client, monkeypatch, tmp_path):
     model_on(monkeypatch)
+    disable_local_source(tmp_path)
     evidence = add_material(client)
     content = json.dumps(dict(signals=[dict(rule='disclosure_available', dimension='operations',
                                             value={'count': 3}, evidence_id=evidence['id'])]), ensure_ascii=False)
@@ -554,6 +563,7 @@ def test_extract_with_no_material_skips_without_calling_the_model(client, monkey
 
 
 def test_every_persisted_finding_cites_evidence_and_material_has_no_number(client, tmp_path):
+    disable_local_source(tmp_path)
     add_signal(tmp_path, 'company_age', {'years': 8}, 'E-' + 'a' * 24)
     add_signal(tmp_path, 'disclosure_available', {'count': 3}, 'E-' + 'b' * 24)
     add_signal(tmp_path, 'employee_review_sample', {'samples': 3, 'negative': 3}, 'E-' + 'c' * 24, 'employee')
@@ -569,3 +579,21 @@ def test_every_persisted_finding_cites_evidence_and_material_has_no_number(clien
         assert {item['kind'] for item in items} == {'assessment', 'material'}
         assert [item['score'] for item in items if item['kind'] == 'material'] == [None, None]
         assert next(item['score'] for item in items if item['kind'] == 'assessment') is not None
+
+
+def test_recompute_refreshes_local_coverage_through_the_api(client, tmp_path):
+    """存了岗位的公司点「重新计算」：HTTP 响应带回自动刷新的本地统计，缺口不再是「尚无来源」。"""
+    repo = Repository(tmp_path)
+    for index in range(3):
+        repo.save_job(dict(company='丙公司', title=f'后端工程师{index}', location='杭州',
+                           salary=f'{15 + index}-{18 + index}K', description_status='complete',
+                           description='负责服务端开发\n1、按需求实现接口', source='boss', url=''), 'boss')
+    for index in range(20):
+        repo.save_job(dict(company='同城对照公司', title=f'工程师{index}', location='杭州',
+                           salary=f'{20 + index % 5}-{25 + index % 5}K', description_status='listing',
+                           description='列表摘要', source='boss', url=''), 'boss')
+    report = client.post('/api/companies/丙公司/reliability', json=dict()).json()
+    assert report['collection']['status'] == 'completed' and report['collection']['count'] >= 2
+    assert report['score'] is not None
+    pay = next(item for item in report['dimensions'] if item['dimension'] == 'pay')
+    assert pay['score'] is not None and '尚无来源' not in ''.join(pay['missing'])

@@ -7,6 +7,25 @@ from .models import (DISCLAIMER, DISCLAIMER_VERSION, DimensionScore, Reliability
                      SignalInput)
 from .rubric import ASSESSMENT, RULES, RUBRIC_VERSION, score
 
+# 重新计算时默认连带刷新的本地来源。零联网、零成本、幂等（证据身份含内容哈希、信号 INSERT OR
+# IGNORE），但仍然尊重设置里的关闭状态——用户关掉就是不想要，哪怕它免费。
+LOCAL_SOURCE = 'jobscope_jobs'
+
+
+def persist_outcome(repo, identity, source_id, outcome, evidence_kind):
+    """采集结果先落证据再落信号：证据仍是唯一的原始层，端点与自动刷新共用同一段落库代码。"""
+    saved = []
+    for item in outcome['signals']:
+        evidence = repo.save_evidence(dict(title=f"{identity['name']} {item['rule']}", company=identity['name'],
+                                           kind=evidence_kind,
+                                           text=item.get('text') or json.dumps(item, sort_keys=True, ensure_ascii=False),
+                                           url=item.get('url', ''), published_at=item.get('observed_at') or None), source_id)
+        saved.append(repo.save_signal(SignalInput(
+            company_id=identity['id'], dimension=item['dimension'], rule=item['rule'], value=item['value'],
+            unit=item.get('unit', ''), source_class=item['source_class'], evidence_id=evidence['id'],
+            observed_at=item.get('observed_at', ''), collected_at=item.get('collected_at') or now())))
+    return saved
+
 
 def _report_finding(item):
     """material 类依据只出文字不出数字：那个数字量的是本项目的材料覆盖度。"""
@@ -24,8 +43,21 @@ class ReliabilityService:
     def company(self, name):
         return self.repo.resolve_company(name)
 
+    def refresh_local(self, company):
+        """重新计算前的本地源自动刷新。「重新计算」是用户最强的直觉动作，只对旧信号重打分会让
+        一家明明存了十几条岗位的公司永远显示「尚无来源」——本地统计不联网不限速，刷新它再打分，
+        缺口文案才会从「尚无来源」变成具体的样本闸门说明。"""
+        from . import local
+        from .sources import SignalSourceStore
+        if not SignalSourceStore(self.repo).enabled(LOCAL_SOURCE):
+            return None
+        outcome = local.collect(LOCAL_SOURCE, company['name'], repo=self.repo, identity=company)
+        saved = persist_outcome(self.repo, company, LOCAL_SOURCE, outcome, local.DERIVED_KIND)
+        return dict(source=LOCAL_SOURCE, status=outcome['status'], message=outcome['message'], count=len(saved))
+
     def recompute(self, name, credit_code=''):
         company = self.repo.resolve_company(name, credit_code)
+        collection = self.refresh_local(company)
         stored = self.repo.signals(company['id'], ttl_days={rule: spec.ttl_days for rule, spec in RULES.items()})
         stale = {item['rule'] for item in stored if item['stale']}
         parsed = [SignalInput(**{key: value for key, value in item.items() if key in SignalInput.model_fields}) for item in stored]
@@ -46,7 +78,7 @@ class ReliabilityService:
             limitations=['分数只反映 JobScope 当前已保存材料能说明的范围，样本量小、来源单一或口径不一致时会明显偏高或偏低。',
                          '参保人数、涉诉数量等公开数字有多种成因，本工具不给因果结论。'])
         payload = {**report.model_dump(), 'summary': wording.overall_text(report.score, report.confidence),
-                   'disclaimer': DISCLAIMER}
+                   'disclaimer': DISCLAIMER, 'collection': collection}
         self.repo.save_reliability(payload)
         return payload
 

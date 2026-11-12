@@ -221,7 +221,11 @@ export default function App() {
     await perform('reliability', async () => {
       const result = await computeReliability(company)
       if (generation === jobGeneration.current && id === activeJobId.current) {
-        setReliability(result); setReliabilityAction(null)
+        setReliability(result)
+        // 重算会自动刷新本地统计；把这段反馈亮出来，用户才知道分数用上了哪些已存数据。
+        setReliabilityAction(result.collection
+          ? { label: '已自动刷新本地统计', status: result.collection.status, message: result.collection.message }
+          : null)
         setReliabilityHistory((await getReliabilityHistory(company)).history)
       }
     })

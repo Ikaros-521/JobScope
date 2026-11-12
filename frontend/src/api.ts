@@ -76,7 +76,9 @@ export type ReliabilityReport = {
   // 顶层 confidence 是「按权重算出的维度覆盖度」，不是单维度的依据充分度，别和维度里那个混称。
   confidence: number; summary: string; disclaimer: string; dimensions: ReliabilityDimension[];
   rubric_version: string; wording_version: string; disclaimer_version: string; computed_at: string;
-  input_hash: string; evidence_ids: string[]; limitations: string[]
+  input_hash: string; evidence_ids: string[]; limitations: string[];
+  // 重新计算时自动刷新的本地统计（不联网）；来源被用户关闭时为 null。
+  collection?: { source: string; status: string; message: string; count: number } | null
 }
 // 单公司历史趋势：只对比这家公司自己的相邻两次快照，没有任何跨公司对照。
 export type ReliabilitySnapshot = {

@@ -611,7 +611,6 @@ def create_app(data_dir=None):
     @app.post('/api/companies/{company}/signals/collect')
     def collect_company_signals(data: SignalCollectInput, company: str = PathParam(min_length=1, max_length=300)):
         from .reliability import collectors, local, paid
-        from .reliability.models import SignalInput
         from .reliability.sources import SIGNAL_SOURCES, SignalSourceStore
         if data.source not in SIGNAL_SOURCES:
             raise HTTPException(400, '未登记的信号来源')
@@ -639,18 +638,11 @@ def create_app(data_dir=None):
         else:
             browser_module = load_module('browser') if data.source in collectors.READERS else None
             outcome = collectors.collect(data.source, identity['name'], browser_module=browser_module, data_dir=data_dir)
-        saved = []
-        for item in outcome['signals']:
-            # 每条信号先落成一条可溯源证据，再落成信号记录：证据仍是唯一的原始层。
-            # url 必须取信号实际出自的那个地址：浏览器/付费接口用各自出处，本地计算没有出处就留空。
-            evidence = repo.save_evidence(dict(title=f"{identity['name']} {item['rule']}", company=identity['name'],
-                                               kind=local.DERIVED_KIND if from_local else (paid.PAID_KIND if from_paid else 'disclosure'),
-                                               text=item.get('text') or json.dumps(item, sort_keys=True, ensure_ascii=False),
-                                               url=item.get('url', ''), published_at=item.get('observed_at') or None), data.source)
-            saved.append(repo.save_signal(SignalInput(
-                company_id=identity['id'], dimension=item['dimension'], rule=item['rule'], value=item['value'],
-                unit=item.get('unit', ''), source_class=item['source_class'], evidence_id=evidence['id'],
-                observed_at=item.get('observed_at', ''), collected_at=item.get('collected_at') or now())))
+        # 每条信号先落成一条可溯源证据，再落成信号记录：证据仍是唯一的原始层。
+        # url 必须取信号实际出自的那个地址：浏览器/付费接口用各自出处，本地计算没有出处就留空。
+        kind = local.DERIVED_KIND if from_local else (paid.PAID_KIND if from_paid else 'disclosure')
+        from .reliability.service import persist_outcome
+        saved = persist_outcome(repo, identity, data.source, outcome, kind)
         return dict(status=outcome['status'], message=outcome['message'], signals=saved)
 
     @app.post('/api/companies/{company}/signals/extract')

@@ -10,9 +10,22 @@ from jobscope.reliability.service import ReliabilityService
 from jobscope.repository import Repository
 
 
-def build(tmp_path):
+def build(tmp_path, local_source=True):
+    """local_source=False 模拟用户在设置里关掉本地来源：recompute 的自动刷新必须尊重这个开关。"""
     repo = Repository(tmp_path)
+    if not local_source:
+        from jobscope.reliability.sources import SignalSourceInput, SignalSourceStore
+        SignalSourceStore(repo).save('jobscope_jobs', SignalSourceInput(mode='disabled'))
     return repo, ReliabilityService(repo)
+
+
+def add_job(repo, company, title='后端工程师', location='杭州', salary='15-18K·13薪',
+            status='complete', description=None):
+    payload = dict(company=company, title=title, location=location, salary=salary,
+                   description_status=status,
+                   description=description or '负责服务端开发\n1、按需求实现接口\n2、排查线上问题',
+                   source='boss', url='')
+    return repo.save_job(payload, 'boss')
 
 
 def add(repo, company, rule, value, evidence, source_class='official', collected_at='2026-11-09T00:00:00+00:00'):
@@ -27,7 +40,8 @@ def dimension(report, name):
 
 
 def test_a_company_without_signals_gets_no_number_but_still_lists_gaps(tmp_path):
-    repo, service = build(tmp_path)
+    # 「没有任何信号」现在只能通过关闭本地源构造：重新计算默认会先刷新本地统计。
+    repo, service = build(tmp_path, local_source=False)
     company = repo.resolve_company('甲公司')
     report = service.recompute(company['name'])
     assert report['score'] is None and report['confidence'] == 0
@@ -100,7 +114,7 @@ def test_findings_carry_the_evidence_they_came_from(tmp_path):
 
 def test_every_persisted_finding_points_back_to_one_saved_signal(tmp_path):
     # 「无证据不出结论」这条红线在数据结构上的落点：持久化的每一句话都必须带得出处的编号。
-    repo, service = build(tmp_path)
+    repo, service = build(tmp_path, local_source=False)
     company = repo.resolve_company('甲公司')
     saved = {item['evidence_id'] for item in repo.signals(company['id'])}
     for rule, value, evidence, source in (
@@ -124,7 +138,7 @@ def test_every_persisted_finding_points_back_to_one_saved_signal(tmp_path):
 
 def test_a_material_rule_describes_coverage_without_producing_a_score(tmp_path):
     # MATERIAL 规则量的是本项目手上的材料，不是这家公司的薪资待遇：只出文字，不出分。
-    repo, service = build(tmp_path)
+    repo, service = build(tmp_path, local_source=False)
     company = repo.resolve_company('甲公司')
     evidence = 'E-' + '2' * 24
     add(repo, company, 'salary_quote_coverage', {'known': 9, 'total': 10}, evidence)
@@ -162,6 +176,39 @@ def test_report_carries_the_three_versions_and_a_subjective_reference_label(tmp_
         RUBRIC_VERSION, wording.WORDING_VERSION, DISCLAIMER_VERSION)
     assert report['disclaimer'] == DISCLAIMER
     assert report['limitations'] and report['computed_at']
+
+
+def test_recompute_refreshes_local_signals_before_scoring(tmp_path):
+    """重新计算是用户的最强直觉动作：存了岗位的公司点它必须直接出分，而不是永远「尚无来源」。"""
+    repo, service = build(tmp_path)
+    company = repo.resolve_company('丙公司')
+    for index in range(3):
+        add_job(repo, '丙公司', title=f'后端工程师{index}', salary=f'{15 + index}-{18 + index}K')
+    for index in range(20):
+        add_job(repo, '同城对照公司', title=f'工程师{index}', salary=f'{20 + index % 5}-{25 + index % 5}K')
+    report = service.recompute('丙公司')
+    # 本地统计在打分前已刷新：collection 报告来源与样本，薪资维度直接过闸门出分。
+    assert report['collection']['status'] == 'completed' and report['collection']['count'] >= 2
+    assert report['score'] is not None and dimension(report, 'pay')['score'] is not None
+    assert dimension(report, 'professional')['score'] is not None  # 3 条完整 JD 过闸门
+    assert '尚无来源' not in ''.join(dimension(report, 'pay')['missing'])
+
+
+def test_recompute_local_refresh_is_idempotent(tmp_path):
+    repo, service = build(tmp_path)
+    repo.resolve_company('丙公司')
+    add_job(repo, '丙公司')
+    first, second = service.recompute('丙公司'), service.recompute('丙公司')
+    assert first['collection']['count'] == second['collection']['count']
+    assert first['input_hash'] == second['input_hash']
+
+
+def test_recompute_respects_a_disabled_local_source(tmp_path):
+    repo, service = build(tmp_path, local_source=False)
+    add_job(repo, '丙公司')
+    report = service.recompute('丙公司')
+    assert report['collection'] is None
+    assert [item['rule'] for item in repo.signals(report['company_id'])] == []
 
 
 def company_rows(repo):
