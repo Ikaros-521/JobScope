@@ -37,6 +37,7 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, name TEXT NOT NULL, credit_code TEXT NOT NULL DEFAULT '', aliases TEXT NOT NULL DEFAULT '[]', payload TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS company_signals (id TEXT PRIMARY KEY, company_id TEXT NOT NULL REFERENCES companies(id), identity TEXT UNIQUE NOT NULL, rule TEXT NOT NULL, dimension TEXT NOT NULL, source_class TEXT NOT NULL, evidence_id TEXT NOT NULL, observed_at TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS company_reliability (company_id TEXT REFERENCES companies(id), input_hash TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(company_id, input_hash));
+                CREATE TABLE IF NOT EXISTS resume_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, job_id TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', job_title TEXT NOT NULL DEFAULT '', jd_digest TEXT NOT NULL DEFAULT '', base_text TEXT NOT NULL DEFAULT '', markdown TEXT NOT NULL, template_id TEXT NOT NULL DEFAULT 'classic', notes TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
             """)
             self._migrate_conversations(conn)
             # 读路径高频查询的二级索引（放在 _migrate_conversations 之后：conversations 的
@@ -222,6 +223,54 @@ class Repository:
         with self.connection() as conn:
             conn.execute("INSERT OR REPLACE INTO resume VALUES (1,?,?,?)", (text, format, revision))
         return self.resume()
+
+    # ---- 简历工坊：每次针对岗位的定制结果保存为一个可二次编辑的投递版本 ----
+
+    _VERSION_COLUMNS = "id,title,job_id,company,job_title,jd_digest,base_text,markdown,template_id,notes,created_at,updated_at"
+
+    def list_resume_versions(self):
+        with self.connection() as conn:
+            rows = conn.execute("SELECT id,title,company,job_title,template_id,created_at,updated_at,length(markdown) AS characters FROM resume_versions ORDER BY updated_at DESC").fetchall()
+            return [dict(row) for row in rows]
+
+    def resume_version(self, version_id):
+        with self.connection() as conn:
+            row = conn.execute(f"SELECT {self._VERSION_COLUMNS} FROM resume_versions WHERE id=?", (version_id,)).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        try:
+            item["notes"] = json.loads(item.get("notes") or "[]")
+        except ValueError:
+            item["notes"] = []
+        return item
+
+    def save_resume_version(self, data):
+        """带 id 更新既有版本，否则新建；更新时保留创建时间与 base_text 原快照。"""
+        existing = self.resume_version(data["id"]) if data.get("id") else None
+        timestamp = now()
+        if existing:
+            fields = {key: data[key] for key in ("title", "job_id", "company", "job_title", "jd_digest", "markdown", "template_id") if key in data}
+            fields["notes"] = json.dumps(data.get("notes", existing["notes"]), ensure_ascii=False)
+            fields["updated_at"] = timestamp
+            with self.connection() as conn:
+                conn.execute(f"UPDATE resume_versions SET {','.join(key + '=?' for key in fields)} WHERE id=?", (*fields.values(), data["id"]))
+            return self.resume_version(data["id"])
+        item = dict(job_id="", company="", job_title="", jd_digest="", base_text="", notes=[], template_id="classic")
+        item.update(data)
+        item["notes"] = json.dumps(item["notes"], ensure_ascii=False)
+        with self.connection() as conn:
+            cursor = conn.execute(
+                "INSERT INTO resume_versions (title,job_id,company,job_title,jd_digest,base_text,markdown,template_id,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                (item["title"], item["job_id"], item["company"], item["job_title"], item["jd_digest"], item["base_text"], item["markdown"], item["template_id"], item["notes"], timestamp, timestamp),
+            )
+            version_id = cursor.lastrowid
+        return self.resume_version(version_id)
+
+    def delete_resume_version(self, version_id):
+        with self.connection() as conn:
+            cursor = conn.execute("DELETE FROM resume_versions WHERE id=?", (version_id,))
+            return cursor.rowcount > 0
 
     def save_report(self, report):
         with self.connection() as conn:

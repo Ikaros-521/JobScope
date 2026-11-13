@@ -172,3 +172,37 @@ class SignalSourceInput(RequestModel):
     mode: Literal['disabled', 'enabled']
     key: str = Field(default='', max_length=4000)
     url: str = Field(default='', max_length=2000)
+class ResumeVersionInput(RequestModel):
+    """新建投递版本：可直接从「我的简历」复制起步，也承载优化结果的落库。"""
+    title: str = Field(min_length=1, max_length=100)
+    markdown: str = Field(min_length=1, max_length=60000)
+    template_id: str = Field(default='classic', max_length=50)
+    job_id: str = Field(default='', max_length=100)
+    company: str = Field(default='', max_length=300)
+    job_title: str = Field(default='', max_length=300)
+    jd_digest: str = Field(default='', max_length=20000)
+    base_text: str = Field(default='', max_length=100000)
+    notes: list[Annotated[str, Field(max_length=600)]] = Field(default_factory=list, max_length=12)
+
+
+class ResumeVersionPatch(RequestModel):
+    """二次编辑：缺省字段保持不变，template_id 需为内置模板之一。"""
+    title: str | None = Field(default=None, min_length=1, max_length=100)
+    markdown: str | None = Field(default=None, min_length=1, max_length=60000)
+    template_id: str | None = Field(default=None, max_length=50)
+    notes: list[Annotated[str, Field(max_length=600)]] | None = None
+
+
+class ResumePreviewInput(RequestModel):
+    markdown: str = Field(min_length=1, max_length=60000)
+    template_id: str = Field(default='classic', max_length=50)
+
+
+class OptimizeResumeInput(RequestModel):
+    """JD 定向优化：基础简历缺省取「我的简历」，JD 来自岗位档案或手动粘贴。"""
+    resume_text: str = Field(default='', max_length=100000)
+    job_id: str = Field(default='', max_length=100)
+    jd_text: str = Field(default='', max_length=20000)
+    company: str = Field(default='', max_length=300)
+    job_title: str = Field(default='', max_length=300)
+    instructions: str = Field(default='', max_length=2000)

@@ -233,3 +233,25 @@ export function date(value: string | null) {
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
 }
 export function safeUrl(url: string) { try { const parsed = new URL(url); return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : undefined } catch { return undefined } }
+// ---- 简历工坊：JD 定向优化、版本管理、模板预览与多格式导出 ----
+export type ResumeTemplate = { id: string; name: string; description: string }
+export type ResumeVersionSummary = { id: number; title: string; company: string; job_title: string; template_id: string; created_at: string; updated_at: string; characters: number }
+export type ResumeVersion = ResumeVersionSummary & { job_id: string; jd_digest: string; base_text: string; markdown: string; notes: string[] }
+export type ResumeVersionDraft = { title: string; markdown: string; template_id?: string; job_id?: string; company?: string; job_title?: string; jd_digest?: string; base_text?: string; notes?: string[] }
+export function listResumeTemplates() { return api<{ templates: ResumeTemplate[] }>('/resume-templates') }
+export function previewResumeDocument(markdown: string, templateId: string) {
+  return post<{ html: string }>('/resume-templates/preview', { markdown, template_id: templateId })
+}
+export function listResumeVersions() { return api<{ versions: ResumeVersionSummary[] }>('/resume-versions') }
+export function getResumeVersion(id: number) { return api<ResumeVersion>(`/resume-versions/${id}`) }
+export function createResumeVersion(draft: ResumeVersionDraft) { return post<ResumeVersion>('/resume-versions', draft) }
+export function updateResumeVersion(id: number, patch: Partial<Pick<ResumeVersionDraft, 'title' | 'markdown' | 'template_id' | 'notes'>>) {
+  return api<ResumeVersion>(`/resume-versions/${id}`, { method: 'PUT', body: JSON.stringify(patch) })
+}
+export function deleteResumeVersion(id: number) { return api<{ ok: boolean }>(`/resume-versions/${id}`, { method: 'DELETE' }) }
+export function optimizeResume(payload: { resume_text?: string; job_id?: string; jd_text?: string; company?: string; job_title?: string; instructions?: string }) {
+  return post<ResumeVersion>('/resume-versions/optimize', payload)
+}
+export function exportResumeVersion(id: number, format: 'pdf' | 'docx' | 'html' | 'md', filename: string) {
+  return download(`/resume-versions/${id}/export?format=${format}`, filename)
+}

@@ -20,8 +20,9 @@ from .analysis import analyze, parse_resume
 from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
 from . import collect_service
+from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
-from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ModelBindingInput, ReliabilityInput, ResumeInput, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
+from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ModelBindingInput, OptimizeResumeInput, ReliabilityInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, SystemSettingsInput, SystemSettingsStore, ConnectionInput, _active, get_model_config, purpose_configured
@@ -843,6 +844,84 @@ def create_app(data_dir=None):
             raise HTTPException(502, str(exc)) from exc
         repo.save_report(report)
         return report
+
+    # ---- 简历工坊：模板预览、JD 定向优化、版本二次编辑与多格式导出 ----
+
+    @app.get("/api/resume-templates")
+    def resume_templates():
+        return {"templates": workshop.template_summary()}
+
+    @app.post("/api/resume-templates/preview")
+    def preview_resume_template(data: ResumePreviewInput):
+        if data.template_id not in workshop.TEMPLATES:
+            raise HTTPException(400, "未知简历模板，请从内置模板中选择")
+        return {"html": workshop.render_document(data.markdown, data.template_id)}
+
+    @app.get("/api/resume-versions")
+    def resume_versions():
+        return {"versions": repo.list_resume_versions()}
+
+    @app.post("/api/resume-versions")
+    def create_resume_version(data: ResumeVersionInput):
+        if data.template_id not in workshop.TEMPLATES:
+            raise HTTPException(400, "未知简历模板，请从内置模板中选择")
+        return repo.save_resume_version(data.model_dump())
+
+    @app.get("/api/resume-versions/{version_id}")
+    def resume_version_detail(version_id: int):
+        version = repo.resume_version(version_id)
+        if version is None:
+            raise HTTPException(404, "简历版本不存在")
+        return version
+
+    @app.put("/api/resume-versions/{version_id}")
+    def update_resume_version(version_id: int, data: ResumeVersionPatch):
+        if repo.resume_version(version_id) is None:
+            raise HTTPException(404, "简历版本不存在")
+        if data.template_id is not None and data.template_id not in workshop.TEMPLATES:
+            raise HTTPException(400, "未知简历模板，请从内置模板中选择")
+        patch = {key: value for key, value in data.model_dump().items() if value is not None}
+        return repo.save_resume_version(dict(id=version_id, **patch))
+
+    @app.delete("/api/resume-versions/{version_id}")
+    def delete_resume_version(version_id: int):
+        if not repo.delete_resume_version(version_id):
+            raise HTTPException(404, "简历版本不存在")
+        return {"ok": True}
+
+    @app.post("/api/resume-versions/optimize")
+    def optimize_resume_version(data: OptimizeResumeInput):
+        base_text = data.resume_text.strip() or repo.resume()["text"]
+        if not base_text.strip():
+            raise HTTPException(400, "请先在「我的简历」保存基础简历，或在优化表单粘贴简历文本")
+        jd_text = data.jd_text.strip()
+        company, job_title = data.company.strip(), data.job_title.strip()
+        if data.job_id:
+            job = get_job(data.job_id)
+            jd_text = jd_text or job["description"]
+            company = company or job["company"]
+            job_title = job_title or job["title"]
+        if not jd_text:
+            raise HTTPException(400, "请选择目标岗位或粘贴岗位要求（JD）后再优化")
+        if not purpose_configured('analysis'):
+            raise HTTPException(400, "尚未配置分析模型，请先在「模型设置 → 功能绑定」为「分析」用途绑定模型渠道，再进行简历优化")
+        try:
+            markdown_text, notes = workshop.optimize_resume(base_text, jd_text, company=company, job_title=job_title, instructions=data.instructions)
+        except ValueError as exc:
+            raise HTTPException(502, str(exc)) from None
+        return repo.save_resume_version(dict(
+            title=workshop.compose_title(job_title, company), markdown=markdown_text, template_id="classic",
+            job_id=data.job_id, company=company, job_title=job_title,
+            jd_digest=jd_text[:2000], base_text=base_text, notes=notes))
+
+    @app.get("/api/resume-versions/{version_id}/export")
+    def export_resume_version(version_id: int, format: str = Query("pdf", pattern="^(pdf|docx|html|md)$")):
+        version = repo.resume_version(version_id)
+        if version is None:
+            raise HTTPException(404, "简历版本不存在")
+        media_type, content = workshop.export_version(version, format)
+        quoted = quote(f"{version['title']}.{format}")
+        return Response(content=content, media_type=media_type, headers={"Content-Disposition": f"attachment; filename=resume.{format}; filename*=utf-8''{quoted}"})
 
     @app.post("/api/chat")
     def chat(data: ChatInput):
