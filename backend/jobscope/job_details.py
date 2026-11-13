@@ -179,11 +179,18 @@ def pending_jobs(repo, jobs=None):
             and (j.get('description_status') != 'complete' or j.get('detail_transport') == 'page_state')]
 
 
-def run_batch(repo, task, limit=500, collector=None, pause=time.sleep):
+def run_batch(repo, task, limit=500, ids=None, collector=None, pause=time.sleep):
     collector = collector or collect_detail
-    pending = pending_jobs(repo)[:limit]
+    if ids:
+        # 反查指定岗位（收藏页入口）：不限 complete 状态——反查的意义就是重读已完整的岗位看变化。
+        wanted = set(ids)
+        pending = [j for j in repo.jobs() if j['id'] in wanted][:limit]
+        message = '正在反查指定岗位，逐条保存，可在中断后继续'
+    else:
+        pending = pending_jobs(repo)[:limit]
+        message = '正在补全完整JD，逐条保存，可在中断后继续'
     task.update(kind='job_details', total=len(pending), processed=0, count=0, failed=0,
-                status='running', message='正在补全完整JD，逐条保存，可在中断后继续')
+                status='running', message=message)
     repo.update_task(task)
     consecutive_errors = 0
     try:

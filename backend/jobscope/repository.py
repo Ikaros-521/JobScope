@@ -136,6 +136,12 @@ class Repository:
             for field in ('description', 'description_status', 'detail_collected_at', 'detail_source_url', 'detail_transport'):
                 if field in previous:
                     item[field] = previous[field]
+        # 收藏标记是用户意图不是采集数据：重采集整包覆盖 payload 时必须幸存，
+        # 否则一次日常刷新就把用户标过的岗位全部静默取消收藏。
+        if previous:
+            for field in ('starred', 'starred_at'):
+                if field in previous:
+                    item[field] = previous[field]
         item.update(source=source, updated_at=now(), evidence_ids=[])
         # Every job revision retains a complete attributable snapshot.
         body = "\n".join([item["title"], item["company"], item["location"], item["salary"], item["description"]])
@@ -296,7 +302,7 @@ class Repository:
             return [json.loads(row[0]) for row in conn.execute("SELECT payload FROM tasks ORDER BY rowid DESC LIMIT 100")]
 
     @staticmethod
-    def _job_filters(q='', location='', source='', salary_min=None, salary_max=None):
+    def _job_filters(q='', location='', source='', salary_min=None, salary_max=None, starred=False):
         """薪资区间按重叠判定：只要岗位月薪范围与给定区间有交集就算命中，面议/年薪等无法解析的岗位自然落选。"""
         where, params = [], []
         if q:
@@ -314,11 +320,14 @@ class Repository:
         if salary_max is not None:
             where.append("json_extract(payload,'$.salary_monthly_min')<=?")
             params.append(salary_max)
+        if starred:
+            # JSON true 经 json_extract 折算成 1：只认显式收藏，旧行（字段缺失=NULL）与已取消（false=0）都不算。
+            where.append("json_extract(payload,'$.starred')=1")
         return where, params
 
-    def job_ids(self, q='', location='', source='', salary_min=None, salary_max=None, limit=20000):
+    def job_ids(self, q='', location='', source='', salary_min=None, salary_max=None, starred=False, limit=20000):
         """供“选择筛选结果全部”：同一套筛选条件返回全部命中 id。"""
-        where, params = self._job_filters(q, location, source, salary_min, salary_max)
+        where, params = self._job_filters(q, location, source, salary_min, salary_max, starred)
         clause = ' WHERE ' + ' AND '.join(where) if where else ''
         with self.connection() as conn:
             total = conn.execute('SELECT count(*) FROM jobs' + clause, params).fetchone()[0]
@@ -326,8 +335,8 @@ class Repository:
         return [row['id'] for row in rows], total
 
     def update_jobs(self, ids, patch):
-        """批量规范化字段（地点/薪资/标签）。原位改 payload：id 不重排、不新增证据快照。"""
-        fields = {key: patch[key] for key in ('location', 'salary', 'tags') if key in patch}
+        """批量规范化字段（地点/薪资/标签/收藏）。原位改 payload：id 不重排、不新增证据快照。"""
+        fields = {key: patch[key] for key in ('location', 'salary', 'tags', 'starred') if key in patch}
         if not fields:
             return 0
         updated = 0
@@ -336,6 +345,10 @@ class Repository:
             if item is None:
                 continue
             item.update(fields)
+            if fields.get('starred'):
+                item['starred_at'] = now()
+            elif 'starred' in fields:
+                item.pop('starred_at', None)
             if 'salary' in fields:
                 item.update(self._salary_numbers(item['salary']))
             item['evidence_ids'] = []
@@ -409,7 +422,7 @@ class Repository:
 
     def page(self, resource, page=1, page_size=20, q='', location='', source='', salary_min=None, salary_max=None,
              company=None, job_id=None, linked_job_id=None, include_job_postings=True,
-             trim_description=None, trim_text=None):
+             trim_description=None, trim_text=None, starred=False):
         """Bounded SQL queries; filters run before count and pagination.
 
         trim_description / trim_text 仅供列表 HTTP 端点裁剪大字段（前端列表只渲染摘要，
@@ -418,7 +431,7 @@ class Repository:
         where, params = [], []
         if resource == 'jobs':
             table, order = 'jobs', 'updated_at DESC, id DESC'
-            where, params = self._job_filters(q, location, source, salary_min, salary_max)
+            where, params = self._job_filters(q, location, source, salary_min, salary_max, starred)
         elif resource == 'evidence':
             table, order = 'evidence', 'rowid DESC'
             if not include_job_postings:

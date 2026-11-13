@@ -531,14 +531,15 @@ def create_app(data_dir=None):
     @app.get("/api/jobs")
     def jobs(q: str = Query(default="", max_length=300), location: str = Query(default="", max_length=300), source: str = Query(default="", max_length=100),
              salary_min: float | None = Query(default=None, ge=0), salary_max: float | None = Query(default=None, ge=0),
-             page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+             starred: bool = Query(default=False), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
         # 列表卡片只渲染摘要：description 裁剪后整页响应从 MB 级降到几十 KB，全文走 /jobs/{id}。
-        return repo.page('jobs', page, page_size, q=q, location=location, source=source, salary_min=salary_min, salary_max=salary_max, trim_description=600)
+        return repo.page('jobs', page, page_size, q=q, location=location, source=source, salary_min=salary_min, salary_max=salary_max, starred=starred, trim_description=600)
 
     @app.get("/api/jobs/ids")
     def job_ids(q: str = Query(default="", max_length=300), location: str = Query(default="", max_length=300), source: str = Query(default="", max_length=100),
-                salary_min: float | None = Query(default=None, ge=0), salary_max: float | None = Query(default=None, ge=0)):
-        ids, total = repo.job_ids(q=q, location=location, source=source, salary_min=salary_min, salary_max=salary_max)
+                salary_min: float | None = Query(default=None, ge=0), salary_max: float | None = Query(default=None, ge=0),
+                starred: bool = Query(default=False)):
+        ids, total = repo.job_ids(q=q, location=location, source=source, salary_min=salary_min, salary_max=salary_max, starred=starred)
         return {"ids": ids, "total": total}
 
     @app.patch("/api/jobs")
@@ -1290,13 +1291,15 @@ def create_app(data_dir=None):
         details = load_module('job_details')
         if not details.batch_lock.acquire(blocking=False):
             raise HTTPException(409, '完整JD补采正在运行')
-        task = repo.create_task('boss', '完整JD批量补采')
-        task.update(kind='job_details', total=min(data.limit, len(details.pending_jobs(repo))), processed=0, failed=0)
+        # 反查指定岗位与补采共用同一任务管道；标题与初始 total 按模式区分，run_batch 随即按实际池子覆盖。
+        task = repo.create_task('boss', '收藏岗位反查' if data.ids else '完整JD批量补采')
+        initial_total = min(data.limit, len(data.ids)) if data.ids else min(data.limit, len(details.pending_jobs(repo)))
+        task.update(kind='job_details', total=initial_total, processed=0, failed=0)
         repo.update_task(task)
 
         def worker():
             try:
-                details.run_batch(repo, task, limit=data.limit)
+                details.run_batch(repo, task, limit=data.limit, ids=data.ids)
             finally:
                 details.batch_lock.release()
 

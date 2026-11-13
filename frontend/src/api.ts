@@ -3,6 +3,7 @@ export type Job = {
   url: string; source: string; updated_at: string; description: string; evidence_ids: string[]; tags: string[]
   description_status?: string; detail_collected_at?: string; detail_source_url?: string
   description_truncated?: boolean // 列表端点裁剪过正文；全文走 /jobs/{id}
+  starred?: boolean; starred_at?: string // 收藏标记：重采集幸存，见 repository.save_job
 }
 // 列表端点的 text 可能被裁剪（text_truncated），text_hit 是搜索命中处的全文摘要窗口。
 export type Evidence = { id: string; title: string; url: string; source: string; kind: string; company: string; text: string; collected_at: string; published_at: string | null; content_hash: string; text_truncated?: boolean; text_hit?: string }
@@ -118,6 +119,9 @@ export function getCompareCompanies(q = '') { return api<{ companies: CompareCom
 export type CompareLayer = { role: string; experience: string; education: string; company_jobs: number; city_jobs: number; company_median?: number; city_median?: number; ratio?: number; gate: 'pass' | 'few_company' | 'few_city' }
 export type CompareLayers = { city: string; total_jobs: number; parseable: number; mix: { role: string; jobs: number }[]; layers: CompareLayer[] }
 export function getCompanyLayers(companies: string[]) { return api<{ companies: (CompareLayers & { company: string })[] }>(`/reliability/compare?companies=${encodeURIComponent(companies.join('|'))}`) }
+// 岗位收藏与反查：PATCH 支持部分字段（starred 显式 false = 取消收藏）；批量反查 ids 与完整JD补采共用一条任务管道。
+export function patchJobs(ids: string[], patch: { starred?: boolean; location?: string; salary?: string; tags?: string[] }) { return api<{ updated: number }>('/jobs', { method: 'PATCH', body: JSON.stringify({ ids, ...patch }) }) }
+export function startDetailBatch(ids?: string[]) { return post<{ task: Task }>('/browser/details', ids ? { ids } : {}) }
 // 主体归并：规则+LLM 扫描产候选，人工确认/手动合并/拆分是最终事实源；合并即别名并集，
 // jobs/evidence 的原始名不动，读路径按「名称+别名」集合聚数据。
 export type MergeEntity = { id: string; name: string; credit_code: string; aliases: string[]; jobs_count: number }

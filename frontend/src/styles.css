@@ -1727,3 +1727,25 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .merge-resolved { display: grid; gap: 4px; }
 .merge-resolved summary { cursor: pointer; }
 .merge-resolved p { margin: 0; }
+/* ── 岗位收藏（收藏夹 / 星标）追加样式，只加不改 ─────────────────────── */
+/* 卡片第三列放星标：覆盖上方两列网格，勾选框 + 卡体 + 星标 */
+.job-card { grid-template-columns: 24px minmax(0, 1fr) 26px; }
+.job-card-star { display: flex; align-items: flex-start; justify-content: center; min-height: 32px; padding-top: 4px; border: 0; background: none; color: var(--muted); cursor: pointer; opacity: .45; transition: opacity 150ms ease, color 150ms ease; }
+.job-card-star:hover { opacity: 1; color: #b8860b; }
+.job-card-star.starred { opacity: 1; color: #b8860b; }
+.job-card-star.starred svg { fill: currentColor; }
+.job-card-extra { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+.job-card-extra:empty { display: none; }
+.job-card-actions { display: inline-flex; align-items: center; gap: 2px; }
+.job-card-actions .text-button { font-size: 12px; }
+/* 档案筛选行的「只看收藏」开关 */
+.archive-starred { min-height: 32px; margin: 0 2px 0 10px; cursor: pointer; }
+/* 收藏夹视图 */
+.favorites-view { display: grid; gap: 14px; }
+.favorites-panel { display: grid; gap: 10px; padding: 14px 16px; }
+.favorites-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.favorites-filters { display: flex; align-items: center; gap: 8px; min-width: 220px; }
+.favorites-batch { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.favorites-batch .agent-checkbox { min-height: 32px; cursor: pointer; }
+/* 档案筛选表单的通配 input 规则（.job-archive-filters input 40px/100%）会把收藏开关的复选框撑大，收回控件尺寸 */
+.archive-starred input { width: 16px; height: 16px; min-height: 16px; }
