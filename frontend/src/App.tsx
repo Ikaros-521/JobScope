@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { api, post, readable, plain, date, safeUrl, computeReliability, collectCompanySignals, extractCompanySignals, getReliability, getReliabilityHistory, listSignalSources, saveSignalSource } from './api'
+import { api, post, readable, plain, date, safeUrl, computeReliability, collectCompanySignals, extractCompanySignals, getReliability, getReliabilityHistory, listSignalSources, saveSignalSource, patchJobs } from './api'
 import type { ConversationNavigation, SignalSource } from './api'
 import { toast, dismissToast } from './toast'
 import { Pagination, emptyPage } from './Pagination'
@@ -22,6 +22,9 @@ import type { WorkshopPrefill } from './ResumeWorkshop'
 import { navigateTabs } from './tabNavigation'
 import { useCompareSelection } from './compareSelectionStore'
 import { ChatWorkspace } from './chat/ChatWorkspace'
+import { Icon } from './Icon'
+import { JobCard } from './JobCard'
+import { FavoritesView } from './FavoritesView'
 import type { Analysis, BrowserStatus, Evidence, Job, PageInfo, ReliabilityHistory, ReliabilityReport, Source, Task } from './api'
 
 const transportNames: Record<string, string> = { http_api: '接口', browser_page: '需浏览器', company_web: '网页快查', manual: '手动' }
@@ -31,36 +34,13 @@ const requirementNames: Record<string, string> = { met: '满足', matched: '满�
 function needsFullJd(job: Job) {
   return job.description_status === 'listing' || (['boss', 'zhaopin'].includes(job.source) && job.description_status !== 'complete')
 }
-function jobQuery(filters: { q: string; location: string; source: string; salaryMin: string; salaryMax: string }) {
+function jobQuery(filters: { q: string; location: string; source: string; salaryMin: string; salaryMax: string; starred?: boolean }) {
   // 薪资输入单位是 K/月，后端按元比较；留空表示不限制。
   const params = new URLSearchParams({ q: filters.q, location: filters.location, source: filters.source, page_size: '100' })
   if (filters.salaryMin) params.set('salary_min', String(Math.round(Number(filters.salaryMin) * 1000)))
   if (filters.salaryMax) params.set('salary_max', String(Math.round(Number(filters.salaryMax) * 1000)))
+  if (filters.starred) params.set('starred', 'true')
   return params
-}
-function Icon({ name, size = 18 }: { name: string; size?: number }) {
-  const paths: Record<string, ReactNode> = {
-    search: <><circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 4 4" /></>,
-    jobs: <><rect x="3" y="7" width="18" height="14" rx="2" /><path d="M8 7V4h8v3M3 12h18M10 12v3h4v-3" /></>,
-    resume: <><path d="M14 3H5v18h14V8Z" /><path d="M14 3v5h5M8 12h8M8 16h6" /></>,
-    source: <><ellipse cx="12" cy="5" rx="8" ry="3" /><path d="M4 5v7c0 4 16 4 16 0V5M4 12v7c0 4 16 4 16 0" /></>,
-    arrow: <><path d="M5 12h14M14 7l5 5-5 5" /></>,
-    plus: <path d="M12 5v14M5 12h14" />,
-    external: <><path d="M14 4h6v6M20 4l-9 9M10 4H4v16h16v-6" /></>,
-    pin: <><path d="M19 10c0 5-7 11-7 11S5 15 5 10a7 7 0 1 1 14 0Z" /><circle cx="12" cy="10" r="2" /></>,
-    chat: <path d="M21 4H3v14h5l4 4v-4h9Z" />,
-    check: <path d="m5 12 4 4L19 6" />,
-    settings: <><path d="M4 7h16M4 17h16" /><circle cx="9" cy="7" r="3" fill="currentColor" /><circle cx="15" cy="17" r="3" fill="currentColor" /></>,
-    close: <path d="m6 6 12 12M18 6 6 18" />,
-    menu: <path d="M4 6h16M4 12h16M4 18h16" />,
-    filter: <><path d="M4 7h16M7 12h10M10 17h4" /></>,
-    chevron: <path d="m9 5 7 7-7 7" />,
-    book: <><path d="M12 5C8 2 3 3 3 3v16s5-1 9 2c4-3 9-2 9-2V3s-5-1-9 2ZM12 5v16" /></>,
-    globe: <><circle cx="12" cy="12" r="9" /><ellipse cx="12" cy="12" rx="4" ry="9" /><path d="M3 12h18" /></>,
-    chart: <><path d="M4 20h16" /><path d="M7 16v-5M12 16V5M17 16v-8" /></>,
-    wand: <><path d="M4 20 13.5 10.5" /><path d="m15 3.5.8 1.7 1.7.8-1.7.8-.8 1.7-.8-1.7-1.7-.8 1.7-.8Z" /><path d="m19.5 9.5.5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2-1.2-.5 1.2-.5Z" /></>,
-  }
-  return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name] || paths.book}</svg>
 }
 function Button({ children, busy, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { busy?: boolean }) { return <button {...props} disabled={props.disabled || busy}>{busy ? <span className="spinner" /> : null}{children}</button> }
 function Empty({ title, children, icon = 'book' }: { title: string; children: ReactNode; icon?: string }) { return <div className="empty"><div className="empty-icon"><Icon name={icon} /></div><h3>{title}</h3><p>{children}</p></div> }
@@ -68,7 +48,7 @@ function Badge({ value }: { value: string }) { return <span className={`badge ${
 function External({ url, children }: { url: string; children: ReactNode }) { const href = safeUrl(url); return href ? <a className="external-link" href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={13} /></a> : <span className="muted">无来源链接</span> }
 
 export default function App() {
-  const [view, setView] = useState<'jobs' | 'resume' | 'workshop' | 'sources' | 'evidence' | 'compare' | 'global' | 'settings' | 'extensions' | 'system'>('jobs')
+  const [view, setView] = useState<'jobs' | 'favorites' | 'resume' | 'workshop' | 'sources' | 'evidence' | 'compare' | 'global' | 'settings' | 'extensions' | 'system'>('jobs')
   // 岗位详情「优化简历」跳转工坊时的预填（工坊消费后清空，避免切回时重复生效）。
   const [workshopPrefill, setWorkshopPrefill] = useState<WorkshopPrefill | null>(null)
   // 横评已选列表（共享 store）：侧栏徽标用；资料库/岗位详情「加入横评」直接写这份 store。
@@ -89,8 +69,10 @@ export default function App() {
   const [jobs, setJobs] = useState<Job[]>([])
   const [jobsInfo, setJobsInfo] = useState<PageInfo>(emptyPage)
   const [jobsTotal, setJobsTotal] = useState(0)
+  // 收藏数只做侧栏角标：独立轻请求取 total，不与档案列表混用（收藏变动后单独刷新）。
+  const [favTotal, setFavTotal] = useState(0)
   const [tasksInfo, setTasksInfo] = useState<PageInfo>(emptyPage)
-  const jobFilters = useRef({ q: '', location: '', source: '', salaryMin: '', salaryMax: '' })
+  const jobFilters = useRef({ q: '', location: '', source: '', salaryMin: '', salaryMax: '', starred: false })
   const jobsRequest = useRef(0)
   const [sources, setSources] = useState<Source[]>([])
   const [locations, setLocations] = useState<SavedLocation[]>([])
@@ -108,7 +90,7 @@ export default function App() {
   const [busy, setBusy] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
-  const [archiveDraft, setArchiveDraft] = useState({ q: '', source: '', location: '', salaryMin: '', salaryMax: '' })
+  const [archiveDraft, setArchiveDraft] = useState({ q: '', source: '', location: '', salaryMin: '', salaryMax: '', starred: false })
   const [batchEdit, setBatchEdit] = useState<{ ids: string[] } | null>(null)
   const [batchDraft, setBatchDraft] = useState({ location: '', salary: '', tags: '' })
   const [confirmDelete, setConfirmDelete] = useState<{ ids: string[]; label: string } | null>(null)
@@ -155,8 +137,12 @@ export default function App() {
     const params = jobQuery(filters); params.set('page', String(page))
     const token = ++jobsRequest.current
     const data = await api<PageInfo & { jobs: Job[] }>(`/jobs?${params.toString()}`)
-    if (token === jobsRequest.current) { setJobs(data.jobs); setJobsInfo(data); const active = filters; if (!active.q && !active.location && !active.source && !active.salaryMin && !active.salaryMax) setJobsTotal(data.total) }
+    if (token === jobsRequest.current) { setJobs(data.jobs); setJobsInfo(data); const active = filters; if (!active.q && !active.location && !active.source && !active.salaryMin && !active.salaryMax && !active.starred) setJobsTotal(data.total) }
     return data.jobs
+  }, [])
+  const refreshFavCount = useCallback(async () => {
+    // 收藏角标的唯一数据源；失败静默——角标缺一个数字不值得打断主流程。
+    try { setFavTotal((await api<PageInfo>('/jobs?starred=true&page_size=1')).total) } catch { /* 角标静默 */ }
   }, [])
   async function loadTasks(page: number) {
     const data = await api<PageInfo & { tasks: Task[] }>(`/tasks?page=${page}&page_size=10`)
@@ -182,7 +168,7 @@ export default function App() {
     let active = true
     async function init() {
       try {
-        await Promise.all([refreshMetadata(), loadJobs()])
+        await Promise.all([refreshMetadata(), loadJobs(), refreshFavCount()])
         const resume = await api<{ text: string; format: string; revision?: number }>('/resume')
         if (active) { setResumeText(resume.text || ''); setResumeFormat(resume.format || 'text'); setResumeRevision(resume.revision || null); setResumeSaved(Boolean(resume.text)) }
       } catch (err) { if (active) toast((err as Error).message, 'error') }
@@ -431,10 +417,32 @@ export default function App() {
   const hasArchiveFilters = Object.values(jobFilters.current).some(Boolean)
   const extraFilterCount = [archiveDraft.source, archiveDraft.location, archiveDraft.salaryMin || archiveDraft.salaryMax].filter(Boolean).length
   function clearArchiveFilters() {
-    const cleared = { q: '', source: '', location: '', salaryMin: '', salaryMax: '' }
+    const cleared = { q: '', source: '', location: '', salaryMin: '', salaryMax: '', starred: false }
     setArchiveDraft(cleared)
     document.querySelector<HTMLInputElement>('.job-archive-filters .search-input input')?.focus({ preventScroll: true })
     void perform('filter', async () => { await loadJobs(cleared, 1) })
+  }
+  // 星标切换：本地先改列表/详情状态再刷角标，PATCH 很快，无需整页重载。
+  async function toggleStar(item: Job) {
+    await perform('star', async () => {
+      const result = await patchJobs([item.id], { starred: !item.starred })
+      if (!result.updated) return
+      const starred = !item.starred
+      setJobs(list => list.map(entry => entry.id === item.id ? { ...entry, starred, starred_at: starred ? new Date().toISOString() : undefined } : entry))
+      if (detail?.job.id === item.id) setDetail({ ...detail, job: { ...detail.job, starred, starred_at: starred ? new Date().toISOString() : undefined } })
+      void refreshFavCount()
+      toast(starred ? '已收藏，可在收藏夹反查与横评' : '已取消收藏')
+    })
+  }
+  async function setStarredSelected(starred: boolean) {
+    await perform('star-batch', async () => {
+      const result = await patchJobs([...selectedIds], { starred })
+      toast(`${starred ? '已收藏' : '已取消收藏'} ${result.updated} 份岗位`)
+      setSelectedIds(new Set())
+      await loadJobs(undefined, jobsInfo.page)
+      if (selectedId) await loadDetail(selectedId)
+      void refreshFavCount()
+    })
   }
 
   return <div className="app-shell">
@@ -445,6 +453,7 @@ export default function App() {
       <nav id="workspace-navigation" aria-label="主导航" onClick={event => { if ((event.target as HTMLElement).closest('button')) { setNavigationOpen(false); if (window.matchMedia('(max-width: 800px)').matches) document.getElementById('workspace-main')?.focus() } }}>
         <div className="sidebar-caption">研究工作区</div>
         <button aria-current={view === 'jobs' ? 'page' : undefined} className={view === 'jobs' ? 'active' : ''} onClick={() => setView('jobs')}><Icon name="jobs" />岗位研究<span className="nav-count">{jobsTotal}</span></button>
+        <button aria-current={view === 'favorites' ? 'page' : undefined} className={view === 'favorites' ? 'active' : ''} onClick={() => setView('favorites')}><Icon name="star" />收藏{favTotal > 0 && <span className="nav-count">{favTotal}</span>}</button>
         <button aria-current={view === 'resume' ? 'page' : undefined} className={view === 'resume' ? 'active' : ''} onClick={() => setView('resume')}><Icon name="resume" />我的简历{resumeSaved && <span className="nav-dot" />}</button>
         <button aria-current={view === 'workshop' ? 'page' : undefined} className={view === 'workshop' ? 'active' : ''} onClick={() => setView('workshop')}><Icon name="wand" />简历工坊</button>
         <button aria-current={view === 'evidence' ? 'page' : undefined} className={view === 'evidence' ? 'active' : ''} onClick={() => setView('evidence')}><Icon name="book" />公司资料库</button>
@@ -460,13 +469,19 @@ export default function App() {
       <div className="sidebar-bottom"><span className={`connection-dot ${online ? 'connected' : ''}`} />{online ? '本地工作区已连接' : '等待本地服务'}<span className="version">v0.1</span></div>
     </aside>
 
-    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'extensions' || view === 'settings' || view === 'compare' || view === 'system' ? 'main main-compact' : 'main'}>
-      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'resume' ? '我的简历' : view === 'workshop' ? '简历工坊' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'extensions' ? 'Agent 扩展' : view === 'settings' ? '模型设置' : view === 'system' ? '系统设置' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
+    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'extensions' || view === 'settings' || view === 'compare' || view === 'system' || view === 'favorites' ? 'main main-compact' : 'main'}>
+      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'resume' ? '我的简历' : view === 'workshop' ? '简历工坊' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'extensions' ? 'Agent 扩展' : view === 'settings' ? '模型设置' : view === 'system' ? '系统设置' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata(), refreshFavCount()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
       <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} onOpenCompare={() => setView('compare')} /></div>
 
       {view === 'global' && <><section className="page-intro chat-intro"><div><h1>全局对话</h1><p>跨岗位、跨公司检索项目资料，回答标注公司与出处</p></div><span className="revision-label">会话保存在本机</span></section><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onManageExtensions={() => setView('extensions')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} /></>}
 
       {view === 'compare' && <CompanyCompare />}
+
+      {view === 'favorites' && <FavoritesView onOpenJob={id => { setView('jobs'); selectJob(id) }} onOpenCompare={() => setView('compare')} onChange={() => {
+        // 收藏变动会同时影响档案页的「只看收藏」过滤结果，一并刷新。
+        void refreshFavCount()
+        if (jobFilters.current.starred) void perform('filter', async () => { await loadJobs(undefined, 1) })
+      }} />}
 
       {view === 'jobs' && <>
         <section className="page-intro"><div><h1>岗位研究</h1><p>把岗位要求、公司证据和你的经历逐项核对</p></div><Button className="button secondary" onClick={() => openModal('job')}><Icon name="plus" size={17} />导入岗位</Button></section>
@@ -488,6 +503,7 @@ export default function App() {
             <form className="job-archive-filters" aria-label="岗位档案筛选" onSubmit={event => { event.preventDefault(); void perform('filter', async () => { await loadJobs({ ...archiveDraft }, 1) }) }}>
               <label className="search-input"><Icon name="search" size={16} /><span className="sr-only">档案关键词</span><input value={archiveDraft.q} onChange={event => setArchiveDraft({ ...archiveDraft, q: event.target.value })} placeholder="在已存档案中搜索" maxLength={300} /></label>
               <Button className="button secondary small archive-submit" type="submit" busy={busy === 'filter'} disabled={Boolean(busy)}>筛选</Button>
+              <label className="agent-checkbox archive-starred" title="只显示收藏过的岗位；收藏不会因重新采集而丢失"><input type="checkbox" checked={Boolean(archiveDraft.starred)} onChange={event => { const next = { ...archiveDraft, starred: event.target.checked }; setArchiveDraft(next); void perform('filter', async () => { await loadJobs(next, 1) }) }} />只看收藏</label>
               <details className="archive-filter-options">
                 <summary><Icon name="filter" size={16} />筛选条件{extraFilterCount > 0 && <span className="filter-count">{extraFilterCount}</span>}<Icon name="chevron" size={14} /></summary>
                 <div className="archive-filter-fields">
@@ -498,15 +514,15 @@ export default function App() {
                 <div className="filter-actions"><span>仅筛选本地档案</span><button type="button" className="text-button" disabled={Boolean(busy)} onClick={clearArchiveFilters}>清除</button><Button className="button secondary small" type="submit" busy={busy === 'filter'} disabled={Boolean(busy)}>应用条件</Button></div>
               </details>
             </form>
-            {jobs.length > 0 && <div className="job-select-bar"><label className="agent-checkbox"><input type="checkbox" checked={allPageSelected} onChange={togglePageSelection} />本页全选</label><button className="text-button" disabled={Boolean(busy)} onClick={() => void selectAllFiltered()}>选择全部 {jobsInfo.total} 条</button>{selectedIds.size > 0 && <div className="selection-actions"><span>已选 {selectedIds.size} 项</span><Button className="button secondary small" disabled={Boolean(busy)} onClick={openBatchEditForSelection}>编辑</Button><Button className="button secondary small danger-text" disabled={Boolean(busy)} onClick={() => askDelete([...selectedIds], `已选的 ${selectedIds.size} 份岗位档案`)}>删除</Button><button className="text-button" onClick={() => setSelectedIds(new Set())}>取消</button></div>}</div>}
-            {loading ? <div className="loading-state"><span className="spinner" />正在连接资料库…</div> : jobs.length === 0 ? <Empty title={hasArchiveFilters ? '没有符合条件的岗位' : '从一个机会开始'} icon="search">{hasArchiveFilters ? <>试试其他关键词，或<button className="inline-button" disabled={Boolean(busy)} onClick={clearArchiveFilters}>清除筛选</button>查看全部档案。</> : '检索真实岗位，或导入你正在考虑的职位。采集后的岗位会保存在这里。'}</Empty> : <div className={`job-list${busy === 'filter' || busy === 'page-jobs' ? ' refreshing' : ''}`}>{jobs.map(item => <div className={`job-card ${selectedId === item.id ? 'selected' : ''}${selectedIds.has(item.id) ? ' checked' : ''}`} key={item.id}><label className="job-card-check"><input type="checkbox" checked={selectedIds.has(item.id)} onChange={() => toggleJobSelection(item.id)} /><span className="sr-only">选择岗位：{item.title} · {item.company}</span></label><button className="job-card-body" aria-pressed={selectedId === item.id} onClick={() => selectJob(item.id)} title={`${item.title} · ${item.company}`}><h3>{item.title}</h3><span className="job-company">{item.company}</span><div className="job-card-meta"><span className="job-salary">{item.salary || '薪资未披露'}</span><span className="job-location"><Icon name="pin" size={12} />{item.location || '地点待确认'}</span>{(item.tags || []).slice(0, 1).map(tag => <span className="job-tags" key={tag}><span>{tag}</span></span>)}</div><div className="job-card-bottom"><span className="job-source">{sourceNames[item.source] || item.source}</span><time>{date(item.updated_at)}</time></div></button></div>)}</div>}
+            {jobs.length > 0 && <div className="job-select-bar"><label className="agent-checkbox"><input type="checkbox" checked={allPageSelected} onChange={togglePageSelection} />本页全选</label><button className="text-button" disabled={Boolean(busy)} onClick={() => void selectAllFiltered()}>选择全部 {jobsInfo.total} 条</button>{selectedIds.size > 0 && <div className="selection-actions"><span>已选 {selectedIds.size} 项</span><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => void setStarredSelected(true)}>收藏</Button><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => void setStarredSelected(false)}>取消收藏</Button><Button className="button secondary small" disabled={Boolean(busy)} onClick={openBatchEditForSelection}>编辑</Button><Button className="button secondary small danger-text" disabled={Boolean(busy)} onClick={() => askDelete([...selectedIds], `已选的 ${selectedIds.size} 份岗位档案`)}>删除</Button><button className="text-button" onClick={() => setSelectedIds(new Set())}>取消</button></div>}</div>}
+            {loading ? <div className="loading-state"><span className="spinner" />正在连接资料库…</div> : jobs.length === 0 ? <Empty title={hasArchiveFilters ? '没有符合条件的岗位' : '从一个机会开始'} icon="search">{hasArchiveFilters ? <>试试其他关键词，或<button className="inline-button" disabled={Boolean(busy)} onClick={clearArchiveFilters}>清除筛选</button>查看全部档案。</> : '检索真实岗位，或导入你正在考虑的职位。采集后的岗位会保存在这里。'}</Empty> : <div className={`job-list${busy === 'filter' || busy === 'page-jobs' ? ' refreshing' : ''}`}>{jobs.map(item => <JobCard key={item.id} item={item} selected={selectedId === item.id} checked={selectedIds.has(item.id)} onToggleSelection={toggleJobSelection} onOpen={selectJob} onToggleStar={item => void toggleStar(item)} />)}</div>}
             <Pagination info={jobsInfo} label="岗位档案" busy={Boolean(busy)} onPage={page => void perform('page-jobs', async () => { await loadJobs(undefined, page) })} /><div className="list-bottom">资料以采集时的页面为准，投递前请再次核实。</div>
           </section>
 
           <section className="detail-panel" aria-label="岗位详情" tabIndex={-1} onClick={() => setPaneFocus('info')}>
             {selectedId && <button className="mobile-back text-button" onClick={() => { document.querySelector('.job-list-panel')?.scrollIntoView({ block: 'start' }); document.querySelector<HTMLElement>('.job-card-body[aria-pressed="true"]')?.focus({ preventScroll: true }) }}><Icon name="arrow" size={16} />返回岗位列表</button>}
             {detailLoading ? <div className="loading-state"><span className="spinner" />正在读取岗位档案…</div> : !job ? <div className="welcome-panel"><div className="welcome-heading"><Icon name="book" /><span>岗位调查档案</span></div><h2>先选一份岗位，再逐项核对</h2><p>检索岗位或导入已有 JD。选择左侧档案，查看要求、公司资料与简历依据。</p><div className="welcome-checklist"><div><span>01</span><section><h3>岗位要求</h3><p>职责、技能、地点和薪酬口径</p></section></div><div><span>02</span><section><h3>公司证据</h3><p>资料原文、披露主体和发布时间</p></section></div><div><span>03</span><section><h3>个人适配</h3><p>已有依据、硬性条件与待核实项</p></section></div></div><Button className="button secondary" onClick={() => openModal('job')}><Icon name="plus" />导入已有岗位</Button><div className="welcome-source-note">每份资料都保留出处，缺少证据时保持未知</div></div> : <>
-              <div className="detail-heading"><div className="detail-kicker"><span>{sourceNames[job.source] || job.source}</span><External url={job.url}>查看原始岗位</External></div><h2>{job.title}</h2><div className="detail-company">{job.company}<span>·</span><Icon name="pin" size={14} />{job.location || '地点待确认'}</div><div className="detail-heading-bottom"><strong>{job.salary || '薪资未披露'}</strong><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => openBatchEdit([job])}>编辑档案</Button><Button className="button secondary small" busy={busy === 'analyze'} disabled={Boolean(busy) || needsFullJd(job)} onClick={() => void analyze()}><Icon name="check" size={16} />评估适配</Button><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => { setWorkshopPrefill({ jobId: job.id, company: job.company, jobTitle: job.title }); setView('workshop') }}><Icon name="wand" size={16} />优化简历</Button></div></div>
+              <div className="detail-heading"><div className="detail-kicker"><span>{sourceNames[job.source] || job.source}</span><External url={job.url}>查看原始岗位</External></div><h2>{job.title}</h2><div className="detail-company">{job.company}<span>·</span><Icon name="pin" size={14} />{job.location || '地点待确认'}</div><div className="detail-heading-bottom"><strong>{job.salary || '薪资未披露'}</strong><Button className="button secondary small" disabled={Boolean(busy)} title={job.starred ? '取消收藏；收藏不会因重新采集而丢失' : '收藏岗位，可在收藏夹反查与横评'} onClick={() => job && void toggleStar(job)}><Icon name="star" size={15} />{job.starred ? '已收藏' : '收藏'}</Button><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => openBatchEdit([job])}>编辑档案</Button><Button className="button secondary small" busy={busy === 'analyze'} disabled={Boolean(busy) || needsFullJd(job)} onClick={() => void analyze()}><Icon name="check" size={16} />评估适配</Button><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => { setWorkshopPrefill({ jobId: job.id, company: job.company, jobTitle: job.title }); setView('workshop') }}><Icon name="wand" size={16} />优化简历</Button></div></div>
               <div className="jd-state"><div><strong>{job.description_status === 'complete' ? '完整JD已保存' : needsFullJd(job) ? '仅列表摘要 · 待补全' : '岗位材料已保存'}</strong><p>{job.detail_collected_at ? `正文读取于 ${date(job.detail_collected_at)}` : needsFullJd(job) ? ((job.source === 'boss' || job.source === 'zhaopin') ? '需要完整职责与任职要求，才能评估是否适合投递' : '该平台列表未给出完整职责，可在岗位档案补充后再评估') : '请核对岗位材料完整性及原始出处'}</p></div>{(job.source === 'boss' || job.source === 'zhaopin') && <Button className="button secondary small" busy={busy === 'job-detail'} disabled={Boolean(busy)} onClick={() => void perform('job-detail', async () => { const id = job.id, generation = jobGeneration.current; const result = await post<{ task: Task; job: Job }>(`/jobs/${encodeURIComponent(id)}/detail`); toast(result.task.message); await Promise.all([generation === jobGeneration.current ? loadDetail(id) : Promise.resolve(), loadJobs(), refreshMetadata()]); if (generation === jobGeneration.current) setAnalysis(null) })}>{job.description_status === 'complete' ? '更新完整职责' : '读取完整职责'}</Button>}</div><div className="detail-tabs" role="tablist" aria-label="岗位档案内容" onKeyDown={navigateTabs}>{(['overview', 'analysis', 'evidence'] as const).map(item => <button key={item} id={`job-${item}-tab`} role="tab" aria-controls="job-detail-panel" tabIndex={tab === item ? 0 : -1} aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item === 'overview' ? '岗位与公司' : item === 'analysis' ? '适配分析' : '证据资料'}{item === 'evidence' && <span>{evidenceTotal}</span>}</button>)}</div>
               <div id="job-detail-panel" className="detail-content" role="tabpanel" aria-labelledby={`job-${tab}-tab`}>
                 {tab === 'overview' && <><div className="section-label"><span className="label-line" />岗位描述</div><div className={`description-text${descExpanded ? '' : ' collapsed'}`}>{plain(job.description) || '尚无岗位描述，请补充原始岗位资料。'}</div>{job.description.length > 600 && <button className="text-button" onClick={() => setDescExpanded(value => !value)}>{descExpanded ? '收起描述' : '展开全文'}</button>}<div className="company-section"><div className="section-heading"><div><span className="section-label">公司情报</span><h3>了解 {job.company}</h3></div><Button className="button secondary small" busy={busy === 'company'} disabled={Boolean(busy)} onClick={() => void collectCompany()}>多平台检索<Icon name="arrow" size={14} /></Button></div><p className="muted body-small">多平台检索该公司岗位与公告，结果直接作为求职参考的依据材料；渠道失败不影响整体。</p>{detail.company_evidence?.length ? <>{detail.company_evidence.length > 4 && <div className="company-pager"><button className="text-button" disabled={companyPage === 0} onClick={() => setCompanyPage(page => page - 1)}>上一页</button><span className="tiny-label">{companyPage + 1} / {Math.ceil(detail.company_evidence.length / 4)} 页 · 共 {detail.company_evidence.length} 条</span><button className="text-button" disabled={companyPage >= Math.ceil(detail.company_evidence.length / 4) - 1} onClick={() => setCompanyPage(page => page + 1)}>下一页</button></div>}<div className="company-evidence-list">{detail.company_evidence.slice(companyPage * 4, companyPage * 4 + 4).map(e => <EvidenceCard key={e.id} evidence={e} />)}</div></> : <div className="inline-empty">尚未收集到该公司的资料。你可以多平台检索公开岗位与公告，或补充已有材料。</div>}<button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充公司资料</button><CompanyReference report={reliability} history={reliabilityHistory} busy={busy === 'reliability'} loading={reliabilityLoading} action={reliabilityAction} company={job.company} onOpenCompare={() => setView('compare')} onCompute={() => void recomputeReference()} onCoverage={() => void runReferenceAction('coverage')} onExtract={() => void runReferenceAction('extract')} onOpenEvidence={openReferenceEvidence} onOpenEvidenceModal={() => openModal('evidence')} /></div></>}
