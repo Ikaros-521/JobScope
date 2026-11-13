@@ -85,6 +85,8 @@ export function CompanyCompare() {
   const [progress, setProgress] = useState('')
   // 正在补数据的公司（一次一家：后端多平台检索串行跑 7 渠道，多家并发会同时开多个浏览器抢资源）。
   const [collecting, setCollecting] = useState<string | null>(null)
+  // 一键补数据的批次进度（多家串行逐家复用 collectCompanyData，i/n 显示在按钮上）。
+  const [batchProgress, setBatchProgress] = useState<{ index: number; total: number } | null>(null)
 
   useEffect(() => {
     let active = true
@@ -137,6 +139,11 @@ export function CompanyCompare() {
   const rows = useMemo(() => selected.map(name => ({ company: name, report: reports[name] })), [selected, reports])
   // 还有公司的报告在途：报告类图表的空窗期先说明数据在路上，别下「没有维度分」的结论
   const reportsLoading = selected.some(name => reports[name] === undefined)
+  // 「一键补数据」的目标：报告已读且没有综合分的公司（从未算过与「依据不足」都算缺数据）。
+  const needsCollect = useMemo(() => selected.filter(name => {
+    const report = reports[name]
+    return report !== undefined && (report === null || report.score == null)
+  }), [selected, reports])
 
   // 加入对比的唯一入口：下拉点选或回车选高亮项。刻意不做「按原文加入」——
   // 横评的数据面是已保存岗位与报告，未登记的公司加了也是空行；等检索请求返回再选。
@@ -166,7 +173,7 @@ export function CompanyCompare() {
     removeCompareCompany(name)
   }
   async function recomputeAll() {
-    if (!selected.length || computing) return
+    if (!selected.length || computing || batchProgress) return
     setComputing(true)
     const done: string[] = []
     const failed: string[] = []
@@ -218,6 +225,24 @@ export function CompanyCompare() {
     if (failedChannels.length) toast(`「${company}」补充完成，${failedChannels.length} 个渠道未出结果（${failedChannels.join('、')}），已重算本地材料。`, 'error')
     else toast(`「${company}」补充完成，已重算并刷新图表。`)
   }
+
+  // 一键补数据：对未出分的公司逐家串行补采（复用 collectCompanyData 的「采集→重算→刷新」闭环，
+  // 一次只跑一家，避免多个浏览器实例抢资源）。批次列表在启动时定格——中途某家补完出了分也不影响队列。
+  async function collectMissing() {
+    if (!needsCollect.length || collecting || batchProgress || computing) return
+    const queue = needsCollect.slice()
+    for (const [index, name] of queue.entries()) {
+      setBatchProgress({ index: index + 1, total: queue.length })
+      await collectCompanyData(name)
+    }
+    setBatchProgress(null)
+    getCompareCompanies(query.trim()).then(data => setSuggestions(data.companies)).catch(() => {})
+  }
+  const batchTitle = reportsLoading
+    ? '参考报告还在读取，稍候即可一键补采'
+    : !needsCollect.length
+      ? '所选公司都已有综合参考分，无需补采'
+      : `对未出分的公司逐家发起多平台检索（公告+快查+岗位共 7 渠道，每家约几分钟），完成后自动重算并刷新图表。本次补充：${needsCollect.join('、')}`
 
   // ── 图表 option 全部由 rows/layers 推导；没有可用数据时面板退成一句提示，不画空坐标系。 ──
   const radarOption = useMemo<ChartOption | null>(() => {
@@ -387,9 +412,20 @@ export function CompanyCompare() {
     <section className="paper-panel compare-controls">
       <div className="section-heading">
         <div><h2>选择对比公司</h2><p className="body-small muted">从已登记的公司里选 2-{MAX_COMPANIES} 家；分数由各家的已保存材料算出，维度覆盖与样本量可能不同。</p></div>
-        <button type="button" className="button primary" disabled={!selected.length || computing} onClick={() => void recomputeAll()}>
-          {computing ? <span className="spinner" /> : null}{computing && progress ? progress : '重新计算所选'}
-        </button>
+        <div className="compare-toolbar-actions">
+          <button type="button" className="button secondary"
+                  disabled={!needsCollect.length || computing || Boolean(collecting) || Boolean(batchProgress)}
+                  title={batchTitle}
+                  onClick={() => void collectMissing()}>
+            {batchProgress ? <span className="spinner" /> : null}
+            {batchProgress ? `补充中 ${batchProgress.index}/${batchProgress.total}` : `一键补数据${needsCollect.length ? `（${needsCollect.length} 家）` : ''}`}
+          </button>
+          <button type="button" className="button primary" disabled={!selected.length || computing || Boolean(batchProgress)}
+                  title="只重算各家已保存的材料（本地统计+已采集证据），不联网采集；材料不够的公司不会出分，需要先用「一键补数据」补采"
+                  onClick={() => void recomputeAll()}>
+            {computing ? <span className="spinner" /> : null}{computing && progress ? progress : '重新计算所选'}
+          </button>
+        </div>
       </div>
       <form className="compare-add-row" onSubmit={submitSearch}>
         <div className="compare-search" ref={searchBox}>
@@ -425,22 +461,23 @@ export function CompanyCompare() {
             ? <div className="compare-search-panel compare-search-none">没有匹配「{query.trim()}」的已登记公司。先在岗位研究里采集该公司的岗位，或等资料库登记后再来。</div>
             : null}
         </div>
-        <button className="button secondary" type="submit" disabled={!suggestions[highlight]}>加入所选</button>
+        <button className="button secondary" type="submit" disabled={!suggestions[highlight]}
+                title="把检索框当前高亮的公司加入对比列表（也可直接点检索结果）">加入所选</button>
       </form>
       {selected.length
         ? <div className="compare-chips">{selected.map(name => (
           <span key={name} className="compare-chip">
             <span className="compare-chip-status" data-state={reports[name] === undefined ? 'loading' : reports[name] ? 'ready' : 'missing'} />
             {name}
-            <button type="button" className="compare-chip-collect" disabled={Boolean(collecting)}
-                    title={collecting && collecting !== name ? `正在补充「${collecting}」，完成后可继续` : '多平台检索该公司的岗位与公告（约几分钟），完成后自动重算'}
+            <button type="button" className="compare-chip-collect" disabled={Boolean(collecting) || Boolean(batchProgress)}
+                    title={collecting && collecting !== name ? `正在补充「${collecting}」，完成后可继续` : '单独补采这一家：多平台检索岗位与公告（约几分钟），完成后自动重算'}
                     aria-label={`补充 ${name} 的岗位与资料`}
                     onClick={() => void collectCompanyData(name)}>
               {collecting === name ? <span className="spinner" aria-hidden="true" /> : '↻'}
             </button>
-            <button type="button" aria-label={`移除 ${name}`} onClick={() => removeCompany(name)}>×</button>
+            <button type="button" aria-label={`移除 ${name}`} title={`从对比列表移除「${name}」`} onClick={() => removeCompany(name)}>×</button>
           </span>))}</div>
-        : <p className="tiny-label">还没有选择公司。加入后点「重新计算所选」会先自动刷新各家的本地统计——存过岗位就能出分；缺数据的公司点胶囊上的 ↻ 直接补采。</p>}
+        : <p className="tiny-label">还没有选择公司。加入后点「重新计算所选」会先自动刷新各家的本地统计——存过岗位就能出分；未出分的公司用「一键补数据」批量补采，或点胶囊上的 ↻ 单独补一家。</p>}
     </section>
 
     {selected.length === 0
@@ -452,11 +489,11 @@ export function CompanyCompare() {
         <div className="compare-grid">
           <section className="paper-panel compare-chart-panel">
             <div className="compare-chart-title"><h3>六维参考对比</h3><span className="tiny-label">雷达 · 0 值表示该维度暂无依据，不代表负面信号</span></div>
-            {radarOption ? <EChart className="compare-chart" option={radarOption} /> : <p className="compare-chart-empty">{reportsLoading ? '正在读取参考报告…' : '所选公司都还没有可绘制的维度分，先重算。'}</p>}
+            {radarOption ? <EChart className="compare-chart" option={radarOption} /> : <p className="compare-chart-empty">{reportsLoading ? '正在读取参考报告…' : '所选公司都还没有可绘制的维度分——材料不够时先用「一键补数据」补采，再重算。'}</p>}
           </section>
           <section className="paper-panel compare-chart-panel">
             <div className="compare-chart-title"><h3>综合参考分与维度覆盖</h3><span className="tiny-label">排列只是阅读顺序；覆盖低的公司分数波动大</span></div>
-            {overallOption ? <EChart className="compare-chart" option={overallOption} /> : <p className="compare-chart-empty">{reportsLoading ? '正在读取参考报告…' : '还没有公司出综合分，先重算。'}</p>}
+            {overallOption ? <EChart className="compare-chart" option={overallOption} /> : <p className="compare-chart-empty">{reportsLoading ? '正在读取参考报告…' : '还没有公司出综合分——材料不够时先用「一键补数据」补采，再重算。'}</p>}
           </section>
           <section className="paper-panel compare-chart-panel">
             <div className="compare-chart-title"><h3>岗位构成</h3><span className="tiny-label">职类分布不同，公司级薪资中位数不可直接比</span></div>
@@ -466,11 +503,13 @@ export function CompanyCompare() {
             <div className="compare-chart-title">
               <h3>同层薪资对比</h3>
               <select className="compare-layer-select" value={gatePreset} aria-label="对比口径（样本量门槛）"
+                      title="控制哪些分层能进入本页图表（样本量门槛）：本地样本薄时换「宽松」看得到中位数；报告的出分门槛固定，不受此选择影响"
                       onChange={event => changeGatePreset(event.target.value as GatePreset)}>
                 {(Object.keys(GATE_PRESETS) as GatePreset[]).map(key => <option key={key} value={key}>{GATE_PRESETS[key].label}</option>)}
               </select>
-              {layerOptions.length
+                {layerOptions.length
                 ? <select className="compare-layer-select" value={activeLayer?.key ?? ''} aria-label="选择对比层级"
+                          title="选择要对比的岗位分层（职类·经验·学历）；各公司只与各自城市的同层岗位对照"
                           onChange={event => setLayerKey(event.target.value)}>
                     {layerOptions.map(item => <option key={item.key} value={item.key}>{item.label}（合计 {item.total} 条）</option>)}
                   </select>

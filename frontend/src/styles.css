@@ -1506,6 +1506,9 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .compare-page { display: grid; gap: 12px; }
 .compare-controls { padding: 16px 20px; display: grid; gap: 10px; }
 .compare-controls .section-heading { margin-bottom: 0; }
+/* 标题行右侧的动作按钮组（一键补数据 + 重新计算所选）：并排不换行，窄屏允许收缩。 */
+.compare-toolbar-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.compare-toolbar-actions .button { white-space: nowrap; }
 .compare-add-row { display: flex; gap: 8px; }
 .compare-add-row input { flex: 1; min-width: 0; }
 .compare-chips { display: flex; flex-wrap: wrap; gap: 6px; }
