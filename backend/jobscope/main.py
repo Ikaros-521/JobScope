@@ -713,7 +713,8 @@ def create_app(data_dir=None):
 
     @app.get('/api/reliability/compare')
     def reliability_compare(q: str = Query('', max_length=300), page_size: int = Query(50, ge=1, le=100),
-                            companies: str = Query('', max_length=2000)):
+                            companies: str = Query('', max_length=2000),
+                            own_min: int = Query(0, ge=0, le=10), city_min: int = Query(0, ge=0, le=10)):
         """横评页的只读数据源，两种取法共用一条路径（可靠性面保持在登记过的七条上）：
 
         - 不带 companies：候选列表。实体表全量（含未算过的公司），分数照实 null，按名称排序。
@@ -722,6 +723,8 @@ def create_app(data_dir=None):
           完全同源（同层同城、本公司 ≥2 条且同层 ≥5 条才给中位数），页面数字与报告口径一致。
           每家按实体口径（名称+别名）聚岗位，与候选列表的 jobs_count 同口径——主体归并后
           别名名下的岗位立即计入分层。
+          own_min/city_min 是横评页「对比口径」下拉的入图门槛（0=用默认值）：只放宽哪些层
+          出中位数，数据与报告同源，**不影响任何报告数字与分数**。
         """
         if companies.strip():
             from .reliability import job_stats
@@ -735,7 +738,8 @@ def create_app(data_dir=None):
                             in [identity['name'], *(identity.get('aliases') or [])] if str(value or '').strip()}
                 else:
                     keys = {Repository.normalise_name(name)}
-                rows.append(dict(company=name, **job_stats.stratum_breakdown(all_jobs, keys)))
+                breakdown = dict(own_min=own_min, city_min=city_min) if own_min > 0 or city_min > 0 else {}
+                rows.append(dict(company=name, **job_stats.stratum_breakdown(all_jobs, keys, **breakdown)))
             return {'companies': rows}
         return repo.compare_page(q, page_size)
 

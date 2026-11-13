@@ -255,13 +255,16 @@ def jd_note(value):
             '衡量的是岗位描述把要做什么讲得有多具体，不是技术实力。' + LOCAL_NOTE + '。')
 
 
-def stratum_breakdown(jobs, names):
+def stratum_breakdown(jobs, names, own_min=None, city_min=None):
     """横评页的岗位分层概要：给「薪资依赖岗位构成」一个可读的对照面。
 
     只读已存岗位，与 `pay_analysis` 同一套分层键（职类×经验档×学历档）、同一套闸门
     （本公司 ≥ MIN_COMPANY_JOBS 条且同层同城 ≥ MIN_CITY_JOBS 条才给中位数）——横评页展示的数字必须与报告口径同源，
-    不在页面层另立一套「参考性中位数」。与打分路径的差别只有一点：这里逐层全列（含样本
-    不足的层，标 gate），缺什么一目了然；分数仍然只由 rubric 产生，本函数不评分。
+    不在页面层另立一套「参考性中位数」。与打分路径的差别有两点：其一，这里逐层全列（含样本
+    不足的层，标 gate），缺什么一目了然；其二，闸门可用 own_min/city_min 覆盖——横评页的
+    「对比口径」下拉会传更宽的值，让样本薄的层也出中位数（数据与默认口径完全同源，只是入图
+    门槛不同）。**分数仍然只由 rubric 产生且只认 limits.py 的默认值**，本函数不评分、前端
+    选择不影响任何报告数字。
     mix 按职类统计全部已存岗位（含认不出职类的，记「未分类」），让「两家公司岗位构成
     不同、公司级中位数不可比」这件事直接看得见。
     """
@@ -282,19 +285,21 @@ def stratum_breakdown(jobs, names):
             if key:
                 groups.setdefault(key, []).append(item)
     mix_counter = Counter((role_family(item.get('title', '')) or '未分类') for item in company)
+    own_min = MIN_COMPANY_JOBS if own_min is None else max(1, own_min)
+    city_min = MIN_CITY_JOBS if city_min is None else max(2, city_min)
     layers = []
     for key in sorted(groups):
         own, same = _midpoints(groups[key]), _midpoints(pool.get(key, []))
         layer = dict(role=key[0], experience=key[1], education=key[2],
                      company_jobs=len(own), city_jobs=len(same))
-        if len(own) >= MIN_COMPANY_JOBS and len(same) >= MIN_CITY_JOBS:
+        if len(own) >= own_min and len(same) >= city_min:
             company_median, city_median = round(median(own), 2), round(median(same), 2)
             if company_median > 0 and city_median > 0:
                 layer.update(company_median=company_median, city_median=city_median,
                              ratio=round(company_median / city_median, 3), gate='pass')
                 layers.append(layer)
                 continue
-        layer['gate'] = 'few_company' if len(own) < MIN_COMPANY_JOBS else 'few_city'
+        layer['gate'] = 'few_company' if len(own) < own_min else 'few_city'
         layers.append(layer)
     return dict(city=city, total_jobs=len(company), parseable=len(_midpoints(company)),
                 mix=[dict(role=role, jobs=count) for role, count in

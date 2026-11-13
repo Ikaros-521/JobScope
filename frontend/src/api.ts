@@ -118,7 +118,10 @@ export function getCompareCompanies(q = '') { return api<{ companies: CompareCom
 // 中位数只在过闸层给出（本公司 ≥2 条、同城同层 ≥5 条），与报告 pay_vs_city_median 同源同闸门。
 export type CompareLayer = { role: string; experience: string; education: string; company_jobs: number; city_jobs: number; company_median?: number; city_median?: number; ratio?: number; gate: 'pass' | 'few_company' | 'few_city' }
 export type CompareLayers = { city: string; total_jobs: number; parseable: number; mix: { role: string; jobs: number }[]; layers: CompareLayer[] }
-export function getCompanyLayers(companies: string[]) { return api<{ companies: (CompareLayers & { company: string })[] }>(`/reliability/compare?companies=${encodeURIComponent(companies.join('|'))}`) }
+export function getCompanyLayers(companies: string[], gate?: { own_min: number; city_min: number }) {
+  const suffix = gate ? `&own_min=${gate.own_min}&city_min=${gate.city_min}` : ''
+  return api<{ companies: (CompareLayers & { company: string })[] }>(`/reliability/compare?companies=${encodeURIComponent(companies.join('|'))}${suffix}`)
+}
 // 岗位收藏与反查：PATCH 支持部分字段（starred 显式 false = 取消收藏）；批量反查 ids 与完整JD补采共用一条任务管道。
 export function patchJobs(ids: string[], patch: { starred?: boolean; location?: string; salary?: string; tags?: string[] }) { return api<{ updated: number }>('/jobs', { method: 'PATCH', body: JSON.stringify({ ids, ...patch }) }) }
 export function startDetailBatch(ids?: string[]) { return post<{ task: Task }>('/browser/details', ids ? { ids } : {}) }

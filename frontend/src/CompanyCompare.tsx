@@ -41,6 +41,20 @@ function dimScore(report: ReliabilityReport | null | undefined, key: string) {
 }
 function layerKeyOf(layer: CompareLayer) { return `${layer.role}|${layer.experience}|${layer.education}` }
 function layerLabel(layer: CompareLayer) { return `${layer.role} · ${layer.experience} · ${layer.education}` }
+// 同层薪资的入图门槛档位：本地库样本薄时换宽松档看得到中位数。只影响本页哪些层入图，
+// 数据与报告完全同源；报告出分门槛固定（后端 limits.py），不受这里选择影响。
+const GATE_PRESETS = {
+  loose: { label: '宽松（本公司 ≥1 条 · 同层 ≥2 条）', own: 1, city: 2 },
+  standard: { label: '标准（本公司 ≥2 条 · 同层 ≥5 条）', own: 2, city: 5 },
+  strict: { label: '严格（本公司 ≥3 条 · 同层 ≥10 条）', own: 3, city: 10 },
+} as const
+type GatePreset = keyof typeof GATE_PRESETS
+function loadGatePreset(): GatePreset {
+  try {
+    const saved = localStorage.getItem('jobscope.compare-gate')
+    return saved === 'loose' || saved === 'strict' ? saved : 'standard'
+  } catch { return 'standard' }
+}
 function fetchTask(id: string) { return api<{ task: Task }>(`/tasks/${encodeURIComponent(id)}`) }
 
 export function CompanyCompare() {
@@ -59,6 +73,14 @@ export function CompanyCompare() {
   // 岗位构成/分层图的数据在途时给出提示，避免图表区被误读成「没有已保存岗位」
   const [layersLoading, setLayersLoading] = useState(false)
   const [layerKey, setLayerKey] = useState('')
+  // 同层薪资入图门槛档位：随会话存 localStorage，切页/刷新保留（与已选公司列表同一持久化策略）。
+  const [gatePreset, setGatePreset] = useState<GatePreset>(loadGatePreset)
+  const gateRef = useRef(GATE_PRESETS[gatePreset])
+  gateRef.current = GATE_PRESETS[gatePreset]
+  function changeGatePreset(value: GatePreset) {
+    setGatePreset(value)
+    try { localStorage.setItem('jobscope.compare-gate', value) } catch { /* 隐私模式写失败只留在内存 */ }
+  }
   const [computing, setComputing] = useState(false)
   const [progress, setProgress] = useState('')
   // 正在补数据的公司（一次一家：后端多平台检索串行跑 7 渠道，多家并发会同时开多个浏览器抢资源）。
@@ -85,19 +107,20 @@ export function CompanyCompare() {
   }, [])
   useEffect(() => { setHighlight(0) }, [suggestions])
 
-  // 岗位分层概要随所选公司变化重取：薪资对比按 职类×经验×学历 分层，不依赖参考报告是否生成。
+  // 岗位分层概要随所选公司/门槛档位变化重取：薪资对比按 职类×经验×学历 分层，不依赖参考报告是否生成。
   useEffect(() => {
     if (!selected.length) { setLayers({}); setLayersLoading(false); return }
     let active = true
     setLayersLoading(true)
+    const gate = { own_min: GATE_PRESETS[gatePreset].own, city_min: GATE_PRESETS[gatePreset].city }
     const timer = window.setTimeout(() => {
-      getCompanyLayers(selected)
+      getCompanyLayers(selected, gate)
         .then(data => { if (active) setLayers(Object.fromEntries(data.companies.map(row => [row.company, row]))) })
         .catch(() => { if (active) setLayers({}) })
         .finally(() => { if (active) setLayersLoading(false) })
     }, 300)
     return () => { active = false; clearTimeout(timer) }
-  }, [selected])
+  }, [selected, gatePreset])
 
   // 参考报告只拉缺失的：新加入（含从资料库跨页加入、刷新后从 localStorage 恢复）逐家补，
   // 已有结果（含重算后写回的）不覆盖，避免闪回 loading 态。
@@ -189,7 +212,7 @@ export function CompanyCompare() {
       const report = await computeReliability(company)
       setReports(prev => ({ ...prev, [company]: report }))
     } catch { /* 重算失败不额外提示，用户可手动点「重新计算所选」 */ }
-    getCompanyLayers(selectedRef.current)
+    getCompanyLayers(selectedRef.current, { own_min: gateRef.current.own, city_min: gateRef.current.city })
       .then(data => setLayers(Object.fromEntries(data.companies.map(row => [row.company, row]))))
       .catch(() => {})
     if (failedChannels.length) toast(`「${company}」补充完成，${failedChannels.length} 个渠道未出结果（${failedChannels.join('、')}），已重算本地材料。`, 'error')
@@ -320,11 +343,11 @@ export function CompanyCompare() {
   const layerGapNote = useMemo(() => {
     const parts = layerPayRows.filter(row => row.layer?.gate !== 'pass').map(row => {
       if (!row.layer) return `${row.company}（无此层岗位）`
-      if (row.layer.gate === 'few_company') return `${row.company}（本公司 ${row.layer.company_jobs} 条，需 ≥2 条）`
-      return `${row.company}（同城同层 ${row.layer.city_jobs} 条，需 ≥5 条）`
+      if (row.layer.gate === 'few_company') return `${row.company}（本公司 ${row.layer.company_jobs} 条，需 ≥${GATE_PRESETS[gatePreset].own} 条）`
+      return `${row.company}（同城同层 ${row.layer.city_jobs} 条，需 ≥${GATE_PRESETS[gatePreset].city} 条）`
     })
     return parts.join(' · ')
-  }, [layerPayRows])
+  }, [layerPayRows, gatePreset])
 
   const jdRows = useMemo(() => rows
     .map(row => ({ company: row.company, data: findingData(row.report, 'jd_specificity') }))
@@ -442,6 +465,10 @@ export function CompanyCompare() {
           <section className="paper-panel compare-chart-panel">
             <div className="compare-chart-title">
               <h3>同层薪资对比</h3>
+              <select className="compare-layer-select" value={gatePreset} aria-label="对比口径（样本量门槛）"
+                      onChange={event => changeGatePreset(event.target.value as GatePreset)}>
+                {(Object.keys(GATE_PRESETS) as GatePreset[]).map(key => <option key={key} value={key}>{GATE_PRESETS[key].label}</option>)}
+              </select>
               {layerOptions.length
                 ? <select className="compare-layer-select" value={activeLayer?.key ?? ''} aria-label="选择对比层级"
                           onChange={event => setLayerKey(event.target.value)}>
@@ -449,8 +476,8 @@ export function CompanyCompare() {
                   </select>
                 : null}
             </div>
-            <span className="tiny-label">同职类·同经验·同学历的报价中位数；各公司只与各自城市的同层对照</span>
-            {layerPayOption ? <EChart className="compare-chart" option={layerPayOption} /> : <p className="compare-chart-empty">{layersLoading ? '正在读取岗位构成…' : layerOptions.length ? '所选层级没有公司过闸（本公司 ≥2 条、同城同层 ≥5 条）。' : '所选公司还分不出可比层（岗位缺职类或经验/学历标注）。'}</p>}
+            <span className="tiny-label">同职类·同经验·同学历的报价中位数；各公司只与各自城市的同层对照；门槛只影响本页入图，报告口径固定</span>
+            {layerPayOption ? <EChart className="compare-chart" option={layerPayOption} /> : <p className="compare-chart-empty">{layersLoading ? '正在读取岗位构成…' : layerOptions.length ? `所选层级没有公司过闸（当前口径：本公司 ≥${GATE_PRESETS[gatePreset].own} 条、同城同层 ≥${GATE_PRESETS[gatePreset].city} 条），可切更宽的对比口径。` : '所选公司还分不出可比层（岗位缺职类或经验/学历标注）。'}</p>}
             {layerGapNote ? <p className="tiny-label compare-layer-note">未入图：{layerGapNote}</p> : null}
           </section>
           <section className="paper-panel compare-chart-panel">

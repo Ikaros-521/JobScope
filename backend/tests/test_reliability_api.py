@@ -665,3 +665,10 @@ def test_compare_layers_endpoint_reports_stratified_pay_and_mix(client, tmp_path
     assert hr_layer['gate'] == 'few_city' and hr_layer['company_jobs'] == 2 and 'company_median' not in hr_layer
     # 没有岗位的公司照实返回空概要，不伪造任何数字。
     assert by['丙公司'] == dict(company='丙公司', city='', total_jobs=0, parseable=0, mix=[], layers=[])
+    # 横评页「对比口径」下拉传更宽的入图门槛：同一层在 own_min=1/city_min=2 下过闸出中位数；
+    # 只影响入图，不产生任何分数。越界参数被拒。
+    loose = client.get('/api/reliability/compare?companies=甲公司&own_min=1&city_min=2').json()['companies'][0]
+    loose_hr = next(item for item in loose['layers']
+                    if (item['role'], item['experience'], item['education']) == ('人事与财务', '3-5年', '本科'))
+    assert loose_hr['gate'] == 'pass' and loose_hr['company_median'] > 0
+    assert client.get('/api/reliability/compare?companies=甲公司&own_min=11').status_code == 422
