@@ -320,8 +320,8 @@ export function CompanyCompare() {
   const layerGapNote = useMemo(() => {
     const parts = layerPayRows.filter(row => row.layer?.gate !== 'pass').map(row => {
       if (!row.layer) return `${row.company}（无此层岗位）`
-      if (row.layer.gate === 'few_company') return `${row.company}（本公司 ${row.layer.company_jobs} 条，需 ≥3 条）`
-      return `${row.company}（同城同层 ${row.layer.city_jobs} 条，需 ≥10 条）`
+      if (row.layer.gate === 'few_company') return `${row.company}（本公司 ${row.layer.company_jobs} 条，需 ≥2 条）`
+      return `${row.company}（同城同层 ${row.layer.city_jobs} 条，需 ≥5 条）`
     })
     return parts.join(' · ')
   }, [layerPayRows])
@@ -450,7 +450,7 @@ export function CompanyCompare() {
                 : null}
             </div>
             <span className="tiny-label">同职类·同经验·同学历的报价中位数；各公司只与各自城市的同层对照</span>
-            {layerPayOption ? <EChart className="compare-chart" option={layerPayOption} /> : <p className="compare-chart-empty">{layersLoading ? '正在读取岗位构成…' : layerOptions.length ? '所选层级没有公司过闸（本公司 ≥3 条、同城同层 ≥10 条）。' : '所选公司还分不出可比层（岗位缺职类或经验/学历标注）。'}</p>}
+            {layerPayOption ? <EChart className="compare-chart" option={layerPayOption} /> : <p className="compare-chart-empty">{layersLoading ? '正在读取岗位构成…' : layerOptions.length ? '所选层级没有公司过闸（本公司 ≥2 条、同城同层 ≥5 条）。' : '所选公司还分不出可比层（岗位缺职类或经验/学历标注）。'}</p>}
             {layerGapNote ? <p className="tiny-label compare-layer-note">未入图：{layerGapNote}</p> : null}
           </section>
           <section className="paper-panel compare-chart-panel">

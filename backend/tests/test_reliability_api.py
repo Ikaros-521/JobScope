@@ -661,6 +661,7 @@ def test_compare_layers_endpoint_reports_stratified_pay_and_mix(client, tmp_path
     assert tech_layer['gate'] == 'pass' and tech_layer['company_jobs'] == 3 and tech_layer['city_jobs'] == 13
     assert tech_layer['ratio'] == round(tech_layer['company_median'] / tech_layer['city_median'], 3)
     hr_layer = layers[('人事与财务', '3-5年', '本科')]
-    assert hr_layer['gate'] == 'few_company' and 'company_median' not in hr_layer
+    # 新闸门（本公司 ≥2、同城同层 ≥5）：本公司 2 条够数，但同城池只有这 2 条 → few_city，不出中位数。
+    assert hr_layer['gate'] == 'few_city' and hr_layer['company_jobs'] == 2 and 'company_median' not in hr_layer
     # 没有岗位的公司照实返回空概要，不伪造任何数字。
     assert by['丙公司'] == dict(company='丙公司', city='', total_jobs=0, parseable=0, mix=[], layers=[])

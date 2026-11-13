@@ -74,20 +74,21 @@ def test_stale_signals_are_excluded_and_reported_as_missing():
 
 # --- P1 四条样本闸门：不满足就不出分，且缺口文案能看出具体原因 ---
 
-def test_pay_gate_fails_when_the_city_sample_is_below_twenty():
+def test_pay_gate_fails_when_the_city_sample_is_below_five():
+    # 闸门放宽到 own≥2 / city≥5（limits.py 单一事实源）：对照池 4 条仍拦。
     result = score([sig('pay_vs_city_median', {'company_median': 20000, 'city_median': 18000,
-                                               'ratio': 1.11, 'company_jobs': 5, 'city_jobs': 15})])
+                                               'ratio': 1.11, 'company_jobs': 5, 'city_jobs': 4})])
     pay = next(item for item in result.dimensions if item.dimension == 'pay')
     assert pay.score is None and pay.confidence == 0
-    assert any('pay_vs_city_median' in line and '同层 ≥20 条' in line for line in pay.missing)
+    assert any('pay_vs_city_median' in line and '同层 ≥5 条' in line for line in pay.missing)
 
 
-def test_pay_gate_fails_when_the_company_sample_is_below_three():
+def test_pay_gate_fails_when_the_company_sample_is_below_two():
     result = score([sig('pay_vs_city_median', {'company_median': 20000, 'city_median': 18000,
-                                               'ratio': 1.11, 'company_jobs': 2, 'city_jobs': 30})])
+                                               'ratio': 1.11, 'company_jobs': 1, 'city_jobs': 30})])
     pay = next(item for item in result.dimensions if item.dimension == 'pay')
     assert pay.score is None
-    assert any('本公司 ≥3 条' in line for line in pay.missing)
+    assert any('本公司 ≥2 条' in line for line in pay.missing)
 
 
 def test_pay_gate_fails_without_a_positive_ratio_or_median():

@@ -19,11 +19,13 @@ from statistics import median
 from ..analysis import SKILLS, contains, parse_salary
 from ..connectors import CITY_CODES
 from ..repository import Repository
+from .limits import MIN_CITY_JOBS, MIN_COMPANY_JOBS
 
 # 量化结果的识别词表：百分比、日活/月活、QPS/TPS、GMV、亿级/万级一类「写得出数字的结果」。
 # 刻意保守：只认材料里明确写出的这些形态，不做语义判断。
 QUANTIFIED = re.compile(r'\d+\s*%|日活|月活|DAU|MAU|QPS|TPS|GMV|亿级|千万级|百万级|万级|\d+\s*万(?:级|\b|人|\+)?|\d+\s*亿', re.IGNORECASE)
 LOCAL_NOTE = '由本项目已保存数据计算，不访问网络'
+# 同层薪资闸门常量（MIN_COMPANY_JOBS / MIN_CITY_JOBS）见 limits.py：零依赖模块，rubric 同引用。
 
 
 def normalise_city(location):
@@ -162,7 +164,7 @@ def pay_analysis(jobs, names):
     for key in sorted(groups):
         own, same = _midpoints(groups[key]), _midpoints(pool.get(key, []))
         label = '·'.join(key)
-        if len(own) >= 3 and len(same) >= 10:
+        if len(own) >= MIN_COMPANY_JOBS and len(same) >= MIN_CITY_JOBS:
             company_median, city_median = round(median(own), 2), round(median(same), 2)
             if company_median > 0 and city_median > 0:
                 ratio = round(company_median / city_median, 3)
@@ -172,7 +174,8 @@ def pay_analysis(jobs, names):
                 detail.append(f'{label}：本公司 {len(own)} 条中位 {company_median} 元 / 同城同层 {len(same)} 条中位 '
                               f'{city_median} 元，比值 {ratio}')
                 continue
-        detail.append(f'{label}：本公司 {len(own)} 条、同城同层 {len(same)} 条，样本不够（本公司需 ≥3 条、同层 ≥10 条），不比')
+        detail.append(f'{label}：本公司 {len(own)} 条、同城同层 {len(same)} 条，样本不够（本公司需 ≥{MIN_COMPANY_JOBS} 条、'
+                      f'同层 ≥{MIN_CITY_JOBS} 条），不比')
     excluded_city = len(company) - len(local_company)
     excluded_unstratified = len(local_company) - sum(len(group) for group in groups.values())
     excluded = []
@@ -256,7 +259,7 @@ def stratum_breakdown(jobs, names):
     """横评页的岗位分层概要：给「薪资依赖岗位构成」一个可读的对照面。
 
     只读已存岗位，与 `pay_analysis` 同一套分层键（职类×经验档×学历档）、同一套闸门
-    （本公司 ≥3 条且同层同城 ≥10 条才给中位数）——横评页展示的数字必须与报告口径同源，
+    （本公司 ≥ MIN_COMPANY_JOBS 条且同层同城 ≥ MIN_CITY_JOBS 条才给中位数）——横评页展示的数字必须与报告口径同源，
     不在页面层另立一套「参考性中位数」。与打分路径的差别只有一点：这里逐层全列（含样本
     不足的层，标 gate），缺什么一目了然；分数仍然只由 rubric 产生，本函数不评分。
     mix 按职类统计全部已存岗位（含认不出职类的，记「未分类」），让「两家公司岗位构成
@@ -284,14 +287,14 @@ def stratum_breakdown(jobs, names):
         own, same = _midpoints(groups[key]), _midpoints(pool.get(key, []))
         layer = dict(role=key[0], experience=key[1], education=key[2],
                      company_jobs=len(own), city_jobs=len(same))
-        if len(own) >= 3 and len(same) >= 10:
+        if len(own) >= MIN_COMPANY_JOBS and len(same) >= MIN_CITY_JOBS:
             company_median, city_median = round(median(own), 2), round(median(same), 2)
             if company_median > 0 and city_median > 0:
                 layer.update(company_median=company_median, city_median=city_median,
                              ratio=round(company_median / city_median, 3), gate='pass')
                 layers.append(layer)
                 continue
-        layer['gate'] = 'few_company' if len(own) < 3 else 'few_city'
+        layer['gate'] = 'few_company' if len(own) < MIN_COMPANY_JOBS else 'few_city'
         layers.append(layer)
     return dict(city=city, total_jobs=len(company), parseable=len(_midpoints(company)),
                 mix=[dict(role=role, jobs=count) for role, count in

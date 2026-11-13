@@ -296,8 +296,9 @@ def test_only_the_extractor_may_reach_the_model_layer():
 
 
 def test_rubric_and_wording_cannot_reach_the_outside_world():
-    """算分与措辞两处都是纯函数：没有网络、没有时钟、没有模型、没有文件。"""
-    assert imported_modules(module_tree('rubric')) == {'dataclasses', 'models'}
+    """算分与措辞两处都是纯函数：没有网络、没有时钟、没有模型、没有文件。
+    limits 是零依赖常量模块（薪资闸门阈值），允许 rubric 引用。"""
+    assert imported_modules(module_tree('rubric')) == {'dataclasses', 'limits', 'models'}
     assert imported_modules(module_tree('wording')) == set()
 
 

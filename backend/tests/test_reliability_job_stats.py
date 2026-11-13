@@ -100,13 +100,13 @@ def test_pay_value_compares_only_within_matched_strata(tmp_path):
 
 
 def test_pay_value_with_no_comparable_stratum_reports_the_zero_sample(tmp_path):
-    # 同城同层对照不足（需 ≥10 条）：分不出可比层 → 全零统计量，缺口正文写明差在哪。
+    # 同城同层对照不足（需 ≥5 条）：分不出可比层 → 全零统计量，缺口正文写明差在哪。
     repo, identity = seed(tmp_path, [])
     for index in range(3):
         repo.save_job(dict(title=f'后端工程师{index}', company='甲公司', description=TECH_DESC,
                            location='北京', salary='20-35K', url=f'a{index}',
                            description_status='complete'), 'test_jobs')
-    for index in range(2):  # 同层对照只有 2 条，凑不齐闸门
+    for index in range(1):  # 同层对照只有 1 条：池 = 甲 3 + 对照 1 = 4 条，凑不齐 ≥5 的闸门
         repo.save_job(dict(title=f'对照工程师{index}', company='乙公司', description=TECH_DESC,
                            location='北京', salary='30-50K', url=f'c{index}',
                            description_status='listing'), 'test_jobs')

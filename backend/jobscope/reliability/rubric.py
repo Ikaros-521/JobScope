@@ -1,6 +1,7 @@
 """The only place a number is produced. Pure functions, no clock, no network, no model."""
 from dataclasses import dataclass, field
 
+from .limits import MIN_CITY_JOBS, MIN_COMPANY_JOBS
 from .models import Dimension, RuleFinding, SignalInput, can_stand_alone
 
 RUBRIC_VERSION = 'rubric-4'
@@ -60,7 +61,7 @@ def _pay_points(value):
         ratio = company_median / city_median if company_median and city_median and city_median > 0 else None
     if not ratio or ratio <= 0:
         return None
-    if (value.get('company_jobs') or 0) < 3 or (value.get('city_jobs') or 0) < 20:
+    if (value.get('company_jobs') or 0) < MIN_COMPANY_JOBS or (value.get('city_jobs') or 0) < MIN_CITY_JOBS:
         return None
     return band(ratio, [(1.2, 0.95), (1.0, 0.8), (0.85, 0.6), (0.7, 0.45)], 0.3)
 
@@ -111,7 +112,7 @@ RULES: dict[str, RuleSpec] = {
     # 每层本公司 ≥3 条、同层 ≥10 条，scorer 合计 ≥3/≥20；分层凑不齐就不出分——混层中位数
     # 是拿低层级岗位对标高层级基线，比不出分更误导。
     'pay_vs_city_median': RuleSpec('pay', '元', 90, 'pay_vs_city_median',
-                                   gate_note='出分需要可比分层：同城、同职类、同经验与学历要求下本公司 ≥3 条、同层 ≥10 条，且合计本公司 ≥3 条、同层 ≥20 条；分层凑不齐就不比，缺口会写明缺哪一层',
+                                   gate_note=f'出分需要可比分层：同城、同职类、同经验与学历要求下本公司 ≥{MIN_COMPANY_JOBS} 条、同层 ≥{MIN_CITY_JOBS} 条（合计口径相同）；分层凑不齐就不比，缺口会写明缺哪一层',
                                    scorer=_pay_points),
     # R2：只统计完整 JD（description_status=complete），列表摘要不参与——半截描述评不了「讲清楚没有」。
     'jd_specificity': RuleSpec('professional', '条', 180, 'jd_specificity',
