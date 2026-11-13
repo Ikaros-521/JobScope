@@ -20,12 +20,13 @@ from .analysis import analyze, parse_resume
 from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
 from . import collect_service
+from . import company_merge
 from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
-from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ModelBindingInput, OptimizeResumeInput, ReliabilityInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput
+from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ReliabilityInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput, SplitInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
-from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, SystemSettingsInput, SystemSettingsStore, ConnectionInput, _active, get_model_config, purpose_configured
+from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, SystemSettingsInput, SystemSettingsStore, ConnectionInput, _active, get_model_config, purpose_configured, use_config
 
 
 SUMMARY_SYSTEM = ('你是求职情报工作台的对话上下文压缩引擎，把早期对话提炼为高密度结构化摘要。'
@@ -717,16 +718,114 @@ def create_app(data_dir=None):
         - 不带 companies：候选列表。实体表全量（含未算过的公司），分数照实 null，按名称排序。
         - 带 companies（'|' 分隔，≤8 家）：各家的岗位分层概要（职类构成 + 职类×经验×学历逐层
           报价对照）。薪资依赖岗位构成，公司级中位数跨公司不可比——分层口径与 job_stats.pay_analysis
-          完全同源（同层同城、本公司 ≥3 条且同层 ≥10 条才给中位数），页面数字与报告口径一致。
+          完全同源（同层同城、本公司 ≥2 条且同层 ≥5 条才给中位数），页面数字与报告口径一致。
+          每家按实体口径（名称+别名）聚岗位，与候选列表的 jobs_count 同口径——主体归并后
+          别名名下的岗位立即计入分层。
         """
         if companies.strip():
             from .reliability import job_stats
             names = [name.strip() for name in companies.split('|') if name.strip()][:8]
             all_jobs = repo.jobs()
-            return {'companies': [dict(company=name,
-                                       **job_stats.stratum_breakdown(all_jobs, {Repository.normalise_name(name)}))
-                                  for name in names]}
+            rows = []
+            for name in names:
+                identity = repo.find_company(name)
+                if identity:
+                    keys = {Repository.normalise_name(value) for value
+                            in [identity['name'], *(identity.get('aliases') or [])] if str(value or '').strip()}
+                else:
+                    keys = {Repository.normalise_name(name)}
+                rows.append(dict(company=name, **job_stats.stratum_breakdown(all_jobs, keys)))
+            return {'companies': rows}
         return repo.compare_page(q, page_size)
+
+    # ── 主体归并：规则+LLM 扫描产候选；人工确认/手动合并/拆分是最终事实源。 ──
+
+    def _merge_overview_payload():
+        return dict(entities=repo.list_merge_entities(), proposals=repo.list_merge_proposals())
+
+    def _resolve_pair(name_a, name_b):
+        a, b = repo.find_company(name_a), repo.find_company(name_b)
+        if a is None or b is None:
+            missing = name_a if a is None else name_b
+            raise HTTPException(422, f'主体「{missing}」不存在或已被合并')
+        return a, b
+
+    def _recompute(company_name):
+        from .reliability.service import ReliabilityService
+        return ReliabilityService(repo).recompute(company_name)
+
+    @app.get('/api/companies/merge/overview')
+    def merge_overview():
+        return _merge_overview_payload()
+
+    @app.post('/api/companies/merge/scan')
+    def merge_scan():
+        # LLM 判定在一批候选上只调一次模型，放后台线程；规则候选本身不依赖模型。
+        task = repo.create_task('company_merge', '主体归并扫描')
+
+        def worker():
+            try:
+                with use_config(settings.effective()):
+                    summary = company_merge.scan(repo)
+                task.update(status='completed', message=summary['message'], count=summary.get('merged', 0))
+            except Exception as exc:
+                task.update(status='failed', message=f'归并扫描失败：{exc}')
+            repo.update_task(task)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return dict(task=task)
+
+    @app.post('/api/companies/merge')
+    def merge_companies_manual(data: MergeInput):
+        a, b = _resolve_pair(data.company_a, data.company_b)
+        primary, secondary = (a, b) if data.primary == 'a' else (b, a)
+        try:
+            entity = repo.merge_companies(primary['id'], secondary['id'])
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        # 合并后数据面变了（别名岗位并入），本地重算毫秒级，让报告立即反映合并结果。
+        _recompute(entity['name'])
+        return dict(company=entity, **_merge_overview_payload())
+
+    @app.post('/api/companies/merge/proposals/{proposal_id}/accept')
+    def accept_merge_proposal(data: MergeAcceptInput, proposal_id: str = PathParam(min_length=3, max_length=40)):
+        try:
+            proposal = repo.resolve_merge_proposal(proposal_id, 'accepted')
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        a, b = _resolve_pair(proposal['company_a'], proposal['company_b'])
+        if data.primary == 'auto':
+            jobs = {item['name']: item['jobs_count'] for item in repo.list_merge_entities()}
+            keep = 'a' if jobs.get(a['name'], 0) >= jobs.get(b['name'], 0) else 'b'
+        else:
+            keep = data.primary
+        primary, secondary = (a, b) if keep == 'a' else (b, a)
+        try:
+            entity = repo.merge_companies(primary['id'], secondary['id'])
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        _recompute(entity['name'])
+        return dict(company=entity, proposal=proposal, **_merge_overview_payload())
+
+    @app.post('/api/companies/merge/proposals/{proposal_id}/dismiss')
+    def dismiss_merge_proposal(proposal_id: str = PathParam(min_length=3, max_length=40)):
+        try:
+            proposal = repo.resolve_merge_proposal(proposal_id, 'dismissed')
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return dict(proposal=proposal, **_merge_overview_payload())
+
+    @app.post('/api/companies/{company_id}/split')
+    def split_company_alias(data: SplitInput, company_id: str = PathParam(min_length=3, max_length=40)):
+        try:
+            entity = repo.split_alias(company_id, data.alias)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        # 主体少了别名口径的岗位，重算让报告立即收窄；拆出的新实体没有历史报告，按需再生成。
+        host = repo.find_company(company_id)
+        if host:
+            _recompute(host['name'])
+        return dict(company=entity, **_merge_overview_payload())
 
 
     @app.put('/api/reliability/sources/{source_id}')

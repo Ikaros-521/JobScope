@@ -1700,3 +1700,30 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
   .workshop-config-body { overflow: visible; }
   .workshop-preview-frame-wrap { min-height: 480px; }
 } 
+
+/* ── 主体归并（公司资料库 tab）：候选对、手动合并、实体别名拆分。 ── */
+.merge-panel { display: grid; gap: 14px; }
+.merge-proposals { display: grid; gap: 8px; }
+.merge-proposal { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.merge-proposal-pair { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.merge-pair-name { font-weight: 600; overflow-wrap: anywhere; }
+.merge-primary-tag { display: inline-block; margin-right: 4px; padding: 1px 5px; border-radius: 4px; background: var(--selected); color: var(--green); font-size: 11px; font-style: normal; font-weight: 700; }
+.merge-proposal-reason { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.merge-proposal-actions { display: flex; align-items: center; gap: 10px; }
+.merge-proposal-actions .tiny-label { margin-right: auto; }
+.merge-manual { display: grid; gap: 8px; }
+.merge-manual-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.merge-manual-row input { flex: 1; min-width: 160px; }
+.merge-split-confirm { margin: 0; }
+.merge-entities { display: grid; gap: 8px; }
+.merge-entity { display: grid; gap: 6px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.merge-entity:last-child { border-bottom: 0; }
+.merge-entity-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.merge-entity-head strong { font-size: 13px; overflow-wrap: anywhere; }
+.merge-aliases { display: flex; gap: 6px; flex-wrap: wrap; }
+.merge-alias { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border: 1px dashed var(--line); border-radius: 999px; color: #43615a; font-size: 12px; line-height: 1.6; }
+.merge-alias > button { border: 0; background: none; color: var(--muted); cursor: pointer; padding: 0 2px; font-size: 13px; line-height: 1; }
+.merge-alias > button:hover { color: #a4342a; }
+.merge-resolved { display: grid; gap: 4px; }
+.merge-resolved summary { cursor: pointer; }
+.merge-resolved p { margin: 0; }

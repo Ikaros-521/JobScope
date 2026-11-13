@@ -37,6 +37,7 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS companies (id TEXT PRIMARY KEY, name TEXT NOT NULL, credit_code TEXT NOT NULL DEFAULT '', aliases TEXT NOT NULL DEFAULT '[]', payload TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS company_signals (id TEXT PRIMARY KEY, company_id TEXT NOT NULL REFERENCES companies(id), identity TEXT UNIQUE NOT NULL, rule TEXT NOT NULL, dimension TEXT NOT NULL, source_class TEXT NOT NULL, evidence_id TEXT NOT NULL, observed_at TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS company_reliability (company_id TEXT REFERENCES companies(id), input_hash TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(company_id, input_hash));
+                CREATE TABLE IF NOT EXISTS company_merge_proposals (id TEXT PRIMARY KEY, company_a TEXT NOT NULL, company_b TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, resolved_at TEXT NOT NULL DEFAULT '');
                 CREATE TABLE IF NOT EXISTS resume_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, job_id TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', job_title TEXT NOT NULL DEFAULT '', jd_digest TEXT NOT NULL DEFAULT '', base_text TEXT NOT NULL DEFAULT '', markdown TEXT NOT NULL, template_id TEXT NOT NULL DEFAULT 'classic', notes TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
             """)
             self._migrate_conversations(conn)
@@ -760,6 +761,21 @@ class Repository:
         with self.connection() as conn:
             return [json.loads(row['payload']) for row in conn.execute('SELECT payload FROM company_reliability WHERE company_id=? ORDER BY created_at', (company_id,)).fetchall()]
 
+    @staticmethod
+    def _jobs_counts(conn):
+        """按规范化公司名统计已存岗位数（一条 GROUP BY 在库侧归并）：compare 候选与主体归并页共用。"""
+        counts = {}
+        for row in conn.execute("SELECT json_extract(payload,'$.company') AS company, count(*) AS n FROM jobs GROUP BY json_extract(payload,'$.company')"):
+            name = Repository.normalise_name(row['company'])
+            if name:
+                counts[name] = counts.get(name, 0) + row['n']
+        return counts
+
+    @staticmethod
+    def _entity_jobs_count(counts, name, aliases):
+        names = {Repository.normalise_name(value) for value in [name, *aliases] if str(value or '').strip()}
+        return sum(counts.get(value, 0) for value in names)
+
     def compare_page(self, q='', page_size=50):
         """横评选择器的候选列表：实体表全量（含还没算过参考分的），LEFT JOIN 各自最新一份报告概要。
 
@@ -781,11 +797,7 @@ class Repository:
                 WHERE instr(lower(c.name), lower(?)) > 0
                 ORDER BY c.name LIMIT ?""", (q, page_size)).fetchall()
             # jobs_count 用一条 GROUP BY 在库侧归并，替代全量 jobs() 的逐行遍历。
-            counts = {}
-            for row in conn.execute("SELECT json_extract(payload,'$.company') AS company, count(*) AS n FROM jobs GROUP BY json_extract(payload,'$.company')"):
-                name = Repository.normalise_name(row['company'])
-                if name:
-                    counts[name] = counts.get(name, 0) + row['n']
+            counts = self._jobs_counts(conn)
         result = []
         for row in rows:
             item = dict(row)
@@ -793,7 +805,130 @@ class Repository:
                 aliases = json.loads(item.pop('aliases') or '[]')
             except ValueError:
                 aliases = []
-            names = {Repository.normalise_name(value) for value in [item['company'], *aliases] if str(value or '').strip()}
-            item['jobs_count'] = sum(counts.get(name, 0) for name in names)
+            item['jobs_count'] = self._entity_jobs_count(counts, item['company'], aliases)
             result.append(item)
         return dict(companies=result)
+
+    # ── 主体归并：合并=别名并集+迁移附属行+删被并方实体；拆分=别名独立重建实体。 ──
+    # jobs/evidence 只存原始公司名，读路径一律按「实体名+别名」的规范化集合匹配，所以合并不需要
+    # 回填任何岗位行；需要搬家的只有按 company_id 外键挂着的 company_signals / company_reliability
+    # （外键 PRAGMA 是开着的，直接删实体行会炸）。
+
+    def list_merge_entities(self):
+        """主体归并页的实体全量列表：名称、别名、岗位数。按岗位数排序，数据多的主体排前面。"""
+        with self.connection() as conn:
+            rows = conn.execute("SELECT id, name, credit_code, aliases, payload FROM companies ORDER BY name").fetchall()
+            counts = self._jobs_counts(conn)
+        entities = []
+        for row in rows:
+            try:
+                aliases = json.loads(row['aliases'] or '[]')
+            except ValueError:
+                aliases = []
+            entities.append(dict(id=row['id'], name=row['name'], credit_code=row['credit_code'],
+                                 aliases=aliases, jobs_count=self._entity_jobs_count(counts, row['name'], aliases)))
+        entities.sort(key=lambda item: (-item['jobs_count'], item['name']))
+        return entities
+
+    def merge_companies(self, primary_id, secondary_id):
+        """把 secondary 实体并入 primary：别名并集、附属行迁移、删被并方实体行，单事务完成。
+
+        primary/secondary 存疑时由调用方（LLM 判定或人工选择）决定方向；这里只管原子地搬家。
+        信号直接 UPDATE company_id（行 id/identity 不变）；报告撞主名方同 input_hash 时跳过并
+        丢弃被并方那份——报告是派生数据，合并后重算即恢复，不值得为此让合并失败。
+        """
+        if primary_id == secondary_id:
+            raise ValueError('不能把公司主体并入它自己')
+        with self.connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            rows = {row['id']: row for row in conn.execute(
+                'SELECT id, name, credit_code, aliases, payload FROM companies WHERE id IN (?, ?)',
+                (primary_id, secondary_id))}
+            if primary_id not in rows or secondary_id not in rows:
+                raise ValueError('公司主体不存在或已被合并')
+            primary, secondary = rows[primary_id], rows[secondary_id]
+            entity = json.loads(primary['payload'])
+            try:
+                absorbed = json.loads(secondary['aliases'] or '[]')
+            except ValueError:
+                absorbed = []
+            merged = {self.normalise_name(value) for value in [*entity['aliases'], *absorbed, secondary['name']]
+                      if str(value or '').strip()}
+            merged.discard(entity['name'])
+            entity['aliases'] = sorted(merged)
+            entity['updated_at'] = now()
+            conn.execute('UPDATE companies SET aliases=?, payload=?, updated_at=? WHERE id=?',
+                         (json.dumps(entity['aliases'], ensure_ascii=False), json.dumps(entity, ensure_ascii=False),
+                          entity['updated_at'], primary_id))
+            # 附属行搬家用 UPDATE 改 company_id（行 id 与 identity 不变，天然不撞键）；
+            # 报告的 PK 含 company_id，主名方已有同 input_hash 的报告时 UPDATE OR IGNORE 跳过，
+            # 残留在被并方名下的行随 DELETE 丢弃——报告是派生数据，合并后重算即恢复。
+            conn.execute('UPDATE company_signals SET company_id=? WHERE company_id=?', (primary_id, secondary_id))
+            conn.execute('UPDATE OR IGNORE company_reliability SET company_id=? WHERE company_id=?',
+                         (primary_id, secondary_id))
+            conn.execute('DELETE FROM company_reliability WHERE company_id=?', (secondary_id,))
+            conn.execute('DELETE FROM companies WHERE id=?', (secondary_id,))
+        return entity
+
+    def split_alias(self, company_id, alias):
+        """把别名从实体拆出去独立成新实体：只动别名表，signals/报告不回迁（拆分后各自重算）。"""
+        cleaned = self.normalise_name(alias)
+        with self.connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT payload FROM companies WHERE id=?', (company_id,)).fetchone()
+            if row is None:
+                raise ValueError('公司主体不存在')
+            entity = json.loads(row['payload'])
+            aliases = [value for value in entity.get('aliases', []) if self.normalise_name(value) != cleaned]
+            if len(aliases) == len(entity.get('aliases', [])):
+                raise ValueError('这个名字不是该主体的别名，无法拆分')
+            entity['aliases'] = aliases
+            entity['updated_at'] = now()
+            conn.execute('UPDATE companies SET aliases=?, payload=?, updated_at=? WHERE id=?',
+                         (json.dumps(entity['aliases'], ensure_ascii=False), json.dumps(entity, ensure_ascii=False),
+                          entity['updated_at'], company_id))
+            reborn = self._upsert_company(conn, cleaned)
+        return reborn
+
+    def add_merge_proposal(self, name_a, name_b, reason):
+        """登记一对合并候选（pending）。同一对（任一方向）出现过任何状态就跳过：pending/accepted
+        不重复提，dismissed 的也不重提——用户明确忽略过的一对，下一轮扫描再弹出来只是打扰。"""
+        a, b = self.normalise_name(name_a), self.normalise_name(name_b)
+        if not a or not b or a == b:
+            return None
+        with self.connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            existing = conn.execute('''SELECT 1 FROM company_merge_proposals
+                WHERE (company_a=? AND company_b=?) OR (company_a=? AND company_b=?)''',
+                (a, b, b, a)).fetchone()
+            if existing:
+                return None
+            proposal_id = 'CM-' + uuid.uuid4().hex[:16]
+            conn.execute('INSERT INTO company_merge_proposals VALUES (?,?,?,?,?,?,?)',
+                         (proposal_id, a, b, str(reason)[:2000], 'pending', now(), ''))
+            row = conn.execute('SELECT * FROM company_merge_proposals WHERE id=?', (proposal_id,)).fetchone()
+        return dict(row)
+
+    def list_merge_proposals(self, limit=100):
+        """pending 在前、resolved 按时间倒序：归并页一次拉全，徽标数取 pending 条数。"""
+        with self.connection() as conn:
+            rows = conn.execute('''SELECT * FROM company_merge_proposals
+                ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC, id LIMIT ?''',
+                (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def resolve_merge_proposal(self, proposal_id, status):
+        """pending → accepted/dismissed 的单向流转；返回该 proposal（含双方规范化名），供调用方执行合并。"""
+        if status not in ('accepted', 'dismissed'):
+            raise ValueError('合并建议只能被接受或忽略')
+        with self.connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT * FROM company_merge_proposals WHERE id=?', (proposal_id,)).fetchone()
+            if row is None:
+                raise ValueError('合并建议不存在')
+            if row['status'] != 'pending':
+                raise ValueError('这条合并建议已经处理过了')
+            conn.execute('UPDATE company_merge_proposals SET status=?, resolved_at=? WHERE id=?',
+                         (status, now(), proposal_id))
+            updated = conn.execute('SELECT * FROM company_merge_proposals WHERE id=?', (proposal_id,)).fetchone()
+        return dict(updated)

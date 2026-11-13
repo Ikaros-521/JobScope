@@ -114,10 +114,29 @@ export function getReliability(company: string) { return api<{ report: Reliabili
 export type CompareCompany = { company: string; credit_code: string; score: number | null; confidence: number | null; computed_at: string | null; jobs_count: number }
 export function getCompareCompanies(q = '') { return api<{ companies: CompareCompany[] }>(`/reliability/compare?q=${encodeURIComponent(q)}`) }
 // 岗位分层概要（compare 端点 companies 模式）：职类构成 + 职类×经验×学历逐层报价对照。
-// 中位数只在过闸层给出（本公司 ≥3 条、同城同层 ≥10 条），与报告 pay_vs_city_median 同源同闸门。
+// 中位数只在过闸层给出（本公司 ≥2 条、同城同层 ≥5 条），与报告 pay_vs_city_median 同源同闸门。
 export type CompareLayer = { role: string; experience: string; education: string; company_jobs: number; city_jobs: number; company_median?: number; city_median?: number; ratio?: number; gate: 'pass' | 'few_company' | 'few_city' }
 export type CompareLayers = { city: string; total_jobs: number; parseable: number; mix: { role: string; jobs: number }[]; layers: CompareLayer[] }
 export function getCompanyLayers(companies: string[]) { return api<{ companies: (CompareLayers & { company: string })[] }>(`/reliability/compare?companies=${encodeURIComponent(companies.join('|'))}`) }
+// 主体归并：规则+LLM 扫描产候选，人工确认/手动合并/拆分是最终事实源；合并即别名并集，
+// jobs/evidence 的原始名不动，读路径按「名称+别名」集合聚数据。
+export type MergeEntity = { id: string; name: string; credit_code: string; aliases: string[]; jobs_count: number }
+export type MergeProposal = { id: string; company_a: string; company_b: string; reason: string; status: 'pending' | 'accepted' | 'dismissed'; created_at: string; resolved_at: string }
+export type MergeOverview = { entities: MergeEntity[]; proposals: MergeProposal[] }
+export function getMergeOverview() { return api<MergeOverview>('/companies/merge/overview') }
+export function startMergeScan() { return post<{ task: Task }>('/companies/merge/scan', {}) }
+export function mergeCompanies(company_a: string, company_b: string) {
+  return post<{ company: MergeEntity } & MergeOverview>('/companies/merge', { company_a, company_b, primary: 'a' })
+}
+export function acceptMergeProposal(id: string, primary: 'a' | 'b' | 'auto') {
+  return post<{ company: MergeEntity } & MergeOverview>(`/companies/merge/proposals/${encodeURIComponent(id)}/accept`, { primary })
+}
+export function dismissMergeProposal(id: string) {
+  return post<{ proposals: MergeProposal[] }>(`/companies/merge/proposals/${encodeURIComponent(id)}/dismiss`, {})
+}
+export function splitCompanyAlias(companyId: string, alias: string) {
+  return post<{ company: MergeEntity } & MergeOverview>(`/companies/${encodeURIComponent(companyId)}/split`, { alias })
+}
 export function getReliabilityHistory(company: string) { return api<{ history: ReliabilityHistory | null }>(`/companies/${encodeURIComponent(company)}/reliability/history`) }
 export function computeReliability(company: string) { return post<ReliabilityReport>(`/companies/${encodeURIComponent(company)}/reliability`, { credit_code: '' }) }
 // 多平台公司检索：公告+企查查/天眼查+岗位渠道逐渠道后台串行跑，返回各渠道任务由调用方轮询；

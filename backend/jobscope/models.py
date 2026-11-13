@@ -61,6 +61,23 @@ class CompanyResearchInput(RequestModel):
     limit: int = Field(default=10, ge=1, le=200)
 
 
+class MergeInput(RequestModel):
+    """手动合并两个公司主体：company_a 为主名（吸收对方），primary 可反转方向。"""
+    company_a: str = Field(min_length=1, max_length=300)
+    company_b: str = Field(min_length=1, max_length=300)
+    primary: Literal["a", "b"] = "a"
+
+
+class MergeAcceptInput(RequestModel):
+    """接受合并建议：primary=auto 时按已存岗位数取多者为主名。"""
+    primary: Literal["a", "b", "auto"] = "auto"
+
+
+class SplitInput(RequestModel):
+    """把别名从主体拆出去独立成新实体。"""
+    alias: str = Field(min_length=1, max_length=300)
+
+
 class BrowserCollectInput(RequestModel):
     source: Literal["boss", "zhaopin", "51job"] = "boss"
     query: str = Field(min_length=1, max_length=200)
@@ -89,6 +106,8 @@ class ModelBindingInput(RequestModel):
 
 class DetailBatchInput(RequestModel):
     limit: int = Field(default=500, ge=1, le=500)
+    # ids 给出时按指定岗位反查（不限 complete 状态——反查就是要重读）；缺省照旧补采全部待完整 JD。
+    ids: list[Annotated[str, Field(min_length=1, max_length=100)]] | None = Field(default=None, min_length=1, max_length=200)
 
 
 class JobBatchUpdate(RequestModel):
@@ -97,6 +116,7 @@ class JobBatchUpdate(RequestModel):
     location: str | None = Field(default=None, max_length=300)
     salary: str | None = Field(default=None, max_length=300)
     tags: list[Annotated[str, Field(max_length=100)]] | None = Field(default=None, max_length=50)
+    starred: bool | None = Field(default=None)
 
 
 class JobBatchDelete(RequestModel):
@@ -172,6 +192,8 @@ class SignalSourceInput(RequestModel):
     mode: Literal['disabled', 'enabled']
     key: str = Field(default='', max_length=4000)
     url: str = Field(default='', max_length=2000)
+
+
 class ResumeVersionInput(RequestModel):
     """新建投递版本：可直接从「我的简历」复制起步，也承载优化结果的落库。"""
     title: str = Field(min_length=1, max_length=100)
