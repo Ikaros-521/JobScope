@@ -7,6 +7,7 @@ import { addCompareCompany, removeCompareCompany, useCompareSelection } from './
 import { MAX_COMPANIES } from './compareSelectionStore'
 import { EChart } from './EChart'
 import type { ChartOption } from './EChart'
+import { SignalSourceChoices, SignalTaskResults, signalTaskNames, useSignalSourceSelection } from './SignalSources'
 
 // 六维的固定顺序与中文标签，与后端 rubric.DIMENSIONS 对齐；雷达图与明细表共用。
 const DIMENSIONS: [key: string, label: string][] = [
@@ -19,7 +20,7 @@ type LayerRow = CompareLayers & { company: string }
 // 多平台检索的渠道短名（与后端 company-research 的 plan 一致），轮询汇总时给用户看。
 // job_details 是收尾步：boss/智联有列表缺口时逐条补读完整 JD（渠道任务之后追加）。
 const CHANNEL_NAMES: Record<string, string> = {
-  cninfo: '巨潮公告', qcc: '企查查', tyc: '天眼查', boss: 'BOSS直聘', zhaopin: '智联', '51job': '前程无忧', liepin: '猎聘', job_details: '完整JD补读',
+  cninfo: '巨潮公告', boss: 'BOSS直聘', zhaopin: '智联', '51job': '前程无忧', liepin: '猎聘', job_details: '完整JD补读', ...signalTaskNames,
 }
 
 function tone(score: number) {
@@ -59,6 +60,8 @@ function loadGatePreset(): GatePreset {
 function fetchTask(id: string) { return api<{ task: Task }>(`/tasks/${encodeURIComponent(id)}`) }
 
 export function CompanyCompare() {
+  const signalSelection = useSignalSourceSelection()
+  const [collectionResults, setCollectionResults] = useState<Record<string, Task[]>>({})
   const [query, setQuery] = useState('')
   const [suggestions, setSuggestions] = useState<CompareCompany[]>([])
   const [searching, setSearching] = useState(false)
@@ -193,38 +196,39 @@ export function CompanyCompare() {
 
   // 单公司补数据：发起多平台检索（公告+快查+岗位渠道串行跑，每渠道独立成败），全部结束后
   // 自动重算该公司并刷新分层——把「缺数据 → 补采 → 出分」闭环留在横评页里。一次只跑一家。
-  async function collectCompanyData(company: string) {
-    if (collecting) return
+  async function collectCompanyData(company: string, sourceIds = [...signalSelection.selected]) {
+    if (collecting || computing || signalSelection.loading || signalSelection.error) return
+    signalSelection.setSelected(ids => ids.filter(id => signalSelection.sources?.[id].tier !== 'paid'))
     setCollecting(company)
-    const progressToast = toast(`正在为「${company}」补充岗位与资料（多渠道串行 + 完整JD补读，约需几分钟）…`, 'notice', true)
-    let failedChannels: string[] = []
+    const progressToast = toast(`正在为「${company}」补充岗位、完整 JD 与所选信号来源，约需几分钟…`, 'notice', true)
     try {
-      const started = await startCompanyResearch(company, 30)
+      const started = await startCompanyResearch(company, 30, sourceIds)
+      setCollectionResults(previous => ({ ...previous, [company]: started.tasks }))
       const results = await Promise.all(started.tasks.map(async initial => {
-        for (let poll = 0; poll < 300; poll++) {
-          await new Promise(resolve => setTimeout(resolve, 2000))
-          const { task } = await fetchTask(initial.id)
-          if (task.status !== 'running' && task.status !== 'pending') return task
-        }
-        return initial
+        try {
+          for (let poll = 0; poll < 900; poll++) {
+            await new Promise(resolve => setTimeout(resolve, 2000))
+            const { task } = await fetchTask(initial.id)
+            setCollectionResults(previous => ({ ...previous, [company]: (previous[company] || []).map(item => item.id === task.id ? task : item) }))
+            if (task.status !== 'running' && task.status !== 'pending') return task
+          }
+          return { ...initial, status: 'failed', message: '等待超时，请在采集记录查看后台最终结果。' }
+        } catch (err) { return { ...initial, status: 'failed', message: `读取执行结果失败：${(err as Error).message}` } }
       }))
-      failedChannels = results.filter(task => !(task.status === 'completed' || task.status === 'success')).map(task => CHANNEL_NAMES[task.source] || task.source)
+      setCollectionResults(previous => ({ ...previous, [company]: results }))
+      const failed = results.filter(task => !['completed', 'success'].includes(task.status))
+      // 后台收尾已重算；读取它生成的报告，避免再次采集或吞掉重算失败。
+      const data = await getReliability(company)
+      setReports(previous => ({ ...previous, [company]: data.report }))
+      const layerData = await getCompanyLayers(selectedRef.current, { own_min: gateRef.current.own, city_min: gateRef.current.city })
+      setLayers(Object.fromEntries(layerData.companies.map(row => [row.company, row])))
+      toast(failed.length ? `「${company}」有 ${failed.length} 个渠道未完整完成（${failed.map(task => CHANNEL_NAMES[task.source] || task.source).join('、')}），请展开执行结果查看原因。` : `「${company}」补充完成，已重算并刷新图表。`, failed.length ? 'error' : 'notice')
     } catch (err) {
-      toast(`补充数据发起失败：${(err as Error).message}`, 'error')
+      toast(`补充或读取结果未完成：${(err as Error).message}`, 'error')
     } finally {
       dismissToast(progressToast)
       setCollecting(null)
     }
-    // 采集已落库，无论渠道成败都重算刷新一次；切页离开后请求照发，回来能看到新结果。
-    try {
-      const report = await computeReliability(company)
-      setReports(prev => ({ ...prev, [company]: report }))
-    } catch { /* 重算失败不额外提示，用户可手动点「重新计算所选」 */ }
-    getCompanyLayers(selectedRef.current, { own_min: gateRef.current.own, city_min: gateRef.current.city })
-      .then(data => setLayers(Object.fromEntries(data.companies.map(row => [row.company, row]))))
-      .catch(() => {})
-    if (failedChannels.length) toast(`「${company}」补充完成，${failedChannels.length} 个渠道未出结果（${failedChannels.join('、')}），已重算本地材料。`, 'error')
-    else toast(`「${company}」补充完成，已重算并刷新图表。`)
   }
 
   // 一键补数据：对未出分的公司逐家串行补采（复用 collectCompanyData 的「采集→重算→刷新」闭环，
@@ -232,9 +236,10 @@ export function CompanyCompare() {
   async function collectMissing() {
     if (!needsCollect.length || collecting || batchProgress || computing) return
     const queue = needsCollect.slice()
+    const sourceIds = [...signalSelection.selected]
     for (const [index, name] of queue.entries()) {
       setBatchProgress({ index: index + 1, total: queue.length })
-      await collectCompanyData(name)
+      await collectCompanyData(name, sourceIds)
     }
     setBatchProgress(null)
     getCompareCompanies(query.trim()).then(data => setSuggestions(data.companies)).catch(() => {})
@@ -415,19 +420,26 @@ export function CompanyCompare() {
         <div><h2>选择对比公司</h2><p className="body-small muted">从已登记的公司里选 2-{MAX_COMPANIES} 家；分数由各家的已保存材料算出，维度覆盖与样本量可能不同。</p></div>
         <div className="compare-toolbar-actions">
           <button type="button" className="button secondary"
-                  disabled={!needsCollect.length || computing || Boolean(collecting) || Boolean(batchProgress)}
+                  disabled={!needsCollect.length || computing || Boolean(collecting) || Boolean(batchProgress) || signalSelection.loading || Boolean(signalSelection.error)}
                   title={batchTitle}
                   onClick={() => void collectMissing()}>
             {batchProgress ? <span className="spinner" /> : null}
             {batchProgress ? `补充中 ${batchProgress.index}/${batchProgress.total}` : `一键补数据${needsCollect.length ? `（${needsCollect.length} 家）` : ''}`}
           </button>
-          <button type="button" className="button primary" disabled={!selected.length || computing || Boolean(batchProgress)}
+          <button type="button" className="button primary" disabled={!selected.length || computing || Boolean(collecting) || Boolean(batchProgress)}
                   title="只重算各家已保存的材料（本地统计+已采集证据），不联网采集；材料不够的公司不会出分，需要先用「一键补数据」补采"
                   onClick={() => void recomputeAll()}>
             {computing ? <span className="spinner" /> : null}{computing && progress ? progress : '重新计算所选'}
           </button>
         </div>
       </div>
+      <details className="signal-collection compare-signal-sources">
+        <summary>补数据来源 · 已选 {signalSelection.selected.length} 个信号来源{signalSelection.sources && signalSelection.selected.some(id => signalSelection.sources![id].tier === 'paid') ? ' · 含付费 API' : ''}</summary>
+        <p className="tiny-label">补数据会先检索岗位、公告与公开网页，再执行下列所选来源并重算。批量操作会对每家公司分别调用；勾选付费 API 可能逐家计费。待实测来源和付费 API 默认不选。</p>
+        {signalSelection.loading ? <p className="tiny-label" role="status">正在读取来源设置…</p> : signalSelection.error ? <p className="tiny-label" role="status">读取失败：{signalSelection.error}</p> : signalSelection.sources ? <SignalSourceChoices sources={signalSelection.sources} selected={signalSelection.selected} onChange={signalSelection.setSelected} disabled={computing || Boolean(collecting) || Boolean(batchProgress)} /> : null}
+        <button className="text-button" type="button" disabled={computing || Boolean(collecting) || Boolean(batchProgress) || signalSelection.loading} onClick={() => void signalSelection.load()}>刷新来源设置（恢复默认选择）</button>
+      </details>
+      {Object.keys(collectionResults).length ? <details className="signal-collection compare-collection-results"><summary>本轮逐渠道执行结果</summary>{Object.entries(collectionResults).map(([company, tasks]) => <div key={company}><h3>{company}</h3><SignalTaskResults tasks={tasks} /></div>)}</details> : null}
       <form className="compare-add-row" onSubmit={submitSearch}>
         <div className="compare-search" ref={searchBox}>
           <input value={query} onChange={event => { setQuery(event.target.value); setSearchOpen(true) }}
@@ -470,7 +482,7 @@ export function CompanyCompare() {
           <span key={name} className="compare-chip">
             <span className="compare-chip-status" data-state={reports[name] === undefined ? 'loading' : reports[name] ? 'ready' : 'missing'} />
             {name}
-            <button type="button" className="compare-chip-collect" disabled={Boolean(collecting) || Boolean(batchProgress)}
+            <button type="button" className="compare-chip-collect" disabled={computing || Boolean(collecting) || Boolean(batchProgress) || signalSelection.loading || Boolean(signalSelection.error)}
                     title={collecting && collecting !== name ? `正在补充「${collecting}」，完成后可继续` : '单独补采这一家：多平台检索岗位与公告并补读完整 JD（约几分钟），完成后自动重算'}
                     aria-label={`补充 ${name} 的岗位与资料`}
                     onClick={() => void collectCompanyData(name)}>

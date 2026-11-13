@@ -4,8 +4,8 @@
 刻意不写死厂商 schema，也刻意不做「从任意 JSON 里找一个像参保人数的数字」那种聪明事——那等于
 把猜测包装成情报，是这个功能最坏的失败模式。规则只有两条：
 
-1. 字段名一律来自 `sources.SIGNAL_SOURCES[source]['fields']` 那份声明表（规则名 → 口径 → 槽位
-   → 候选字段名）。**那份表是按通用写法预置的假设，等用户按自己采购的接口文档逐行校正**；
+1. 字段名一律来自已保存的 `fields` 声明表（规则名 → 口径 → 槽位 → 候选字段名）；没有覆盖时
+   使用 `sources.SIGNAL_SOURCES[source]['fields']`。**预置表是通用假设，须按采购的接口文档校正**；
    诚实状态写在这里、写在 `sources.py` 的模块文档里、也必须写在每次采集的 message 里。
 2. 只在「键名与候选名精确对上（忽略大小写与 `_ - / 空格`）」时取值，值只接受数字或能解析成日期
    的字符串。对不上就这条规则什么都不产出，并把试过的字段名逐个报回 message；
@@ -26,7 +26,7 @@ import httpx
 from ..repository import now
 from .collectors import years_since
 from .rubric import RULES
-from .sources import SIGNAL_SOURCES
+from .sources import SIGNAL_SOURCES, contains_key, validate_fields, validate_url
 
 # 槽位词表：这份表之外的槽位名一律算映射写错（`test_reliability_sources` 会红，不会静默不取数）。
 SLOTS = frozenset({'founded_date', 'insured_latest', 'insured_previous', 'ratio', 'cases', 'insured',
@@ -40,8 +40,8 @@ PAID_KIND = 'paid_api_record'
 PER_WAN = 10000
 # message 里每个槽位最多报几个候选字段名：全列会让一句话长到没法读。
 NAMES_SHOWN = 5
-MAPPING_NOTE = ('字段名来自 sources.SIGNAL_SOURCES 里那份按通用写法预置的映射，'
-                '尚未对照任何服务商文档核实，请按你采购的接口文档校正')
+MAPPING_NOTE = ('字段名来自来源设置中的声明映射（未配置时使用 sources.SIGNAL_SOURCES 的通用预置映射），'
+                '本项目尚未对照任何服务商文档核实，请按你采购的接口文档校正')
 DATE_FORMATS = ('%Y-%m-%d', '%Y/%m/%d', '%Y年%m月%d日', '%Y.%m.%d',
                 '%Y-%m-%d %H:%M:%S', '%Y/%m/%d %H:%M:%S', '%Y-%m-%dT%H:%M:%S')
 NUMERIC = re.compile(r'-?\d+(?:\.\d+)?')
@@ -251,19 +251,33 @@ def collect(source_id, company, *, client=None):
         return _outcome('unsupported', '该来源不是登记了字段映射的付费 HTTP 接口，本模块不取数。')
     if client is None:
         return _outcome('unsupported', '该付费来源尚未启用或缺少你自己的密钥；JobScope 不代持密钥、不发起请求。')
+    # Old collector test doubles need only fetch/url/key; config is optional.
+    config = getattr(client, 'config', None)
+    if isinstance(config, dict) and config.get('fields') is not None:
+        try:
+            fields = validate_fields(source_id, config['fields'])
+        except (TypeError, ValueError):
+            return _outcome('failed', '付费接口字段映射无效，本轮未发起请求。')
     url = str(getattr(client, 'url', '') or '')
     key = str(getattr(client, 'key', '') or '')
-    if key and key in url:
+    if contains_key(url, key):
         # 出处地址会原样落进证据：密钥一旦写进地址就等于永久留档，这里直接拒绝而不是替它擦掉。
         return _outcome('failed', '接口地址里出现了密钥：密钥只能放在请求头里。请在设置里改填不含密钥的接口地址。')
     keyword = str(company or '').strip()[:120]
     if not keyword:
         return _outcome('failed', '请先确定要查询的公司名称。')
     try:
+        validate_url(url, key)
         # 付费接口按次计费：一次调用，不重试、不换参数、不改口径。
         payload = client.fetch(keyword)
-    except (ValueError, httpx.HTTPError) as exc:
-        detail = str(exc) or '请求失败'
+    except Exception as exc:
+        # Never persist exception text: SDK/HTTP errors can contain request headers or signed URLs.
+        if isinstance(exc, httpx.HTTPStatusError):
+            detail = f'HTTP {exc.response.status_code}，请核对服务地址、认证方式与授权额度'
+        elif isinstance(exc, ValueError) and str(exc) in {'付费来源未填写接口地址', '来源响应超过上限'}:
+            detail = str(exc)
+        else:
+            detail = '请求或响应解析失败，请检查接口配置与网关状态'
         return _outcome('failed', f'付费接口 {source_id} 没有取回数据：{detail}。本轮未采集任何信号。')
     if not isinstance(payload, dict):
         # 响应根本不是对象：字段映射无从按名取值，这跟「对象里没有这些字段」是两件事。

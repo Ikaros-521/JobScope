@@ -105,9 +105,16 @@ export type ReliabilityDiff = {
 export type ReliabilityHistory = { company: string; company_id: string; items: ReliabilitySnapshot[]; diffs: ReliabilityDiff[] }
 // 采集类端点的 status 词表（collectors/local）；抽取端点另有 skipped、degraded，所以这里不收成闭集。
 export type SignalActionResult = { status: string; message: string }
-export type SignalCollectResult = SignalActionResult & { signals: unknown[] }
+export type SignalCollectResult = SignalActionResult & { signals: unknown[]; task?: Task }
 export type SignalExtractResult = SignalActionResult & { accepted: number; signals: unknown[]; evidence: number; task: Task }
-export type SignalSource = { name: string; tier: 'free' | 'paid'; transport: string; status: string; rules: string[]; description: string; mode: 'disabled' | 'enabled'; url?: string; updated_at?: string; key_set?: boolean }
+export type SignalFieldMapping = Record<string, Record<string, string[]>[]>
+export type SignalSourceDraft = { mode: 'disabled' | 'enabled'; key?: string; url?: string; auth_header?: string; auth_prefix?: string; company_param?: string; fields?: SignalFieldMapping }
+export type SignalSource = {
+  name: string; tier: 'free' | 'paid'; transport: string; status: string; rules: string[]; description: string;
+  mode: 'disabled' | 'enabled'; implemented: boolean; ready: boolean; unavailable_reason: string;
+  url?: string; updated_at?: string; key_set?: boolean; auth_header?: string; auth_prefix?: string;
+  company_param?: string; fields?: SignalFieldMapping; last_run?: Task | null
+}
 
 export function getReliability(company: string) { return api<{ report: ReliabilityReport | null }>(`/companies/${encodeURIComponent(company)}/reliability`) }
 // 横评候选：实体表全量（含未算过的公司），分数照实 null——没算过就是没算过；按名称排序，不带名次语义。
@@ -148,11 +155,11 @@ export function getReliabilityHistory(company: string) { return api<{ history: R
 export function computeReliability(company: string) { return post<ReliabilityReport>(`/companies/${encodeURIComponent(company)}/reliability`, { credit_code: '' }) }
 // 多平台公司检索：公告+企查查/天眼查+岗位渠道逐渠道后台串行跑，返回各渠道任务由调用方轮询；
 // limit 控制岗位渠道的采集上限，横评补数据传更大值（默认 10 与岗位详情页「多平台检索」一致）。
-export function startCompanyResearch(company: string, limit = 10) { return post<{ tasks: Task[] }>('/company-research', { company, limit }) }
+export function startCompanyResearch(company: string, limit = 10, signalSources?: string[]) { return post<{ tasks: Task[] }>('/company-research', { company, limit, ...(signalSources ? { signal_sources: signalSources } : {}) }) }
 export function collectCompanySignals(company: string, source: string) { return post<SignalCollectResult>(`/companies/${encodeURIComponent(company)}/signals/collect`, { source }) }
 export function extractCompanySignals(company: string, limit = 12) { return post<SignalExtractResult>(`/companies/${encodeURIComponent(company)}/signals/extract`, { limit }) }
 export function listSignalSources() { return api<{ sources: Record<string, SignalSource> }>('/reliability/sources') }
-export function saveSignalSource(id: string, body: { mode: 'disabled' | 'enabled'; key?: string; url?: string }) {
+export function saveSignalSource(id: string, body: SignalSourceDraft) {
   return api<SignalSource>(`/reliability/sources/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) })
 }
 

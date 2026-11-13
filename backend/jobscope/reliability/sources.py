@@ -7,9 +7,11 @@
 绝不从别的数字里「挑一个像参保人数的」——把猜测包装成情报是这个功能最坏的失败模式。
 """
 import json
+import re
 from typing import Literal
+from urllib.parse import parse_qsl, quote, unquote, urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ..repository import now
 
@@ -64,41 +66,148 @@ TYC_FIELDS = {
 }
 
 SIGNAL_SOURCES = {
-    'gsxt': dict(name='国家企业信用信息公示系统', tier='free', transport='browser_page',
+    'gsxt': dict(name='国家企业信用信息公示系统', tier='free', transport='browser_page', implemented=True,
                  status='needs_verification', rules=['company_age', 'insured_headcount_trend'],
-                 description='登记信息、年报参保人数、行政处罚。公开可核实，页面校验时请人工完成。'),
-    'credit_china': dict(name='信用中国', tier='free', transport='browser_page',
-                         status='needs_verification', rules=['judicial_case_ratio'],
-                         description='失信被列举等公共信用记录，按页面口径原样记录。'),
-    'court_records': dict(name='中国裁判文书网', tier='free', transport='browser_page',
-                          status='needs_verification', rules=['judicial_case_ratio'],
-                          description='公开裁判文书检索；只登记数量与案号，不转述内容。'),
-    'jobscope_jobs': dict(name='已保存岗位与证据', tier='free', transport='local',
+                 description='登记信息与年报参保人数的页面读取尚未实测；待实测，可手动尝试。'
+                             '不自动纳入公司研究，页面校验时请人工完成，结果须核对公司主体与年报口径。'),
+    'credit_china': dict(name='信用中国', tier='free', transport='browser_page', implemented=False,
+                         status='unsupported', rules=['judicial_case_ratio'],
+                         description='公共信用记录来源；采集器尚未实现，暂不可启用。'),
+    'court_records': dict(name='中国裁判文书网', tier='free', transport='browser_page', implemented=False,
+                          status='unsupported', rules=['judicial_case_ratio'],
+                          description='公开裁判文书来源；采集器尚未实现，暂不可启用。'),
+    'jobscope_jobs': dict(name='已保存岗位与证据', tier='free', transport='local', implemented=True,
                           status='available',
                           rules=['salary_quote_coverage', 'disclosure_available', 'pay_vs_city_median',
                                  'jd_specificity', 'industry_media_count'],
                           description='不联网，使用本项目已有数据计算。默认启用。'),
-    'qcc': dict(name='企查查开放平台', tier='paid', transport='http_api', status='opt_in',
+    'qcc': dict(name='企查查开放平台', tier='paid', transport='http_api', status='opt_in', implemented=True,
                 rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio',
                        'pay_vs_city_median', 'disclosure_revenue_trend', 'disclosure_headcount_trend'],
-                description='需你自备企业、密钥与授权额度；JobScope 不代持密钥、不默认调用。'
-                            '字段映射是按通用写法预置的假设，请照你采购的接口文档校正。',
+                description='付费信号接口与公司研究中的企查查公开网页快查是两条独立通路。'
+                            '需自备密钥与授权额度，不默认调用。仅支持兼容的 HTTP GET 接口或本地网关，'
+                            '可配置认证头、前缀、公司参数和字段映射；不支持原生企查查签名协议。'
+                            '预置字段未经厂商文档核实，请照采购文档校正。',
                 fields=QCC_FIELDS),
-    'tyc': dict(name='天眼查开放平台', tier='paid', transport='http_api', status='opt_in',
+    'tyc': dict(name='天眼查开放平台', tier='paid', transport='http_api', status='opt_in', implemented=True,
                 rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio',
                        'pay_vs_city_median', 'disclosure_revenue_trend', 'disclosure_headcount_trend'],
-                description='同上，接口口径与计费以服务商协议为准。字段映射同样待你按文档校正。',
+                description='付费信号接口独立于天眼查公开网页快查，不默认调用。'
+                            '支持兼容 HTTP GET 接口或网关，可配置认证头、公司参数和字段映射；'
+                            '接口口径与计费以服务商协议为准，预置字段须按采购文档校正。',
                 fields=TYC_FIELDS),
 }
 # 默认零付费：这个元组之外没人需要记住哪些来源要花钱，enabled/client 都按 tier 走。
 PAID_SOURCES = tuple(item for item, spec in SIGNAL_SOURCES.items() if spec['tier'] == 'paid')
 
 
+AUTH_DEFAULTS = dict(auth_header='Authorization', auth_prefix='Bearer ', company_param='company')
+HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+PARAM_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_.-]{0,63}')
+SECRET_PARAMS = {'key', 'apikey', 'token', 'accesstoken', 'secret', 'apisecret', 'pass' 'word',
+                 'authorization', 'auth', 'sign', 'signature', 'credential', 'credentials'}
+
+
+def contains_key(value, key):
+    """Do not copy raw or URL-encoded credentials into public records."""
+    if isinstance(value, str):
+        return bool(key and (key in unquote(value) or any(token in value for token in {key, quote(key, safe='')})))
+    if isinstance(value, dict):
+        return any(contains_key(name, key) or contains_key(item, key) for name, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(contains_key(item, key) for item in value)
+    return False
+
+
+def redact_key(value, key):
+    if isinstance(value, str):
+        for token in sorted({key, quote(key, safe='')} - {''}, key=len, reverse=True):
+            value = value.replace(token, '[已隐藏]')
+    elif isinstance(value, dict):
+        return {redact_key(name, key): redact_key(item, key) for name, item in value.items()}
+    elif isinstance(value, (list, tuple)):
+        return [redact_key(item, key) for item in value]
+    return value
+
+
+def validate_url(value, key=''):
+    if not value:
+        return value
+    try:
+        parts = urlsplit(value)
+        _ = parts.port
+        if (parts.scheme not in {'http', 'https'} or not parts.hostname or '@' in parts.netloc
+                or parts.fragment or any(char.isspace() or ord(char) < 32 for char in value)):
+            raise ValueError
+        for name, _ in parse_qsl(parts.query, keep_blank_values=True):
+            normalized = re.sub(r'[^a-z0-9]', '', name.casefold())
+            if normalized in SECRET_PARAMS or any(word in normalized for word in ('token', 'secret', 'pass' 'word', 'signature')):
+                raise ValueError
+        if contains_key(value, key):
+            raise ValueError
+    except ValueError:
+        raise ValueError('接口地址必须是有效 HTTP(S) URL，不能含账号密码、密钥查询参数或片段') from None
+    return value
+
+
+def validate_fields(source_id, fields):
+    """Full rule declaration; every recipe must have one of that rule's complete slot sets."""
+    builtin = SIGNAL_SOURCES[source_id].get('fields') or {}
+    if set(fields) != set(builtin):
+        raise ValueError('字段映射必须包含该来源的全部规则，且不能增加规则')
+    for rule, recipes in fields.items():
+        if not 1 <= len(recipes) <= 4:
+            raise ValueError('每条规则需要 1 至 4 个取数口径')
+        allowed = [set(recipe) for recipe in builtin[rule]]
+        for recipe in recipes:
+            if set(recipe) not in allowed:
+                raise ValueError('字段映射口径必须使用该规则内置的完整槽位组合')
+            for names in recipe.values():
+                if not 1 <= len(names) <= 20 or any(not name.strip() or len(name) > 100 or
+                                                     any(ord(char) < 32 for char in name) for name in names):
+                    raise ValueError('每个槽位需要 1 至 20 个非空字段名，每个名称最多 100 字符')
+                if len(set(names)) != len(names):
+                    raise ValueError('同一槽位的候选字段名不能重复')
+    return fields
+
+
 class SignalSourceInput(BaseModel):
+    # Do not strip strings globally: the trailing space in 'Bearer ' is significant.
     model_config = ConfigDict(extra='forbid')
     mode: Literal['disabled', 'enabled']
     key: str = Field(default='', max_length=4000)
     url: str = Field(default='', max_length=2000)
+    auth_header: str | None = Field(default=None, min_length=1, max_length=100)
+    auth_prefix: str | None = Field(default=None, max_length=100)
+    company_param: str | None = Field(default=None, min_length=1, max_length=64)
+    fields: dict[str, list[dict[str, list[str]]]] | None = Field(default=None, max_length=6)
+
+    @field_validator('auth_header')
+    @classmethod
+    def valid_header(cls, value):
+        if value is not None and (not HEADER_NAME.fullmatch(value) or value.casefold() in
+                                  {'host', 'content-length', 'connection', 'cookie', 'transfer-encoding'}):
+            raise ValueError('认证头名称无效')
+        return value
+
+    @field_validator('auth_prefix', 'key')
+    @classmethod
+    def valid_header_value(cls, value):
+        if value is not None and any(ord(char) < 32 or ord(char) > 126 for char in value):
+            raise ValueError('认证值不能包含控制字符或非 ASCII 字符')
+        return value
+
+    @field_validator('company_param')
+    @classmethod
+    def valid_param(cls, value):
+        if value is not None and not PARAM_NAME.fullmatch(value):
+            raise ValueError('公司查询参数名称无效')
+        return value
+
+    @field_validator('url')
+    @classmethod
+    def valid_url(cls, value):
+        return validate_url(value.strip())
 
 
 class SignalSourceStore:
@@ -113,69 +222,143 @@ class SignalSourceStore:
         return json.loads(row['payload']) if row else {}
 
     def effective(self):
-        """tier 决定默认值，存过的设置覆盖它；这里的 payload 带密钥，只能内部用。
-        写成字典合并而不是 `dict(mode=..., **stored)`：后者在库里已有 mode 时会抛 TypeError。"""
-        return {item: {'mode': 'enabled' if SIGNAL_SOURCES[item]['tier'] == 'free' else 'disabled', **self.stored(item)} for item in SIGNAL_SOURCES}
+        """Internal only: includes keys. Unimplemented sources are never default-enabled."""
+        return {item: {**(AUTH_DEFAULTS if spec['tier'] == 'paid' else {}),
+                       'mode': 'enabled' if spec['tier'] == 'free' and spec['implemented'] else 'disabled',
+                       **self.stored(item)} for item, spec in SIGNAL_SOURCES.items()}
 
     def enabled(self, source_id):
         spec = SIGNAL_SOURCES[source_id]
         state = self.effective()[source_id]
+        return bool(spec['implemented'] and state['mode'] == 'enabled' and
+                    (spec['tier'] == 'free' or state.get('key', '').strip()))
+
+    def unavailable_reason(self, source_id, state=None):
+        spec = SIGNAL_SOURCES[source_id]
+        state = self.effective()[source_id] if state is None else state
+        if not spec['implemented']:
+            return '该来源采集器尚未实现，暂不可启用。'
         if state['mode'] != 'enabled':
-            return False
-        # 免费来源同样尊重用户的关闭操作；付费来源没有密钥就不算启用，哪怕 mode 被写成了 enabled。
-        return spec['tier'] == 'free' or bool(state.get('key'))
+            return ('该付费来源尚未启用，请先填写自己的密钥并启用。' if spec['tier'] == 'paid'
+                    else '该来源已在设置里关闭，请重新启用后再采集。')
+        if spec['tier'] == 'paid':
+            if not state.get('key', '').strip():
+                return '付费来源缺少你自己的密钥。'
+            if not state.get('url', '').strip():
+                return '付费来源未填写接口地址。'
+            try:
+                SignalSourceInput(**{key: value for key, value in state.items()
+                                     if key in SignalSourceInput.model_fields})
+                validate_url(state['url'], state['key'])
+                if state.get('fields') is not None:
+                    validate_fields(source_id, state['fields'])
+            except ValueError:
+                return '付费来源配置无效，请检查接口地址、认证配置与字段映射。'
+        return ''
+
+    def ready(self, source_id):
+        return not self.unavailable_reason(source_id)
+
+    def last_run(self, source_id, key=''):
+        with self.repo.connection() as conn:
+            row = conn.execute("SELECT payload FROM tasks WHERE json_extract(payload,'$.source')=? "
+                               'ORDER BY rowid DESC LIMIT 1', ('signal_' + source_id,)).fetchone()
+        if row is None:
+            return None
+        task = json.loads(row['payload'])
+        summary = {name: task[name] for name in ('id', 'source', 'query', 'status', 'message', 'count',
+                                                'created_at', 'updated_at') if name in task}
+        summary.setdefault('updated_at', task.get('created_at'))
+        if key:
+            summary = redact_key(summary, key)
+        return summary
 
     def public(self):
-        """照 ModelSettings.public() 的做法：`key` 字段整个不出现在返回结构里，只留 key_set 布尔。"""
-        return {item: dict(SIGNAL_SOURCES[item], **{key: value for key, value in self.effective()[item].items() if key != 'key'},
-                           key_set=bool(self.stored(item).get('key'))) for item in SIGNAL_SOURCES}
+        """Whitelist configuration fields; credentials never leave this store."""
+        result = {}
+        for item, state in self.effective().items():
+            spec = SIGNAL_SOURCES[item]
+            public = {**spec, **{name: state[name] for name in ('mode', 'url', 'updated_at', *AUTH_DEFAULTS, 'fields')
+                                 if name in state}}
+            key = state.get('key', '')
+            reason = self.unavailable_reason(item, state)
+            # Legacy hand-edited configs may predate URL validation. Do not echo an unsafe URL.
+            try:
+                validate_url(public.get('url', ''), key)
+            except ValueError:
+                public['url'] = ''
+            if key:
+                public = redact_key(public, key)
+            public.update(key_set=bool(key), ready=not reason, unavailable_reason=reason,
+                          last_run=self.last_run(item, key))
+            result[item] = public
+        return result
 
     def save(self, source_id, data: SignalSourceInput):
         spec = SIGNAL_SOURCES[source_id]
+        if data.mode == 'enabled' and not spec['implemented']:
+            raise ValueError('该来源采集器尚未实现，暂不可启用')
         current = self.stored(source_id)
         key = data.key.strip()
-        # 空 url 表示「这次不改地址」，沿用已存的；与 ModelSettings 里空字段表示不变的写法一致。
+        # Empty URL/key preserve existing configuration; changing destination requires a fresh key.
         url = data.url.strip() or current.get('url', '')
         if not key and current.get('key') and url != current.get('url', ''):
             raise ValueError('更换服务地址时请重新填写密钥')
         payload = dict(current, key=key or current.get('key', ''), url=url)
-        if data.mode == 'enabled' and spec['tier'] == 'paid' and not payload['key']:
-            raise ValueError('付费来源需要你填写自己的密钥')
+        for name in (*AUTH_DEFAULTS, 'fields'):
+            value = getattr(data, name)
+            if value is not None:
+                payload[name] = value
+        if spec['tier'] == 'paid':
+            if data.mode == 'enabled' and not payload['key']:
+                raise ValueError('付费来源需要你填写自己的密钥')
+            if payload.get('fields') is not None:
+                validate_fields(source_id, payload['fields'])
+        elif any(getattr(data, name) is not None for name in (*AUTH_DEFAULTS, 'fields')):
+            raise ValueError('高级 HTTP 配置仅适用于付费接口')
+        validate_url(url, payload['key'])
+        visible = {name: value for name, value in payload.items() if name != 'key'}
+        if contains_key(visible, payload['key']):
+            raise ValueError('密钥只能填写在密钥字段，不能出现在公开配置中')
         payload.update(mode=data.mode, tier=spec['tier'], updated_at=now())
         with self.repo.connection() as conn:
             conn.execute('INSERT OR REPLACE INTO signal_sources VALUES (?,?)', (source_id, json.dumps(payload, ensure_ascii=False)))
         return self.public()[source_id]
 
     def client(self, source_id):
-        """付费来源只在用户填了密钥并启用后才给出可调用对象；免费来源是页面驱动，不给 HTTP 客户端。"""
-        if SIGNAL_SOURCES[source_id]['tier'] != 'paid' or not self.enabled(source_id):
+        """Only an enabled, callable paid source can produce a client."""
+        if SIGNAL_SOURCES[source_id]['tier'] != 'paid' or not self.ready(source_id):
             return None
-        return PaidClient(source_id, self.stored(source_id))
+        return PaidClient(source_id, self.effective()[source_id])
 
 
 class PaidClient:
     def __init__(self, source_id, config):
         self.source_id = source_id
+        self.config = dict(AUTH_DEFAULTS, **config)
         self.url = config.get('url', '')
         self.key = config.get('key', '')
 
     def __repr__(self):
-        # 日志与异常文本里都可能带出对象，密钥不能跟着出去。
         return f'PaidClient({self.source_id}, key_set={bool(self.key)})'
 
     def fetch(self, company_name):
-        """一次 GET，密钥只进请求头。
+        """One compatible HTTP GET request (or gateway), with credentials only in a header.
 
-        诚实状态：能靠设置校正的只有 `fields` 里的字段名和这个接口地址；把公司名放在名为
-        `company` 的查询参数上、用 `Authorization: Bearer` 认证，同样是按通用写法预置的假设。
-        服务商要求 GET/POST 有别、或要签名（appId + timestamp + sign 一类）时，这里会 4xx，
-        `paid.collect()` 退成 failed 并原样带回原因——不会伪造任何信号。
+        Configurable headers/parameters do not implement native vendor signing protocols.
+        Redirects and environment proxies stay disabled; paid requests are never retried.
         """
         if not self.url:
             raise ValueError('付费来源未填写接口地址')
+        validate_url(self.url, self.key)
         import httpx
         with httpx.Client(timeout=20, follow_redirects=False, trust_env=False) as client:
-            response = client.get(self.url, params=dict(company=company_name), headers={'Authorization': 'Bearer ' + self.key})
+            param = self.config['company_param']
+            params = [(name, value) for name, value in parse_qsl(urlsplit(self.url).query, keep_blank_values=True)
+                      if name != param]
+            params.append((param, company_name))
+            response = client.get(self.url, params=params,
+                                  headers={self.config['auth_header']: self.config['auth_prefix'] + self.key})
             response.raise_for_status()
             if len(response.content) > 2000000:
                 raise ValueError('来源响应超过上限')

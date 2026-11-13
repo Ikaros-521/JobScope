@@ -55,9 +55,10 @@ class ReliabilityService:
         saved = persist_outcome(self.repo, company, LOCAL_SOURCE, outcome, local.DERIVED_KIND)
         return dict(source=LOCAL_SOURCE, status=outcome['status'], message=outcome['message'], count=len(saved))
 
-    def recompute(self, name, credit_code=''):
+    def recompute(self, name, credit_code='', *, refresh_local=True):
         company = self.repo.resolve_company(name, credit_code)
-        collection = self.refresh_local(company)
+        # Research has already run its selected local task; do not run it twice or bypass selection.
+        collection = self.refresh_local(company) if refresh_local else None
         stored = self.repo.signals(company['id'], ttl_days={rule: spec.ttl_days for rule, spec in RULES.items()})
         stale = {item['rule'] for item in stored if item['stale']}
         parsed = [SignalInput(**{key: value for key, value in item.items() if key in SignalInput.model_fields}) for item in stored]

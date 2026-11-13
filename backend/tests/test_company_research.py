@@ -71,7 +71,8 @@ def test_company_research_runs_all_channels_and_isolates_failures(client, stub_c
     started = client.post('/api/company-research', json={'company': '海宁辰曦科技有限公司'})
     assert started.status_code == 200
     tasks = started.json()['tasks']
-    assert [t['source'] for t in tasks] == ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin']
+    assert [t['source'] for t in tasks] == ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin',
+                                               'signal_jobscope_jobs', 'reliability_compute']
     # 端点异步返回：后台线程执行渠道，stub 渠道瞬时完成属正常，只验证渠道规划与隔离。
 
     finals = {t['source']: wait_task(client, t['id']) for t in tasks}
@@ -141,14 +142,143 @@ def test_company_research_appends_job_details_finale(client, stub_channels, monk
 
     started = client.post('/api/company-research', json={'company': '海宁辰曦科技有限公司'})
     tasks = started.json()['tasks']
-    assert [t['source'] for t in tasks] == ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin', 'job_details']
-    final = wait_task(client, tasks[-1]['id'])
+    assert [t['source'] for t in tasks] == ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin',
+                                               'job_details', 'signal_jobscope_jobs', 'reliability_compute']
+    final = wait_task(client, next(task['id'] for task in tasks if task['source'] == 'job_details'))
+    assert wait_task(client, tasks[-1]['id'])['status'] == 'completed'
     assert final['status'] == 'completed'
     assert len(calls) == 1
     assert calls[0]['ids'] == [seeded['id']]
     assert calls[0]['limit'] == 1
     assert '海宁辰曦' in calls[0]['message']
 
-    # 没有可补岗位的公司不追加收尾任务（仍是最初 7 渠道）。
+    # 无待补岗位时不追加详情任务，信号与报告任务仍需执行。
     bare = client.post('/api/company-research', json={'company': '无岗位公司'}).json()['tasks']
-    assert [t['source'] for t in bare] == ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin']
+    assert [t['source'] for t in bare] == ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin',
+                                               'signal_jobscope_jobs', 'reliability_compute']
+    assert wait_task(client, bare[-1]['id'])['status'] == 'completed'
+
+
+def test_research_defaults_only_ready_available_free_and_never_paid(client, stub_channels, monkeypatch):
+    from jobscope.reliability import collectors
+    from jobscope.reliability.sources import PaidClient
+    calls = []
+    monkeypatch.setattr(PaidClient, 'fetch', lambda self, company: calls.append(company))
+    monkeypatch.setattr(collectors, 'collect', lambda *args, **kwargs: pytest.fail('unverified GSXT is explicit only'))
+    assert client.put('/api/reliability/sources/qcc', json=dict(mode='enabled', key='vendor-key',
+                      url='http://127.0.0.1:9999/company')).status_code == 200
+    tasks = client.post('/api/company-research', json={'company': '甲公司'}).json()['tasks']
+    assert [task['source'] for task in tasks if task['source'].startswith('signal_')] == ['signal_jobscope_jobs']
+    assert wait_task(client, tasks[-1]['id'])['status'] == 'completed'
+    local = wait_task(client, next(task['id'] for task in tasks if task['source'] == 'signal_jobscope_jobs'))
+    assert local['status'] == 'completed' and local['count'] == 3
+    assert calls == []
+    report = client.get('/api/companies/甲公司/reliability').json()['report']
+    assert report and report['evidence_ids']
+    assert len([task for task in client.app.state.repo.tasks() if task['source'] == 'signal_jobscope_jobs']) == 1
+    assert client.get('/api/reliability/sources').json()['sources']['jobscope_jobs']['last_run']['id'] == local['id']
+
+
+@pytest.mark.parametrize('selection,code', [
+    (['qcc'], 409), (['credit_china'], 409), (['court_records'], 409),
+    (['missing_source'], 400), (['jobscope_jobs', 'jobscope_jobs'], 400),
+    (['gsxt'] * 7, 422),
+])
+def test_research_validates_selection_before_creating_tasks_or_threads(client, monkeypatch, selection, code):
+    def forbidden(*args, **kwargs):
+        pytest.fail('invalid selection must not start a thread')
+    monkeypatch.setattr('jobscope.main.threading.Thread', forbidden)
+    result = client.post('/api/company-research', json=dict(company='甲公司', signal_sources=selection))
+    assert result.status_code == code
+    assert client.app.state.repo.tasks() == []
+    assert client.app.state.repo.find_company('甲公司') is None
+
+
+def test_research_empty_selection_and_disabled_default_do_not_collect(client, stub_channels, monkeypatch):
+    from jobscope.reliability import local
+    monkeypatch.setattr(local, 'collect', lambda *args, **kwargs: pytest.fail('signals not selected'))
+    for selection in ([], None):
+        if selection is None:
+            assert client.put('/api/reliability/sources/jobscope_jobs', json={'mode': 'disabled'}).status_code == 200
+        tasks = client.post('/api/company-research', json=dict(company='甲公司', signal_sources=selection)).json()['tasks']
+        assert not any(task['source'].startswith('signal_') for task in tasks)
+        assert wait_task(client, tasks[-1]['id'])['status'] == 'completed'
+    result = client.post('/api/company-research', json=dict(company='甲公司', signal_sources=['jobscope_jobs']))
+    assert result.status_code == 409
+
+
+def test_research_explicit_paid_and_gsxt_are_separate_from_web_and_local_runs_last(client, stub_channels, monkeypatch):
+    from jobscope.reliability import collectors, local
+    from jobscope.reliability.sources import PaidClient
+    events = []
+    original_local = local.collect
+
+    def paid_fetch(self, company):
+        events.append(('paid', company))
+        return {'establish_date': '2015-04-01'}
+
+    def gsxt_collect(source, company, **kwargs):
+        events.append(('gsxt', company))
+        return dict(status='needs_verification', message='请核对页面', signals=[])
+
+    def local_collect(source, company, **kwargs):
+        events.append(('local', company))
+        assert 'liepin' in stub_channels  # job channels have finished before local statistics
+        return original_local(source, company, **kwargs)
+
+    monkeypatch.setattr(PaidClient, 'fetch', paid_fetch)
+    monkeypatch.setattr(collectors, 'collect', gsxt_collect)
+    monkeypatch.setattr(local, 'collect', local_collect)
+    assert client.put('/api/reliability/sources/qcc', json=dict(mode='enabled', key='vendor-key',
+                      url='http://localhost:9999/company')).status_code == 200
+    tasks = client.post('/api/company-research', json=dict(company='甲 公司',
+                        signal_sources=['jobscope_jobs', 'qcc', 'gsxt'])).json()['tasks']
+    signals = [task for task in tasks if task['source'].startswith('signal_')]
+    assert [task['source'] for task in signals] == ['signal_qcc', 'signal_gsxt', 'signal_jobscope_jobs']
+    assert wait_task(client, tasks[-1]['id'])['status'] == 'completed'
+    assert events == [('paid', '甲公司'), ('gsxt', '甲公司'), ('local', '甲公司')]
+    finals = {task['source']: wait_task(client, task['id']) for task in tasks}
+    assert finals['qcc']['status'] == 'completed'  # public web lookup is distinct
+    assert finals['signal_qcc']['status'] == 'partial' and finals['signal_qcc']['count'] == 1
+    assert finals['signal_gsxt']['status'] == 'needs_verification'
+    assert client.get('/api/companies/甲公司/reliability').json()['report']['score'] is not None
+    assert len(client.app.state.repo.tasks()) == len(tasks)
+
+
+def test_queued_source_is_rechecked_after_disable_without_calling_paid(client, stub_channels, monkeypatch):
+    from jobscope.reliability.sources import PaidClient, SignalSourceInput, SignalSourceStore
+    from jobscope import collect_service
+    store = SignalSourceStore(client.app.state.repo)
+    store.save('qcc', SignalSourceInput(mode='enabled', key='vendor-key', url='http://localhost:9999/company'))
+    monkeypatch.setattr(PaidClient, 'fetch', lambda *args: pytest.fail('disabled paid source was called'))
+    original = collect_service.execute_collection
+
+    def disable_during_jobs(*args, **kwargs):
+        store.save('qcc', SignalSourceInput(mode='disabled'))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(collect_service, 'execute_collection', disable_during_jobs)
+    tasks = client.post('/api/company-research', json=dict(company='甲公司', signal_sources=['qcc'])).json()['tasks']
+    assert wait_task(client, tasks[-1]['id'])['status'] == 'completed'
+    signal = wait_task(client, next(task['id'] for task in tasks if task['source'] == 'signal_qcc'))
+    assert signal['status'] == 'skipped' and signal['count'] == 0
+    assert '未启用' in signal['message']
+
+
+def test_worker_signal_and_compute_failures_finalize_all_tasks(client, stub_channels, monkeypatch):
+    from jobscope.reliability import local
+    from jobscope.reliability.service import ReliabilityService
+    secret = 'secret-must-not-be-stored'
+
+    def fail(*args, **kwargs):
+        raise RuntimeError(secret)
+
+    monkeypatch.setattr(local, 'collect', fail)
+    monkeypatch.setattr(ReliabilityService, 'recompute', fail)
+    tasks = client.post('/api/company-research', json={'company': '甲公司'}).json()['tasks']
+    finals = {task['source']: wait_task(client, task['id']) for task in tasks}
+    assert finals['signal_jobscope_jobs']['status'] == 'failed'
+    assert finals['reliability_compute']['status'] == 'failed'
+    assert not any(task['status'] in ('pending', 'running') for task in finals.values())
+    assert secret not in str(finals)
+

@@ -200,7 +200,8 @@ def test_no_reliability_response_echoes_the_configured_secret(client, tmp_path, 
     for result in calls:
         assert SECRET not in result.text, result.request.url.path
         assert SECRET.casefold() not in result.text.casefold()
-        assert 'Bearer' not in result.text
+        # Public auth_prefix='Bearer ' is configuration, never a credential-bearing header.
+        assert 'Authorization: Bearer' not in result.text
         assert '"key"' not in result.text
     # 密钥只许待在 signal_sources 这一张表里；证据、信号、报告任何一处落进原文都算留档外泄。
     with Repository(tmp_path).connection() as conn:
@@ -216,12 +217,14 @@ def test_paid_sources_start_disabled_and_free_ones_enabled(client, tmp_path):
     items = client.get('/api/reliability/sources').json()['sources']
     assert set(items) == set(SIGNAL_SOURCES)
     paid = [key for key, spec in SIGNAL_SOURCES.items() if spec['tier'] == 'paid']
-    free = [key for key, spec in SIGNAL_SOURCES.items() if spec['tier'] == 'free']
+    free = [key for key, spec in SIGNAL_SOURCES.items() if spec['tier'] == 'free' and spec['implemented']]
+    unsupported = [key for key, spec in SIGNAL_SOURCES.items() if not spec['implemented']]
     assert paid and set(paid) == set(PAID_SOURCES)
     assert all(items[key]['mode'] == 'disabled' for key in paid)
     assert all(items[key]['mode'] == 'enabled' for key in free)
+    assert all(items[key]['mode'] == 'disabled' and not items[key]['ready'] for key in unsupported)
     assert all(items[key]['key_set'] is False for key in items)
-    # 默认值只能由 tier 推导：登记表里写死 mode 就等于偷偷把某个付费来源默认打开。
+    # 默认值由 tier 与 implemented 推导，未实现的来源不能启用。
     assert all('mode' not in spec for spec in SIGNAL_SOURCES.values())
     store = SignalSourceStore(Repository(tmp_path))
     assert all(not store.enabled(key) for key in paid)

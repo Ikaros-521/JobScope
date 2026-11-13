@@ -263,3 +263,55 @@ def test_the_statuses_stay_inside_the_collectors_vocabulary():
     outcomes = [run(client=FakeClient(payload=payload))[0] for payload in (FULL, {'x': 1}, [], 'text', None)]
     outcomes.append(paid.collect('qcc', '甲公司', client=None))
     assert all(item['status'] in allowed for item in outcomes)
+
+
+def test_client_configuration_overrides_mapping_without_guessing_vendor_fields():
+    import copy
+    from jobscope.reliability.sources import SIGNAL_SOURCES
+    fields = copy.deepcopy(SIGNAL_SOURCES['qcc']['fields'])
+    fields['company_age'][0]['founded_date'] = ['incorporated_on']
+    client = FakeClient(payload={'incorporated_on': '2015-04-01'})
+    client.config = {'fields': fields}
+    outcome, by_rule = run(client=client)
+    assert outcome['status'] == 'partial' and set(by_rule) == {'company_age'}
+    assert 'incorporated_on' in by_rule['company_age']['text']
+    client.payload = {'establish_date': '2015-04-01'}
+    _, by_rule = run(client=client)
+    assert 'company_age' not in by_rule  # configured fields replace, rather than supplement, defaults
+
+
+def test_paid_client_sends_custom_auth_header_prefix_and_company_param(monkeypatch):
+    from jobscope.reliability.sources import PaidClient
+    requests = []
+    original_client = httpx.Client
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, json={'incorporated_on': '2015-04-01'})
+
+    def client_factory(**kwargs):
+        assert kwargs == dict(timeout=20, follow_redirects=False, trust_env=False)
+        return original_client(transport=httpx.MockTransport(handle), **kwargs)
+
+    monkeypatch.setattr(httpx, 'Client', client_factory)
+    client = PaidClient('qcc', dict(url='http://localhost:9500/company?format=json', key=KEY,
+                       auth_header='X-Api-Key', auth_prefix='', company_param='keyword'))
+    assert client.fetch('甲公司') == {'incorporated_on': '2015-04-01'}
+    request = requests.pop()
+    assert request.headers['X-Api-Key'] == KEY and 'Authorization' not in request.headers
+    assert dict(request.url.params) == {'format': 'json', 'keyword': '甲公司'}
+    assert KEY not in str(request.url) and KEY not in repr(client)
+    default = PaidClient('qcc', dict(url=ENDPOINT, key=KEY))
+    default.fetch('乙公司')
+    request = requests.pop()
+    assert request.headers['Authorization'] == 'Bearer ' + KEY
+    assert dict(request.url.params) == {'company': '乙公司'}
+
+
+def test_unexpected_paid_errors_never_echo_headers_keys_or_signed_urls():
+    error = RuntimeError(f'Authorization: Bearer {KEY}; gateway returned https://vendor.example/?secret=other-secret')
+    client = FakeClient(error=error)
+    outcome, signals = run(client=client)
+    assert outcome['status'] == 'failed' and signals == {}
+    assert KEY not in str(outcome) and 'other-secret' not in str(outcome)
+    assert client.calls == ['甲公司']

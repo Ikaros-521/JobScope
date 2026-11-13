@@ -130,3 +130,83 @@ def test_public_listing_shows_the_mapping_so_the_user_can_correct_it(store):
     assert 'establish_date' in json.dumps(spec['fields'], ensure_ascii=False)
     assert secret not in json.dumps(spec, ensure_ascii=False)
 
+
+def test_implementation_and_readiness_are_separate_from_enabled_settings(store):
+    public = store.public()
+    for source in ('credit_china', 'court_records'):
+        assert public[source]['implemented'] is False
+        assert public[source]['status'] == 'unsupported'
+        assert public[source]['mode'] == 'disabled'
+        assert not public[source]['ready'] and public[source]['unavailable_reason']
+        with pytest.raises(ValueError, match='尚未实现'):
+            store.save(source, SignalSourceInput(mode='enabled'))
+    assert public['gsxt']['implemented'] and public['gsxt']['ready']
+    assert public['gsxt']['status'] == 'needs_verification'
+    assert '待实测' in public['gsxt']['description']
+    assert public['jobscope_jobs']['ready']
+    saved = store.save('qcc', SignalSourceInput(mode='enabled', key='vendor-key'))
+    assert saved['mode'] == 'enabled' and not saved['ready']
+    assert '接口地址' in saved['unavailable_reason']
+    assert store.client('qcc') is None
+    assert store.save('qcc', SignalSourceInput(mode='enabled', url='http://localhost:9000/company',
+                                             key='vendor-key'))['ready']
+
+
+@pytest.mark.parametrize('url', [
+    'ftp://api.example/x', 'https:///company', 'https://user:pass@api.example/x',
+    'https://api.example/x?api_key=secret', 'https://api.example/x?access_token=secret',
+    'https://api.example/x?signature=secret', 'https://api.example/x#secret',
+    'http://localhost:invalid/x', 'https://api.example/a b',
+])
+def test_unsafe_urls_are_rejected_without_persisting(store, url):
+    with pytest.raises(ValueError):
+        store.save('qcc', SignalSourceInput(mode='enabled', key='vendor-key', url=url))
+    assert store.stored('qcc') == {}
+
+
+def test_advanced_settings_preserve_omitted_values_and_validate_complete_slot_sets(store):
+    fields = json.loads(json.dumps(SIGNAL_SOURCES['qcc']['fields']))
+    fields['company_age'][0]['founded_date'] = ['incorporated_on']
+    saved = store.save('qcc', SignalSourceInput(mode='enabled', key='vendor-key',
+                       url='http://127.0.0.1:9010/company', auth_header='X-Api-Key', auth_prefix='',
+                       company_param='keyword', fields=fields))
+    assert saved['fields'] == fields and saved['auth_prefix'] == ''
+    assert saved['auth_header'] == 'X-Api-Key' and saved['company_param'] == 'keyword'
+    saved = store.save('qcc', SignalSourceInput(mode='disabled'))
+    assert saved['fields'] == fields and saved['auth_prefix'] == ''
+    assert saved['url'] == 'http://127.0.0.1:9010/company' and saved['key_set']
+    fields['insured_headcount_trend'][0].pop('insured_previous')
+    with pytest.raises(ValueError, match='完整槽位'):
+        store.save('qcc', SignalSourceInput(mode='enabled', fields=fields))
+    assert store.stored('qcc')['mode'] == 'disabled'
+
+
+@pytest.mark.parametrize('advanced', [
+    {'auth_header': 'X-Key\r\nInjected'}, {'auth_header': 'Host'},
+    {'auth_prefix': 'Bearer\n'}, {'company_param': 'company&token'},
+    {'fields': {'company_age': [{'founded_date': []}]}},
+])
+def test_invalid_advanced_configuration_is_rejected(store, advanced):
+    with pytest.raises(ValueError):
+        store.save('qcc', SignalSourceInput(mode='enabled', key='vendor-key',
+                   url='https://api.example/company', **advanced))
+    assert store.stored('qcc') == {}
+
+
+def test_last_run_is_signal_task_only_and_not_limited_by_recent_task_page(store):
+    assert store.public()['qcc']['last_run'] is None
+    signal = store.repo.create_task('signal_qcc', '甲公司')
+    signal.update(status='partial', message='字段未全部匹配', count=2, updated_at='2026-11-13T12:00:00Z')
+    store.repo.update_task(signal)
+    for _ in range(105):
+        store.repo.create_task('qcc', '公开网页查询')
+    assert store.public()['qcc']['last_run'] == signal
+
+
+def test_key_cannot_be_smuggled_into_public_advanced_configuration(store):
+    secret = 'vendor-key-secret'
+    with pytest.raises(ValueError, match='密钥'):
+        store.save('qcc', SignalSourceInput(mode='enabled', key=secret,
+                   url='https://api.example/company', auth_prefix=secret))
+    assert secret not in json.dumps(store.public())
+

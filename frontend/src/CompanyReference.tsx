@@ -2,6 +2,7 @@ import { date } from './api'
 import type { ReliabilityDiff, ReliabilityFinding, ReliabilityHistory, ReliabilityReport } from './api'
 import { toast } from './toast'
 import { addCompareCompany } from './compareSelectionStore'
+import { SignalCollector, signalStatusNames } from './SignalSources'
 
 // 措辞只能来自后端 wording.py 的模板：这个组件只排版，不替公司写任何结论。
 // 唯一允许自己写的文字是标签、按钮名和「这一步在做什么」的说明。
@@ -30,7 +31,7 @@ const ACTION_INFO: Record<'local' | 'extract' | 'material', { name: string; tip:
   },
   material: {
     name: '补资料',
-    tip: '打开补充资料窗口，手动贴入公告、报告等材料；官方登记类信息只能靠你自己提供材料。',
+    tip: '打开补充资料窗口，手动贴入公告、报告等材料；也可在「按来源补数据」中尝试官方页面或已配置的付费 API。',
   },
 }
 
@@ -199,7 +200,7 @@ function TrendDiff({ diff }: { diff: ReliabilityDiff }) {
   </div>
 }
 
-export function CompanyReference({ report, history, busy, loading, action, company, onCompute, onCoverage, onExtract, onOpenEvidence, onOpenEvidenceModal, onOpenCompare }: {
+export function CompanyReference({ report, history, busy, loading, action, company, onCompute, onCoverage, onExtract, onOpenEvidence, onOpenEvidenceModal, onOpenCompare, onSignalBusy, onSignalCollected, onConfigureSources }: {
   report: ReliabilityReport | null
   history: ReliabilityHistory | null
   busy: boolean
@@ -212,6 +213,9 @@ export function CompanyReference({ report, history, busy, loading, action, compa
   onOpenEvidence: (evidenceId: string) => void
   onOpenEvidenceModal: () => void
   onOpenCompare?: () => void
+  onSignalBusy: (busy: boolean) => void
+  onSignalCollected: (report: ReliabilityReport, history: ReliabilityHistory | null) => void
+  onConfigureSources: () => void
 }) {
   const score = report?.score ?? null
   const gapActionHandler = (kind: 'local' | 'extract' | 'material') => {
@@ -244,7 +248,7 @@ export function CompanyReference({ report, history, busy, loading, action, compa
       </div>}
 
     {action ? <p className="reliability-action" role="status">
-      <span className="reliability-action-status">{action.status}</span>
+      <span className="reliability-action-status">{signalStatusNames[action.status] || action.status}</span>
       <span>{action.label}：{action.message}</span>
     </p> : null}
 
@@ -270,6 +274,8 @@ export function CompanyReference({ report, history, busy, loading, action, compa
       <button type="button" className="text-button" disabled={Boolean(busy)} title={ACTION_INFO.local.tip} onClick={onCoverage}>{ACTION_INFO.local.name}</button>
       <button type="button" className="text-button" disabled={Boolean(busy)} title={ACTION_INFO.extract.tip} onClick={onExtract}>{ACTION_INFO.extract.name}</button>
     </div>
+
+    <SignalCollector company={company} disabled={busy} onBusyChange={onSignalBusy} onCollected={onSignalCollected} onConfigure={onConfigureSources} />
 
     {/* 免责与边界是常驻区块，不放进 hover 或折叠里：读到分数的人要同时读到限制。 */}
     {report ? <div className="reliability-legal">

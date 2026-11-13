@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from .reliability.sources import SignalSourceInput as SourceSettingsInput
+
 
 class RequestModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -59,6 +61,8 @@ class CompanyResearchInput(RequestModel):
     company: str = Field(min_length=1, max_length=100)
     # 岗位渠道的采集上限；默认 10 与岗位详情页一致，横评补数据传更大值。
     limit: int = Field(default=10, ge=1, le=200)
+    # None selects callable, verified free sources; [] opts out of signal collection.
+    signal_sources: list[Annotated[str, Field(min_length=2, max_length=40)]] | None = Field(default=None, max_length=6)
 
 
 class MergeInput(RequestModel):
@@ -187,11 +191,8 @@ class SignalExtractInput(RequestModel):
     credit_code: str = Field(default='', max_length=40)
 
 
-class SignalSourceInput(RequestModel):
-    """Paid tiers stay opt-in; `key` is accepted on write only and never returned."""
-    mode: Literal['disabled', 'enabled']
-    key: str = Field(default='', max_length=4000)
-    url: str = Field(default='', max_length=2000)
+class SignalSourceInput(SourceSettingsInput):
+    """Public and internal settings share validation; auth_prefix whitespace is significant."""
 
 
 class ResumeVersionInput(RequestModel):

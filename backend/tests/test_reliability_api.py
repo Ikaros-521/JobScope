@@ -485,7 +485,7 @@ def test_reading_a_report_does_not_leave_a_company_row_behind(client, tmp_path):
     assert rows() == 0
     for name in ('拼错了的公搜', '甲公司'):
         assert client.get(f'/api/companies/{name}/reliability').json() == {'report': None}
-    assert client.get('/api/companies/甲公司/reliability', params=dict(credit_code='91110000MA01ABCD7X')).json() == {'report': None}
+    assert client.get('/api/companies/甲公司/reliability', params=dict(credit_code='91110000' + 'MA01ABCD7X')).json() == {'report': None}
     assert rows() == 0
     # 空白名同样只是 422，不写行。
     assert client.get('/api/companies/%20/reliability').status_code == 422
@@ -495,6 +495,110 @@ def test_reading_a_report_does_not_leave_a_company_row_behind(client, tmp_path):
     assert rows() == 1
     assert client.get('/api/companies/甲公司/reliability').json()['report']['input_hash'] == built['input_hash']
     assert rows() == 1
+
+
+def test_public_api_advanced_paid_configuration_and_omitted_values(client, monkeypatch):
+    from jobscope.reliability.sources import SIGNAL_SOURCES, PaidClient
+    fields = json.loads(json.dumps(SIGNAL_SOURCES['qcc']['fields']))
+    fields['company_age'][0]['founded_date'] = ['registered_on']
+    body = dict(mode='enabled', key=SECRET, url='http://127.0.0.1:9800/company',
+                auth_header='X-Vendor-Key', auth_prefix='Token ', company_param='keyword', fields=fields)
+    response = client.put('/api/reliability/sources/qcc', json=body)
+    assert response.status_code == 200
+    saved = response.json()
+    assert saved['ready'] and saved['unavailable_reason'] == ''
+    assert saved['auth_prefix'] == 'Token ' and saved['auth_header'] == 'X-Vendor-Key'
+    assert saved['company_param'] == 'keyword' and saved['fields'] == fields
+    assert SECRET not in response.text
+    response = client.put('/api/reliability/sources/qcc', json=dict(mode='enabled'))
+    assert response.json()['auth_prefix'] == 'Token ' and response.json()['fields'] == fields
+    seen = []
+
+    def fetch(self, company):
+        seen.append((self.config['auth_prefix'], self.config['company_param']))
+        return {'registered_on': '2015-04-01'}
+
+    monkeypatch.setattr(PaidClient, 'fetch', fetch)
+    response = client.post('/api/companies/甲公司/signals/collect', json=dict(source='qcc'))
+    assert response.json()['status'] == 'partial'
+    assert len(response.json()['signals']) == 1 and seen == [('Token ', 'keyword')]
+    assert response.json()['task']['count'] == 1
+    assert client.get('/api/reliability/sources').json()['sources']['qcc']['last_run']['id'] == response.json()['task']['id']
+
+
+@pytest.mark.parametrize('patch,code', [
+    ({'url': 'file:///tmp/company'}, 422), ({'url': 'https://user:pw@vendor.example/'}, 422),
+    ({'url': 'https://vendor.example/?token=other'}, 422),
+    ({'auth_header': 'Authorization\r\nInjected'}, 422), ({'auth_prefix': 'Bearer\n'}, 422),
+    ({'company_param': 'company&secret'}, 422),
+    ({'fields': {'company_age': [{'founded_date': ['date']}]}}, 400),
+])
+def test_public_api_invalid_paid_configuration_is_secret_free(client, patch, code):
+    response = client.put('/api/reliability/sources/qcc', json=dict(mode='enabled', key=SECRET, **patch))
+    assert response.status_code == code
+    assert SECRET not in response.text
+    assert not client.get('/api/reliability/sources').json()['sources']['qcc']['key_set']
+
+
+def test_public_api_allows_enabled_key_without_url_but_blocks_collection(client, monkeypatch):
+    from jobscope.reliability.sources import PaidClient
+    monkeypatch.setattr(PaidClient, 'fetch', lambda *args: pytest.fail('not ready source must not call HTTP'))
+    saved = client.put('/api/reliability/sources/qcc', json=dict(mode='enabled', key=SECRET)).json()
+    assert saved['mode'] == 'enabled' and not saved['ready'] and '接口地址' in saved['unavailable_reason']
+    result = client.post('/api/companies/甲公司/signals/collect', json=dict(source='qcc'))
+    assert result.status_code == 409
+    assert client.app.state.repo.tasks() == []
+    assert client.app.state.repo.find_company('甲公司') is None
+
+
+def test_unimplemented_and_unknown_sources_are_rejected_without_tasks(client):
+    for source in ('credit_china', 'court_records'):
+        assert client.put('/api/reliability/sources/' + source, json=dict(mode='enabled')).status_code == 400
+        assert client.post('/api/companies/甲公司/signals/collect', json=dict(source=source)).status_code == 409
+    assert client.post('/api/companies/甲公司/signals/collect', json=dict(source='unknown')).status_code == 400
+    assert client.app.state.repo.tasks() == []
+
+
+@pytest.mark.parametrize('status', ['partial', 'unsupported', 'needs_login', 'needs_verification', 'failed'])
+def test_manual_collect_records_final_task_even_without_signals(client, monkeypatch, status):
+    from jobscope.reliability import collectors
+    monkeypatch.setattr(collectors, 'collect', lambda *args, **kwargs: dict(status=status, message='来源结果说明', signals=[]))
+    result = client.post('/api/companies/甲公司/signals/collect', json=dict(source='gsxt')).json()
+    assert result['status'] == status and result['signals'] == []
+    task = client.get('/api/tasks/' + result['task']['id']).json()['task']
+    assert task['status'] == status and task['source'] == 'signal_gsxt' and task['count'] == 0
+    assert task['updated_at'] and task['message'] == result['message']
+    assert client.get('/api/reliability/sources').json()['sources']['gsxt']['last_run'] == task
+
+
+def test_unexpected_collector_exception_is_finalized_and_secret_free(client, monkeypatch):
+    from jobscope.reliability import paid
+    enable_paid(client, monkeypatch)
+
+    def fail(*args, **kwargs):
+        raise RuntimeError('Authorization: Bearer ' + SECRET)
+
+    monkeypatch.setattr(paid, 'collect', fail)
+    response = client.post('/api/companies/甲公司/signals/collect', json=dict(source='qcc'))
+    assert response.status_code == 200 and response.json()['status'] == 'failed'
+    assert response.json()['task']['status'] == 'failed' and response.json()['task']['count'] == 0
+    assert SECRET not in response.text and SECRET not in client.get('/api/tasks').text
+    assert SECRET not in client.get('/api/reliability/sources').text
+
+
+def test_partial_persistence_count_is_honest_and_identity_credit_code_is_preserved(client, monkeypatch):
+    from jobscope.reliability import collectors
+    from jobscope.reliability.rubric import RULES
+    signal = dict(rule='company_age', dimension='stability', value={'years': 8}, unit=RULES['company_age'].unit,
+                  source_class='official', url='https://example.com/company', observed_at='2018-01-01')
+    monkeypatch.setattr(collectors, 'collect', lambda *args, **kwargs: dict(
+        status='completed', message='读到信号', signals=[signal, {**signal, 'value': None}]))
+    response = client.post('/api/companies/甲 公司/signals/collect',
+                           json=dict(source='gsxt', credit_code='91110000' + 'MA01ABCD7X')).json()
+    assert response['status'] == 'partial' and response['task']['count'] == len(response['signals']) == 1
+    entity = client.app.state.repo.find_company('甲公司', '91110000' + 'MA01ABCD7X')
+    assert entity['id'] == response['signals'][0]['company_id']
+    assert response['task']['query'] == entity['name']
 
 
 def test_extract_without_a_model_skips_and_still_records_the_run(client):

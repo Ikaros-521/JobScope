@@ -435,39 +435,82 @@ def create_app(data_dir=None):
 
     @app.post("/api/company-research")
     def company_research(data: CompanyResearchInput):
-        # 多平台公司检索：公告（接口）与国内岗位源（浏览器）逐渠道串行跑；渠道各自独立 try，
-        # 单渠道失败/需要登录只反映在该渠道任务上，不影响其余渠道，前端按任务逐个提示。
+        from .reliability.collection import SourceUnavailable, collect_source, validate_source
+        from .reliability.sources import SIGNAL_SOURCES, SignalSourceStore
         company = data.company.strip()
-        # 渠道编排：公告（接口）→ 企查查/天眼查（公开页快查）→ 国内岗位源（浏览器/接口）。
-        # liepin 是接口源（connectors），browser 渠道由 BROWSER_SOURCES 判定。
-        plan = ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin']
-        tasks = [repo.create_task(source, company) for source in plan]
-        # 收尾步（有可补岗位时追加为最后一个任务）：岗位渠道只存列表摘要，完整 JD 靠详情页
-        # 逐条补读——jd 具体度与薪资分层的材料都在这步攒。boss/智联的列表先进来才有得补，
-        # 所以放在渠道之后跑；未登录/被人机验证挡住只影响这个子任务。
+        store = SignalSourceStore(repo)
+        # Freeze source IDs before creating any task/thread. Paid sources require explicit selection;
+        # unverified GSXT remains a manual option rather than silently running on every research.
+        selected = data.signal_sources
+        if selected is None:
+            selected = [source for source, spec in SIGNAL_SOURCES.items()
+                        if spec['tier'] == 'free' and spec['implemented'] and spec['status'] == 'available'
+                        and store.ready(source)]
+        if len(set(selected)) != len(selected):
+            raise HTTPException(400, '信号来源不能重复')
+        try:
+            for source in selected:
+                validate_source(store, source)
+        except SourceUnavailable as exc:
+            raise HTTPException(exc.status_code, str(exc)) from None
+        selected = tuple(sorted(selected, key=lambda source: SIGNAL_SOURCES[source]['transport'] == 'local'))
+        # Keep existing detail supplementation before signals and local statistics.
         detail_ids = [job['id'] for job in collect_service.company_pending_details(repo, company)]
+        plan = ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin']
+        channel_tasks = [repo.create_task(source, company) for source in plan]
+        tasks = list(channel_tasks)
         detail_task = repo.create_task('job_details', company) if detail_ids else None
         if detail_task is not None:
             tasks.append(detail_task)
+        signal_tasks = [(source, repo.create_task('signal_' + source, company)) for source in selected]
+        tasks.extend(task for _, task in signal_tasks)
+        compute_task = repo.create_task('reliability_compute', company)
+        tasks.append(compute_task)
+
+        def fail(task, message):
+            task.update(status='failed', message=message, updated_at=now())
+            repo.update_task(task)
 
         def worker():
-            for source, task in zip(plan, tasks[:len(plan)]):
+            try:
+                for source, task in zip(plan, channel_tasks):
+                    try:
+                        if source in ('qcc', 'tyc'):
+                            execute_lookup(source, company, task)
+                        else:
+                            execute_collection(source, company, task, limit=data.limit)
+                    except Exception:
+                        fail(task, '该渠道检索失败，已跳过；不影响其他渠道')
+                if detail_task is not None:
+                    try:
+                        collect_service.run_company_details(repo, company, detail_task, detail_ids)
+                    except Exception:
+                        fail(detail_task, '完整JD补读失败，可在岗位档案里单独重试')
+                for source, task in signal_tasks:
+                    try:
+                        # collect_source rechecks current settings and reuses this queued task.
+                        collect_source(repo, data_dir, company, source, task=task)
+                    except Exception:
+                        fail(task, '该信号来源采集失败，已跳过；不影响其他来源')
                 try:
-                    if source in ('qcc', 'tyc'):
-                        execute_lookup(source, company, task)
-                    else:
-                        execute_collection(source, company, task, limit=data.limit)
+                    from .reliability.service import ReliabilityService
+                    ReliabilityService(repo).recompute(company, refresh_local=False)
+                    compute_task.update(status='completed', message='已按当前保存的材料重算求职参考报告',
+                                        count=1, updated_at=now())
+                    repo.update_task(compute_task)
                 except Exception:
-                    task.update(status="failed", message="该渠道检索失败，已跳过；不影响其他渠道")
-                    repo.update_task(task)
-            if detail_task is not None:
-                try:
-                    collect_service.run_company_details(repo, company, detail_task, detail_ids)
-                except Exception:
-                    detail_task.update(status="failed", message="完整JD补读失败，可在岗位档案里单独重试")
-                    repo.update_task(detail_task)
+                    fail(compute_task, '求职参考报告重算失败，可单独重新计算')
+            finally:
+                # Even a helper returning early must not leave a permanently running task.
+                for task in tasks:
+                    if task['status'] in ('running', 'pending'):
+                        fail(task, '该步骤未完成，可单独重试')
 
-        threading.Thread(target=worker, daemon=True).start()
+        try:
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception:
+            for task in tasks:
+                fail(task, '后台任务未能启动，请重试')
         return {"tasks": tasks}
 
     @app.post("/api/browser/collect")
@@ -642,40 +685,13 @@ def create_app(data_dir=None):
 
     @app.post('/api/companies/{company}/signals/collect')
     def collect_company_signals(data: SignalCollectInput, company: str = PathParam(min_length=1, max_length=300)):
-        from .reliability import collectors, local, paid
-        from .reliability.sources import SIGNAL_SOURCES, SignalSourceStore
-        if data.source not in SIGNAL_SOURCES:
-            raise HTTPException(400, '未登记的信号来源')
-        store = SignalSourceStore(repo)
-        # 闸门语义取 sources.enabled：免费来源被手动关闭同样算关，付费来源还要存有密钥。
-        if not store.enabled(data.source):
-            if SIGNAL_SOURCES[data.source]['tier'] == 'paid':
-                raise HTTPException(409, '该付费来源尚未启用；请先在设置里填入你自己的密钥，JobScope 不代持密钥。')
-            raise HTTPException(409, '该来源已在设置里关闭，请重新启用后再采集。')
-        identity = company_identity(company, data.credit_code)
-        # 分派只看登记表里的 transport，三条取数通路互不越界：
-        # browser_page → 项目浏览器读公开页面；local → 只读本项目已存数据；
-        # http_api（只有付费来源用得上）→ 按声明式字段映射取数。
-        # READERS 就是「由项目浏览器采集」的那一组来源；其余非本地来源连浏览器模块都不必导入，
-        # 由 collectors 直接退成 unsupported，浏览器依赖因此不会进入不需要它的路径。
-        spec = SIGNAL_SOURCES[data.source]
-        from_local = spec['transport'] == 'local'
-        from_paid = spec['transport'] == 'http_api' and spec['tier'] == 'paid'
-        if from_local:
-            # 本地来源反过来完全不碰浏览器：它只读本项目的已存数据，也不限页数、不等间隔。
-            outcome = local.collect(data.source, identity['name'], repo=repo, identity=identity)
-        elif from_paid:
-            # client 由 store 把关：没启用或没密钥就是 None，paid 会退成 unsupported 而不发起请求。
-            outcome = paid.collect(data.source, identity['name'], client=store.client(data.source))
-        else:
-            browser_module = load_module('browser') if data.source in collectors.READERS else None
-            outcome = collectors.collect(data.source, identity['name'], browser_module=browser_module, data_dir=data_dir)
-        # 每条信号先落成一条可溯源证据，再落成信号记录：证据仍是唯一的原始层。
-        # url 必须取信号实际出自的那个地址：浏览器/付费接口用各自出处，本地计算没有出处就留空。
-        kind = local.DERIVED_KIND if from_local else (paid.PAID_KIND if from_paid else 'disclosure')
-        from .reliability.service import persist_outcome
-        saved = persist_outcome(repo, identity, data.source, outcome, kind)
-        return dict(status=outcome['status'], message=outcome['message'], signals=saved)
+        from .reliability.collection import SourceUnavailable, collect_source
+        try:
+            return collect_source(repo, data_dir, company, data.source, data.credit_code)
+        except SourceUnavailable as exc:
+            raise HTTPException(exc.status_code, str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
 
     @app.post('/api/companies/{company}/signals/extract')
     def extract_company_signals(data: SignalExtractInput, company: str = PathParam(min_length=1, max_length=300)):
@@ -848,12 +864,12 @@ def create_app(data_dir=None):
 
     @app.put('/api/reliability/sources/{source_id}')
     def save_reliability_source(data: SignalSourceInput, source_id: str = PathParam(min_length=2, max_length=40)):
-        from .reliability.sources import SIGNAL_SOURCES, SignalSourceInput as SourceSettings, SignalSourceStore
+        from .reliability.sources import SIGNAL_SOURCES, SignalSourceStore
         if source_id not in SIGNAL_SOURCES:
             raise HTTPException(404, '未登记的信号来源')
         try:
-            # 公开契约收下密钥，转成 reliability 层的设置对象；store.public() 只回 key_set 布尔。
-            return SignalSourceStore(repo).save(source_id, SourceSettings(mode=data.mode, key=data.key, url=data.url))
+            # The public model inherits the internal contract, including optional advanced fields.
+            return SignalSourceStore(repo).save(source_id, data)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
 
