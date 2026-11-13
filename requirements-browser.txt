@@ -1,2 +1,0 @@
-# 可选：真实 Chrome 持久会话及响应监听。
-DrissionPage==4.1.1.4

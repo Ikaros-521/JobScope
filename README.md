@@ -7,7 +7,7 @@
 需要 Python 3.11+、Node.js 20+。在本仓库根目录（`start.ps1` 所在目录）打开 Windows PowerShell，运行：
 
 ```powershell
-.\start.ps1 -Install -Browser
+.\start.ps1 -Install
 ```
 
 首次安装后，日常启动：

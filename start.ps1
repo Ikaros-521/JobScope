@@ -1,7 +1,6 @@
-param(
+﻿param(
     [int]$Port = 8765,
     [switch]$Install,
-    [switch]$Browser,
     [string]$LocalEmbeddingModel = ''
 )
 
@@ -16,10 +15,6 @@ if ($Install) {
     }
     & $pythonPath -m pip install -r (Join-Path $projectDir 'backend\requirements.txt')
     if ($LASTEXITCODE -ne 0) { throw '后端依赖安装失败。' }
-    if ($Browser) {
-        & $pythonPath -m pip install -r (Join-Path $projectDir 'requirements-browser.txt')
-        if ($LASTEXITCODE -ne 0) { throw '浏览器依赖安装失败。' }
-    }
     if ($LocalEmbeddingModel) {
         & $pythonPath -m pip install -r (Join-Path $projectDir 'requirements-research.txt')
         if ($LASTEXITCODE -ne 0) { throw '本地语义模型依赖安装失败。' }
