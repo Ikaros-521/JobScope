@@ -25,6 +25,8 @@ def stub_channels(monkeypatch):
 
     connectors = types.ModuleType('jobscope.connectors')
     connectors.BROWSER_SOURCES = {'boss', 'zhaopin', '51job'}
+    # 真身 job_details 在 company-research 收尾步会被 import（from .connectors import plain），stub 也得供得上。
+    connectors.plain = lambda value='': str(value or '').strip()
 
     def fake_collect(source, query, location='', limit=20, cache_dir=None):
         limits.setdefault(source, []).append(limit)
@@ -109,3 +111,44 @@ def test_company_research_limit_passthrough(client, stub_channels):
 
     assert client.post('/api/company-research', json={'company': '海宁辰曦科技有限公司', 'limit': 201}).status_code == 422
     assert client.post('/api/company-research', json={'company': '海宁辰曦科技有限公司', 'limit': 0}).status_code == 422
+
+
+def test_company_research_appends_job_details_finale(client, stub_channels, monkeypatch):
+    """一键补数据收尾步：该公司 boss/智联的非完整岗位追加为第 8 个任务送详情补读——
+    渠道列表只存摘要，完整 JD（jd 具体度与薪资分层的材料）靠这步逐条读；没有缺口时不追加。"""
+    import threading
+    calls: list[dict] = []
+    details = types.ModuleType('jobscope.job_details')
+    details.DETAIL_SOURCES = {'boss': ('www.zhipin.com', r'/job_detail/[A-Za-z0-9_-]+\.html'),
+                              'zhaopin': ('www.zhaopin.com', r'/jobdetail/[A-Za-z0-9]+\.htm')}
+    details.batch_lock = threading.Lock()
+
+    def fake_run_batch(repo, task, limit=500, ids=None, collector=None, pause=time.sleep, message=None):
+        calls.append({'ids': list(ids or []), 'limit': limit, 'message': message})
+        task.update(kind='job_details', status='completed', message=message or '完整JD补读完成', count=len(ids or []))
+        repo.update_task(task)
+    details.run_batch = fake_run_batch
+    monkeypatch.setitem(sys.modules, 'jobscope.job_details', details)
+
+    repo = client.app.state.repo
+    seeded = repo.save_job(dict(title='后端工程师', company='海宁辰曦科技有限公司', location='杭州',
+                                salary='15-25K', description='仅列表摘要', description_status='listing',
+                                source='boss', url='https://www.zhipin.com/job_detail/abc123.html'), 'boss')
+    # 别家公司的缺口不进本家收尾池。
+    repo.save_job(dict(title='他司岗位', company='另一家公司', location='杭州', salary='10-15K',
+                       description='仅列表摘要', description_status='listing',
+                       source='boss', url='https://www.zhipin.com/job_detail/other99.html'), 'boss')
+
+    started = client.post('/api/company-research', json={'company': '海宁辰曦科技有限公司'})
+    tasks = started.json()['tasks']
+    assert [t['source'] for t in tasks] == ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin', 'job_details']
+    final = wait_task(client, tasks[-1]['id'])
+    assert final['status'] == 'completed'
+    assert len(calls) == 1
+    assert calls[0]['ids'] == [seeded['id']]
+    assert calls[0]['limit'] == 1
+    assert '海宁辰曦' in calls[0]['message']
+
+    # 没有可补岗位的公司不追加收尾任务（仍是最初 7 渠道）。
+    bare = client.post('/api/company-research', json={'company': '无岗位公司'}).json()['tasks']
+    assert [t['source'] for t in bare] == ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin']

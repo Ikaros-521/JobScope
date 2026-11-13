@@ -63,3 +63,39 @@ def run_collection(repo, data_dir, source, query, location, limit, use_browser=F
         task.update(status="failed", message="采集未完成，请检查来源状态及本地依赖后重试")
         repo.update_task(task)
         return {"task": task, "jobs": []}
+
+
+# 一键补数据收尾步的每家详情上限：jd 具体度闸门要 3 条完整 JD，留足余量又控制时长（每条 2s 间隔）。
+DETAIL_BATCH_LIMIT = 10
+
+
+def company_pending_details(repo, company):
+    """该公司实体（名+别名）名下、支持详情读取（boss/智联）且尚未完整的岗位。
+
+    company-research 的岗位渠道只存列表摘要；jd_specificity 与薪资分层要的完整 JD 得逐条读
+    详情页。实体口径与 reliability/local.py 一致：别名并集规范化精确比对，绝不模糊匹配。"""
+    details = _module('job_details')
+    entity = repo.resolve_company(company)
+    raw = [entity['name'], *(entity.get('aliases') or [])]
+    names = {repo.normalise_name(item) for item in raw if str(item or '').strip()}
+    return [job for job in repo.jobs()
+            if repo.normalise_name(job.get('company', '')) in names
+            and job.get('source', '') in details.DETAIL_SOURCES
+            and job.get('description_status') != 'complete'][:DETAIL_BATCH_LIMIT]
+
+
+def run_company_details(repo, company, task, ids):
+    """company-research 的收尾步：渠道串行跑完后，把该公司待补岗位逐条读成完整 JD。
+
+    与岗位档案的批量详情共用 batch_lock：锁被占说明另一路详情在跑，本家跳过不阻塞，
+    渠道结果不受影响（漏掉的完整 JD 可在岗位档案里单独补）。"""
+    details = _module('job_details')
+    if not details.batch_lock.acquire(blocking=False):
+        task.update(status='failed', message='完整JD批量补采正在运行，本家详情补读已跳过；可在岗位档案里单独补采')
+        repo.update_task(task)
+        return
+    try:
+        details.run_batch(repo, task, limit=len(ids), ids=ids,
+                          message=f'正在补读「{company}」完整JD，逐条保存，可在中断后继续')
+    finally:
+        details.batch_lock.release()

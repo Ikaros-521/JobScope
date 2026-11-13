@@ -442,9 +442,16 @@ def create_app(data_dir=None):
         # liepin 是接口源（connectors），browser 渠道由 BROWSER_SOURCES 判定。
         plan = ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin']
         tasks = [repo.create_task(source, company) for source in plan]
+        # 收尾步（有可补岗位时追加为最后一个任务）：岗位渠道只存列表摘要，完整 JD 靠详情页
+        # 逐条补读——jd 具体度与薪资分层的材料都在这步攒。boss/智联的列表先进来才有得补，
+        # 所以放在渠道之后跑；未登录/被人机验证挡住只影响这个子任务。
+        detail_ids = [job['id'] for job in collect_service.company_pending_details(repo, company)]
+        detail_task = repo.create_task('job_details', company) if detail_ids else None
+        if detail_task is not None:
+            tasks.append(detail_task)
 
         def worker():
-            for source, task in zip(plan, tasks):
+            for source, task in zip(plan, tasks[:len(plan)]):
                 try:
                     if source in ('qcc', 'tyc'):
                         execute_lookup(source, company, task)
@@ -453,6 +460,12 @@ def create_app(data_dir=None):
                 except Exception:
                     task.update(status="failed", message="该渠道检索失败，已跳过；不影响其他渠道")
                     repo.update_task(task)
+            if detail_task is not None:
+                try:
+                    collect_service.run_company_details(repo, company, detail_task, detail_ids)
+                except Exception:
+                    detail_task.update(status="failed", message="完整JD补读失败，可在岗位档案里单独重试")
+                    repo.update_task(detail_task)
 
         threading.Thread(target=worker, daemon=True).start()
         return {"tasks": tasks}

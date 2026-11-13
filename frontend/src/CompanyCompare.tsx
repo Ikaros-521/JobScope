@@ -17,8 +17,9 @@ const PALETTE = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4
 
 type LayerRow = CompareLayers & { company: string }
 // 多平台检索的渠道短名（与后端 company-research 的 plan 一致），轮询汇总时给用户看。
+// job_details 是收尾步：boss/智联有列表缺口时逐条补读完整 JD（渠道任务之后追加）。
 const CHANNEL_NAMES: Record<string, string> = {
-  cninfo: '巨潮公告', qcc: '企查查', tyc: '天眼查', boss: 'BOSS直聘', zhaopin: '智联', '51job': '前程无忧', liepin: '猎聘',
+  cninfo: '巨潮公告', qcc: '企查查', tyc: '天眼查', boss: 'BOSS直聘', zhaopin: '智联', '51job': '前程无忧', liepin: '猎聘', job_details: '完整JD补读',
 }
 
 function tone(score: number) {
@@ -195,7 +196,7 @@ export function CompanyCompare() {
   async function collectCompanyData(company: string) {
     if (collecting) return
     setCollecting(company)
-    const progressToast = toast(`正在为「${company}」补充岗位与资料（7 渠道串行，约需几分钟）…`, 'notice', true)
+    const progressToast = toast(`正在为「${company}」补充岗位与资料（多渠道串行 + 完整JD补读，约需几分钟）…`, 'notice', true)
     let failedChannels: string[] = []
     try {
       const started = await startCompanyResearch(company, 30)
@@ -242,7 +243,7 @@ export function CompanyCompare() {
     ? '参考报告还在读取，稍候即可一键补采'
     : !needsCollect.length
       ? '所选公司都已有综合参考分，无需补采'
-      : `对未出分的公司逐家发起多平台检索（公告+快查+岗位共 7 渠道，每家约几分钟），完成后自动重算并刷新图表。本次补充：${needsCollect.join('、')}`
+      : `对未出分的公司逐家发起多平台检索（公告+快查+岗位多渠道），收尾自动把该公司 BOSS/智联的列表岗位补读成完整 JD，完成后自动重算并刷新图表。本次补充：${needsCollect.join('、')}`
 
   // ── 图表 option 全部由 rows/layers 推导；没有可用数据时面板退成一句提示，不画空坐标系。 ──
   const radarOption = useMemo<ChartOption | null>(() => {
@@ -470,7 +471,7 @@ export function CompanyCompare() {
             <span className="compare-chip-status" data-state={reports[name] === undefined ? 'loading' : reports[name] ? 'ready' : 'missing'} />
             {name}
             <button type="button" className="compare-chip-collect" disabled={Boolean(collecting) || Boolean(batchProgress)}
-                    title={collecting && collecting !== name ? `正在补充「${collecting}」，完成后可继续` : '单独补采这一家：多平台检索岗位与公告（约几分钟），完成后自动重算'}
+                    title={collecting && collecting !== name ? `正在补充「${collecting}」，完成后可继续` : '单独补采这一家：多平台检索岗位与公告并补读完整 JD（约几分钟），完成后自动重算'}
                     aria-label={`补充 ${name} 的岗位与资料`}
                     onClick={() => void collectCompanyData(name)}>
               {collecting === name ? <span className="spinner" aria-hidden="true" /> : '↻'}
