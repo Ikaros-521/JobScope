@@ -113,40 +113,58 @@ class Repository:
             conn.close()
 
     def save_evidence(self, data, source="user_import"):
+        with self.connection() as conn:
+            return self._save_evidence(conn, data, source)
+
+    def _save_evidence(self, conn, data, source="user_import"):
         item = {"title": "资料", "url": "", "company": "", "kind": "user_material", "text": "", "published_at": None, **data}
         item.pop("id", None)
         item["source"] = source
         item["content_hash"] = digest(item["text"])
         identity = digest(json.dumps([source, item["company"], item["url"], item["kind"], item["title"], item["published_at"], item["content_hash"]], ensure_ascii=False))
+        # Manual provenance is part of identity: equal text from different jobs or notes
+        # must not silently reuse another supplement's attribution.
+        if item.get('original_job_id') or item.get('source_note'):
+            identity = digest(json.dumps([identity, item.get('original_job_id'), item.get('source_note')], ensure_ascii=False))
         item.update(id="E-" + identity[:24], collected_at=now())
-        with self.connection() as conn:
-            conn.execute("INSERT OR IGNORE INTO evidence VALUES (?,?,?,?,?)", (item["id"], identity, item["company"], item["kind"], json.dumps(item, ensure_ascii=False)))
-            # 与 save_job 同一口径：证据落库即登记其公司主体，资料库随材料生长。
-            if str(item["company"]).strip():
-                self._upsert_company(conn, item["company"])
-            return json.loads(conn.execute("SELECT payload FROM evidence WHERE identity=?", (identity,)).fetchone()["payload"])
+        conn.execute("INSERT OR IGNORE INTO evidence VALUES (?,?,?,?,?)", (item["id"], identity, item["company"], item["kind"], json.dumps(item, ensure_ascii=False)))
+        # 与 save_job 同一口径：证据落库即登记其公司主体，资料库随材料生长。
+        if str(item["company"]).strip():
+            self._upsert_company(conn, item["company"])
+        return json.loads(conn.execute("SELECT payload FROM evidence WHERE identity=?", (identity,)).fetchone()["payload"])
 
     def save_job(self, data, source):
         item = {"title": "", "company": "", "description": "", "location": "", "salary": "", "url": "", "tags": [], **data}
         item.update(self._salary_numbers(item["salary"]))
         key = item.get("external_id") or item.get("url") or json.dumps([item["title"], item["company"], item["location"]], ensure_ascii=False)
         item["id"] = "J-" + digest(source + ":" + str(key))[:24]
-        previous = self.job(item["id"])
-        if previous and previous.get('description_status') == 'complete' and item.get('description_status') != 'complete':
-            for field in ('description', 'description_status', 'detail_collected_at', 'detail_source_url', 'detail_transport'):
-                if field in previous:
-                    item[field] = previous[field]
-        # 收藏标记是用户意图不是采集数据：重采集整包覆盖 payload 时必须幸存，
-        # 否则一次日常刷新就把用户标过的岗位全部静默取消收藏。
-        if previous:
-            for field in ('starred', 'starred_at'):
-                if field in previous:
-                    item[field] = previous[field]
-        item.update(source=source, updated_at=now(), evidence_ids=[])
-        # Every job revision retains a complete attributable snapshot.
-        body = "\n".join([item["title"], item["company"], item["location"], item["salary"], item["description"]])
-        evidence = self.save_evidence(dict(title=item["title"], company=item["company"], url=item["url"], kind="job_posting", text=body, published_at=item.get("published_at")), source)
         with self.connection() as conn:
+            conn.execute('BEGIN IMMEDIATE')
+            row = conn.execute('SELECT payload FROM jobs WHERE id=?', (item['id'],)).fetchone()
+            previous = json.loads(row['payload']) if row else None
+            if previous and previous.get('description_status') == 'complete' and item.get('description_status') != 'complete':
+                for field in ('description', 'description_status', 'detail_collected_at', 'detail_source_url', 'detail_transport'):
+                    if field in previous:
+                        item[field] = previous[field]
+            # 收藏标记是用户意图不是采集数据：重采集整包覆盖 payload 时必须幸存，
+            # 否则一次日常刷新就把用户标过的岗位全部静默取消收藏。
+            if previous:
+                for field in ('starred', 'starred_at'):
+                    if field in previous:
+                        item[field] = previous[field]
+            item['platform_tags'] = list(dict.fromkeys(data.get('platform_tags', data.get('tags', []))))
+            item['personal_tags'] = list((previous or {}).get('personal_tags', []))
+            if previous and 'personal_tags' not in previous:
+                item['personal_tags'] = list(previous.get('tags', []))
+            item['tags'] = list(dict.fromkeys(item['platform_tags'] + item['personal_tags']))
+            if previous and previous.get('description_source') == 'user':
+                for field in ('description', 'description_status', 'description_source', 'description_source_note', 'manual_description_at', 'manual_description_evidence_id'):
+                    if field in previous:
+                        item[field] = previous[field]
+            item.update(source=source, updated_at=now(), evidence_ids=[])
+            # Every job revision retains a complete attributable snapshot.
+            body = "\n".join([item["title"], item["company"], item["location"], item["salary"], (data.get("description", "") if item.get("description_source") == "user" else item["description"])])
+            evidence = self._save_evidence(conn, dict(title=item["title"], company=item["company"], url=item["url"], kind="job_posting", text=body, published_at=item.get("published_at")), source)
             conn.execute("INSERT INTO jobs VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at", (item["id"], json.dumps(item, ensure_ascii=False), item["updated_at"]))
             conn.execute("INSERT OR IGNORE INTO job_evidence VALUES (?,?)", (item["id"], evidence["id"]))
             # 岗位/证据落库时顺带登记公司主体，公司资料库随采集生长。这里登记的是平台或用户
@@ -340,21 +358,29 @@ class Repository:
         if not fields:
             return 0
         updated = 0
-        for job_id in ids:
-            item = self.job(job_id)
-            if item is None:
-                continue
-            item.update(fields)
-            if fields.get('starred'):
-                item['starred_at'] = now()
-            elif 'starred' in fields:
-                item.pop('starred_at', None)
-            if 'salary' in fields:
-                item.update(self._salary_numbers(item['salary']))
-            item['evidence_ids'] = []
+        for job_id in dict.fromkeys(ids):
             with self.connection() as conn:
-                conn.execute('UPDATE jobs SET payload=?, updated_at=? WHERE id=?', (json.dumps(item, ensure_ascii=False), now(), job_id))
-            updated += 1
+                conn.execute('BEGIN IMMEDIATE')
+                row = conn.execute('SELECT payload FROM jobs WHERE id=?', (job_id,)).fetchone()
+                item = json.loads(row['payload']) if row else None
+                if item is None:
+                    continue
+                if 'tags' in fields:
+                    item.setdefault('platform_tags', [])
+                    item['personal_tags'] = list(dict.fromkeys(fields['tags']))
+                item.update({key: value for key, value in fields.items() if key != 'tags'})
+                if 'tags' in fields:
+                    item['tags'] = list(dict.fromkeys(item['platform_tags'] + item['personal_tags']))
+                if fields.get('starred'):
+                    item['starred_at'] = now()
+                elif 'starred' in fields:
+                    item.pop('starred_at', None)
+                if 'salary' in fields:
+                    item.update(self._salary_numbers(item['salary']))
+                item['evidence_ids'] = []
+                item['updated_at'] = now()
+                conn.execute('UPDATE jobs SET payload=?, updated_at=? WHERE id=?', (json.dumps(item, ensure_ascii=False), item['updated_at'], job_id))
+                updated += 1
         return updated
 
     def delete_jobs(self, ids):
@@ -536,7 +562,7 @@ class Repository:
                 raise ValueError('会话不存在')
             messages = json.loads(row[0])
             self._fill_message_ids(messages)
-            messages = (messages + stamped)[-200:]
+            messages = messages + stamped
             conn.execute('UPDATE conversations SET messages=?, updated_at=? WHERE id=?', (json.dumps(messages, ensure_ascii=False), now(), conversation_id))
         return stamped
 
@@ -633,20 +659,38 @@ class Repository:
             messages = messages[:index] + messages[index + removed:]
             conn.execute('UPDATE conversations SET messages=?, updated_at=? WHERE id=?', (json.dumps(messages, ensure_ascii=False), now(), conversation_id))
 
-    def truncate_for_edit(self, conversation_id, scope, message_id):
-        """Drop the user message at message_id and everything after it; returns the remaining history."""
+    def branch_for_edit(self, conversation_id, scope, message_id):
+        """Create an independent history branch without copying runtime approvals."""
+        original = self.get_conversation(conversation_id, scope)
+        messages = original['messages']
+        index = next((i for i, item in enumerate(messages) if item.get('id') == message_id), None)
+        if index is None:
+            raise ValueError('消息不存在')
+        if messages[index].get('role') != 'user':
+            raise ValueError('只能对用户消息执行重新生成')
+        branch = self.create_conversation(scope, mode=original['mode'], model=original.get('model', ''), llm_channel=original.get('llm_channel', ''), permission_mode=original.get('permission_mode', 'autonomous'))
+        history = messages[:index]
+        with self.connection() as conn:
+            private_table = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_private_conversations'").fetchone()
+            if private_table:
+                conn.execute('INSERT OR IGNORE INTO agent_private_conversations(id) SELECT ? FROM agent_private_conversations WHERE id=?', (branch, conversation_id))
+        self.append_messages(branch, history)
+        self.ensure_title(branch, scope, (original.get('title') or '对话') + ' · 修订')
+        return branch, history
+
+    def supplement_job_description(self, job_id, description, source_note):
         with self.connection() as conn:
             conn.execute('BEGIN IMMEDIATE')
-            row = self._conversation_row(conn, conversation_id, scope)
-            messages = json.loads(row['messages'])
-            index = next((i for i, item in enumerate(messages) if item.get('id') == message_id), None)
-            if index is None:
-                raise ValueError('消息不存在')
-            if messages[index].get('role') != 'user':
-                raise ValueError('只能对用户消息执行重新生成')
-            messages = messages[:index]
-            conn.execute('UPDATE conversations SET messages=?, updated_at=? WHERE id=?', (json.dumps(messages, ensure_ascii=False), now(), conversation_id))
-            return messages
+            row = conn.execute('SELECT payload FROM jobs WHERE id=?', (job_id,)).fetchone()
+            if row is None:
+                raise ValueError('岗位不存在')
+            item = json.loads(row['payload'])
+            evidence = self._save_evidence(conn, dict(title=item['title'] + '（用户补录完整职责）', company=item['company'], kind='job_posting', text=description, source_note=source_note, original_job_id=job_id, url=''), 'user_import')
+            conn.execute('INSERT OR IGNORE INTO job_evidence VALUES (?,?)', (job_id, evidence['id']))
+            timestamp = now()
+            item.update(description=description, description_status='complete', description_source='user', description_source_note=source_note, manual_description_at=timestamp, manual_description_evidence_id=evidence['id'], evidence_ids=[], updated_at=timestamp)
+            conn.execute('UPDATE jobs SET payload=?, updated_at=? WHERE id=?', (json.dumps(item, ensure_ascii=False), timestamp, job_id))
+        return self.job(job_id)
 
     def compress_conversation(self, conversation_id, boundary, summary, expected_ids=None):
         """Fold messages [0, boundary) behind a summary checkpoint inserted at boundary; nothing is deleted.

@@ -51,6 +51,8 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
   const [lineage, setLineage] = useState<ConversationDetail['lineage']>(null)
   const [run, setRun] = useState<RunState | null>(null)
   const [error, setError] = useState('')
+  const [failedMessage, setFailedMessage] = useState<StoredMessage | null>(null)
+  const [conditions, setConditions] = useState<ConversationDetail['conditions']>()
   const [opening, setOpening] = useState(false)
   const [starting, setStarting] = useState(false)
   const startingRef = useRef(false)
@@ -149,8 +151,11 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
         return
       }
       if (event === 'error') {
-        // 出错时同步撤下确认卡：失败后卡片已不可用，留着只会让人反复点到 409。
-        setRun(current => current ? { ...current, error: String(data.message ?? '生成失败'), approval: undefined } : current)
+        closeStream()
+        setRun(null)
+        setError(String(data.message ?? '生成失败'))
+        void reloadRef.current(conversationIdRef.current)
+        void refreshSessions()
         return
       }
       if (event === 'cancelled') {
@@ -167,16 +172,32 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
         void reloadRef.current(conversationIdRef.current)
         void refreshSessions()
         // 本轮正常完成：稍等历史落库刷新先走一步，再自动发送队首排队消息（如有）。
-        window.setTimeout(() => void resumeQueueRef.current(), 400)
+        const completedSelection = selectionRef.current
+        const completedConversation = conversationIdRef.current
+        window.setTimeout(() => {
+          if (selectionRef.current === completedSelection && conversationIdRef.current === completedConversation) void resumeQueueRef.current()
+        }, 400)
         return
       }
       if (event === 'end') {
         // 流终止于 error 时（done 路径已提前 closeStream），这里补解锁发送：不清理会让会话永远锁在“生成中”。
-        source.close()
-        runIdRef.current = null
-        if (sourceRef.current === source) sourceRef.current = null
+        closeStream()
+        setRun(null)
+        setError('连接已结束，请重试本轮问题')
+        void reloadRef.current(conversationIdRef.current)
       }
     })
+    source.onerror = () => {
+      if (runIdRef.current !== runId) return
+      const id = conversationIdRef.current
+      if (!id) return
+      // 短暂网络故障交由 EventSource 自动续传；只在服务端确认已结束时解锁。
+      void getConversation(id).then(detail => {
+        if (runIdRef.current !== runId || conversationIdRef.current !== id) return
+        if (detail.active_run && !detail.active_run.done) return
+        closeStream(); setRun(null); setError('生成连接已结束，请重试本轮问题'); void reloadRef.current(id)
+      }).catch(() => { /* 离线时保留自动重连，避免重复启动后台仍在运行的请求。 */ })
+    }
     sourceRef.current = source
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [refreshSessions])
@@ -184,6 +205,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
   const applyDetail = useCallback((detail: ConversationDetail) => {
     conversationIdRef.current = detail.id
     setMessages(detail.messages)
+    setConditions(detail.conditions)
     setScopeActions(detail.scope_expansions || [])
     setLineage(detail.lineage || null)
     setConversation({ id: detail.id, title: detail.title, mode: 'general', model: detail.model, llm_channel: detail.llm_channel || '', permission_mode: detail.permission_mode || 'autonomous' })
@@ -215,6 +237,8 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
     closeStream()
     conversationIdRef.current = null
     setError('')
+    setFailedMessage(null)
+    setConditions(undefined)
     setRun(null)
     setMessages([])
     setScopeActions([])
@@ -269,6 +293,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
     startingRef.current = true
     setStarting(true)
     setError('')
+    setFailedMessage(null)
     const targetId = conversation.id
     const tempId = `tmp-${Date.now()}`
     setMessages(current => [...current, { id: tempId, ts: '', role: 'user', content }])
@@ -287,6 +312,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
       })
       setConversation(current => ({ ...current, id: started.conversation_id, title: started.title || current.title }))
       conversationIdRef.current = started.conversation_id
+      setFailedMessage({ id: started.user_message_id, ts: '', role: 'user', content })
       sessionStorage.setItem(storageKeyRef.current, started.conversation_id)
       // 新会话刚拿到 id：把排队消息的绑定从 null 刷成该会话，切走再回来不丢。
       persistQueue()
@@ -295,12 +321,13 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
         const entry: StoredMessage = { id: started.user_message_id, ts: '', role: 'user', content }
         if (options?.editMessageId) {
           const index = withoutTemp.findIndex(item => item.id === options.editMessageId)
-          // 服务端会把该消息之后的历史一并截断重跑，乐观更新保持同样形状。
+          // 后端创建历史分支；原会话完整保留，当前视图切换到分支。
           if (index >= 0) return [...withoutTemp.slice(0, index), entry]
         }
         return [...withoutTemp, entry]
       })
       attach(started.run_id)
+      void reloadRef.current(started.conversation_id)
       void refreshSessions()
       return true
     } catch (err) {
@@ -431,7 +458,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
   const clearError = useCallback(() => setError(''), [])
 
   return {
-    sessions, sessionsLoading, conversation, messages, scopeActions, lineage, run, error, opening, starting, queue,
+    sessions, sessionsLoading, conversation, messages, scopeActions, lineage, conditions, failedMessage, run, error, opening, starting, queue,
     openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeMode, changeModel, changePermissionMode, compress, refreshSessions, clearError,
     enqueue, removeQueued, clearQueue, resumeQueue,
   }

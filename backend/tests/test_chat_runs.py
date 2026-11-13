@@ -193,7 +193,7 @@ def test_company_scoped_run_keeps_sessions_isolated(client):
     assert client.get('/api/conversations', params={'scope': 'company', 'company': '甲公司'}).json()['conversations'] == []
 
 
-def test_edit_resend_truncates_history(client):
+def test_edit_resend_branches_history(client):
     first = client.post('/api/chat/runs', json={'message': '问题一', 'agent_mode': 'research'}).json()
     await_run(client, first['run_id'])
     second = client.post('/api/chat/runs', json={'message': '问题二', 'conversation_id': first['conversation_id'], 'agent_mode': 'research'}).json()
@@ -201,7 +201,9 @@ def test_edit_resend_truncates_history(client):
     assert len(stored_messages(client, first['conversation_id'])) == 4
     third = client.post('/api/chat/runs', json={'message': '问题一（修订）', 'conversation_id': first['conversation_id'], 'edit_message_id': first['user_message_id'], 'agent_mode': 'research'}).json()
     await_run(client, third['run_id'])
-    stored = stored_messages(client, first['conversation_id'])
+    assert len(stored_messages(client, first['conversation_id'])) == 4
+    assert third['conversation_id'] != first['conversation_id']
+    stored = stored_messages(client, third['conversation_id'])
     assert len(stored) == 2 and stored[0]['content'] == '问题一（修订）' and stored[1]['role'] == 'assistant'
 
 
@@ -592,3 +594,43 @@ def test_approval_keeps_stream_open_and_continues_on_same_log(client, monkeypatc
     assert kinds.count('start') == 1 and kinds.count('resumed') == 1
     assert kinds.index('approval_required') < kinds.index('resumed')
     assert kinds[-2:] == ['done', 'end']
+
+
+def test_manual_description_endpoint_keeps_original_evidence(client):
+    job = client.post('/api/import/job', json={'title': '岗位', 'company': '公司', 'description': '摘要'}).json()['job']
+    response = client.post(f"/api/jobs/{job['id']}/manual-description", json={'description': '完整职责', 'source_note': '招聘邮件'})
+    assert response.status_code == 200
+    revised = response.json()
+    assert revised['id'] == job['id'] and revised['description_source'] == 'user'
+    assert revised['description_status'] == 'complete'
+    assert set(job['evidence_ids']) < set(revised['evidence_ids'])
+
+
+@pytest.mark.parametrize('outcome', ['failure', 'cancel'])
+def test_branch_failure_or_cancel_keeps_original(client, monkeypatch, outcome):
+    repo = client.app.state.repo
+    scope = {'kind': 'global'}
+    cid = repo.create_conversation(scope)
+    original = repo.append_messages(cid, [dict(role='user', content='q1'), dict(role='assistant', content='a1', citations=['E-one']), dict(role='user', content='q2'), dict(role='assistant', content='a2')])
+    with repo.connection() as conn:
+        conn.execute('CREATE TABLE IF NOT EXISTS agent_private_conversations(id TEXT PRIMARY KEY)')
+        conn.execute('INSERT INTO agent_private_conversations VALUES (?)', (cid,))
+    entered = threading.Event()
+    release = threading.Event()
+    def answer(*args, **kwargs):
+        entered.set()
+        release.wait(3)
+        raise ValueError('controlled failure')
+    monkeypatch.setattr('jobscope.research.agent.ResearchAgent.answer', answer)
+    run = client.post('/api/chat/runs', json={'message': 'q1 revised', 'conversation_id': cid, 'edit_message_id': original[0]['id'], 'agent_mode': 'research'}).json()
+    assert entered.wait(3)
+    if outcome == 'cancel':
+        client.post(f"/api/chat/runs/{run['run_id']}/cancel")
+    release.set()
+    await_run(client, run['run_id'])
+    join_worker(client, run['run_id'])
+    assert stored_messages(client, cid) == original
+    branch = stored_messages(client, run['conversation_id'])
+    assert len(branch) == 1 and branch[0]['content'] == 'q1 revised'
+    with repo.connection() as conn:
+        assert conn.execute('SELECT 1 FROM agent_private_conversations WHERE id=?', (run['conversation_id'],)).fetchone()

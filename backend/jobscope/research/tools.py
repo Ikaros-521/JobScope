@@ -6,6 +6,8 @@ from .index import scope_clause
 
 
 def salary_query(index, plan, scope):
+    if plan.clarification:
+        raise ValueError(plan.clarification)
     index.sync()
     # Job facts use their own explicit scope. Never execute model-authored SQL.
     where, params = [], []
@@ -53,7 +55,7 @@ def salary_query(index, plan, scope):
 def salary_text(metrics, plan):
     basis = '区间上限' if plan.threshold_basis == 'monthly_max' else '区间下限'
     operator = {'gt': '>', 'ge': '≥', 'lt': '<', 'le': '≤'}[plan.operator]
-    heading = f"薪资查询：范围内{metrics['total_jobs']}个岗位，其中{metrics['known_monthly_jobs']}个有可解析的人民币月薪，{metrics['unknown_monthly_jobs']}个未知或口径不支持。"
+    heading = f"薪资查询：城市为{metrics['location'] or '不限地点'}；范围内{metrics['total_jobs']}个岗位，其中{metrics['known_monthly_jobs']}个有可解析的人民币月薪，{metrics['unknown_monthly_jobs']}个未知或口径不支持。"
     if plan.actual_salary:
         heading = '实际/到手工资未知：当前结构化数据没有经过独立核实的实际发薪样本，不能从招聘报价推断。\n\n' + heading
     if plan.threshold is not None:

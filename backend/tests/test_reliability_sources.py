@@ -133,16 +133,18 @@ def test_public_listing_shows_the_mapping_so_the_user_can_correct_it(store):
 
 def test_implementation_and_readiness_are_separate_from_enabled_settings(store):
     public = store.public()
+    # 信用中国/裁判文书网采集器已实现（2026-11-13 侦察后接线）：默认启用、可直接手动选择；
+    # status 仍是 needs_verification——登录墙已实测，结果页解析正则待真实登录后人工验证。
     for source in ('credit_china', 'court_records'):
-        assert public[source]['implemented'] is False
-        assert public[source]['status'] == 'unsupported'
-        assert public[source]['mode'] == 'disabled'
-        assert not public[source]['ready'] and public[source]['unavailable_reason']
-        with pytest.raises(ValueError, match='尚未实现'):
-            store.save(source, SignalSourceInput(mode='enabled'))
+        assert public[source]['implemented'] is True
+        assert public[source]['mode'] == 'enabled' and public[source]['ready'] is True
+        assert public[source]['status'] == 'needs_verification'
+        assert '登录' in public[source]['description']
+        saved = store.save(source, SignalSourceInput(mode='enabled'))
+        assert saved['mode'] == 'enabled' and saved['ready']
     assert public['gsxt']['implemented'] and public['gsxt']['ready']
     assert public['gsxt']['status'] == 'needs_verification'
-    assert '待实测' in public['gsxt']['description']
+    assert '滑块' in public['gsxt']['description']
     assert public['jobscope_jobs']['ready']
     saved = store.save('qcc', SignalSourceInput(mode='enabled', key='vendor-key'))
     assert saved['mode'] == 'enabled' and not saved['ready']

@@ -23,7 +23,7 @@ from . import collect_service
 from . import company_merge
 from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
-from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ReliabilityInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput, SplitInput
+from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ReliabilityInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput, SplitInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, SystemSettingsInput, SystemSettingsStore, ConnectionInput, _active, get_model_config, purpose_configured, use_config
@@ -259,8 +259,8 @@ def create_app(data_dir=None):
 
     @app.get('/api/settings/channels')
     def model_channels():
-        from .channels import CHANNELS
-        return dict(channels=CHANNELS)
+        from .channels import CHANNELS, MODEL_METADATA
+        return dict(channels=CHANNELS, model_metadata=MODEL_METADATA)
 
     @app.post('/api/settings/models/discover')
     def discover_models(data: ConnectionInput):
@@ -327,7 +327,7 @@ def create_app(data_dir=None):
         try:
             normalised = normalise_binding(purpose, payload)
         except ValueError as exc:
-            raise HTTPException(422, str(exc)) from None
+            raise HTTPException(422, str(exc)) from exc
         if normalised['kind'] == 'channel':
             try:
                 channel = llm_channels.get(normalised['channel_id'])
@@ -877,6 +877,15 @@ def create_app(data_dir=None):
     def locations(limit: int = Query(40, ge=1, le=100)):
         return {'locations': repo.locations(limit)}
 
+    @app.post('/api/jobs/{job_id}/manual-description')
+    def supplement_job_description(job_id: str, data: ManualDescriptionInput):
+        if not data.description.strip() or not data.source_note.strip():
+            raise HTTPException(status_code=422, detail='职责与来源说明不能为空')
+        try:
+            return repo.supplement_job_description(job_id, data.description.strip(), data.source_note.strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
     @app.get("/api/jobs/{job_id}")
     def job_detail(job_id: str):
         job = get_job(job_id)
@@ -1160,6 +1169,9 @@ def create_app(data_dir=None):
             raise HTTPException(404, str(exc)) from None
         handle = runs.active_for_conversation(conversation_id)
         conversation['active_run'] = handle.snapshot() if handle else None
+        from .research.query import condition_context, conversation_conditions
+        conversation['conditions'] = conversation_conditions(
+            conversation['messages'], **condition_context(repo, conversation['scope']))
         actions = scope_expansions.list(conversation_id)
         conversation['scope_expansions'] = actions
         conversation['lineage'] = scope_expansions.lineage(conversation_id)

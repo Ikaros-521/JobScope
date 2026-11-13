@@ -68,14 +68,16 @@ TYC_FIELDS = {
 SIGNAL_SOURCES = {
     'gsxt': dict(name='国家企业信用信息公示系统', tier='free', transport='browser_page', implemented=True,
                  status='needs_verification', rules=['company_age', 'insured_headcount_trend'],
-                 description='登记信息与年报参保人数的页面读取尚未实测；待实测，可手动尝试。'
-                             '不自动纳入公司研究，页面校验时请人工完成，结果须核对公司主体与年报口径。'),
-    'credit_china': dict(name='信用中国', tier='free', transport='browser_page', implemented=False,
-                         status='unsupported', rules=['judicial_case_ratio'],
-                         description='公共信用记录来源；采集器尚未实现，暂不可启用。'),
-    'court_records': dict(name='中国裁判文书网', tier='free', transport='browser_page', implemented=False,
-                          status='unsupported', rules=['judicial_case_ratio'],
-                          description='公开裁判文书来源；采集器尚未实现，暂不可启用。'),
+                 description='检索页走 /corpdashboard/pc-search.html；搜索需人工拖动滑块，页面会停在前台等你完成后重试。'
+                             '进入方式已实测，结果页解析正则仍待真实滑块通过后人工验证。不自动纳入公司研究。'),
+    'credit_china': dict(name='信用中国', tier='free', transport='browser_page', implemented=True,
+                         status='needs_verification', rules=['judicial_case_ratio'],
+                         description='需注册并登录信用中国（未登录访问会跳到登录页，页面会停在前台等你登录后重试）。'
+                                     '登记严重失信主体等记录条数，与已存参保人数合并换算每万人比率；解析正则待登录后人工验证。'),
+    'court_records': dict(name='中国裁判文书网', tier='free', transport='browser_page', implemented=True,
+                          status='needs_verification', rules=['judicial_case_ratio'],
+                          description='需登录裁判文书网（个人账号即可）；登记检索命中的文书数量作为涉诉数量口径。'
+                                      '登录墙已实测，结果页解析正则待登录后人工验证。'),
     'jobscope_jobs': dict(name='已保存岗位与证据', tier='free', transport='local', implemented=True,
                           status='available',
                           rules=['salary_quote_coverage', 'disclosure_available', 'pay_vs_city_median',

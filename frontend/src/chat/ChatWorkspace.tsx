@@ -13,6 +13,7 @@ import { ToolTimeline } from './ToolTimeline'
 import { Markdown } from './Markdown'
 import { useChatRun } from './useChatRun'
 import { ScopeExpansionCard } from './ScopeExpansionCard'
+import './chatRecovery.css'
 
 const SUGGESTIONS = ['结合我的简历，制定 Agent 岗位面试计划', '检索 Python 岗位并比较薪资', '哪些公司仍缺少独立资料？']
 
@@ -24,8 +25,9 @@ const STICK_THRESHOLD = 80
 // 上下文估算基数：system 提示 + 工具声明，不随会话变化。
 const CONTEXT_BASE_TOKENS = 600
 
-export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navigation, onNavigateConversation, onOpened }: {
+export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onConfigureModel, navigation, onNavigateConversation, onOpened }: {
   scope: ChatScope; modelConfigured: boolean; onManageExtensions?: () => void
+  onConfigureModel?: () => void
   navigation?: ConversationNavigation | null
   onNavigateConversation?: (navigation: ConversationNavigation) => void
   onOpened?: (requestId: string) => void
@@ -35,11 +37,23 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
   const company = scope.kind === 'company' ? scope.company.trim() : ''
   const jobCompany = scope.kind === 'job' ? scope.company : ''
   const {
-    sessions, sessionsLoading, conversation, messages, scopeActions, lineage, run, error, opening, starting, queue,
+    sessions, sessionsLoading, conversation, messages, scopeActions, lineage, conditions, failedMessage, run, error, opening, starting, queue,
     openConversation, send, stop, approve, removeMessage, renameSession, removeSession, changeModel, changePermissionMode, compress, clearError,
     enqueue, removeQueued, clearQueue, resumeQueue,
   } = useChatRun(scope, navigation, onOpened)
-  const [input, setInput] = useState('')
+  const [input, setInputState] = useState('')
+  const draftScope = scope.kind === 'job' ? `job:${scope.jobId}` : scope.kind === 'company' ? `company:${scope.company}` : 'global'
+  const draftKey = `jobscope-draft:${draftScope}:${conversation.id || 'new'}`
+  const draftKeyRef = useRef(draftKey)
+  draftKeyRef.current = draftKey
+  function setInput(value: string) {
+    setInputState(value)
+    if (value) sessionStorage.setItem(draftKeyRef.current, value)
+    else sessionStorage.removeItem(draftKeyRef.current)
+  }
+  useEffect(() => {
+    if (!opening) { setInputState(sessionStorage.getItem(draftKey) || ''); setEditing(null) }
+  }, [draftKey, opening])
   const [editing, setEditing] = useState<EditingTarget>(null)
   const [sessionsCollapsed, setSessionsCollapsed] = useState(isJob)
   const [globalModels, setGlobalModels] = useState<string[]>([])
@@ -191,11 +205,23 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
   const liveActions = (run?.steps || []).flatMap(step => step.action ? [step.action] : [])
   const floatingActions = Array.from(new Map([...scopeActions, ...localActions].filter(action => !visibleMessageActions.has(action.id)).map(action => [action.id, action])).values())
 
-  // 用量只统计未折叠消息（含摘要检查点）：与模型实际可见的上下文口径一致；流式增量也计入。
-  const contextTokens = useMemo(() => (
-    CONTEXT_BASE_TOKENS + messages.reduce((sum, item) => sum + (item.compacted ? 0 : estimateTokens(item.content)), 0)
-      + (run?.answer ? estimateTokens(run.answer) : 0)
-  ), [messages, run?.answer])
+  // 对齐服务端初始输入窗口：最新摘要 + 最近六条未折叠普通消息。
+  // 工具定义/动态工具结果无法在浏览器精确计量，因此持续标注为估算。
+  const contextTokens = useMemo(() => {
+    const checkpoints = messages.filter(item => item.kind === 'compaction')
+    let history = messages.filter(item => item.kind !== 'compaction' && !item.compacted)
+    let question = input
+    if (run || starting) {
+      let latestUser = history.length - 1
+      while (latestUser >= 0 && history[latestUser].role !== 'user') latestUser--
+      if (latestUser >= 0) { question = history[latestUser].content; history = history.slice(0, latestUser) }
+    }
+    const checkpoint = checkpoints.at(-1)?.content.slice(0, 8000) || ''
+    return CONTEXT_BASE_TOKENS + estimateTokens(checkpoint)
+      + history.slice(-6).reduce((sum, item) => sum + estimateTokens(item.content.slice(0, 3000)), 0)
+      + estimateTokens(question) + estimateTokens(JSON.stringify(conditions || {}))
+      + estimateTokens(run?.answer || '')
+  }, [messages, conditions, input, run, starting])
 
   // 会话选了已存渠道且该渠道登记了窗口大小时，按渠道窗口估算，否则用全局设置。
   const activeWindow = useMemo(() => {
@@ -217,17 +243,15 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
 
   function startEdit(message: StoredMessage) {
     setEditing({ id: message.id, original: message.content })
-    setInput(message.content)
   }
 
   function cancelEdit() {
     setEditing(null)
-    setInput('')
   }
 
   async function submit() {
     const text = input.trim()
-    if (!text) return
+    if (!text || !effectiveConfigured) return
     // 生成中（或本轮正在启动）发送 = 排队：不打断当前生成，本轮完成后自动发送。
     if (running || starting) {
       enqueue(text)
@@ -239,8 +263,10 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
     }
     stickRef.current = true
     setShowJump(false)
-    const ok = await send(text, editing ? { editMessageId: editing.id } : undefined)
+    const sendingDraftKey = draftKeyRef.current
+    const ok = await send(text)
     if (ok) {
+      sessionStorage.removeItem(sendingDraftKey)
       setInput('')
       setEditing(null)
     }
@@ -250,7 +276,6 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
     if (running) return
     if (message.role === 'user') {
       setEditing({ id: message.id, original: message.content })
-      setInput(message.content)
       return
     }
     const index = messages.findIndex(item => item.id === message.id)
@@ -319,6 +344,14 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
 
       {lineage && <div className="chat-clone-notice" role="status">范围已扩大至{scopeLabel}；已复制的历史回答仍按原范围生成，可继续提问。</div>}
 
+      {conditions && (conditions.location || conditions.threshold !== null || conditions.exclude_outsourcing || conditions.clarification) && <div className="chat-conditions" aria-label="当前会话条件">
+        <strong>本会话条件</strong>
+        {conditions.location && <span>{conditions.location}<button disabled={busy} onClick={() => setInput('不限地点')}>取消地点</button></span>}
+        {conditions.threshold !== null && <span>薪资 {conditions.operator === 'ge' ? '至少' : conditions.operator} {conditions.threshold / 1000}K（{conditions.threshold_basis === 'monthly_min' ? '月薪下限' : conditions.threshold_basis}）<button disabled={busy} onClick={() => setInput('取消薪资限制')}>取消薪资</button></span>}
+        {conditions.exclude_outsourcing && <span>不考虑外包<button disabled={busy} onClick={() => setInput('取消外包限制')}>取消</button></span>}
+        {conditions.clarification && <span>{conditions.clarification}</span>}
+        <button disabled={busy} onClick={() => setInput('修改条件：')}>修改条件</button><small>在输入框确认并发送；也可直接用自然语言更改。</small>
+      </div>}
       <div className="chat-thread-wrap">
         <div className="chat-thread" ref={threadRef} aria-live="polite"
           onScroll={measureStick} onWheel={onThreadWheel} onTouchStart={onThreadTouchStart} onTouchMove={onThreadTouchMove} onKeyDown={onThreadKeyDown} tabIndex={-1}>
@@ -339,7 +372,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
             editing={editing?.id === message.id}
             canMutate={canMutate}
             onStartEdit={startEdit}
-            onEditSubmit={(target, content) => { setEditing(null); stickRef.current = true; setShowJump(false); void send(content, { editMessageId: target.id }) }}
+            onEditSubmit={(target, content) => { if (!effectiveConfigured) { toast('请先配置模型；编辑内容仍在当前消息中', 'error'); return }; stickRef.current = true; setShowJump(false); void send(content, { editMessageId: target.id }).then(ok => { if (ok) setEditing(null) }) }}
             onEditCancel={cancelEdit}
             onResend={resend}
             onDelete={target => void removeMessage(target.id)}
@@ -385,6 +418,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
       </section>}
 
       {error && <div className="alert error chat-alert" role="alert"><span>{error}</span>
+        {failedMessage && <button type="button" disabled={busy || !effectiveConfigured} onClick={() => void send(failedMessage.content, { editMessageId: failedMessage.id })}>重试本轮问题</button>}
         {navigation && <button type="button" onClick={() => { void openConversation(navigation.conversationId).then(ok => { if (ok) onOpened?.(navigation.requestId) }) }}>重新打开目标对话</button>}
         <button aria-label="关闭错误提示" onClick={clearError}>×</button></div>}
 
@@ -424,6 +458,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, navi
         editing={editing}
         onCancelEdit={cancelEdit}
         onManageExtensions={onManageExtensions}
+        onConfigureModel={onConfigureModel}
         scopeLabel={scopeLabel}
         onExpandScope={!isGlobal && onNavigateConversation ? () => setShowScopeOptions(value => !value) : undefined}
         locked={opening ? '正在打开会话…' : starting ? '正在开始本轮对话…' : cloning ? '正在复制并打开对话…' : proposing ? '正在生成范围扩展卡片…' : isGlobal || isJob || company ? '' : '请先在上方确认公司主体'}

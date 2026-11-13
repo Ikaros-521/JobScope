@@ -1,6 +1,7 @@
 export type Job = {
   id: string; title: string; company: string; location: string; salary: string;
   url: string; source: string; updated_at: string; description: string; evidence_ids: string[]; tags: string[]
+  platform_tags?: string[]; personal_tags?: string[]; description_source?: string; description_source_note?: string
   description_status?: string; detail_collected_at?: string; detail_source_url?: string
   description_truncated?: boolean // 列表端点裁剪过正文；全文走 /jobs/{id}
   starred?: boolean; starred_at?: string // 收藏标记：重采集幸存，见 repository.save_job
@@ -60,10 +61,12 @@ export type ApprovalRequest = { approval_id: string; tool: string; arguments: Re
 export type ChatRunStatus = { run_id: string; conversation_id: string; done: boolean; cancelled: boolean; awaiting_approval: boolean; pending_approval: ApprovalRequest | null }
 export type ChatScope = { kind: 'global' } | { kind: 'company'; company: string } | { kind: 'job'; jobId: string; company: string; title?: string }
 export type ConversationSummary = { id: string; title: string; mode: ChatMode; model: string; llm_channel: string; permission_mode: PermissionMode; updated_at: string; message_count: number; preview: string }
-export type ConversationDetail = { id: string; scope: { kind: string; company?: string; job_id?: string }; title: string; mode: ChatMode; model: string; llm_channel: string; permission_mode: PermissionMode; created_at: string; updated_at: string; messages: StoredMessage[]; active_run: ChatRunStatus | null; scope_expansions?: ScopeExpansion[]; lineage?: { source_conversation_id: string; action_id: string } | null }
+export type ConversationConditions = { location: string; threshold: number | null; operator: string; threshold_basis: string; exclude_outsourcing: boolean; clarification: string }
+export type ConversationDetail = { conditions?: ConversationConditions; id: string; scope: { kind: string; company?: string; job_id?: string }; title: string; mode: ChatMode; model: string; llm_channel: string; permission_mode: PermissionMode; created_at: string; updated_at: string; messages: StoredMessage[]; active_run: ChatRunStatus | null; scope_expansions?: ScopeExpansion[]; lineage?: { source_conversation_id: string; action_id: string } | null }
 export type ChatRunStart = { run_id: string; conversation_id: string; user_message_id: string; title: string | null }
 export type ModelProvider = { mode: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model: string; key_set: boolean; source: string; context_tokens?: number | null; saved_channel_id?: string }
-export type Channel = { id: string; name: string; url: string; protocol: 'openai' | 'anthropic'; models: string[]; embeddings: string[] }
+export type Channel = { id: string; name: string; url: string; protocol: 'openai' | 'anthropic'; models: string[]; embeddings: string[] | null; note?: string }
+export type ModelMetadata = { context_tokens: number; source: string; checked_at: string }
 // 已保存的对话渠道：每条自带地址/密钥/默认模型/模型列表，可激活为全局默认
 export type LlmChannel = { id: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models: string[]; embeddings?: string[]; context_tokens: number | null; key_set: boolean }
 export type LlmChannelDraft = { id?: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models?: string[]; embeddings?: string[]; key?: string; clear_key?: boolean; context_tokens?: number | null }
@@ -195,7 +198,7 @@ export function getSystemSettings() { return api<SystemSettings>('/settings/syst
 export function saveSystemSettings(settings: SystemSettings) {
   return api<SystemSettings>('/settings/system', { method: 'PUT', body: JSON.stringify(settings) })
 }
-export function getChannels() { return api<{ channels: Channel[] }>('/settings/channels') }
+export function getChannels() { return api<{ channels: Channel[]; model_metadata: Record<string, ModelMetadata> }>('/settings/channels') }
 export function listLlmChannels() { return api<{ channels: LlmChannel[] }>('/settings/llm-channels') }
 export function saveLlmChannel(draft: LlmChannelDraft) { return post<{ channel: LlmChannel; channels: LlmChannel[] }>('/settings/llm-channels', draft) }
 export function deleteLlmChannel(id: string) { return api<{ ok: boolean; channels: LlmChannel[]; bindings: BindingsPayload }>(`/settings/llm-channels/${encodeURIComponent(id)}`, { method: 'DELETE' }) }

@@ -36,6 +36,20 @@ def scope_clause(scope, plan=None, alias='d'):
     if plan and plan.companies:
         predicates.append(f"{alias}.company IN ({','.join('?' for _ in plan.companies)})")
         values.extend(plan.companies)
+    if plan and (plan.location or plan.threshold is not None or plan.skills):
+        filters, params = [], []
+        if plan.location:
+            filters.append('instr(j.location,?)>0')
+            params.append(plan.location)
+        if plan.threshold is not None:
+            operator = {'gt': '>', 'ge': '>=', 'lt': '<', 'le': '<='}[plan.operator]
+            filters.append(f'j.{plan.threshold_basis}{operator}?')
+            params.append(plan.threshold)
+        # Salary/location restrictions apply to job evidence, while company
+        # documents remain available as explicitly non-job background.
+        if filters:
+            predicates.append(f"({alias}.kind!='job_posting' OR {alias}.evidence_id IN (SELECT jd.evidence_id FROM research_jobs j JOIN research_job_documents jd ON jd.job_id=j.job_id WHERE " + ' AND '.join(filters) + '))')
+            values.extend(params)
     return (' AND '.join(predicates) or '1=1'), values
 
 
@@ -122,10 +136,18 @@ class ResearchIndex:
             for row in jobs:
                 item = json.loads(row[0])
                 old = c.execute('SELECT evidence_id FROM research_job_documents WHERE job_id=?', (item['id'],)).fetchall()
-                body = '\n'.join(item.get(k, '') for k in ('title', 'company', 'location', 'salary', 'description'))
-                evidence = c.execute('''SELECT e.payload FROM evidence e JOIN job_evidence je ON je.evidence_id=e.id
-                    WHERE je.job_id=? AND e.company=? AND json_extract(e.payload,'$.content_hash')=? ORDER BY e.rowid DESC LIMIT 1''',
-                                     (item['id'], item['company'], digest(body))).fetchone()
+                if item.get('description_source') == 'user' and item.get('manual_description_evidence_id'):
+                    # A user supplement has its own provenance. Later salary/location changes must not
+                    # unindex this JD or reattribute its text to the platform that supplied the listing.
+                    evidence = c.execute('''SELECT e.payload FROM evidence e JOIN job_evidence je ON je.evidence_id=e.id
+                        WHERE je.job_id=? AND e.company=? AND e.kind='job_posting' AND e.id=?
+                        AND json_extract(e.payload,'$.source')='user_import' ''',
+                        (item['id'], item['company'], item['manual_description_evidence_id'])).fetchone()
+                else:
+                    body = '\n'.join(item.get(k, '') for k in ('title', 'company', 'location', 'salary', 'description'))
+                    evidence = c.execute('''SELECT e.payload FROM evidence e JOIN job_evidence je ON je.evidence_id=e.id
+                        WHERE je.job_id=? AND e.company=? AND json_extract(e.payload,'$.content_hash')=? ORDER BY e.rowid DESC LIMIT 1''',
+                                         (item['id'], item['company'], digest(body))).fetchone()
                 current = json.loads(evidence[0]) if evidence else None
                 c.execute('DELETE FROM research_job_documents WHERE job_id=?', (item['id'],))
                 if current:

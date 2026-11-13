@@ -38,7 +38,7 @@ def model_plan(message, history, baseline, scope, companies):
         plan = QueryPlan.model_validate(result)
         # Numeric facts and location filters are deterministic. A model may resolve
         # language, but cannot silently invent restrictive financial conditions.
-        for field in ('threshold', 'threshold_basis', 'operator', 'location', 'actual_salary', 'skills', 'skills_operator', 'clarification'):
+        for field in ('threshold', 'threshold_basis', 'operator', 'location', 'actual_salary', 'skills', 'skills_operator', 'clarification', 'exclude_outsourcing'):
             setattr(plan, field, getattr(baseline, field))
         if baseline.companies:
             plan.companies = baseline.companies

@@ -229,3 +229,8 @@ class OptimizeResumeInput(RequestModel):
     company: str = Field(default='', max_length=300)
     job_title: str = Field(default='', max_length=300)
     instructions: str = Field(default='', max_length=2000)
+
+
+class ManualDescriptionInput(RequestModel):
+    description: str = Field(min_length=1, max_length=100000)
+    source_note: str = Field(min_length=1, max_length=1000)

@@ -27,6 +27,7 @@ import { ChatWorkspace } from './chat/ChatWorkspace'
 import { Icon } from './Icon'
 import { JobCard } from './JobCard'
 import { FavoritesView } from './FavoritesView'
+import { ManualJobDescription } from './ManualJobDescription'
 import type { Analysis, BrowserStatus, Evidence, Job, PageInfo, ReliabilityHistory, ReliabilityReport, Source, Task } from './api'
 
 const transportNames: Record<string, string> = { http_api: '接口', browser_page: '需浏览器', company_web: '网页快查', manual: '手动' }
@@ -94,6 +95,7 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [archiveDraft, setArchiveDraft] = useState({ q: '', source: '', location: '', salaryMin: '', salaryMax: '', starred: false })
   const [batchEdit, setBatchEdit] = useState<{ ids: string[] } | null>(null)
+  const [tagsChanged, setTagsChanged] = useState(false)
   const [batchDraft, setBatchDraft] = useState({ location: '', salary: '', tags: '' })
   const [confirmDelete, setConfirmDelete] = useState<{ ids: string[]; label: string } | null>(null)
   const [detail, setDetail] = useState<{ job: Job; evidence: Evidence[]; company_evidence: Evidence[]; evidence_total: number } | null>(null)
@@ -110,7 +112,13 @@ export default function App() {
   const [descExpanded, setDescExpanded] = useState(false)
   const [companyPage, setCompanyPage] = useState(0)
   const [paneFocus, setPaneFocus] = useState<'archive' | 'info' | 'chat'>('info')
-  const [focusHint, setFocusHint] = useState(() => { try { return localStorage.getItem('jobscope.pane-focus-hint') !== 'off' } catch { return true } })
+  const [discoveryOpen, setDiscoveryOpen] = useState(false)
+  const [browserCollecting, setBrowserCollecting] = useState(false)
+  const jobScroll = useRef({ window: 0, detail: 0, list: 0 })
+  const [settingsReturn, setSettingsReturn] = useState<typeof view>('jobs')
+  function configureModel() { setSettingsReturn(view); setView('settings') }
+  function openJobChat() { jobScroll.current = { window: window.scrollY, detail: document.querySelector('.detail-panel')?.scrollTop || 0, list: document.querySelector('.job-list-panel')?.scrollTop || 0 }; setPaneFocus('chat') }
+  function returnToJob() { setPaneFocus('info'); requestAnimationFrame(() => { window.scrollTo({ top: jobScroll.current.window, behavior: 'instant' }); const detailPane = document.querySelector('.detail-panel'); const listPane = document.querySelector('.job-list-panel'); if (detailPane) detailPane.scrollTop = jobScroll.current.detail; if (listPane) listPane.scrollTop = jobScroll.current.list }) }
   const [resumeText, setResumeText] = useState('')
   const [resumeFormat, setResumeFormat] = useState('text')
   const [resumeRevision, setResumeRevision] = useState<number | null>(null)
@@ -205,7 +213,7 @@ export default function App() {
     finally { if (token === detailRequest.current) setDetailLoading(false) }
   }, [])
   function selectJob(id: string) {
-    jobGeneration.current++; activeJobId.current = id; setSelectedId(id); setDetail(null); setAnalysis(null); setReliability(null); setReliabilityHistory(null); setReliabilityLoading(false); setReliabilityAction(null); setEvidenceFocus(''); setDescExpanded(false); setCompanyPage(0); setTab('overview')
+    setPaneFocus('info'); setDiscoveryOpen(false); jobGeneration.current++; activeJobId.current = id; setSelectedId(id); setDetail(null); setAnalysis(null); setReliability(null); setReliabilityHistory(null); setReliabilityLoading(false); setReliabilityAction(null); setEvidenceFocus(''); setDescExpanded(false); setCompanyPage(0); setTab('overview')
     const panel = document.querySelector<HTMLElement>('.detail-panel')
     panel?.scrollTo({ top: 0 })
     scrollToSelectedDetail.current = window.matchMedia('(max-width: 1040px)').matches
@@ -279,20 +287,18 @@ export default function App() {
     throw new Error('等待采集超时，请稍后在采集记录里查看结果')
   }
   async function collectBrowser() {
-    const progress = toast('已开始后台采集，读完后自动保存并刷新；若浏览器出现登录或验证页面，请在该窗口完成', 'notice', true)
-    await perform('browser-collect', async () => {
+    if (browserCollecting) return
+    setBrowserCollecting(true)
+    const progress = toast('已开始后台采集，可继续处理其他工作', 'notice', true)
+    try {
       const started = await post<{ task: Task }>('/browser/collect', { source: browserSource, query, location, limit: browserLimit })
       const task = await watchTask(started.task.id)
       await Promise.all([loadJobs(), refreshMetadata()])
-      if (task.status === 'completed' && task.count > 0) {
-        toast(`已保存或更新 ${task.count} 条岗位。${task.message || ''}`)
-        setView('jobs')
-        window.scrollTo({ top: 0, behavior: 'instant' })
-      } else {
-        toast(task.message || '本次未保存岗位，请查看采集记录')
-      }
-    })
-    dismissToast(progress)
+      toast(task.count > 0 ? `已保存或更新 ${task.count} 条岗位。${task.message || ''}` : task.message || '本次未保存岗位', 'notice', false, {
+        label: '查看岗位', onClick: () => { setView('jobs'); setPaneFocus('info') },
+      })
+    } catch (error) { toast((error as Error).message, 'error') }
+    finally { setBrowserCollecting(false); dismissToast(progress) }
   }
   async function analyze() {
     if (!job) return
@@ -367,7 +373,8 @@ export default function App() {
   }
   function openBatchEdit(targets: Job[]) {
     setBatchEdit({ ids: targets.map(item => item.id) })
-    setBatchDraft(targets.length === 1 ? { location: targets[0].location || '', salary: targets[0].salary || '', tags: (targets[0].tags || []).join(', ') } : { location: '', salary: '', tags: '' })
+    setTagsChanged(false)
+    setBatchDraft(targets.length === 1 ? { location: targets[0].location || '', salary: targets[0].salary || '', tags: (targets[0].personal_tags ?? targets[0].tags ?? []).join(', ') } : { location: '', salary: '', tags: '' })
     openModal('batch-edit')
   }
   function openBatchEditForSelection() {
@@ -398,7 +405,7 @@ export default function App() {
     if (batchDraft.location.trim()) payload.location = batchDraft.location.trim()
     if (batchDraft.salary.trim()) payload.salary = batchDraft.salary.trim()
     const tags = batchDraft.tags.split(/[,，]/).map(tag => tag.trim()).filter(Boolean)
-    if (tags.length) payload.tags = tags
+    if (tagsChanged) payload.tags = tags
     await perform('batch-edit', async () => {
       const result = await api<{ updated: number }>('/jobs', { method: 'PATCH', body: JSON.stringify(payload) })
       toast(`已更新 ${result.updated} 份档案`)
@@ -425,6 +432,7 @@ export default function App() {
   const browserSourceItem = browserSources.find(item => item.id === browserSource)
   const browserCities = browserSourceItem?.cities || []
   const hasArchiveFilters = Object.values(jobFilters.current).some(Boolean)
+  const emptyLibrary = !loading && jobsTotal === 0 && !hasArchiveFilters && !job
   const extraFilterCount = [archiveDraft.source, archiveDraft.location, archiveDraft.salaryMin || archiveDraft.salaryMax].filter(Boolean).length
   function clearArchiveFilters() {
     const cleared = { q: '', source: '', location: '', salaryMin: '', salaryMax: '', starred: false }
@@ -439,7 +447,7 @@ export default function App() {
       if (!result.updated) return
       const starred = !item.starred
       setJobs(list => list.map(entry => entry.id === item.id ? { ...entry, starred, starred_at: starred ? new Date().toISOString() : undefined } : entry))
-      if (detail?.job.id === item.id) setDetail({ ...detail, job: { ...detail.job, starred, starred_at: starred ? new Date().toISOString() : undefined } })
+      setDetail(current => current?.job.id === item.id ? { ...current, job: { ...current.job, starred, starred_at: starred ? new Date().toISOString() : undefined } } : current)
       void refreshFavCount()
       toast(starred ? '已收藏，可在收藏夹反查与横评' : '已取消收藏')
     })
@@ -481,9 +489,9 @@ export default function App() {
 
     <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'extensions' || view === 'settings' || view === 'compare' || view === 'system' || view === 'favorites' ? 'main main-compact' : 'main'}>
       <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'resume' ? '我的简历' : view === 'workshop' ? '简历工坊' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'extensions' ? 'Agent 扩展' : view === 'settings' ? '模型设置' : view === 'system' ? '系统设置' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata(), refreshFavCount()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
-      <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} onOpenCompare={() => setView('compare')} /></div>
+      <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} onConfigureModel={configureModel} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} onOpenCompare={() => setView('compare')} /></div>
 
-      {view === 'global' && <><section className="page-intro chat-intro"><div><h1>全局对话</h1><p>跨岗位、跨公司检索项目资料，回答标注公司与出处</p></div><span className="revision-label">会话保存在本机</span></section><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onManageExtensions={() => setView('extensions')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} /></>}
+      {view === 'global' && <><section className="page-intro chat-intro"><div><h1>全局对话</h1><p>跨岗位、跨公司检索项目资料，回答标注公司与出处</p></div><span className="revision-label">会话保存在本机</span></section><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onManageExtensions={() => setView('extensions')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} /></>}
 
       {view === 'compare' && <CompanyCompare />}
 
@@ -494,8 +502,10 @@ export default function App() {
       }} />}
 
       {view === 'jobs' && <>
-        <section className="page-intro"><div><h1>岗位研究</h1><p>把岗位要求、公司证据和你的经历逐项核对</p></div><Button className="button secondary" onClick={() => openModal('job')}><Icon name="plus" size={17} />导入岗位</Button></section>
-        <section className="search-section" aria-labelledby="collect-heading">
+        <section className="page-intro"><div><h1>岗位研究</h1><p>把岗位要求、公司证据和你的经历逐项核对</p></div></section>
+        {emptyLibrary && <section className="empty-library-intro"><h2>从一个机会开始</h2><p>粘贴你正在考虑的岗位，或查找外部机会。每份档案保留出处。</p></section>}
+        {paneFocus !== 'chat' && <div className="job-entry-actions"><button className="button primary" onClick={() => openModal('job')}>粘贴已有岗位 JD</button><button className="button secondary" onClick={() => setDiscoveryOpen(!discoveryOpen)} aria-expanded={discoveryOpen}>查找外部岗位</button></div>}
+        <section className="search-section" aria-labelledby="collect-heading" hidden={!discoveryOpen || paneFocus === 'chat'}>
           <div className="search-section-heading"><h2 id="collect-heading"><Icon name="globe" size={16} />发现新岗位</h2><span>从外部来源采集，保存到本地档案</span><button className="text-button" onClick={() => setView('sources')}>管理数据源<Icon name="arrow" size={13} /></button></div>
           <form className="search-form" onSubmit={collect}>
             <label className="collect-field collect-keyword"><span>岗位关键词</span><span className="collect-control"><Icon name="search" size={17} /><input value={query} onChange={event => setQuery(event.target.value)} placeholder="岗位、技能或公司" required maxLength={200} /></span></label>
@@ -507,9 +517,9 @@ export default function App() {
           <div className="search-footnote"><span><span className="small-dot" />{selectedSource?.description || '标注“需浏览器”的来源，需要先在项目 Chrome 中登录。'}</span></div>
         </section>
 
-        {focusHint && <div className="pane-focus-hint" role="note"><span>提示：点击任意一栏可聚焦放大，点其他栏切换焦点</span><button className="icon-button" aria-label="知道了，不再提示" onClick={() => { setFocusHint(false); try { localStorage.setItem('jobscope.pane-focus-hint', 'off') } catch { /* 隐私模式下无法持久化，本次会话内不再显示 */ } }}><Icon name="close" size={13} /></button></div>}
-        <div className={`research-layout focus-${paneFocus}${job ? '' : ' no-chat'}`}>
-          <section className="job-list-panel" aria-labelledby="archive-heading" onClick={() => setPaneFocus('archive')}><div className="panel-title"><h2 id="archive-heading">岗位档案 <span>{jobsInfo.total.toLocaleString()}</span></h2>{hasArchiveFilters ? <button className="text-button archive-reset" disabled={Boolean(busy)} onClick={clearArchiveFilters}>清除筛选</button> : <span className="archive-scope">本地资料库</span>}</div>
+        {job && paneFocus !== 'chat' && <div className="job-reading-actions"><span>{job.title}</span><button className="button primary small" onClick={openJobChat}>问这份岗位</button></div>}
+        {!emptyLibrary && <div className={`research-layout focus-${paneFocus}${job ? '' : ' no-chat'}`}>
+          <section className="job-list-panel" aria-labelledby="archive-heading"><div className="panel-title"><h2 id="archive-heading">岗位档案 <span>{jobsInfo.total.toLocaleString()}</span></h2>{hasArchiveFilters ? <button className="text-button archive-reset" disabled={Boolean(busy)} onClick={clearArchiveFilters}>清除筛选</button> : <span className="archive-scope">本地资料库</span>}</div>
             <form className="job-archive-filters" aria-label="岗位档案筛选" onSubmit={event => { event.preventDefault(); void perform('filter', async () => { await loadJobs({ ...archiveDraft }, 1) }) }}>
               <label className="search-input"><Icon name="search" size={16} /><span className="sr-only">档案关键词</span><input value={archiveDraft.q} onChange={event => setArchiveDraft({ ...archiveDraft, q: event.target.value })} placeholder="在已存档案中搜索" maxLength={300} /></label>
               <Button className="button secondary small archive-submit" type="submit" busy={busy === 'filter'} disabled={Boolean(busy)}>筛选</Button>
@@ -529,11 +539,11 @@ export default function App() {
             <Pagination info={jobsInfo} label="岗位档案" busy={Boolean(busy)} onPage={page => void perform('page-jobs', async () => { await loadJobs(undefined, page) })} /><div className="list-bottom">资料以采集时的页面为准，投递前请再次核实。</div>
           </section>
 
-          <section className="detail-panel" aria-label="岗位详情" tabIndex={-1} onClick={() => setPaneFocus('info')}>
+          <section className="detail-panel" aria-label="岗位详情" tabIndex={-1}>
             {selectedId && <button className="mobile-back text-button" onClick={() => { document.querySelector('.job-list-panel')?.scrollIntoView({ block: 'start' }); document.querySelector<HTMLElement>('.job-card-body[aria-pressed="true"]')?.focus({ preventScroll: true }) }}><Icon name="arrow" size={16} />返回岗位列表</button>}
-            {detailLoading ? <div className="loading-state"><span className="spinner" />正在读取岗位档案…</div> : !job ? <div className="welcome-panel"><div className="welcome-heading"><Icon name="book" /><span>岗位调查档案</span></div><h2>先选一份岗位，再逐项核对</h2><p>检索岗位或导入已有 JD。选择左侧档案，查看要求、公司资料与简历依据。</p><div className="welcome-checklist"><div><span>01</span><section><h3>岗位要求</h3><p>职责、技能、地点和薪酬口径</p></section></div><div><span>02</span><section><h3>公司证据</h3><p>资料原文、披露主体和发布时间</p></section></div><div><span>03</span><section><h3>个人适配</h3><p>已有依据、硬性条件与待核实项</p></section></div></div><Button className="button secondary" onClick={() => openModal('job')}><Icon name="plus" />导入已有岗位</Button><div className="welcome-source-note">每份资料都保留出处，缺少证据时保持未知</div></div> : <>
+            {detailLoading ? <div className="loading-state"><span className="spinner" />正在读取岗位档案…</div> : !job ? <div className="welcome-panel"><div className="welcome-heading"><Icon name="book" /><span>岗位调查档案</span></div><h2>先选一份岗位，再逐项核对</h2><p>检索岗位或导入已有 JD。选择左侧档案，查看要求、公司资料与简历依据。</p><div className="welcome-checklist"><div><span>01</span><section><h3>岗位要求</h3><p>职责、技能、地点和薪酬口径</p></section></div><div><span>02</span><section><h3>公司证据</h3><p>资料原文、披露主体和发布时间</p></section></div><div><span>03</span><section><h3>个人适配</h3><p>已有依据、硬性条件与待核实项</p></section></div></div><div className="welcome-source-note">每份资料都保留出处，缺少证据时保持未知</div></div> : <>
               <div className="detail-heading"><div className="detail-kicker"><span>{sourceNames[job.source] || job.source}</span><External url={job.url}>查看原始岗位</External></div><h2>{job.title}</h2><div className="detail-company">{job.company}<span>·</span><Icon name="pin" size={14} />{job.location || '地点待确认'}</div><div className="detail-heading-bottom"><strong>{job.salary || '薪资未披露'}</strong><Button className="button secondary small" disabled={Boolean(busy)} title={job.starred ? '取消收藏；收藏不会因重新采集而丢失' : '收藏岗位，可在收藏夹反查与横评'} onClick={() => job && void toggleStar(job)}><Icon name="star" size={15} />{job.starred ? '已收藏' : '收藏'}</Button><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => openBatchEdit([job])}>编辑档案</Button><Button className="button secondary small" busy={busy === 'analyze'} disabled={Boolean(busy) || needsFullJd(job)} onClick={() => void analyze()}><Icon name="check" size={16} />评估适配</Button><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => { setWorkshopPrefill({ jobId: job.id, company: job.company, jobTitle: job.title }); setView('workshop') }}><Icon name="wand" size={16} />优化简历</Button></div></div>
-              <div className="jd-state"><div><strong>{job.description_status === 'complete' ? '完整JD已保存' : needsFullJd(job) ? '仅列表摘要 · 待补全' : '岗位材料已保存'}</strong><p>{job.detail_collected_at ? `正文读取于 ${date(job.detail_collected_at)}` : needsFullJd(job) ? ((job.source === 'boss' || job.source === 'zhaopin') ? '需要完整职责与任职要求，才能评估是否适合投递' : '该平台列表未给出完整职责，可在岗位档案补充后再评估') : '请核对岗位材料完整性及原始出处'}</p></div>{(job.source === 'boss' || job.source === 'zhaopin') && <Button className="button secondary small" busy={busy === 'job-detail'} disabled={Boolean(busy)} onClick={() => void perform('job-detail', async () => { const id = job.id, generation = jobGeneration.current; const result = await post<{ task: Task; job: Job }>(`/jobs/${encodeURIComponent(id)}/detail`); toast(result.task.message); await Promise.all([generation === jobGeneration.current ? loadDetail(id) : Promise.resolve(), loadJobs(), refreshMetadata()]); if (generation === jobGeneration.current) setAnalysis(null) })}>{job.description_status === 'complete' ? '更新完整职责' : '读取完整职责'}</Button>}</div><div className="detail-tabs" role="tablist" aria-label="岗位档案内容" onKeyDown={navigateTabs}>{(['overview', 'analysis', 'evidence'] as const).map(item => <button key={item} id={`job-${item}-tab`} role="tab" aria-controls="job-detail-panel" tabIndex={tab === item ? 0 : -1} aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item === 'overview' ? '岗位与公司' : item === 'analysis' ? '适配分析' : '证据资料'}{item === 'evidence' && <span>{evidenceTotal}</span>}</button>)}</div>
+              <ManualJobDescription key={job.id} job={job} onSaved={async saved => { if (activeJobId.current === saved.id) { await loadDetail(saved.id); setAnalysis(null) }; await loadJobs() }} /><div className="jd-state"><div><strong>{job.description_status === 'complete' ? '完整JD已保存' : needsFullJd(job) ? '仅列表摘要 · 待补全' : '岗位材料已保存'}</strong><p>{job.detail_collected_at ? `正文读取于 ${date(job.detail_collected_at)}` : needsFullJd(job) ? ((job.source === 'boss' || job.source === 'zhaopin') ? '需要完整职责与任职要求，才能评估是否适合投递' : '该平台列表未给出完整职责，可在岗位档案补充后再评估') : '请核对岗位材料完整性及原始出处'}</p></div>{(job.source === 'boss' || job.source === 'zhaopin') && <Button className="button secondary small" busy={busy === 'job-detail'} disabled={Boolean(busy)} onClick={() => void perform('job-detail', async () => { const id = job.id, generation = jobGeneration.current; const result = await post<{ task: Task; job: Job }>(`/jobs/${encodeURIComponent(id)}/detail`); toast(result.task.message); await Promise.all([generation === jobGeneration.current ? loadDetail(id) : Promise.resolve(), loadJobs(), refreshMetadata()]); if (generation === jobGeneration.current) setAnalysis(null) })}>{job.description_status === 'complete' ? '更新完整职责' : '读取完整职责'}</Button>}</div><div className="detail-tabs" role="tablist" aria-label="岗位档案内容" onKeyDown={navigateTabs}>{(['overview', 'analysis', 'evidence'] as const).map(item => <button key={item} id={`job-${item}-tab`} role="tab" aria-controls="job-detail-panel" tabIndex={tab === item ? 0 : -1} aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item === 'overview' ? '岗位与公司' : item === 'analysis' ? '适配分析' : '证据资料'}{item === 'evidence' && <span>{evidenceTotal}</span>}</button>)}</div>
               <div id="job-detail-panel" className="detail-content" role="tabpanel" aria-labelledby={`job-${tab}-tab`}>
                 {tab === 'overview' && <><div className="section-label"><span className="label-line" />岗位描述</div><div className={`description-text${descExpanded ? '' : ' collapsed'}`}>{plain(job.description) || '尚无岗位描述，请补充原始岗位资料。'}</div>{job.description.length > 600 && <button className="text-button" onClick={() => setDescExpanded(value => !value)}>{descExpanded ? '收起描述' : '展开全文'}</button>}<div className="company-section"><div className="section-heading"><div><span className="section-label">公司情报</span><h3>了解 {job.company}</h3></div><Button className="button secondary small" busy={busy === 'company'} disabled={Boolean(busy)} onClick={() => void collectCompany()}>多平台检索<Icon name="arrow" size={14} /></Button></div><p className="muted body-small">多平台检索岗位、公告与公开网页，收尾刷新已启用的本地信号并重算；官方页面和付费 API 可在下方「按来源补数据」中选择。</p>{detail.company_evidence?.length ? <>{detail.company_evidence.length > 4 && <div className="company-pager"><button className="text-button" disabled={companyPage === 0} onClick={() => setCompanyPage(page => page - 1)}>上一页</button><span className="tiny-label">{companyPage + 1} / {Math.ceil(detail.company_evidence.length / 4)} 页 · 共 {detail.company_evidence.length} 条</span><button className="text-button" disabled={companyPage >= Math.ceil(detail.company_evidence.length / 4) - 1} onClick={() => setCompanyPage(page => page + 1)}>下一页</button></div>}<div className="company-evidence-list">{detail.company_evidence.slice(companyPage * 4, companyPage * 4 + 4).map(e => <EvidenceCard key={e.id} evidence={e} />)}</div></> : <div className="inline-empty">尚未收集到该公司的资料。你可以多平台检索公开岗位与公告，或补充已有材料。</div>}<button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充公司资料</button><CompanyReference key={job.id} onSignalBusy={value => setBusy(value ? 'reliability' : '')} onSignalCollected={(report, history) => { if (job.id !== activeJobId.current) return; setReliability(report); setReliabilityHistory(history); setReliabilityAction(null); void refreshMetadata() }} onConfigureSources={() => { setView('sources'); setSourcesTab('catalog') }} report={reliability} history={reliabilityHistory} busy={Boolean(busy)} loading={reliabilityLoading} action={reliabilityAction} company={job.company} onOpenCompare={() => setView('compare')} onCompute={() => void recomputeReference()} onCoverage={() => void runReferenceAction('coverage')} onExtract={() => void runReferenceAction('extract')} onOpenEvidence={openReferenceEvidence} onOpenEvidenceModal={() => openModal('evidence')} /></div></>}
                 {tab === 'analysis' && (!analysis ? <Empty title={busy === 'analyze' ? '正在对应岗位要求…' : '让经历与要求逐项对照'} icon="resume">{busy === 'analyze' ? '分析完成后，将展示匹配依据、未知项与面试核实问题。' : <>{resumeSaved ? '点击“评估适配”，查看有依据的匹配与缺口。' : <>先在<button className="inline-button" onClick={() => setView('resume')}>我的简历</button>保存个人经历，再生成适配分析。</>}分数仅供辅助比较，不代表录用概率。</>}</Empty> : <AnalysisView analysis={analysis} />)}
@@ -541,8 +551,8 @@ export default function App() {
               </div>
             </>}
           </section>
-          {job && <section className="chat-section job-chat" onClick={() => setPaneFocus('chat')}><ChatWorkspace key={job.id} scope={{ kind: 'job', jobId: job.id, company: job.company, title: job.title }} modelConfigured={modelConfigured} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} /></section>}
-        </div>
+          {job && <section className="chat-section job-chat"><button className="button secondary small job-return" onClick={returnToJob}>返回岗位</button><ChatWorkspace key={job.id} scope={{ kind: 'job', jobId: job.id, company: job.company, title: job.title }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} /></section>}
+        </div>}
       </>}
 
       {view === 'resume' && <><section className="page-intro"><div><h1>我的简历</h1><p>你的简历是适配分析的依据，保存在当前本地工作区。</p></div>{resumeRevision != null && <span className="revision-label">版本 {resumeRevision}</span>}</section><div className="resume-layout"><form className="paper-panel resume-editor" onSubmit={saveResume}><div className="section-heading"><h2>简历与事实档案</h2><label className="format-select"><span className="sr-only">简历格式</span><select value={resumeFormat} onChange={event => { setResumeFormat(event.target.value); setResumeSaved(false) }}><option value="text">简历纯文本 / Markdown</option><option value="facts_yaml">ResumeLoom facts.yaml</option></select></label></div><ResumeImport disabled={Boolean(busy) || loading} hasText={Boolean(resumeText.trim())} onApply={(text, format) => { setResumeText(text); setResumeFormat(format); setResumeSaved(false); toast('已提取并填入编辑区，请核对内容后保存。') }} /><label htmlFor="resume-text" className="field-label">简历正文 · 可直接编辑或粘贴</label><textarea className="resume-textarea" id="resume-text" value={resumeText} onChange={event => { setResumeText(event.target.value); setResumeSaved(false) }} required maxLength={100000} spellCheck={false} placeholder={resumeFormat === 'facts_yaml' ? 'schema_version: 1\nfacts:\n  ...' : '填写技能、工作经历、项目经验，以及地点和薪资等求职偏好。\n\n建议保留具体职责、项目背景和经过确认的成果。'} /><div className="editor-footer"><span className={resumeSaved ? '' : 'editor-unsaved'}>{resumeText.length.toLocaleString()} 字符 · {resumeSaved ? '已保存' : '未保存的修改'}</span><Button className="button primary" busy={busy === 'resume'} disabled={Boolean(busy)} type="submit">保存到本地<Icon name="check" size={17} /></Button></div></form><aside className="paper-panel resume-guide"><span className="section-label">整理建议</span><h2>整理可核对的经历</h2><div className="guide-item"><b>01</b><div><h3>保留具体经历</h3><p>技能、职责和项目事实，比笼统的自我评价更有帮助。</p></div></div><div className="guide-item"><b>02</b><div><h3>未知就留作未知</h3><p>未提到的技能不能自动认定为不会，也不能当作已经掌握。</p></div></div><div className="guide-item"><b>03</b><div><h3>复用 ResumeLoom</h3><p>可导入 PDF、Word .docx 和文本文件，也可使用 facts.yaml。扫描件需先 OCR；旧版 .doc 请另存为 .docx。</p></div></div><div className="privacy-note"><Icon name="book" size={18} /><p>文件在本机提取文字，确认保存后仅保留文本。启用外部模型分析时，相关资料可能发送至你配置的模型服务。</p></div></aside></div></>}
@@ -563,7 +573,7 @@ export default function App() {
             <div className="browser-actions"><form onSubmit={event => { event.preventDefault(); void collectBrowser() }}>
               <div className="browser-form-heading"><h3>采集条件</h3><span>仅采集公开可见的资料</span></div>
               <div className="browser-fields"><div><label className="field-label" htmlFor="browser-source">采集平台</label><select id="browser-source" value={browserSource} onChange={event => setBrowserSource(event.target.value)}>{browserSources.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div><div><label className="field-label" htmlFor="browser-query">岗位关键词</label><input id="browser-query" value={query} onChange={event => setQuery(event.target.value)} placeholder="例如：Python 后端" required maxLength={200} /></div><div><label className="field-label" htmlFor="browser-location">城市（可选）</label><CityInput id="browser-location" cities={browserCities} hot={browserSourceItem?.hot || []} pinyin={cityPinyin} locations={locations} value={location} onChange={setLocation} placeholder={browserCities.length ? '输入或点选城市' : '例如：北京'} maxLength={100} /></div><div><label className="field-label" htmlFor="browser-limit">采集数量 <span>· 条</span></label><input id="browser-limit" type="number" min={1} max={1000} value={browserLimit} onChange={event => setBrowserLimit(Math.max(1, Math.min(1000, Number(event.target.value) || 20)))} inputMode="numeric" /></div></div>
-              <div className="browser-form-actions"><Button className="button secondary" type="button" title="启动/连接项目专属 Chrome（登录态与日常浏览器隔离）并打开所选平台首页；适合平时先登录、过验证" busy={busy === 'browser-start'} disabled={Boolean(busy) || !browserSources.length} onClick={() => void perform('browser-start', async () => { const result = await post<BrowserStatus>(`/browser/start?source=${encodeURIComponent(browserSource)}`); setBrowser(result); toast(result.message); await refreshMetadata() })}><Icon name="globe" size={17} />打开专用浏览器</Button><Button className="button primary" title="在项目浏览器会话里采集当前平台；浏览器没开会自动拉起——未登录时在弹出的窗口里完成登录/验证，再点一次即可" busy={busy === 'browser-collect'} disabled={Boolean(busy) || !browserSources.length} type="submit">开始采集<Icon name="arrow" size={16} /></Button></div>
+              <div className="browser-form-actions"><Button className="button secondary" type="button" title="启动/连接项目专属 Chrome（登录态与日常浏览器隔离）并打开所选平台首页；适合平时先登录、过验证" busy={busy === 'browser-start'} disabled={Boolean(busy) || !browserSources.length} onClick={() => void perform('browser-start', async () => { const result = await post<BrowserStatus>(`/browser/start?source=${encodeURIComponent(browserSource)}`); setBrowser(result); toast(result.message); await refreshMetadata() })}><Icon name="globe" size={17} />打开专用浏览器</Button><Button className="button primary" title="在项目浏览器会话里采集当前平台；浏览器没开会自动拉起——未登录时在弹出的窗口里完成登录/验证，再点一次即可" busy={browserCollecting} disabled={browserCollecting || !browserSources.length} type="submit">开始采集<Icon name="arrow" size={16} /></Button></div>
               <p className="browser-form-note">点「开始采集」没开浏览器会自动拉起；未登录时在弹出的窗口里登录后再点一次。实际数量以平台可返回的结果为准。</p>
             </form></div>
           </section>
@@ -583,7 +593,7 @@ export default function App() {
       </div>}
 
       <div hidden={view !== 'extensions'} className="extensions-view"><AgentExtensions /></div>
-      {view === 'settings' && <ModelSettings onSaved={refreshMetadata} />}
+      {view === 'settings' && <><button className="button secondary settings-return" onClick={() => setView(settingsReturn)}>返回原工作区</button><ModelSettings onSaved={refreshMetadata} /></>}
       {view === 'system' && <SystemSettings />}
       <footer className="page-footer"><span>知根 JobScope</span><span>资料保留原始出处，未知信息待核实</span></footer>
     </main>
@@ -596,7 +606,7 @@ export default function App() {
           else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus() }
         }
       }}><div className="section-heading"><div><h2 id="modal-title">{modal === 'job' ? '导入岗位' : modal === 'evidence' ? '补充公司资料' : modal === 'batch-edit' ? '批量编辑档案' : '确认删除岗位'}</h2></div><button className="icon-button" aria-label="关闭弹窗" onClick={() => setModal(null)} disabled={Boolean(busy)}><Icon name="close" /></button></div><p className="muted body-small">{modal === 'job' ? '粘贴原始岗位信息，来源将标记为“用户导入”。' : modal === 'evidence' ? '保留原文和来源，帮助后续核实。请勿填写 Cookie 或访问令牌。' : modal === 'batch-edit' ? `将应用到已选的 ${batchEdit?.ids.length ?? 0} 份档案；留空的字段保持不变，薪资按原文覆盖（如 15–25K·13薪）。` : `将删除${confirmDelete?.label || '所选岗位'}，连同其岗位证据、适配报告与岗位对话，此操作不可恢复。`}</p>{(modal === 'job' || modal === 'evidence') && <><form onSubmit={importRecord}><label className="field-label" htmlFor="import-title">{modal === 'job' ? '岗位名称' : '资料标题'} <span>*</span></label><input id="import-title" name="title" required maxLength={300} autoFocus /><label className="field-label" htmlFor="import-company">公司名称 <span>*</span></label><input id="import-company" name="company" required maxLength={300} defaultValue={modal === 'evidence' ? job?.company : ''} />{modal === 'job' ? <div className="form-two"><div><label className="field-label" htmlFor="import-location">工作地点</label><input id="import-location" name="location" maxLength={200} /></div><div><label className="field-label" htmlFor="import-salary">原始薪资描述</label><input id="import-salary" name="salary" maxLength={300} placeholder="保留原文，如 20–30K·13薪" /></div></div> : <><label className="field-label" htmlFor="import-kind">资料类型</label><select id="import-kind" name="kind" defaultValue="user_material"><option value="user_material">用户提供材料</option><option value="employee_statement">员工自述</option><option value="company_statement">企业自述</option><option value="disclosure">正式披露</option><option value="media_report">媒体报道</option></select></>}<label className="field-label" htmlFor="import-url">原始链接（可选）</label><input id="import-url" name="url" type="url" maxLength={2000} placeholder="https://" /><label className="field-label" htmlFor="import-body">{modal === 'job' ? '岗位描述' : '资料原文'} <span>*</span></label><textarea id="import-body" name={modal === 'job' ? 'description' : 'text'} required rows={7} maxLength={100000} /><div className="modal-actions"><button type="button" className="button secondary" onClick={() => setModal(null)} disabled={Boolean(busy)}>取消</button><Button className="button primary" type="submit" busy={busy === 'import'} disabled={Boolean(busy)}>保存资料<Icon name="check" size={16} /></Button></div></form></>}
-              {modal === 'batch-edit' && batchEdit && <form onSubmit={submitBatchEdit}><label className="field-label" htmlFor="batch-location">工作地点</label><input id="batch-location" value={batchDraft.location} onChange={event => setBatchDraft({ ...batchDraft, location: event.target.value })} maxLength={300} autoFocus /><label className="field-label" htmlFor="batch-salary">薪资描述</label><input id="batch-salary" value={batchDraft.salary} onChange={event => setBatchDraft({ ...batchDraft, salary: event.target.value })} maxLength={300} placeholder="15–25K·13薪" /><label className="field-label" htmlFor="batch-tags">标签（逗号分隔，保存后替换现有标签）</label><input id="batch-tags" value={batchDraft.tags} onChange={event => setBatchDraft({ ...batchDraft, tags: event.target.value })} maxLength={500} placeholder="已核实, 优先投递" /><div className="modal-actions"><button type="button" className="button secondary" onClick={() => setModal(null)} disabled={Boolean(busy)}>取消</button><Button className="button primary" type="submit" busy={busy === 'batch-edit'} disabled={Boolean(busy)}>保存修改<Icon name="check" size={16} /></Button></div></form>}
+              {modal === 'batch-edit' && batchEdit && <form onSubmit={submitBatchEdit}><label className="field-label" htmlFor="batch-location">工作地点</label><input id="batch-location" value={batchDraft.location} onChange={event => setBatchDraft({ ...batchDraft, location: event.target.value })} maxLength={300} autoFocus /><label className="field-label" htmlFor="batch-salary">薪资描述</label><input id="batch-salary" value={batchDraft.salary} onChange={event => setBatchDraft({ ...batchDraft, salary: event.target.value })} maxLength={300} placeholder="15–25K·13薪" /><label className="field-label" htmlFor="batch-tags">个人标签（逗号分隔，可清空；平台标签保留）</label><input id="batch-tags" value={batchDraft.tags} onChange={event => { setTagsChanged(true); setBatchDraft({ ...batchDraft, tags: event.target.value }) }} maxLength={500} placeholder="已核实, 优先投递" /><div className="modal-actions"><button type="button" className="button secondary" onClick={() => setModal(null)} disabled={Boolean(busy)}>取消</button><Button className="button primary" type="submit" busy={busy === 'batch-edit'} disabled={Boolean(busy)}>保存修改<Icon name="check" size={16} /></Button></div></form>}
               {modal === 'confirm-delete' && confirmDelete && <div className="modal-actions"><button type="button" className="button secondary" onClick={() => setModal(null)} disabled={Boolean(busy)}>取消</button><Button className="button danger" busy={busy === 'batch-delete'} disabled={Boolean(busy)} onClick={() => void perform('batch-delete', submitBatchDelete)}>确认删除</Button></div>}
             </section></div>}
   </div>

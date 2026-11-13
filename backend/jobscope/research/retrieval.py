@@ -10,6 +10,9 @@ from .query import tokenize
 
 
 def retrieve(index, plan, scope, provider=None, limit=8, budget=24000):
+    if plan.clarification:
+        return dict(evidence=[], strategy='clarification', candidates=0, lexical_candidates=0,
+                    dense_candidates=0, terms=[], degraded=[plan.clarification])
     index.sync()
     clause, params = scope_clause(scope, plan)
     terms = plan.terms()

@@ -6,8 +6,10 @@
 """
 import re
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlencode
 
 import httpx
 
@@ -57,18 +59,41 @@ class FakeClient:
         return self.payload
 
 
-class FakeTab:
-    """collectors 的假页面，只用来对拍「日期 → 年数」的同一把尺子。"""
+class _FlowTab:
+    """gsxt 新流程的多页回放：只用来对拍「日期 → 年数」的同一把尺子。"""
 
-    def __init__(self, html):
-        self._html = html
+    def __init__(self, pages):
+        self.pages = pages
+        self.visited = []
+        self.current = ''
 
     def get(self, url, timeout=None):
-        return True
+        self.visited.append(url)
+        if url in self.pages:
+            self.current = url
+
+    @property
+    def url(self):
+        return self.current
 
     @property
     def html(self):
-        return self._html
+        return self.pages.get(self.current, '')
+
+    def close(self):
+        pass
+
+
+class _Browser:
+    def status(self, data_dir=None):
+        return {'installed': True, 'running': True, 'message': ''}
+
+    @contextmanager
+    def session_lock(self, data_dir=None):
+        yield True
+
+    def _connection(self, data_dir=None):
+        return 9333
 
 
 def run(payload=MISSING, *, error=None, client=None, source='qcc', company='甲公司'):
@@ -138,10 +163,18 @@ def test_the_first_declared_candidate_name_wins():
     assert by_rule['company_age']['observed_at'] == '2001-01-01'
 
 
-def test_the_only_present_candidate_is_used_and_a_date_string_becomes_years():
+def test_the_only_present_candidate_is_used_and_a_date_string_becomes_years(monkeypatch):
     names = paid.candidate_names('qcc', 'company_age', 'founded_date')
     _outcome, by_rule = run({names[-1]: '2015年04月01日'})
-    page = collectors._read_registration(FakeTab('<td>成立日期 2015-04-01</td>'), '甲公司')
+    search_url = (collectors.GSXT_ORIGIN + collectors.GSXT_SEARCH_PATH + '?'
+                  + urlencode({'tab': 'main', 'searchWord': '甲公司'}))
+    pages = {search_url: '<a href="/d.html">甲公司</a>',
+             collectors.GSXT_ORIGIN + '/d.html': '<p>成立日期 2015-04-01</p>'}
+    monkeypatch.setattr(collectors, '_open_tab', lambda module, data_dir: _FlowTab(pages))
+    monkeypatch.setattr(collectors, '_sleep', lambda seconds: None)
+    monkeypatch.setattr(collectors, 'CHALLENGE_WAIT', 0)
+    outcome = collectors.collect('gsxt', '甲公司', browser_module=_Browser())
+    page = next(item for item in outcome['signals'] if item['rule'] == 'company_age')
     # 同一份日期在浏览器采集与付费接口两条路径上必须换算成同一个年数：只有一处算法。
     assert by_rule['company_age']['value']['years'] == page['value']['years']
     assert by_rule['company_age']['observed_at'] == '2015-04-01'

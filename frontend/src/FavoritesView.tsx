@@ -28,17 +28,26 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
   const filters = useRef({ q: '', source: '' })
   const requestToken = useRef(0)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  // 保存已见岗位的公司快照：分页不会丢失选中岗位所属公司。
+  const selectedCompanies = useRef(new Map<string, string>())
+  const [selectionNotice, setSelectionNotice] = useState('')
   const [busy, setBusy] = useState('')
   const [recheckTask, setRecheckTask] = useState<Task | null>(null)
   const recheckTimer = useRef(0)
 
   const load = useCallback(async (next = filters.current, page = 1) => {
+    if (next.q !== filters.current.q || next.source !== filters.current.source) {
+      setSelectedIds(new Set()); selectedCompanies.current.clear(); setSelectionNotice('筛选已变更，已清空此前跨页选择。')
+    }
     filters.current = next
     const params = new URLSearchParams({ starred: 'true', q: next.q, source: next.source, page_size: '100' })
     params.set('page', String(page))
     const token = ++requestToken.current
     const data = await api<PageInfo & { jobs: Job[] }>(`/jobs?${params.toString()}`)
-    if (token === requestToken.current) { setJobs(data.jobs); setInfo(data) }
+    if (token === requestToken.current) {
+      data.jobs.forEach(item => selectedCompanies.current.set(item.id, item.company))
+      setJobs(data.jobs); setInfo(data)
+    }
     return data.jobs
   }, [])
 
@@ -69,10 +78,12 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
   }
 
   function toggleSelection(id: string) {
+    setSelectionNotice('')
     setSelectedIds(previous => { const next = new Set(previous); if (next.has(id)) next.delete(id); else next.add(id); return next })
   }
   const allPageSelected = jobs.length > 0 && jobs.every(item => selectedIds.has(item.id))
   function togglePageSelection() {
+    setSelectionNotice('')
     setSelectedIds(previous => {
       const next = new Set(previous)
       if (jobs.length > 0 && jobs.every(item => next.has(item.id))) jobs.forEach(item => next.delete(item.id))
@@ -90,7 +101,7 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
 
   function compareSelectedCompanies() {
     // 横评比的是公司：选中岗位的公司去重后逐个加入，满了如实告知几条没进。
-    const companies = [...new Set(jobs.filter(item => selectedIds.has(item.id)).map(item => item.company.trim()).filter(Boolean))]
+    const companies = [...new Set([...selectedIds].map(id => (selectedCompanies.current.get(id) || '').trim()).filter(Boolean))]
     if (!companies.length) { toast('先勾选要横评的岗位'); return }
     let added = 0, exists = 0, full = 0
     for (const company of companies) {
@@ -137,9 +148,9 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
           <button className="button secondary small" type="submit" disabled={busy === 'filter'}>筛选</button>
         </form>
         <div className="favorites-batch">
-          <label className="agent-checkbox"><input type="checkbox" checked={allPageSelected} onChange={togglePageSelection} />本页全选</label>
+          <label className="agent-checkbox"><input type="checkbox" checked={allPageSelected} disabled={Boolean(busy)} onChange={togglePageSelection} />本页全选</label>
           {selectedIds.size > 0 && <>
-            <span className="tiny-label">已选 {selectedIds.size} 项</span>
+            <span className="tiny-label">跨页已选 {selectedIds.size} 项（本页 {jobs.filter(item => selectedIds.has(item.id)).length} 项）</span>
             <button className="button secondary small" disabled={Boolean(busy) || rechecking} title="用项目浏览器重读源站原帖，刷新薪资与完整JD；未登录时会提示先登录" onClick={recheckSelected}>反查选中</button>
             <button className="button secondary small" disabled={Boolean(busy)} onClick={compareSelectedCompanies}>横评选中公司</button>
             <button className="button secondary small danger-text" disabled={Boolean(busy)} onClick={unstarSelected}>取消收藏</button>
@@ -147,12 +158,13 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
           </>}
         </div>
       </div>
+      {selectionNotice && <p role="status" className="tiny-label">{selectionNotice}</p>}
       {rechecking && <p className="batch-message" role="status"><span className="spinner" /> {recheckTask?.message}{recheckTask?.total ? ` · 已处理 ${recheckTask.processed || 0}/${recheckTask.total}` : ''}</p>}
       {loading ? <div className="loading-state"><span className="spinner" />正在读取收藏…</div>
         : jobs.length === 0 ? <div className="empty"><div className="empty-icon"><Icon name="star" /></div><h3>{draft.q || filters.current.q ? '收藏中没有符合条件的岗位' : '还没有收藏的岗位'}</h3><p>在岗位档案列表点卡片右侧的星标，或岗位详情页点「收藏」。收藏不会因为重新采集而丢失。</p></div>
         : <div className={`job-list${busy === 'filter' ? ' refreshing' : ''}`}>{jobs.map(item => <JobCard key={item.id} item={item} selected={false} checked={selectedIds.has(item.id)}
           busy={busy.startsWith(`star-${item.id}`) || busy.startsWith(`recheck-${item.id}`)}
-          onToggleSelection={toggleSelection} onOpen={onOpenJob} onToggleStar={toggleStar}
+          onToggleSelection={id => { if (!busy) toggleSelection(id) }} onOpen={onOpenJob} onToggleStar={toggleStar}
           actions={<span className="job-card-actions">
             <button className="text-button" disabled={Boolean(busy)} title="重读源站原帖，刷新薪资与完整JD" onClick={() => void recheckOne(item)}>反查</button>
             <button className="text-button" onClick={() => joinCompare(item)}>加入横评</button>

@@ -7,7 +7,7 @@ from ..chat import answer_question, citation, model_configured
 from ..repository import now
 from .index import ResearchIndex, scope_clause
 from .providers import EmbeddingProvider, model_plan
-from .query import plan_query
+from .query import plan_query, condition_context
 from .retrieval import retrieve
 from .tools import salary_query, salary_text
 
@@ -62,8 +62,9 @@ class ResearchAgent:
                 else:
                     names = [scope['company']]
             t = time.perf_counter()
-            baseline = plan_query(message, history or [], scope, names)
-            plan, planner_info = model_plan(message, history or [], baseline, scope, names)
+            baseline = plan_query(message, history or [], scope, names, known_locations=condition_context(self.repo, scope)['known_locations'])
+            model_history = [h for h in (history or []) if not h.get('compacted')]
+            plan, planner_info = model_plan(message, model_history, baseline, scope, names)
             event('query_plan', t, plan=plan.model_dump(), provider=planner_info)
             if stop_requested():
                 raise RunCancelled('已停止')
@@ -133,11 +134,11 @@ class ResearchAgent:
             if evidence:
                 try:
                     if self.synthesizer is answer_question:
-                        result = self.synthesizer(message, evidence, resume=resume, history=history, preselected=True,
+                        result = self.synthesizer(message, evidence, resume=resume, history=model_history, preselected=True,
                                                   tool_context=dict(salary=metrics, coverage=coverage), on_delta=on_delta)
                     else:
                         # Compatibility seam for application-level injected providers/tests.
-                        result = self.synthesizer(message, evidence, resume=resume, history=history)
+                        result = self.synthesizer(message, evidence, resume=resume, history=model_history)
                 except ValueError:
                     degraded.append('回答模型失败或引用无效，展示已核实工具结果与证据摘录')
                     result = dict(answer='模型回答未通过校验。以下为证据摘录：\n\n' + '\n\n'.join(e['text'][:650] for e in evidence),

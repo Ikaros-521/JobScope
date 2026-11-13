@@ -56,8 +56,9 @@ def collect_source(repo, data_dir, company, source_id, credit_code='', *, task=N
         elif from_paid:
             outcome = paid.collect(source_id, identity['name'], client=store.client(source_id))
         else:
-            browser_module = importlib.import_module('..browser', __package__) if source_id in collectors.READERS else None
-            outcome = collectors.collect(source_id, identity['name'], browser_module=browser_module, data_dir=data_dir)
+            browser_module = importlib.import_module('..browser', __package__) if source_id in collectors.FLOWS else None
+            outcome = collectors.collect(source_id, identity['name'], browser_module=browser_module, data_dir=data_dir,
+                                         repo=repo, identity=identity)
         key = store.stored(source_id).get('key', '') if from_paid else ''
         # Inspect nested strings before persistence, including credentials with JSON escapes.
         if key and contains_key(outcome, key):

@@ -22,7 +22,7 @@ function tokensLabel(value: number) { return value >= 10000 ? `${Math.round(valu
 // 下拉选项值编码：''=跟随全局；'|model'=覆盖全局配置上的模型；'channelId|model'=指定渠道的模型；'channelId|'=渠道默认模型
 function selectValue(model: string, channelId: string) { return channelId ? `${channelId}|${model}` : model ? `|${model}` : '' }
 
-export function ChatComposer({ input, onInputChange, model, llmChannel = '', modelChannels = [], globalModels = [], onModelChange, permissionMode = 'autonomous', onPermissionModeChange, running, awaiting, onStop, onSend, onQueue, queueCount = 0, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, scopeLabel = '全项目', onExpandScope, locked = '', scopeName = '全项目资料', contextTokens = 0, contextWindow = 128000, compressing = false, hasConversation = false, canCompress = true, onCompress }: {
+export function ChatComposer({ input, onInputChange, model, llmChannel = '', modelChannels = [], globalModels = [], onModelChange, permissionMode = 'autonomous', onPermissionModeChange, running, awaiting, onStop, onSend, onQueue, queueCount = 0, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, onConfigureModel, scopeLabel = '全项目', onExpandScope, locked = '', scopeName = '全项目资料', contextTokens = 0, contextWindow = 128000, compressing = false, hasConversation = false, canCompress = true, onCompress }: {
   input: string
   onInputChange: (value: string) => void
   model: string
@@ -45,6 +45,7 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
   editing: EditingTarget
   onCancelEdit: () => void
   onManageExtensions?: () => void
+  onConfigureModel?: () => void
   scopeLabel?: string
   onExpandScope?: () => void
   locked?: string
@@ -64,16 +65,16 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
     node.style.height = `${Math.min(200, Math.max(48, node.scrollHeight))}px`
   }, [input])
 
-  const blocked = Boolean(locked) || awaiting || compressing || !modelConfigured
+  const blocked = Boolean(locked) || awaiting || compressing
   const placeholder = locked || (compressing ? '正在压缩上下文…' : awaiting ? '等待工具确认后再继续对话…'
     : running && onQueue ? '生成中…输入下一条，Enter 加入队列，完成后自动发送'
-    : !modelConfigured ? '请先在模型设置中配置对话模型' : `围绕${scopeName}提问，Agent 会按需调用工具…`)
+    : !modelConfigured ? '可以先写下问题，配置模型后再发送…' : `围绕${scopeName}提问，Agent 会按需调用工具…`)
 
   function trySend() {
     if (!input.trim()) return
     // 生成中 Enter 不再无效：有内容且支持排队就走队列（IDE 队列行为），否则维持禁用。
     if (running) { if (onQueue) onQueue(); return }
-    if (blocked) return
+    if (blocked || !modelConfigured) return
     onSend()
   }
 
@@ -88,7 +89,7 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
 
   return <div className="chat-composer">
     {editing && <div className="composer-editing-note">
-      <span>正在编辑历史消息并重新生成之后的回答</span>
+      <span>正在编辑历史消息；发送后打开新版本，原对话保留</span>
       <button type="button" onClick={onCancelEdit}>取消编辑</button>
     </div>}
     <div className={`composer-box ${blocked ? 'disabled' : ''}`}>
@@ -105,13 +106,15 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
       />
       {running
         ? <button type="button" className="composer-stop" onClick={onStop} aria-label="停止生成"><span aria-hidden="true">■</span>停止</button>
-        : <button type="button" className="composer-send" onClick={trySend} disabled={blocked || !input.trim()} aria-label="发送消息">发送</button>}
+        : <button type="button" className="composer-send" onClick={trySend} disabled={blocked || !modelConfigured || !input.trim()} aria-label="发送消息">发送</button>}
     </div>
     <div className="composer-toolbar">
       <div className="composer-scope" aria-label="资料检索范围">
         <span className="composer-scope-tag" title={scopeLabel}>{scopeLabel}</span>
         {onExpandScope && <button type="button" className="composer-expand" disabled={running || awaiting || compressing || !hasConversation || Boolean(locked)} onClick={onExpandScope}>扩大范围 ↗</button>}
       </div>
+      {onConfigureModel && <button type="button" className="composer-configure" onClick={onConfigureModel}>{modelConfigured ? '模型设置' : '配置模型后发送（草稿已保存）'}</button>}
+      <details className="composer-options"><summary>模型与工具选项</summary><div className="composer-options-body">
       <label className="composer-model">
         <span>模型</span>
         <select value={selectValue(model, llmChannel)} onChange={event => pickModel(event.target.value)} disabled={running || awaiting}>
@@ -148,15 +151,16 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
       {onManageExtensions && <button type="button" className="composer-extensions" onClick={onManageExtensions}>MCP 与 Skills</button>}
       {onCompress && <div className="context-meter-group">
         <div className={`context-meter ${level}`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}
-          aria-label="当前会话上下文估算用量" title={`当前会话上下文估算 ${tokensLabel(contextTokens)} / ${tokensLabel(contextWindow)} tokens（${percent}%，按字符数估算）`}>
+          aria-label="当前会话上下文估算用量" title={`初始输入窗口估算（最新摘要＋最近6条＋当前问题及明确条件） ${tokensLabel(contextTokens)} / ${tokensLabel(contextWindow)} tokens（${percent}%，按字符数估算；系统提示为固定估值，不含动态工具结果，实际用量以模型返回为准）`}>
           <span className="context-meter-bar" aria-hidden="true"><span className="context-meter-fill" style={{ width: `${percent}%` }} /></span>
-          <span className="context-meter-text">{tokensLabel(contextTokens)} / {tokensLabel(contextWindow)}</span>
+          <span className="context-meter-text">估算 {tokensLabel(contextTokens)} / {tokensLabel(contextWindow)}</span>
         </div>
         <button type="button" className="composer-compress" onClick={onCompress} disabled={running || awaiting || compressing || !hasConversation || !canCompress}
           title={canCompress ? '把较早的历史折叠成一条摘要检查点，模型上下文随之精简；原文仍保留可查看' : '历史消息较少，暂无需压缩'}>
           {compressing ? '压缩中…' : '压缩上下文'}
         </button>
       </div>}
+      </div></details>
       {queueCount > 0 && <span className="composer-queue-count" title="生成完成后按顺序自动发送">已排队 {queueCount} 条</span>}
       <span className="composer-hint">Enter 发送 · Shift + Enter 换行 · {MODE_HINTS[permissionMode]}</span>
     </div>

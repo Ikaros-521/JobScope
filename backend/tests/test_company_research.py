@@ -180,7 +180,7 @@ def test_research_defaults_only_ready_available_free_and_never_paid(client, stub
 
 
 @pytest.mark.parametrize('selection,code', [
-    (['qcc'], 409), (['credit_china'], 409), (['court_records'], 409),
+    (['qcc'], 409),
     (['missing_source'], 400), (['jobscope_jobs', 'jobscope_jobs'], 400),
     (['gsxt'] * 7, 422),
 ])
@@ -192,6 +192,26 @@ def test_research_validates_selection_before_creating_tasks_or_threads(client, m
     assert result.status_code == code
     assert client.app.state.repo.tasks() == []
     assert client.app.state.repo.find_company('甲公司') is None
+
+
+def test_research_accepts_explicit_credit_and_court_selections(client, stub_channels, monkeypatch):
+    """2026-11-13 接线后：信用中国/裁判文书网是合法的显式选择，执行走 collectors.collect。"""
+    from jobscope.reliability import collectors
+    seen = []
+
+    def browser_collect(source, company, **kwargs):
+        seen.append(source)
+        return dict(status='needs_login', message='需要登录', signals=[])
+
+    monkeypatch.setattr(collectors, 'collect', browser_collect)
+    tasks = client.post('/api/company-research', json=dict(
+        company='甲公司', signal_sources=['credit_china', 'court_records'])).json()['tasks']
+    signals = [task for task in tasks if task['source'].startswith('signal_')]
+    assert [task['source'] for task in signals] == ['signal_credit_china', 'signal_court_records']
+    assert wait_task(client, tasks[-1]['id'])['status'] == 'completed'
+    finals = {task['source']: wait_task(client, task['id']) for task in signals}
+    assert seen == ['credit_china', 'court_records']
+    assert all(item['status'] == 'needs_login' and item['count'] == 0 for item in finals.values())
 
 
 def test_research_empty_selection_and_disabled_default_do_not_collect(client, stub_channels, monkeypatch):

@@ -1,0 +1,8 @@
+.composer-options { position: relative; font-size: 12px; }
+.composer-options summary { cursor: pointer; padding: 5px; }
+.composer-options-body { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px 0; max-height: 145px; overflow: auto; }
+.composer-configure, .chat-conditions button { border: 0; background: transparent; color: var(--accent, #296b59); cursor: pointer; font-size: 12px; text-decoration: underline; }
+.chat-conditions { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 7px 16px; background: #f2f6f3; font-size: 12px; max-height: 100px; overflow: auto; }
+.chat-conditions span { display: inline-flex; align-items: center; gap: 4px; }
+.chat-conditions small { color: #617169; }
+@media (max-width: 600px) { .composer-options-body { max-height: 100px; } .chat-conditions { padding: 6px 10px; max-height: 82px; } .composer-hint { display: none; } }

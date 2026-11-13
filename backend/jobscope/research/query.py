@@ -3,6 +3,102 @@ import re
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from ..connectors import CITY_CODES
+
+CITY_NAMES = sorted((set(CITY_CODES) - {'全国'}) | {'远程'}, key=len, reverse=True)
+
+
+def condition_context(repo, scope):
+    """Read the same scoped location vocabulary for planning and conversation detail."""
+    where, params = ('1=1', []) if scope['kind'] == 'global' else ("json_extract(payload,'$.company')=?", [scope['company']])
+    if scope['kind'] == 'job':
+        where += ' AND id=?'
+        params.append(scope['job_id'])
+    with repo.connection() as conn:
+        rows = conn.execute("SELECT DISTINCT json_extract(payload,'$.location'),json_extract(payload,'$.company') FROM jobs WHERE " + where, params).fetchall()
+        names = {r[1] for r in rows if r[1]}
+        if scope['kind'] == 'global':
+            names.update(r[0] for r in conn.execute('SELECT DISTINCT company FROM evidence') if r[0])
+    return dict(known_locations=sorted({r[0].strip() for r in rows if isinstance(r[0], str) and r[0].strip()}),
+                companies=sorted(names | ({scope['company']} if scope['kind'] != 'global' else set())))
+
+
+def location_condition(message, known_locations=(), companies=()):
+    """Use the collection city dictionary; ambiguous geography never widens a query."""
+    for company in sorted(companies, key=len, reverse=True):
+        message = message.replace(company, ' ')
+    vocabulary = sorted(set(CITY_NAMES) | set(known_locations), key=len, reverse=True)
+    cities = [city for city in vocabulary if city.casefold() in message.casefold()]
+    cities = [city for city in cities if not any(city != other and city in other for other in cities)]
+    if len(cities) > 1:
+        return '', '当前筛选只支持一个城市。请明确选择一个城市，本次未执行跨城市统计。'
+    if cities and re.search(re.escape(cities[0]) + r'(?:或|和|及|、)[\u4e00-\u9fff]{2,10}?(?:的岗位|岗位|工资|薪资|月薪)', message):
+        return '', '检测到多个地点或地点组合，当前只支持一个城市。请明确选择，本次未执行统计。'
+    # Explicit location slots, including unknown names; never interpret them as no filter.
+    slot = re.search(r'(?:地点|城市)(?:是|为|改成|[:：])\s*([^，。；,\s]+)|(?:在|只看|只考虑)([^，。；,\s]{1,30}?)(?:的?岗位|工作|找工作|工资|薪资|月薪)', message)
+    if slot:
+        value = next((v for v in slot.groups() if v), '')
+        if not any(value.casefold() in {city.casefold(), city.casefold() + '市'} for city in cities):
+            return '', f'未识别地点“{value}”。请确认城市名称，本次没有放宽到全库。'
+    explicit = re.search(r'(?:只看|只考虑|地点(?:是|为|[:：])|城市(?:是|为|[:：])|在)([\u4e00-\u9fff]{2,12}?(?:市|省|区|县))(?=的|[，,。\s]|岗位|工作|工资|薪资|$)', message)
+    if explicit and not any(city in explicit[1] for city in cities):
+        return '', f'未识别地点“{explicit[1]}”。请确认城市名称，本次没有放宽到全库。'
+    return (cities[0] if cities else ''), ''
+
+
+def conversation_conditions(messages, known_locations=(), companies=()):
+    """Derive visible preferences only from original user messages in this conversation.
+
+    No assistant text, compaction summary, tool arguments or model rewrites can
+    create or clear preferences. Callers own conversation/scope isolation.
+    """
+    state = dict(location='', threshold=None, operator='ge', threshold_basis='monthly_min',
+                 exclude_outsourcing=False, clarification='', locked_fields=[])
+    location_issue = salary_issue = ''
+    for item in messages or []:
+        if item.get('role') != 'user' or item.get('kind') == 'compaction':
+            continue
+        text = item.get('content', '')
+        if not isinstance(text, str):
+            continue
+        # Ordinary writing/travel examples must not become employment preferences.
+        if re.search(r'旅游|广告|小说|翻译|写一|写个|写段|写一段', text) and not re.search(r'只看|只考虑|求职条件|找工作', text):
+            continue
+        relevant = bool(re.search(r'岗位|工作|求职|薪资|工资|月薪|年薪|年包|只看|只考虑|改成|换成|地点|城市|外包|至少|取消|不限|不限制|(?:也|还)?看看', text))
+        if not relevant:
+            continue
+        if re.search(r'不限地点|取消城市|取消地点|所有城市|全国', text):
+            state['location'], location_issue = '', ''
+            state['locked_fields'].append('location')
+        else:
+            location, issue = location_condition(text, known_locations, companies)
+            if location or issue:
+                if location and state['location'] and location != state['location'] and re.search(r'也看|还看|也看看|还看看|加上|再加', text):
+                    issue = '当前筛选只支持一个城市；新增城市会形成多城市条件，请明确改成哪一个城市。'
+                state['location'], location_issue = location, issue
+                state['locked_fields'].append('location')
+        if re.search(r'不限薪资|取消(?:金额|薪资|工资)(?:限制)?|不限制工资', text):
+            state['threshold'], salary_issue = None, ''
+            state['locked_fields'].extend(['threshold', 'operator', 'threshold_basis'])
+        else:
+            amount = re.search(r'(超过|高于|大于|至少|不低于|低于|少于|不超过|最多)\s*(\d+(?:\.\d+)?)\s*([kK万千元])', text)
+            suffix = re.search(r'(\d+(?:\.\d+)?)\s*([kK万千元])\s*(以上|以下)', text)
+            if amount or suffix:
+                state['locked_fields'].extend(['threshold', 'operator', 'threshold_basis'])
+                direction, value, unit = (amount[1], amount[2], amount[3]) if amount else (suffix[3], suffix[1], suffix[2])
+                state['threshold'] = float(value) * {'k': 1000, '万': 10000, '千': 1000, '元': 1}[unit.lower()]
+                state['operator'] = 'gt' if direction in {'超过', '高于', '大于'} else 'lt' if direction in {'低于', '少于'} else 'le' if direction in {'以下', '不超过', '最多'} else 'ge'
+                state['threshold_basis'] = 'monthly_max' if re.search('上限|最高月薪|最高能', text) else 'monthly_min'
+                salary_issue = '当前金额筛选只支持招聘税前月薪，不能将年薪或到手工资作为月薪过滤，请明确月薪条件。' if re.search('年薪|年包|年收入|税后|到手', text) else ''
+        if re.search(r'取消外包限制|不排除外包|可以考虑外包|接受外包', text):
+            state['exclude_outsourcing'] = False
+            state['locked_fields'].append('exclude_outsourcing')
+        elif re.search(r'不考虑外包|排除外包|不要外包|不看外包', text):
+            state['exclude_outsourcing'] = True
+            state['locked_fields'].append('exclude_outsourcing')
+    state['clarification'] = location_issue or salary_issue or ('外包性质尚无可靠结构化核实字段，不能把缺少材料视为非外包。请确认是否暂时取消外包限制，当前未执行筛选。' if state['exclude_outsourcing'] else '')
+    state['locked_fields'] = list(dict.fromkeys(state['locked_fields']))
+    return state
 
 CONCEPTS = {
     'salary': ('工资', '薪资', '薪酬', '待遇', '月薪', '年薪', '奖金', '几薪', 'salary', 'compensation'),
@@ -42,6 +138,7 @@ class QueryPlan(BaseModel):
     explanation: str = Field(default='', max_length=500)
     planner: str = 'rules'
     clarification: str = Field(default='', max_length=500)
+    exclude_outsourcing: bool = False
 
     def terms(self):
         text = self.query
@@ -62,7 +159,7 @@ def enforce_scope(plan, scope, companies):
     return plan
 
 
-def unknown_company_names(message, companies):
+def unknown_company_names(message, companies, known_locations=()):
     text = message
     for company in sorted(set(companies), key=len, reverse=True):
         text = text.replace(company, ' ')
@@ -81,7 +178,9 @@ def unknown_company_names(message, companies):
     if prefix != text and not names:
         prefix = re.sub(r'^(?:请|帮我|先|比较|对比|查询|看看|了解|关于|还有|那么|那|继续)+', '', prefix)
         prefix = re.sub(r'取消金额限制|取消金额|不限薪资|不限制工资|不限地点|全国|所有城市|不限技能|取消技能|所有岗位|呢', '', prefix)
-        prefix = re.sub(r'北京|上海|杭州|深圳|广州|成都|南京|苏州|武汉|宁波|远程|(?:RAG|Agent|Python|JavaScript|Java|SQL|Go|React|C\+\+)', '', prefix, flags=re.I)
+        for city in [*CITY_NAMES, *known_locations]:
+            prefix = prefix.replace(city, '')
+        prefix = re.sub(r'(?:RAG|Agent|Python|JavaScript|Java|SQL|Go|React|C\+\+)', '', prefix, flags=re.I)
         prefix = re.sub(r'已保存|已采集|全项目|所有|全部|当前|范围内|哪些|什么|几个|这家|那家|项目|公司|集团|岗位|招聘|实际|到手|实发|税后|税前|月薪|按|的|和|与|及|或|[一二三四五六七八九十百两几\d]+家', '', prefix)
         prefix = prefix.strip(' ，,。？?：:')
         if re.fullmatch(r'[\u4e00-\u9fffA-Za-z]{2,20}', prefix):
@@ -98,14 +197,14 @@ def execution_query(plan, original):
     return ' '.join(dict.fromkeys(p for p in parts if p))[:1500]
 
 
-def plan_query(message, history, scope, companies=()):
+def plan_query(message, history, scope, companies=(), known_locations=()):
     query = message.strip()
     user_turns = [h for h in history if h.get('role') == 'user'][-6:]
     previous = user_turns[-1]['content'] if user_turns else ''
     is_followup = bool(re.search(r'^(那|那么|它|他们|这家|还有|继续)|呢[？?]?$|^(超过|低于|至少|只看)', query))
     inherited_plan = None
     if user_turns and is_followup:
-        inherited_plan = plan_query(previous, user_turns[:-1], scope, companies)
+        inherited_plan = plan_query(previous, user_turns[:-1], scope, companies, known_locations)
     if previous and is_followup:
         # Only prior user intent is inherited, not assistant claims or instructions.
         inherited = inherited_plan.concepts
@@ -127,7 +226,7 @@ def plan_query(message, history, scope, companies=()):
         direction, value, unit = amount[1], amount[2], amount[3]
     threshold = float(value) * {'k': 1000, '万': 10000, '千': 1000, '元': 1}[unit.lower()] if amount else None
     operator = 'gt' if direction in {'超过', '高于', '大于'} else 'lt' if direction in {'低于', '少于'} else 'le' if direction in {'以下', '不超过', '最多'} else 'ge'
-    location = next((city for city in ('北京', '上海', '杭州', '深圳', '广州', '成都', '南京', '苏州', '武汉', '宁波', '远程') if city in message), '')
+    location, location_issue = location_condition(message, known_locations, companies)
     plan = QueryPlan(query=query[:1500], intent=intent, companies=explicit, concepts=concepts, location=location,
                      threshold=threshold, operator=operator,
                      threshold_basis='monthly_max' if re.search('上限|最高月薪|最高能', message) else 'monthly_min',
@@ -147,17 +246,26 @@ def plan_query(message, history, scope, companies=()):
         plan.actual_salary = plan.actual_salary or inherited_plan.actual_salary
         if inherited_plan.clarification:
             annual = '当前金额筛选只支持' in inherited_plan.clarification
-            monthly_correction = (threshold is not None and '月薪' in message and not re.search('年薪|年包|到手|税后', message)) or bool(re.search('不限薪资|取消金额|不限制工资', message))
             global_correction = bool(re.search('已保存公司|全部公司|全项目|所有公司', message))
-            if (annual and not monthly_correction) or (not annual and not explicit_current and not global_correction):
+            condition_issue = annual or bool(re.search('未识别地点|只支持一个城市|多个地点|外包性质', inherited_plan.clarification))
+            # Persistent filter issues are recomputed from the complete raw user
+            # history below; inheriting this string would resurrect cancelled rules.
+            if not condition_issue and not explicit_current and not global_correction:
                 plan.clarification = inherited_plan.clarification
     # An unknown named company must not silently broaden an entity question.
     if scope['kind'] == 'global':
-        entities = unknown_company_names(query, companies)
+        entities = unknown_company_names(query, companies, known_locations)
         if entities:
             plan.clarification = '资料库未识别到这个精确公司主体：' + '、'.join(entities) + '。请选择已保存公司或补充资料，本次没有扩大到全项目统计。'
     if threshold is not None and re.search('年薪|年包|年收入|税后|到手', message):
         plan.clarification = '当前金额筛选只支持招聘税前月薪。年薪或到手工资需要确认保证薪资月数、奖金或税费条件；请明确月薪条件，不能把年薪直接作为月薪过滤。'
+    conditions = conversation_conditions([*(history or []), dict(role='user', content=message)], known_locations, companies)
+    for field in ('location', 'threshold', 'operator', 'threshold_basis', 'exclude_outsourcing'):
+        setattr(plan, field, conditions[field])
+    if conditions['clarification']:
+        plan.clarification = conditions['clarification']
+    elif location_issue:
+        plan.clarification = location_issue
     plan = enforce_scope(plan, scope, companies)
     plan.query = execution_query(plan, query)
     return plan

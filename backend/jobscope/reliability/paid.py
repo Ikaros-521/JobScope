@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 import httpx
 
 from ..repository import now
-from .collectors import years_since
+from .collectors import PER_WAN, years_since
 from .rubric import RULES
 from .sources import SIGNAL_SOURCES, contains_key, validate_fields, validate_url
 
@@ -37,7 +37,6 @@ DATE_SLOTS = frozenset({'founded_date'})
 # 数成一份公告，计数随点击无限膨胀），也不该进抽取器的材料（否则厂商字段会第二轮变成模型输入）。
 PAID_KIND = 'paid_api_record'
 # 件/万人：件数 ÷ 人数 × 10000。口径写进 message，用户才复核得动。
-PER_WAN = 10000
 # message 里每个槽位最多报几个候选字段名：全列会让一句话长到没法读。
 NAMES_SHOWN = 5
 MAPPING_NOTE = ('字段名来自来源设置中的声明映射（未配置时使用 sources.SIGNAL_SOURCES 的通用预置映射），'

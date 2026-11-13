@@ -194,9 +194,14 @@ class RunManager:
                 history = []
                 title = message[:30]
             else:
-                history = self.repo.truncate_for_edit(conversation_id, scope, edit_message_id) if edit_message_id else conversation['messages']
+                if edit_message_id:
+                    conversation_id, history = self.repo.branch_for_edit(conversation_id, scope, edit_message_id)
+                else:
+                    history = conversation['messages']
                 self.repo.update_conversation(conversation_id, scope, mode=mode, permission_mode=effective_permission)
-            history = [m for m in history if not m.get('compacted')]
+            # Keep original turns for deterministic conversation preferences.
+            # Model adapters independently select their compacted/recent context.
+            history = list(history)
             handle = RunHandle('R-' + uuid.uuid4().hex, conversation_id, config, scope)
             handle.streaming = background
             user_message = self.repo.append_messages(conversation_id, [dict(role='user', content=message)])[0]

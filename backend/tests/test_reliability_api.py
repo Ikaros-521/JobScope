@@ -551,12 +551,18 @@ def test_public_api_allows_enabled_key_without_url_but_blocks_collection(client,
     assert client.app.state.repo.find_company('甲公司') is None
 
 
-def test_unimplemented_and_unknown_sources_are_rejected_without_tasks(client):
-    for source in ('credit_china', 'court_records'):
-        assert client.put('/api/reliability/sources/' + source, json=dict(mode='enabled')).status_code == 400
-        assert client.post('/api/companies/甲公司/signals/collect', json=dict(source=source)).status_code == 409
+def test_unknown_source_is_rejected_without_tasks(client):
     assert client.post('/api/companies/甲公司/signals/collect', json=dict(source='unknown')).status_code == 400
     assert client.app.state.repo.tasks() == []
+
+
+def test_credit_and_court_sources_are_now_implemented_and_selectable(client):
+    """2026-11-13 接线后：信用中国/裁判文书网默认启用、可选择；解析仍待真实登录验证（status 不变）。"""
+    sources = client.get('/api/reliability/sources').json()['sources']
+    for source in ('credit_china', 'court_records'):
+        assert sources[source]['implemented'] and sources[source]['ready']
+        assert sources[source]['mode'] == 'enabled'
+        assert sources[source]['status'] == 'needs_verification'
 
 
 @pytest.mark.parametrize('status', ['partial', 'unsupported', 'needs_login', 'needs_verification', 'failed'])

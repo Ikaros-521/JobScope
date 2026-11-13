@@ -15,7 +15,7 @@ from .repository import now
 from .settings import AGENT_LIMIT_DEFAULTS, SystemSettingsStore, get_model_config
 from .research.index import ResearchIndex
 from .research.providers import EmbeddingProvider
-from .research.query import plan_query
+from .research.query import plan_query, conversation_conditions, condition_context
 from .research.retrieval import retrieve
 from .research.tools import salary_query
 
@@ -176,12 +176,16 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
 岗位范围只包含当前岗位的招聘原文及同公司非岗位来源，不能读取同公司其他岗位、全公司岗位统计或跨公司派生参考；公司范围只读取精确公司主体。工具返回澄清时先向用户澄清，不得改写查询绕过。工具报告范围不足时，说明边界，可调用request_scope_expansion提出company/global扩展申请并结束本轮；卡片点击前不能切换范围或执行扩大查询。MCP、Skills与简历工具仍按原权限使用。
 已启用Skills目录：''' + json.dumps(skills, ensure_ascii=False)
         # 压缩摘要检查点必须始终可见：历史被截到最后 6 条时，摘要不能一起被挤掉。
+        condition_history = [*(history or []), dict(role='user', content=message)]
+        conditions = conversation_conditions(condition_history, **condition_context(self.repo, scope))
+        system += '\n本会话用户当前求职条件（仅应用于项目检索/统计，不妨碍普通写作）：' + json.dumps(conditions, ensure_ascii=False)
         checkpoints = [h for h in (history or []) if h.get('kind') == 'compaction']
-        recent = [h for h in (history or []) if h.get('kind') != 'compaction'][-6:]
+        recent = [h for h in (history or []) if h.get('kind') != 'compaction' and not h.get('compacted')][-6:]
         pinned = [dict(role='assistant', content=checkpoints[-1]['content'][:8000])] if checkpoints else []
         messages = [dict(role='system', content=system)] + pinned + [dict(role=h['role'], content=h['content'][:3000]) for h in recent] + [dict(role='user', content=message)]
         run = dict(id=run_id or 'R-' + uuid.uuid4().hex, status='running', scope=dict(scope), question=message, created_at=now(), events=[], strategy='agent', degraded=[], duration_ms=0, context_characters=0, limits=dict(limits))
         state = dict(run=run, scope=dict(scope), scope_binding=fingerprint(scope), actions=[], messages=messages, tools=tools, registry=registry, evidence={}, metrics=None, calls=0, turns=0, context_chars=0, conversation_id=conversation_id, question=message, resume_loaded=self.extensions.is_private(conversation_id), config_binding=self._model_binding(), started=time.time(), partial='', permission_mode=permission_mode, timeline=[], limits=dict(limits))
+        state['condition_history'] = condition_history
         self._save(run)
         return self._loop(state, hooks)
 
@@ -219,7 +223,15 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             self.index.sync()
             with self.repo.connection() as conn:
                 names = [row[0] for row in conn.execute('SELECT DISTINCT company FROM research_docs')]
-            plan = plan_query(args['query'], [], scope, names)
+            # Tool rewrites cannot cancel or replace the user's persistent filters.
+            context = condition_context(self.repo, scope)
+            plan = plan_query(args['query'], [], scope, names, known_locations=context['known_locations'])
+            conditions = conversation_conditions(state.get('condition_history', []), known_locations=context['known_locations'], companies=names)
+            for field in ('location', 'threshold', 'operator', 'threshold_basis', 'exclude_outsourcing'):
+                if field in conditions['locked_fields']:
+                    setattr(plan, field, conditions[field])
+            if conditions['clarification']:
+                plan.clarification = conditions['clarification']
             if plan.clarification:
                 return dict(clarification=plan.clarification, executed=False, evidence=[], note='请先确认查询条件，尚未执行检索或统计。')
             if name == 'project_search':
@@ -483,6 +495,14 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             result['reasoning'] = reasoning[:8000]
         # 顺序显示模式的完整分段日志：落库后历史消息可按发生顺序重建思维链/工具/正文穿插。
         result['timeline'] = list(state.get('timeline') or [])
+        result['citation_validation'] = dict(status='warning' if invalid else 'valid', invalid_ids=invalid)
+        if invalid:
+            # Apply the same final validation to every text segment while preserving
+            # the ordering of reasoning, tool events and prose.
+            for segment in result['timeline']:
+                if segment.get('kind') == 'text':
+                    segment['text'] = re.sub(r'[\[【]\s*(?:证据\s*(?:ID)?\s*[:：]?\s*)?(E-[A-Za-z0-9_-]+)\s*[\]】]', lambda m: f'[{m[1]} 未读取]' if m[1] in invalid else f'[{m[1]}]', segment.get('text', ''))
+            result['timeline'].append(dict(kind='text', text='> ⚠️ 引用未通过校验：' + '、'.join(invalid) + ' 不是本轮工具实际读取的资料编号，相关结论请对照工具过程核实。'))
         return result
 
     def _expansion_result(self, state):
