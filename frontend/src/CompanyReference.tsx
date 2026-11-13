@@ -13,10 +13,26 @@ const sourceNames: Record<string, string> = {
   user_material: '你提供的材料', employee: '个人自述', media: '媒体报道',
 }
 
-// 缺口的行动入口按规则归属：本地规则点「本地重算」，抽取规则点「从材料抽取」，
+// 缺口的行动入口按规则归属：本地规则点「盘点已有资料」，抽取规则点「提取资料数字」，
 // 其余（官方登记类）只能靠你自己补材料。措辞与归属都是本项目自己的说明，不是对公司的结论。
 const LOCAL_RULES = ['salary_quote_coverage', 'disclosure_available', 'pay_vs_city_median', 'jd_specificity', 'industry_media_count']
 const EXTRACT_RULES = ['team_size_statement', 'disclosure_revenue_trend', 'disclosure_headcount_trend', 'employee_review_sample']
+
+// 按钮名只讲功能不讲实现；tip 是悬浮时「这一步在做什么」的完整说明，缺口行与底部按钮共用同一份。
+const ACTION_INFO: Record<'local' | 'extract' | 'material', { name: string; tip: string }> = {
+  local: {
+    name: '盘点已有资料',
+    tip: '用本项目已保存的岗位和材料在本地算一遍（不联网）：得出薪资统计、岗位描述分析等依据，并告诉你哪些维度材料够、哪些还缺。完成后自动重算参考分。',
+  },
+  extract: {
+    name: '提取资料数字',
+    tip: '从你补充的公告、公司资料里找出明确写着的数字（如团队规模、营收变化），补进打分依据。只认原文数字，不作猜测；完成后自动重算参考分。',
+  },
+  material: {
+    name: '补资料',
+    tip: '打开补充资料窗口，手动贴入公告、报告等材料；官方登记类信息只能靠你自己提供材料。',
+  },
+}
 
 function gapAction(line: string): 'local' | 'extract' | 'material' {
   if (LOCAL_RULES.some(rule => line.includes(rule))) return 'local'
@@ -25,7 +41,7 @@ function gapAction(line: string): 'local' | 'extract' | 'material' {
 }
 
 const gapActionNames: Record<'local' | 'extract' | 'material', string> = {
-  local: '本地重算', extract: '从材料抽取', material: '补资料',
+  local: ACTION_INFO.local.name, extract: ACTION_INFO.extract.name, material: ACTION_INFO.material.name,
 }
 
 // 单一强调色的连续色阶：只有同一色相的深浅，分数低不等于变红，也不出现警示标签。
@@ -144,7 +160,7 @@ function Gap({ line, busy, onAction }: { line: string; busy: boolean; onAction: 
   const action = gapAction(line)
   return <li className="reliability-gap">
     <span>{line}</span>
-    <button type="button" className="text-button" disabled={Boolean(busy)} onClick={() => onAction(action)}>
+    <button type="button" className="text-button" disabled={Boolean(busy)} title={ACTION_INFO[action].tip} onClick={() => onAction(action)}>
       {gapActionNames[action]}
     </button>
   </li>
@@ -251,8 +267,8 @@ export function CompanyReference({ report, history, busy, loading, action, compa
     ))}</div>
 
     <div className="reliability-actions">
-      <button type="button" className="text-button" disabled={Boolean(busy)} onClick={onCoverage}>用已有材料算覆盖度</button>
-      <button type="button" className="text-button" disabled={Boolean(busy)} onClick={onExtract}>从材料里抽取信号</button>
+      <button type="button" className="text-button" disabled={Boolean(busy)} title={ACTION_INFO.local.tip} onClick={onCoverage}>{ACTION_INFO.local.name}</button>
+      <button type="button" className="text-button" disabled={Boolean(busy)} title={ACTION_INFO.extract.tip} onClick={onExtract}>{ACTION_INFO.extract.name}</button>
     </div>
 
     {/* 免责与边界是常驻区块，不放进 hover 或折叠里：读到分数的人要同时读到限制。 */}

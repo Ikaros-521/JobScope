@@ -244,7 +244,7 @@ export default function App() {
   async function runReferenceAction(kind: 'coverage' | 'extract') {
     if (!job) return
     const company = job.company, id = job.id, generation = jobGeneration.current
-    const label = kind === 'coverage' ? '用已有材料算覆盖度' : '从材料里抽取信号'
+    const label = kind === 'coverage' ? '盘点已有资料' : '提取资料数字'
     await perform('reliability', async () => {
       // 采集与抽取的 status、message 一律照后端原文显示，不改写、不美化。
       const result = kind === 'coverage' ? await collectCompanySignals(company, 'jobscope_jobs') : await extractCompanySignals(company)
