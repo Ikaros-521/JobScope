@@ -382,7 +382,13 @@ def collect(source='boss', query='', location='', limit=20, data_dir=None, progr
         return result('unsupported', status(data_dir)['message'])
     port = _connection(data_dir)
     if not port:
-        return result('needs_login', f'请先启动项目浏览器并登录{spec["name"]}。')
+        # 采集入口自动拉起项目浏览器：点「开始采集」的预期就是看到浏览器窗口，不再要求先去
+        # 别处点「打开专用浏览器」。start() 自带锁与连接探测；拉不起来（依赖缺失、配置目录
+        # 被占）就按它的结果提示，与手动启动同一套文案。
+        started = start(data_dir, source)
+        port = _connection(data_dir)
+        if not port:
+            return result('needs_login', started.get('message') or f'请先启动项目浏览器并登录{spec["name"]}。')
     if not _lock.acquire(blocking=False):
         return result('backoff', '浏览器任务正在运行，请等待完成。')
     tab = None

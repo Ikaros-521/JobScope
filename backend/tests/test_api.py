@@ -258,9 +258,16 @@ def test_collect_routes_browser_only_sources_into_the_page_session(client, monke
     assert client.post('/api/analyze', json=dict(job_id=job['id'])).status_code == 200
 
 
-def test_browser_source_without_a_session_reports_login_not_zero_results(client):
+def test_browser_source_without_a_session_reports_login_not_zero_results(client, monkeypatch):
+    """无会话时 /api/collect 会自动尝试拉起项目浏览器（2026-11-13 起）；必须 stub 掉 start 与
+    连接探测——本机装了 Chrome+DrissionPage 的话不 stub 会在 pytest 里真开浏览器窗口。"""
+    from jobscope import browser as browser_module
+    monkeypatch.setattr(browser_module, '_connection', lambda data_dir=None: None)
+    monkeypatch.setattr(browser_module, 'start',
+                        lambda data_dir=None, source='boss': dict(installed=True, running=False,
+                                                                  message='项目 Chrome 启动失败；请关闭占用同一配置目录的浏览器后重试。'))
     result = client.post('/api/collect', json=dict(source='51job', query='Python')).json()
-    assert result['task']['status'] in ('needs_login', 'unsupported')
+    assert result['task']['status'] == 'needs_login'
     assert '浏览器' in result['task']['message']
     assert result['jobs'] == []
     assert client.get('/api/jobs').json()['total'] == 0
