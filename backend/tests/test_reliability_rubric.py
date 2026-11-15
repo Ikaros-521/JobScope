@@ -85,12 +85,21 @@ def test_pay_gate_fails_when_the_city_sample_is_below_five():
     assert any('pay_vs_city_median' in line and '同层 ≥5 条' in line for line in pay.missing)
 
 
-def test_pay_gate_fails_when_the_company_sample_is_below_two():
+def test_pay_gate_fails_when_the_city_stratum_baseline_is_below_five():
+    """2026-11-15 起公司侧 1 条即可比（单条报价=岗位级评价）；拦的是同层基线不足。"""
+    result = score([sig('pay_vs_city_median', {'company_median': 20000, 'city_median': 18000,
+                                               'ratio': 1.11, 'company_jobs': 1, 'city_jobs': 4})])
+    pay = next(item for item in result.dimensions if item.dimension == 'pay')
+    assert pay.score is None
+    assert any('同层 ≥5 条' in line for line in pay.missing)
+
+
+def test_a_single_company_quote_scores_against_the_stratum_baseline():
+    """单条报价 vs 同层基线（≥5 条）也出分：样本条数随句子展示，不冒充公司薪资水平。"""
     result = score([sig('pay_vs_city_median', {'company_median': 20000, 'city_median': 18000,
                                                'ratio': 1.11, 'company_jobs': 1, 'city_jobs': 30})])
     pay = next(item for item in result.dimensions if item.dimension == 'pay')
-    assert pay.score is None
-    assert any('本公司 ≥2 条' in line for line in pay.missing)
+    assert pay.score is not None and pay.findings[0].data['company_jobs'] == 1
 
 
 def test_pay_gate_fails_without_a_positive_ratio_or_median():
@@ -133,14 +142,17 @@ def test_pay_ratio_bands_follow_the_spec():
     assert pay_at(12000, 20000) == 30.0   # ratio 0.6
 
 
-def test_jd_specificity_scores_only_three_or_more_complete_descriptions():
+def test_jd_specificity_scores_even_a_single_complete_description():
+    """2026-11-15 起单条完整 JD 也出分（评的就是这份描述写得多清楚）；零条仍不出分。"""
     base = {'jobs': 3, 'chars_mean': 600.0, 'items_mean': 8.0, 'skills_mean': 8.0, 'quantified_share': 1.0}
     result = score([sig('jd_specificity', base)])
     professional = next(item for item in result.dimensions if item.dimension == 'professional')
     # 四个子指标全部触顶：加权和就是满分。
     assert professional.score == 100.0
-    thin = score([sig('jd_specificity', {**base, 'jobs': 2})])
-    assert next(item for item in thin.dimensions if item.dimension == 'professional').score is None
+    single = score([sig('jd_specificity', {**base, 'jobs': 1})])
+    assert next(item for item in single.dimensions if item.dimension == 'professional').score == 100.0
+    none = score([sig('jd_specificity', {**base, 'jobs': 0})])
+    assert next(item for item in none.dimensions if item.dimension == 'professional').score is None
 
 
 def test_team_size_scores_statement_agreement_not_size_itself():

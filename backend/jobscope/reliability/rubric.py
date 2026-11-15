@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from .limits import MIN_CITY_JOBS, MIN_COMPANY_JOBS
 from .models import Dimension, RuleFinding, SignalInput, can_stand_alone
 
-RUBRIC_VERSION = 'rubric-5'
+RUBRIC_VERSION = 'rubric-6'
 
 # assessment 才允许产生维度分。material 衡量的只是本项目手上有多少材料：
 # 把「9/10 条岗位能解析出月薪」算成薪资待遇 90 分，用户读到的是「薪资给得好」，这是静默的谎言。
@@ -70,8 +70,10 @@ def _pay_points(value):
 
 def _jd_points(value):
     """岗位描述具体程度。归一上限写在这里：600 字 / 8 条职责 / 8 项技术栈是「把要做什么讲清楚」的常见量级，
-    权重 0.25/0.30/0.25/0.20 合计 1.0；量的是描述具体与否，不是技术实力。"""
-    if (value.get('jobs') or 0) < 3:
+    权重 0.25/0.30/0.25/0.20 合计 1.0；量的是描述具体与否，不是技术实力。
+    2026-11-15 起单条完整 JD 也出分：评的就是「这份描述写得多清楚」（岗位级评价），
+    样本条数随句子展示，不再用 ≥3 把单岗位研究挡在门外。"""
+    if (value.get('jobs') or 0) < 1:
         return None
     chars = min(1.0, (value.get('chars_mean') or 0) / 600)
     items = min(1.0, (value.get('items_mean') or 0) / 8)
@@ -128,7 +130,7 @@ RULES: dict[str, RuleSpec] = {
                                    scorer=_pay_points),
     # R2：只统计完整 JD（description_status=complete），列表摘要不参与——半截描述评不了「讲清楚没有」。
     'jd_specificity': RuleSpec('professional', '条', 180, 'jd_specificity',
-                               gate_note='出分需要 ≥3 条完整岗位描述（完整职责未采集、只有列表摘要的岗位不参与）；样本不够就不评',
+                               gate_note='出分需要至少 1 条完整岗位描述（完整职责未采集、只有列表摘要的岗位不参与）；有几条评几条，样本量随句子展示',
                                scorer=_jd_points),
     # R3：公司口径的规模自述一致程度。value 由抽取端把多条自述聚合成一条（median_size/statements/compatible）。
     'team_size_statement': RuleSpec('people', '人', 240, 'team_size_statement',
@@ -137,11 +139,11 @@ RULES: dict[str, RuleSpec] = {
                                     scorer=_team_size_points),
     # R4/R5 刻意拆成两条而不是用 metric 字符串参数区分：_for_signal() 只保留数字字段，字符串塞不进去。
     'disclosure_revenue_trend': RuleSpec('operations', '元', 365, 'disclosure_revenue_trend',
-                                         gate_note='需要同一份公告里的本期与上期营收数字，且上期大于 0，才能算同比',
+                                         gate_note='需要本期与上期营收数字（同一份公告，或同一来源的相邻年度报告，如爱企查年报序列），且上期大于 0，才能算同比',
                                          extract_hint='value 填 {"current": 本期数字, "previous": 上期数字}，两个数字必须来自同一份公告，禁止跨材料或跨年份拼接',
                                          scorer=_same_material_trend_points),
     'disclosure_headcount_trend': RuleSpec('operations', '人', 365, 'disclosure_headcount_trend',
-                                           gate_note='需要同一份公告里的本期与上期在职人数，且上期大于 0，才能算同比',
+                                           gate_note='需要本期与上期在职人数（同一份公告，或同一来源的相邻年度报告，如爱企查年报序列），且上期大于 0，才能算同比',
                                            extract_hint='value 填 {"current": 本期数字, "previous": 上期数字}，两个数字必须来自同一份公告，禁止跨材料或跨年份拼接',
                                            scorer=_same_material_trend_points),
     'employee_review_sample': RuleSpec('people', '条', 180, 'employee_review_sample', kind=MATERIAL,

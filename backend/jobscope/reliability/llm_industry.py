@@ -66,8 +66,12 @@ def _signal(direction, judgment):
                 unit=spec.unit, source_class='llm', observed_at='', url='', text=text)
 
 
-def collect(company, evidence, *, max_tokens=700, timeout=45):
-    """一次判断、一次折算：结构化输出经严格校验与禁用词检查后落成一条信号。"""
+def collect(company, evidence, *, max_tokens=2000, timeout=60):
+    """一次判断、一次折算：结构化输出经严格校验与禁用词检查后落成一条信号。
+
+    max_tokens 默认 2000：GLM 一类思考模型会先花大量输出 token 推理再吐 JSON，
+    上限给太小会在思考阶段就触顶（2026-11-15 实测 700 不够），报「输出上限」。
+    """
     from ..settings import purpose_configured, get_purpose_config
     if not purpose_configured('analysis'):
         return dict(status='skipped', message='未配置分析模型，跳过 AI 行业判断。', signals=[], raw='')

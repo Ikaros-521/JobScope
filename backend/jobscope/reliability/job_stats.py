@@ -171,7 +171,9 @@ def pay_analysis(jobs, names):
                 ratios.append((len(own), ratio))
                 covered_own.extend(own)
                 covered_same.extend(same)
-                detail.append(f'{label}：本公司 {len(own)} 条中位 {company_median} 元 / 同城同层 {len(same)} 条中位 '
+                # 单条报价时不写「中位」：那就是报价本身，措辞不冒充统计量。
+                own_label = '报价' if len(own) == 1 else '中位'
+                detail.append(f'{label}：本公司 {len(own)} 条{own_label} {company_median} 元 / 同城同层 {len(same)} 条中位 '
                               f'{city_median} 元，比值 {ratio}')
                 continue
         detail.append(f'{label}：本公司 {len(own)} 条、同城同层 {len(same)} 条，样本不够（本公司需 ≥{MIN_COMPANY_JOBS} 条、'

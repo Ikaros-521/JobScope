@@ -523,6 +523,77 @@ def _commercial_insured(source_id, html, plain):
             if INSURED_MIN <= int(item) <= INSURED_MAX]
 
 
+# 爱企查年报（2026-11-15 实测校准）：公司页年报表的行有直达链接 /annualreport?pid=..&year=YYYY，
+# 公开可访问、无需登录。逐年页面公示「从业人数」（企业可选不公示）与「社保信息」
+# （城镇职工基本养老保险参保数，实测恒公示）；「主营业务收入/营业收入」企业可选不公示。
+AQC_ORIGIN = 'https://aiqicha.baidu.com'
+# DOM 序列化里 & 会写成 &amp;，两种都收；收获后统一归一化成 & 再拼地址。
+AQC_ANNUAL_LINK = re.compile(r'href="(/annualreport\?pid=\d+&(?:amp;)?year=\d{4})"')
+AQC_STAFF_RE = re.compile(r'从业人数\s*([^\s，,。；;]{1,15})')
+AQC_PENSION_RE = re.compile(r'城镇职工基本养老保险\s*(\d+)\s*人')
+AQC_REVENUE_RE = re.compile(r'(?:主营业务收入|营业收入)\s*([^\s，,。；;]{1,20})')
+AMOUNT_UNITS = {'万': 10000, '亿': 100000000}
+
+
+def _aqc_amount(text):
+    """「1.2亿」「3000万」「120000」→ 元；「不公示」/无数字 → None。"""
+    match = re.search(r'([\d,]+(?:\.\d+)?)\s*([万亿]?)', str(text or ''))
+    if match is None or not match[1]:
+        return None
+    try:
+        value = float(match[1].replace(',', ''))
+    except ValueError:
+        return None
+    return value * AMOUNT_UNITS.get(match[2], 1)
+
+
+def _aqc_read_annual(tab, detail_html, on_status):
+    """读爱企查最近两期年报 → [(年份, {staff, pension, revenue}, 口径纯文本), …]。
+
+    只取年报表里链接直达的最近两年（每期一次页面访问，有界）；年报表要点「企业年报」页签
+    才渲染，当前 DOM 收不够链接时先点页签再收一次。读取失败的字段留 None，由调用方决定
+    口径是否成立——同一口径两期都成立才出同比，宁缺勿猜。
+    """
+    from .. import company_lookup
+
+    def harvest(html_text):
+        found = {href.replace('&amp;', '&') for href in AQC_ANNUAL_LINK.findall(str(html_text or ''))}
+        return sorted(found, key=lambda href: int(href[-4:]), reverse=True)
+
+    links = harvest(detail_html)[:2]
+    if len(links) < 2:
+        try:
+            tab.ele('css:#convenient-tab-annual', timeout=3).click()
+        except Exception:
+            try:
+                tab.ele('css:a.subtab-annual', timeout=3).click()
+            except Exception:
+                return []
+        _sleep(company_lookup.RENDER_DELAY)
+        links = harvest(_html_of(tab))[:2]
+    if len(links) < 2:
+        return []
+    rows = []
+    for href in links:
+        _sleep(PAGE_DELAY)
+        tab.get(AQC_ORIGIN + href, timeout=PAGE_TIMEOUT)
+        _sleep(company_lookup.RENDER_DELAY)
+        plain = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', _html_of(tab)))
+        staff = AQC_STAFF_RE.search(plain)
+        pension = AQC_PENSION_RE.search(plain)
+        revenue = AQC_REVENUE_RE.search(plain)
+        # 从业人数的值可能带「人」等后缀或写「不公示」：只认捕获值里成串的数字。
+        staff_digits = re.search(r'\d[\d,]*', staff[1]) if staff else None
+        rows.append((href[-4:],
+                     dict(staff=int(staff_digits[0].replace(',', '')) if staff_digits else None,
+                          pension=int(pension[1]) if pension else None,
+                          revenue=_aqc_amount(revenue[1]) if revenue else None),
+                     plain))
+    if on_status:
+        on_status(f'年报({rows[-1][0]}-{rows[0][0]})')
+    return rows
+
+
 def _commercial_pass(tab, keyword, source_id, on_status, data_dir, drafts):
     from .. import company_lookup
     spec = company_lookup.SITES[COMMERCIAL_SITES[source_id]]
@@ -577,11 +648,21 @@ def _commercial_pass(tab, keyword, source_id, on_status, data_dir, drafts):
     # 参保趋势按来源取数：tyc 从页面 JSON 取（渲染文本会粘连数字），其余标签配对 + 范围闸门。
     # 页面排列由新到旧的假设仅适用于非 tyc 来源；tyc 按年份排序，[0] 是最近一期。
     insured = _commercial_insured(source_id, html, plain)
+    # 爱企查年报先读（导航离开详情页，必须在 plain 已提取之后）：公司页参保文本同样会与年份
+    # 粘连（2026-11-15 实测 24033+2024），年报页逐年养老参保数才是干净口径——有年报就用它。
+    annual = _aqc_read_annual(tab, html, on_status) if source_id == 'aiqicha_web' else []
+    insured_basis = 'page'
+    if len(annual) == 2 and annual[0][1]['pension'] and annual[1][1]['pension']:
+        insured = [annual[0][1]['pension'], annual[1][1]['pension']]
+        insured_basis = 'annual'
     if len(insured) >= 2:
+        insured_text = (f'参保人数取自{spec["name"]}公开公司页（城镇职工口径未必一致，'
+                        f'页面排列由新到旧的假设未实测校正）' if insured_basis == 'page' else
+                        f'参保人数取自爱企查年报序列（{annual[1][0]}→{annual[0][0]} 年度报告的'
+                        f'城镇职工基本养老保险参保数）')
         drafts.append(_signal('insured_headcount_trend', {'before': insured[1], 'after': insured[0]},
                               '', str(tab.url or detail_url),
-                              f'参保人数取自{spec["name"]}公开公司页（城镇职工口径未必一致，'
-                              f'页面排列由新到旧的假设未实测校正）；人数变动有多种成因，本条只登记数字。'))
+                              insured_text + '；人数变动有多种成因，本条只登记数字。'))
         got.append('参保人数趋势')
     cases = CASES_RE.search(plain)
     if cases is not None:
@@ -598,6 +679,29 @@ def _commercial_pass(tab, keyword, source_id, on_status, data_dir, drafts):
                               f'登记的企业类型为「{entity_kind}」（取自{spec["name"]}公开页），'
                               f'按关键词确定性判定为{nature}；性质只是稳定性的一个侧面，不推断经营好坏。'))
         got.append('国企性质')
+    if source_id == 'aiqicha_web' and len(annual) == 2:
+        # 爱企查年报序列：operations 维度的人数/营收同比（相邻年度、同一来源序列，
+        # 口径写进证据正文；两期同一口径都成立才出信号）。年报已在上面读取复用。
+        (year_new, row_new, _), (year_old, row_old, _) = annual
+        basis, field = None, None
+        if row_new['staff'] and row_old['staff']:
+            basis, field = '从业人数（企业年报公示口径）', 'staff'
+        elif row_new['pension'] and row_old['pension']:
+            basis, field = '城镇职工基本养老保险参保数（从业人数未公示时的代理口径）', 'pension'
+        if field:
+            drafts.append(_signal('disclosure_headcount_trend',
+                                  {'current': row_new[field], 'previous': row_old[field]}, '',
+                                  str(tab.url or detail_url),
+                                  f'人数取自爱企查年报序列（{year_old}→{year_new} 年度报告，口径：{basis}）；'
+                                  '同比由固定规则换算，人数变动有多种成因，本条只登记数字，不推断经营好坏。'))
+            got.append('年报人数同比')
+        if row_new['revenue'] and row_old['revenue']:
+            drafts.append(_signal('disclosure_revenue_trend',
+                                  {'current': row_new['revenue'], 'previous': row_old['revenue']}, '',
+                                  str(tab.url or detail_url),
+                                  f'营收取自爱企查年报序列（{year_old}→{year_new} 年度报告的年度营业收入，'
+                                  '企业公示口径）；同比由固定规则换算，营收变动有多种成因，本条只登记数字。'))
+            got.append('年报营收同比')
     if not drafts:
         snapshot = _capture(data_dir, source_id, tab)
         note = f'（页面快照：{snapshot}）' if snapshot else ''

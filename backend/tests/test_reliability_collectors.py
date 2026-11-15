@@ -555,6 +555,79 @@ def test_commercial_web_without_entity_kind_emits_no_soe_signal(monkeypatch, tmp
     assert all(item['rule'] != 'soe_status' for item in outcome['signals'])
 
 
+# 2026-11-15 实测回放：爱企查年报页（/annualreport?pid=..&year=YYYY）逐年公示社保参保数
+# （恒公示），从业人数/营收企业可选不公示（华为全不公示）。两期同一口径成立才出同比。
+AQC_ANNUAL_2024 = ('<title>2024年报</title>从业人数 不公示 社保信息 城镇职工基本养老保险58422人 '
+                   '失业保险58425人 主营业务收入 不公示' + PAD)
+AQC_ANNUAL_2023 = ('<title>2023年报</title>从业人数 不公示 社保信息 城镇职工基本养老保险61341人 '
+                   '失业保险61339人 主营业务收入 不公示' + PAD)
+AQC_DETAIL_WITH_ANNUAL = ('<span>成立日期：2015-04-01</span>'
+                          '<a href="/annualreport?pid=1&amp;year=2024">2024年度报告</a>'
+                          '<a href="/annualreport?pid=1&amp;year=2023">2023年度报告</a>' + PAD)
+
+
+def aqc_annual_replay(detail_html=AQC_DETAIL_WITH_ANNUAL, pages_2024=AQC_ANNUAL_2024, pages_2023=AQC_ANNUAL_2023):
+    return commercial_replay('aiqicha_web', [CARD], {
+        CARD_HREF: detail_html,
+        'https://aiqicha.baidu.com/annualreport?pid=1&year=2024': pages_2024,
+        'https://aiqicha.baidu.com/annualreport?pid=1&year=2023': pages_2023,
+    })
+
+
+def test_aiqicha_annual_report_feeds_the_operations_dimension(monkeypatch, tmp_path):
+    """华为实测回放：从业人数不公示 → 社保养老参保数作代理口径，出年报人数同比。"""
+    registry, tab = aqc_annual_replay()
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    outcome = collectors.collect('aiqicha_web', NAME, browser_module=browser, data_dir=tmp_path)
+    headcount = next(item for item in outcome['signals'] if item['rule'] == 'disclosure_headcount_trend')
+    assert headcount['value'] == {'current': 58422, 'previous': 61341}
+    assert '养老保险参保数' in headcount['text'] and '2023→2024' in headcount['text']
+    # 营收不公示 → 不出营收同比，也不许拿别处数字凑。
+    assert all(item['rule'] != 'disclosure_revenue_trend' for item in outcome['signals'])
+
+
+def test_aiqicha_insured_trend_prefers_annual_pension_over_glued_page_text(monkeypatch, tmp_path):
+    """公司页参保文本与年份粘连（24033+2024 同款事故）：有年报就改用逐年养老参保数。"""
+    glued_detail = ('<span>参保人数24033 2024年年报</span>'
+                    '<a href="/annualreport?pid=1&amp;year=2024">2024年度报告</a>'
+                    '<a href="/annualreport?pid=1&amp;year=2023">2023年度报告</a>' + PAD)
+    registry, tab = aqc_annual_replay(detail_html=glued_detail)
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    outcome = collectors.collect('aiqicha_web', NAME, browser_module=browser, data_dir=tmp_path)
+    insured = next(item for item in outcome['signals'] if item['rule'] == 'insured_headcount_trend')
+    assert insured['value'] == {'before': 61341, 'after': 58422}
+    assert '年报序列' in insured['text']
+
+
+def test_aiqicha_annual_report_uses_staff_counts_and_revenue_when_disclosed(monkeypatch, tmp_path):
+    """从业人数与营收都公示时优先直取（不再用社保代理），两条同比都落。"""
+    y2024 = '从业人数 12000人 社保信息 城镇职工基本养老保险11800人 主营业务收入 3.2亿' + PAD
+    y2023 = '从业人数 10000人 社保信息 城镇职工基本养老保险9800人 主营业务收入 28000万' + PAD
+    registry, tab = aqc_annual_replay(pages_2024=y2024, pages_2023=y2023)
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    outcome = collectors.collect('aiqicha_web', NAME, browser_module=browser, data_dir=tmp_path)
+    headcount = next(item for item in outcome['signals'] if item['rule'] == 'disclosure_headcount_trend')
+    revenue = next(item for item in outcome['signals'] if item['rule'] == 'disclosure_revenue_trend')
+    assert headcount['value'] == {'current': 12000, 'previous': 10000}
+    assert '从业人数' in headcount['text']
+    assert revenue['value'] == {'current': 320000000.0, 'previous': 280000000.0}
+
+
+def test_aiqicha_without_two_annual_reports_skips_the_trend(monkeypatch, tmp_path):
+    """新公司不足两期年报：如实跳过同比，不猜。"""
+    detail = '<span>成立日期：2026-01-14</span><a href="/annualreport?pid=1&amp;year=2026">2026年度报告</a>' + PAD
+    registry, tab = commercial_replay('aiqicha_web', [CARD], {CARD_HREF: detail,
+                                      'https://aiqicha.baidu.com/annualreport?pid=1&year=2026': AQC_ANNUAL_2024})
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    outcome = collectors.collect('aiqicha_web', NAME, browser_module=browser, data_dir=tmp_path)
+    assert all(item['rule'] not in ('disclosure_headcount_trend', 'disclosure_revenue_trend')
+               for item in outcome['signals'])
+
+
 def test_aiqicha_cards_come_from_the_pid_extraction_and_founded_uses_both_labels(monkeypatch):
     """2026-11-15 实测校准：爱企查卡片无 href（pid 在 data-log-title 里），标签用「成立时间」。"""
     from jobscope import company_lookup

@@ -19,6 +19,17 @@ const sourceNames: Record<string, string> = {
 const LOCAL_RULES = ['salary_quote_coverage', 'disclosure_available', 'pay_vs_city_median', 'jd_specificity', 'industry_media_count']
 const EXTRACT_RULES = ['team_size_statement', 'disclosure_revenue_trend', 'disclosure_headcount_trend', 'employee_review_sample']
 
+// 每个维度「怎么才能出分」的一句话通路说明：维度卡收起时就显示，别让「暂不出分」变成哑谜。
+// 口径与后端 rubric 的闸门一致（limits.py：公司侧 1 条、同层基线 5 条），只讲「差什么、去哪补」。
+const DIMENSION_CHANNELS: Record<string, string> = {
+  stability: '补法：企查查/天眼查/爱企查公开页采司龄·参保·企业类型',
+  pay: '补法：该公司 1 条报价即可比，需同城同层对照 ≥5 条（库里其他公司岗位自动充当，一次多平台检索就够）',
+  operations: '补法：采集「爱企查公开页」自动读最近两期年报的人数/营收同比；或手动导入年报材料跑「提取资料数字」',
+  people: '补法：公司页人员规模 + JD 团队自述凑 2 条（采集公开页 + 补全 JD）后跑「提取资料数字」',
+  professional: '补法：补全该岗位完整描述（有 1 条评 1 条，样本量随句子展示）',
+  industry: '补法：在「按来源补数据」手动勾选「AI 行业判断」',
+}
+
 // 按钮名只讲功能不讲实现；tip 是悬浮时「这一步在做什么」的完整说明，缺口行与底部按钮共用同一份。
 const ACTION_INFO: Record<'local' | 'extract' | 'material', { name: string; tip: string }> = {
   local: {
@@ -200,7 +211,7 @@ function TrendDiff({ diff }: { diff: ReliabilityDiff }) {
   </div>
 }
 
-export function CompanyReference({ report, history, busy, loading, action, company, onCompute, onCoverage, onExtract, onOpenEvidence, onOpenEvidenceModal, onOpenCompare, onSignalBusy, onSignalCollected, onConfigureSources }: {
+export function CompanyReference({ report, history, busy, loading, action, company, onCompute, onCoverage, onExtract, onOpenEvidence, onOpenEvidenceModal, onOpenCompare, onSignalBusy, onSignalCollected, onConfigureSources, onAgentCollect }: {
   report: ReliabilityReport | null
   history: ReliabilityHistory | null
   busy: boolean
@@ -216,8 +227,24 @@ export function CompanyReference({ report, history, busy, loading, action, compa
   onSignalBusy: (busy: boolean) => void
   onSignalCollected: (report: ReliabilityReport, history: ReliabilityHistory | null) => void
   onConfigureSources: () => void
+  // 把「按缺口补齐」的指令交给全局对话的 Agent：跳转 + 预填由外层（App）完成。
+  onAgentCollect?: (prompt: string) => void
 }) {
   const score = report?.score ?? null
+  // 暂不出分的维度清单 + 给 Agent 的预填指令：缺口文案取各维度第一条 missing（去掉规则名前缀）。
+  const unscored = (report?.dimensions ?? []).filter(item => item.score === null)
+  const agentPrompt = unscored.length ? [
+    `请帮我补齐「${company}」的求职参考数据。当前 ${unscored.length} 个维度暂不出分，缺口如下：`,
+    ...unscored.map(item => {
+      const reason = (item.missing[0] || '尚无来源').replace(/^[a-z_]+（/, '').replace(/）$/, '')
+      const channel = (DIMENSION_CHANNELS[item.dimension] || '').replace('补法：', '')
+      return `- ${item.label}：${reason}${channel ? '；' + channel : ''}`
+    }),
+    '请先用 company_profile 看缺口，再按需依次执行：collect_jobs 采集该公司岗位 → job_deep_read 补完整 JD → '
+      + 'signal_collect 逐免费来源（jobscope_jobs/aiqicha_web/qcc_web/tyc_web）→ signal_extract 抽取 → reliability_refresh 重算。',
+    '每步如实汇报：遇到 needs_login/needs_verification 停下来告诉我怎么处理（不重试不绕过）；'
+      + '结束后说明哪些维度仍缺、还缺什么口径。分数保持「主观参考」口径。',
+  ].join('\n') : ''
   const gapActionHandler = (kind: 'local' | 'extract' | 'material') => {
     if (kind === 'local') onCoverage()
     else if (kind === 'extract') onExtract()
@@ -254,10 +281,21 @@ export function CompanyReference({ report, history, busy, loading, action, compa
       <span>{action.label}：{action.message}</span>
     </p> : null}
 
+    {/* 暂不出分必须自带原因与补法（用户反馈：只写「暂不出分」像哑谜）；Agent 入口把整份缺口交给全局对话协同补齐。 */}
+    {unscored.length > 0 && report ? <div className="reliability-coach">
+      <div>
+        <strong>{unscored.length} 个维度暂不出分</strong>
+        <ul>{unscored.map(item => <li key={item.dimension}><b>{item.label}</b>：{DIMENSION_CHANNELS[item.dimension] || '缺口与口径见卡片内说明'}</li>)}</ul>
+      </div>
+      {onAgentCollect ? <button type="button" className="button secondary small" disabled={Boolean(busy)}
+        onClick={() => onAgentCollect(agentPrompt)}>让 Agent 协同补齐</button> : null}
+    </div> : null}
+
     <div className="reliability-grid">{(report?.dimensions ?? []).map(item => (
       <details key={item.dimension} className="reliability-dimension">
         <summary>
-          <span>{item.label}</span>
+          <span>{item.label}{item.score === null && DIMENSION_CHANNELS[item.dimension]
+            ? <small className="reliability-gap-hint">{DIMENSION_CHANNELS[item.dimension]}</small> : null}</span>
           <b style={item.score === null ? undefined : { color: tone(item.score) }}>{item.score === null ? '暂不出分' : number(item.score)}</b>
         </summary>
         {item.score !== null ? <div className="reliability-meter" aria-hidden="true"><i style={{ width: `${Math.max(2, Math.min(100, item.score))}%`, background: tone(item.score) }} /></div> : null}

@@ -89,7 +89,7 @@ def stream_complete(config, system, user, *, max_tokens=1800, temperature=None, 
     if not isinstance(text, str) or not text.strip():
         truncated = finish_reason in ('max_tokens', 'length')
         if truncated:
-            raise OutputLimitError('模型已响应，但输出额度耗尽，尚未生成最终答案')
+            raise OutputLimitError('模型输出触达单次上限（max_tokens），未生成完整回答；与账户余额无关，可重试一次。')
         raise ValueError('模型返回格式无效')
     return text, usage
 
@@ -123,7 +123,7 @@ def complete(config, system, user, *, max_tokens=1800, temperature=None, timeout
     if not isinstance(content, str) or not content.strip():
         truncated = data.get('stop_reason') == 'max_tokens' if protocol == 'anthropic' else data['choices'][0].get('finish_reason') == 'length'
         if truncated:
-            raise OutputLimitError('模型已响应，但输出额度耗尽，尚未生成最终答案')
+            raise OutputLimitError('模型输出触达单次上限（max_tokens），未生成完整回答；与账户余额无关，可重试一次。')
         raise ValueError('模型返回格式无效')
     return content, data.get('usage', {})
 

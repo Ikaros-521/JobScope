@@ -101,10 +101,11 @@ SIGNAL_SOURCES = {
                                 '未登录可见字段有限，遇到登录/验证页面会停在前台等你处理；解析正则待实测校正。'),
     'aiqicha_web': dict(name='爱企查公开页', tier='free', transport='browser_page', implemented=True,
                         status='needs_verification',
-                        rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio', 'soe_status'],
-                        description='无需接口密钥：用项目浏览器读百度爱企查公开搜索卡片与公司页可见字段。'
-                                    '2026-11-15 已实测校准检索与详情通路（卡片走 data-log-title、标签用「成立时间」、'
-                                    '详情区块需等懒加载）；参保趋势与涉诉计数的数值口径仍待多样本验证。'),
+                        rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio', 'soe_status',
+                               'disclosure_headcount_trend', 'disclosure_revenue_trend'],
+                        description='无需接口密钥：用项目浏览器读百度爱企查公开搜索卡片与公司页可见字段，'
+                                    '并读最近两期企业年报（从业/社保人数、公示则含营收）出实际经营同比。'
+                                    '2026-11-15 已实测校准检索、详情与年报通路；各数值口径仍待多样本验证。'),
     'jobscope_jobs': dict(name='已保存岗位与证据', tier='free', transport='local', implemented=True,
                          status='available',
                          rules=['salary_quote_coverage', 'disclosure_available', 'pay_vs_city_median',

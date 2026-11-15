@@ -25,12 +25,15 @@ const STICK_THRESHOLD = 80
 // 上下文估算基数：system 提示 + 工具声明，不随会话变化。
 const CONTEXT_BASE_TOKENS = 600
 
-export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onConfigureModel, navigation, onNavigateConversation, onOpened }: {
+export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onConfigureModel, navigation, onNavigateConversation, onOpened, prefill }: {
   scope: ChatScope; modelConfigured: boolean; onManageExtensions?: () => void
   onConfigureModel?: () => void
   navigation?: ConversationNavigation | null
   onNavigateConversation?: (navigation: ConversationNavigation) => void
   onOpened?: (requestId: string) => void
+  // 外部（如求职参考的「让 Agent 协同补齐」按钮）带来的预填指令：token 变化时写入输入框一次，
+  // 不覆盖用户随后手动改动；只在输入框为空时应用，避免打断正在编辑的内容。
+  prefill?: { text: string; token: string } | null
 }) {
   const isGlobal = scope.kind === 'global'
   const isJob = scope.kind === 'job'
@@ -54,6 +57,17 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCo
   useEffect(() => {
     if (!opening) { setInputState(sessionStorage.getItem(draftKey) || ''); setEditing(null) }
   }, [draftKey, opening])
+  // 预填指令：同一 token 只应用一次；用户已开始输入（输入框非空）就不打扰。
+  const prefillSeen = useRef('')
+  useEffect(() => {
+    if (!prefill || prefill.token === prefillSeen.current) return
+    prefillSeen.current = prefill.token
+    setInputState(current => {
+      if (current.trim()) return current
+      sessionStorage.setItem(draftKeyRef.current, prefill.text)
+      return prefill.text
+    })
+  }, [prefill])
   const [editing, setEditing] = useState<EditingTarget>(null)
   const [sessionsCollapsed, setSessionsCollapsed] = useState(isJob)
   const [globalModels, setGlobalModels] = useState<string[]>([])
