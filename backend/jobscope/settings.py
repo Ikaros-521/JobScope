@@ -9,6 +9,7 @@ from typing import Literal
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
+from .model_transport import OutputLimitError
 from .repository import now
 
 _active = ContextVar('jobscope_model_config', default=None)
@@ -55,6 +56,8 @@ class SystemSettingsInput(BaseModel):
     chat_display_mode: Literal['merged', 'sequential']
     show_reasoning: bool
     agent_limits: AgentLimitsInput
+    # 扩展市场在线检索源：official 走官方接口，china 走国内镜像；缺省 official 兼容旧客户端。
+    market_source: Literal['official', 'china'] = 'official'
 
 
 class LlmChannelInput(BaseModel):
@@ -236,32 +239,97 @@ class ModelSettings:
     def connection_config(self, target, value, channel_id=None, *, require_model=True):
         current = self.effective()
         if channel_id:
-            if target != 'llm':
-                raise ValueError('已保存对话渠道仅支持对话模型')
-            current['llm'] = LlmChannelStore(self.repo).get(channel_id)
+            channel = LlmChannelStore(self.repo).get(channel_id)
+            if target == 'embedding':
+                # 已保存渠道的向量测试：渠道是地址与密钥的事实源，向量端点固定走 OpenAI 兼容协议；
+                # 预设目录里部分渠道 embeddings=None，这里以渠道自己登记的向量模型为准，改挂 custom 绕开预设门禁。
+                if channel.get('protocol') == 'anthropic':
+                    raise ValueError('Anthropic 协议渠道不提供向量模型，请选择其他渠道')
+                from .model_transport import endpoint
+                current['embedding'] = dict(mode='remote', channel='custom', protocol='openai',
+                                            url=endpoint(channel['url'], 'openai', 'embedding'),
+                                            model='', key=channel.get('key', ''), local_model='', source='saved-channel')
+                value = value.model_copy(update=dict(channel='custom', protocol='openai'))
+            else:
+                current['llm'] = channel
         return self.prepare(target, value, current, require_model=require_model)
 
-    def test(self, target, value, channel_id=None):
+    @staticmethod
+    def _probe_failure_message(exc):
+        if isinstance(exc, OutputLimitError):
+            return '服务已连接，模型已响应，但测试输出额度耗尽，尚未生成最终答案。不是地址或密钥错误；可换用非推理模型后重试。配置未被本次测试修改。'
+        if isinstance(exc, httpx.TimeoutException):
+            return '推理请求超时，尚未验证最终回答。模型列表与推理接口耗时不同，请稍后重试或检查渠道的推理服务。配置未被本次测试修改。'
+        return '连接测试失败，请检查接口地址、模型、密钥或本地模型缓存。配置未被本次测试修改。'
+
+    def _probe(self, target, config):
+        """一次连接探测：embedding 返回向量维度，llm 只要求有效回答；失败抛原始异常。"""
         from .model_transport import complete, OutputLimitError
+        if target == 'embedding':
+            from .research.providers import EmbeddingProvider
+            vectors = EmbeddingProvider(config=config).embed(['连接测试'])
+            if not vectors or not len(vectors[0]):
+                raise ValueError('向量服务未返回有效向量')
+            return len(vectors[0])
+        complete(config, '', '请只回复 OK。这是连接测试。', max_tokens=1024, timeout=60)
+        return None
+
+    def _probe_timed(self, target, config, record=None):
+        """带计时探测；record(ok, duration_ms) 在成败两种情况下都会被调用一次，随后异常统一映射为 ConnectionError。"""
+        start = time.perf_counter()
+        try:
+            dimensions = self._probe(target, config)
+        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, OSError) as exc:
+            # OutputLimitError 是 ValueError 子类，靠 isinstance 区分「连通但输出耗尽」。
+            if record:
+                record(False, round((time.perf_counter() - start) * 1000))
+            raise ConnectionError(self._probe_failure_message(exc)) from None
+        duration_ms = round((time.perf_counter() - start) * 1000)
+        if record:
+            record(True, duration_ms)
+        return dimensions, duration_ms
+
+    def _record_channel_test(self, channel_id, target, data, ok, duration_ms):
+        """把测试结果并入渠道 last_test（成败都记），仅当测试的就是已保存的地址与协议时写入，
+        避免把编辑中未保存的草稿地址记到渠道头上。"""
+        from .model_transport import endpoint
+        try:
+            channel = LlmChannelStore(self.repo).get(channel_id)
+        except ValueError:
+            return
+        if data.get('protocol', 'openai') != channel.get('protocol', 'openai'):
+            return
+        expected = channel.get('url', '') if target == 'llm' else endpoint(channel.get('url', ''), 'openai', 'embedding')
+        if data.get('url') != expected:
+            return
+        LlmChannelStore(self.repo).record_test(channel_id, dict(
+            target=target, model=data.get('model', ''), ok=ok, duration_ms=duration_ms, at=now()))
+
+    def test(self, target, value, channel_id=None):
         data = self.connection_config(target, value, channel_id)
         if data['mode'] == 'disabled':
             raise ValueError('请先选择一个模型连接方式')
-        start = time.perf_counter()
-        dimensions = None
-        try:
-            if target == 'embedding':
-                from .research.providers import EmbeddingProvider
-                vectors = EmbeddingProvider(config=data).embed(['连接测试'])
-                dimensions = len(vectors[0])
-            else:
-                complete(data, '', '请只回复 OK。这是连接测试。', max_tokens=1024, timeout=60)
-        except OutputLimitError:
-            raise ConnectionError('服务已连接，模型已响应，但测试输出额度耗尽，尚未生成最终答案。不是地址或密钥错误；可换用非推理模型后重试。配置未被本次测试修改。') from None
-        except httpx.TimeoutException:
-            raise ConnectionError('推理请求超时，尚未验证最终回答。模型列表与推理接口耗时不同，请稍后重试或检查渠道的推理服务。配置未被本次测试修改。') from None
-        except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError, OSError):
-            raise ConnectionError('连接测试失败，请检查接口地址、模型、密钥或本地模型缓存。配置未被本次测试修改。') from None
-        return dict(ok=True, dimensions=dimensions, duration_ms=round((time.perf_counter() - start) * 1000), message='连接成功；仅验证服务与响应格式，未评估回答质量')
+        dimensions, duration_ms = self._probe_timed(
+            target, data,
+            None if not channel_id else lambda ok, ms: self._record_channel_test(channel_id, target, data, ok, ms))
+        return dict(ok=True, dimensions=dimensions, duration_ms=duration_ms, message='连接成功；仅验证服务与响应格式，未评估回答质量')
+
+    def test_purpose(self, purpose):
+        """按「功能与模型」当前生效配置实测：embedding 走向量端点，其余走对话补全。"""
+        from .bindings import PURPOSES
+        if purpose not in PURPOSES:
+            raise ValueError('未知的模型用途')
+        # effective() 的键是 llm/embedding/extraction/analysis：agent 与抽取/分析都是对话补全。
+        row = self.effective().get('embedding' if purpose == 'embedding' else 'llm') or {}
+        if row.get('mode') != 'remote':
+            raise ValueError('该功能未配置远端模型，请先绑定渠道与模型')
+        target = 'embedding' if purpose == 'embedding' else 'llm'
+        channel_id = row.get('saved_channel_id')
+        dimensions, duration_ms = self._probe_timed(
+            target, row,
+            None if not channel_id else lambda ok, ms: LlmChannelStore(self.repo).record_test(
+                channel_id, dict(target=target, model=row.get('model', ''), ok=ok, duration_ms=ms, at=now())))
+        return dict(ok=True, dimensions=dimensions, duration_ms=duration_ms, message='连接成功；已按该功能当前生效的渠道与模型实测')
 
     def discover(self, target, value, channel_id=None):
         from .model_transport import endpoint, headers
@@ -377,6 +445,15 @@ class LlmChannelStore:
             if cursor.rowcount == 0:
                 raise ValueError('渠道不存在或已删除')
 
+    def record_test(self, channel_id, record):
+        """把最近一次连接测试结果（含失败）并入渠道 payload；渠道页与状态条据此持久展示，不再依赖前端会话内存。"""
+        payload = self.get(channel_id)
+        payload['last_test'] = dict(target=record['target'], model=str(record.get('model', ''))[:300],
+                                    ok=bool(record['ok']), duration_ms=int(record['duration_ms']), at=record['at'])
+        with self.repo.connection() as conn:
+            conn.execute('INSERT OR REPLACE INTO llm_channels VALUES (?,?)', (channel_id, json.dumps(payload, ensure_ascii=False)))
+        return payload['last_test']
+
     def activate(self, channel_id, bindings):
         """设为对话默认：写一条指向渠道的绑定，不复制密钥——渠道是唯一事实源。"""
         payload = self.get(channel_id)
@@ -390,7 +467,7 @@ AGENT_LIMIT_DEFAULTS = dict(max_model_calls=60, max_tool_calls=50, context_chara
 
 
 class SystemSettingsStore:
-    """系统级参数（聊天显示模式、思维链显隐、Agent 执行限额）：默认值合并，保存时钳制范围。"""
+    """系统级参数（聊天显示模式、思维链显隐、Agent 执行限额、市场检索源）：默认值合并，保存时钳制范围。"""
 
     DISPLAY_MODES = ('merged', 'sequential')
     # 误填 0 会直接废掉 Agent，天文数字会撑爆上下文/时限，保存时一律钳回该范围。
@@ -413,7 +490,8 @@ class SystemSettingsStore:
         return limits
 
     def effective(self):
-        result = dict(chat_display_mode='merged', show_reasoning=True, agent_limits=dict(AGENT_LIMIT_DEFAULTS))
+        result = dict(chat_display_mode='merged', show_reasoning=True, agent_limits=dict(AGENT_LIMIT_DEFAULTS),
+                      market_source='official')
         with self.repo.connection() as conn:
             for row in conn.execute('SELECT key,payload FROM system_settings'):
                 saved = json.loads(row[1])
@@ -434,4 +512,6 @@ class SystemSettingsStore:
                          ('show_reasoning', json.dumps(bool(data.show_reasoning))))
             conn.execute('INSERT OR REPLACE INTO system_settings VALUES (?,?)',
                          ('agent_limits', json.dumps(limits, ensure_ascii=False)))
+            conn.execute('INSERT OR REPLACE INTO system_settings VALUES (?,?)',
+                         ('market_source', json.dumps(data.market_source)))
         return self.effective()

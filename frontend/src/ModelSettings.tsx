@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
-import { activateLlmChannel, deleteLlmChannel, getBindings, getChannels, listLlmChannels, post, saveBinding, saveLlmChannel } from './api'
-import type { BindingEntry, BindingsPayload, Channel, LlmChannel, LlmChannelDraft, ModelMetadata, ModelPurpose } from './api'
+import { activateLlmChannel, deleteLlmChannel, getBindings, getChannels, listLlmChannels, post, saveBinding, saveLlmChannel, testModelPurpose } from './api'
+import type { BindingEntry, BindingsPayload, Channel, ChannelTestRecord, LlmChannel, LlmChannelDraft, ModelMetadata, ModelPurpose } from './api'
 import { toast } from './toast'
 import { navigateTabs } from './tabNavigation'
 
 type Protocol = 'openai' | 'anthropic'
 type Draft = { id?: string; name: string; channel: string; protocol: Protocol; url: string; model: string; modelsText: string; embeddingsText: string; key: string; clear_key: boolean; context_tokens: number | '' }
 type BindingDraft = { kind: 'channel'; channel_id: string; model: string } | { kind: 'local'; local_model: string } | { kind: 'disabled' } | { kind: 'inherit' }
-type TestRecord = { duration_ms: number; channel: string; at: string }
+type EditorAction = 'test' | 'test-embedding' | 'discover'
 const emptyDraft: Draft = { name: '', channel: 'custom', protocol: 'openai', url: '', model: '', modelsText: '', embeddingsText: '', key: '', clear_key: false, context_tokens: '' }
 
 const PURPOSE_META: Record<ModelPurpose, { label: string; description: string; allow: ('inherit' | 'channel' | 'local' | 'disabled')[] }> = {
@@ -29,6 +29,16 @@ function contextLabel(tokens: number) { return tokens >= 1_000_000 ? `${(tokens 
 function purposeSource(kind: string | undefined) {
   return kind === 'channel' ? '使用渠道模型' : kind === 'local' ? '本地缓存模型' : kind === 'disabled' ? '关闭此功能' : '跟随对话默认'
 }
+// 测试状态以渠道 payload 里的 last_test 为准（后端持久化），换页/重启后依旧可见。
+function latestChannelTest(channels: LlmChannel[]): { channel: LlmChannel; test: ChannelTestRecord } | null {
+  let best: { channel: LlmChannel; test: ChannelTestRecord } | null = null
+  for (const channel of channels) {
+    const test = channel.last_test
+    if (test && (!best || test.at > best.test.at)) best = { channel, test }
+  }
+  return best
+}
+function testTime(at: string) { const parsed = new Date(at); return Number.isNaN(parsed.getTime()) ? at : parsed.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) }
 
 export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
   const [tab, setTab] = useState<'channels' | 'purposes'>('channels')
@@ -46,8 +56,6 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
   const [confirmId, setConfirmId] = useState('')
   const [loadAttempt, setLoadAttempt] = useState(0)
   const [loadError, setLoadError] = useState<string | null>(null)
-  const [lastTest, setLastTest] = useState<TestRecord | null>(null)
-  const [testedIds, setTestedIds] = useState<Set<string>>(new Set())
   const [expandedPurpose, setExpandedPurpose] = useState<ModelPurpose | null>(null)
   const [formDirty, setFormDirty] = useState(false)
   const [activeStep, setActiveStep] = useState(1)
@@ -71,6 +79,7 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
   const configuredPurposes = bindings ? PURPOSE_ORDER.filter(purpose => bindings[purpose].resolved.configured).length : 0
   const defaultChannel = channelById(defaultChannelId)
   const defaultModel = bindings?.agent.resolved.model || defaultChannel?.model || '未设置'
+  const recentTest = latestChannelTest(channels ?? [])
 
   function edit(value: LlmChannel) {
     setSelectedId(value.id)
@@ -109,28 +118,63 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
   const keyBindingChanged = Boolean(savedChannel && draft && (draft.url.trim() !== savedChannel.url || draft.protocol !== savedChannel.protocol))
   const needsKey = keyBindingChanged && Boolean(savedChannel?.key_set) && !draft?.key.trim() && !draft?.clear_key
 
-  async function action(operation: 'test' | 'discover') {
+  async function refreshChannels() { try { setChannels((await listLlmChannels()).channels) } catch { /* 状态刷新失败不影响测试结果本身 */ } }
+
+  async function action(operation: EditorAction) {
     if (!draft || inFlight.current || needsKey) return
-    const config = draftPayload()
+    const embedding = operation === 'test-embedding'
+    const config = embedding
+      ? { mode: 'remote' as const, channel: draft.channel, protocol: 'openai' as const, url: draft.url.trim(), model: splitModels(draft.embeddingsText)[0] ?? '', key: draft.key.trim(), clear_key: draft.clear_key }
+      : draftPayload()
     if (!config) return
+    if (embedding && !config.model) { toast('请先在「向量模型」里填写至少一个模型 ID', 'error'); return }
     inFlight.current = true
     setBusy(operation)
     try {
-      const body = { target: 'llm' as const, channel_id: draft.id, config }
       if (operation === 'discover') {
-        const result = await post<{ models: string[]; message: string }>('/settings/models/discover', body)
+        const result = await post<{ models: string[]; message: string }>('/settings/models/discover', { target: 'llm' as const, channel_id: draft.id, config })
         setLists({ models: result.models, source: 'live' })
         update({ modelsText: result.models.slice(0, 200).join('\n') })
         toast(result.models.length ? `已获取 ${result.models.length} 个模型，保存渠道后保留列表。` : '渠道返回空列表，可手动输入模型 ID。')
       } else {
-        const result = await post<{ duration_ms: number }>('/settings/models/test', body)
-        const testedId = draft.id
-        const testedName = draft.name.trim() || draft.url.trim()
-        setLastTest({ duration_ms: result.duration_ms, channel: testedName, at: new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) })
-        if (testedId) setTestedIds(current => { const next = new Set(current); next.add(testedId); return next })
-        toast(`连接成功 · ${result.duration_ms} ms。测试未保存配置。`)
+        const result = await post<{ duration_ms: number; dimensions: number | null }>('/settings/models/test', { target: embedding ? 'embedding' : 'llm', channel_id: draft.id, config })
+        if (draft.id) await refreshChannels()
+        toast(embedding
+          ? `向量模型可用 · ${result.duration_ms} ms${result.dimensions ? ` · ${result.dimensions} 维` : ''}。测试未保存配置。`
+          : `连接成功 · ${result.duration_ms} ms。测试未保存配置。`)
       }
-    } catch (err) { toast((err as Error).message || '操作失败', 'error') }
+    } catch (err) { toast((err as Error).message || '操作失败', 'error'); if (draft.id) await refreshChannels() }
+    finally { inFlight.current = false; setBusy('') }
+  }
+
+  // 渠道详情页直接测试：连接信息与密钥都取自已保存渠道，前端只回传空密钥。
+  async function testChannel(channel: LlmChannel, target: 'llm' | 'embedding') {
+    if (inFlight.current) return
+    const model = target === 'llm' ? channel.model : (channel.embeddings ?? [])[0]
+    if (!model) { toast(target === 'llm' ? '这条渠道还没有默认模型，先编辑补上再测试' : '这条渠道没有登记向量模型', 'error'); return }
+    inFlight.current = true
+    setBusy(`test-${channel.id}-${target}`)
+    try {
+      const config = { mode: 'remote' as const, channel: channel.channel, protocol: target === 'llm' ? channel.protocol : 'openai' as const, url: channel.url, model, key: '', clear_key: false }
+      const result = await post<{ duration_ms: number; dimensions: number | null }>('/settings/models/test', { target, channel_id: channel.id, config })
+      await refreshChannels()
+      toast(target === 'llm'
+        ? `「${channel.name}」连接成功 · ${result.duration_ms} ms`
+        : `「${channel.name}」向量模型可用 · ${result.duration_ms} ms${result.dimensions ? ` · ${result.dimensions} 维` : ''}`)
+    } catch (err) { toast((err as Error).message || '测试失败', 'error'); await refreshChannels() }
+    finally { inFlight.current = false; setBusy('') }
+  }
+
+  // 「功能与模型」行级测试：服务端按当前生效绑定实测，结果写回渠道。
+  async function testPurpose(purpose: ModelPurpose) {
+    if (inFlight.current) return
+    inFlight.current = true
+    setBusy(`purpose-${purpose}`)
+    try {
+      const result = await testModelPurpose(purpose)
+      await refreshChannels()
+      toast(`${PURPOSE_META[purpose].label}连接成功 · ${result.duration_ms} ms${result.dimensions ? ` · ${result.dimensions} 维` : ''}`)
+    } catch (err) { toast((err as Error).message || '测试失败', 'error'); await refreshChannels() }
     finally { inFlight.current = false; setBusy('') }
   }
 
@@ -230,8 +274,8 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
           </div>
           <div className="model-metric">
             <span className="metric-label">连接状态</span>
-            <strong className="metric-value">{lastTest ? <><span className="status-dot ok" aria-hidden="true" />{lastTest.duration_ms} <small>ms</small></> : '尚未测试'}</strong>
-            <span className="metric-foot">{lastTest ? `${lastTest.channel} · ${lastTest.at} · 本次会话` : '在渠道编辑里点「测试连接」'}</span>
+            <strong className="metric-value">{recentTest ? <><span className={`status-dot ${recentTest.test.ok ? 'ok' : 'warn'}`} aria-hidden="true" />{recentTest.test.ok ? <>{recentTest.test.duration_ms} <small>ms</small></> : '测试失败'}</> : '尚未测试'}</strong>
+            <span className="metric-foot">{recentTest ? `${recentTest.channel.name} · ${recentTest.test.target === 'embedding' ? '向量' : '对话'} ${recentTest.test.model} · ${testTime(recentTest.test.at)}` : '在渠道页点「测试连接」'}</span>
           </div>
         </section>
 
@@ -246,11 +290,11 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
             {channels === null && <p className="body-small muted" role="status">正在读取渠道配置…</p>}
             {channels?.map(item => {
               const isDefault = defaultChannelId === item.id
-              const tested = testedIds.has(item.id)
+              const record = item.last_test
               return <button type="button" key={item.id} disabled={Boolean(busy)} className={`channel-item ${selectedId === item.id && !draft ? 'selected' : ''} ${isDefault ? 'default' : ''}`} onClick={() => { setDraft(null); setSelectedId(item.id); setConfirmId('') }}>
-                <strong><span className={`status-dot ${tested ? 'ok' : 'off'}`} aria-hidden="true" />{item.name}{isDefault && <span className="badge good channel-badge"><span />对话默认</span>}</strong>
+                <strong><span className={`status-dot ${record ? (record.ok ? 'ok' : 'warn') : 'off'}`} aria-hidden="true" />{item.name}{isDefault && <span className="badge good channel-badge"><span />对话默认</span>}</strong>
                 <span>{hostOf(item.url)}</span>
-                <span>{item.model || '未设默认模型'} · {item.models.length} 个模型{item.key_set ? ' · 密钥已存' : ''} · {tested ? '已测试' : '未测试'}</span>
+                <span>{item.model || '未设默认模型'} · {item.models.length} 个模型{item.key_set ? ' · 密钥已存' : ''} · {record ? (record.ok ? '已测试' : '测试失败') : '未测试'}</span>
               </button>
             })}
             {channels !== null && channels.length === 0 && !draft && <p className="body-small muted">还没有渠道。新建一条，填入服务商地址与密钥，再把它的模型设为各功能的默认。</p>}
@@ -304,8 +348,9 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
                   <div className="model-picker-heading"><label className="field-label" htmlFor="channel-models">对话模型 · {splitModels(draft.modelsText).length} 个</label><button type="button" className="text-button" disabled={!preset?.models.length} onClick={() => { update({ modelsText: (preset?.models ?? []).join('\n') }); setLists(null) }}>填入服务商预设</button></div>
                   <textarea id="channel-models" rows={4} value={draft.modelsText} onChange={event => update({ modelsText: event.target.value })} placeholder="支持每行一个、逗号或分号分隔，自动去重" spellCheck={false} />
                   <p className="field-help">保存时自动加入默认模型，最多保留 200 个模型。</p>
-                  <label className="field-label" htmlFor="channel-embeddings">向量模型 <span className="muted">供语义检索选用</span></label>
+                  <div className="model-picker-heading"><label className="field-label" htmlFor="channel-embeddings">向量模型 <span className="muted">供语义检索选用</span></label><button type="button" className="text-button" disabled={!splitModels(draft.embeddingsText).length || Boolean(busy) || needsKey} onClick={() => void action('test-embedding')}>{busy === 'test-embedding' && <span className="spinner" aria-hidden="true" />}{busy === 'test-embedding' ? '测试中…' : '测试向量模型'}</button></div>
                   <textarea id="channel-embeddings" rows={2} value={draft.embeddingsText} onChange={event => update({ embeddingsText: event.target.value })} placeholder={(preset?.embeddings ?? []).join('\n') || '例如 BAAI/bge-m3'} spellCheck={false} />
+                  <p className="field-help">测试会调用清单里的第一个向量模型；语义检索绑定后也可在「功能与模型」里按生效配置实测。</p>
                 </div>
               </details>
               {formError && <p className="field-help key-warning" role="alert">{formError}</p>}
@@ -325,11 +370,13 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
                 <div><dt>向量模型</dt><dd>{(selected.embeddings ?? []).length ? `${selected.embeddings!.length} 个` : '未登记'}</dd></div>
                 <div><dt>上下文窗口</dt><dd>{selected.context_tokens ? contextLabel(selected.context_tokens) : '按 128K 估算'}</dd></div>
                 <div><dt>密钥</dt><dd>{selected.key_set ? '已保存（不回显）' : '未保存'}</dd></div>
-                <div><dt>连接测试</dt><dd>{testedIds.has(selected.id) ? '本次会话已通过' : '尚未测试'}</dd></div>
+                <div><dt>连接测试</dt><dd>{selected.last_test ? <>{selected.last_test.ok ? '通过' : '失败'} · {selected.last_test.target === 'embedding' ? '向量' : '对话'} {selected.last_test.model || '未记录模型'} · {testTime(selected.last_test.at)}{selected.last_test.ok ? ` · ${selected.last_test.duration_ms} ms` : ''}</> : '尚未测试'}</dd></div>
               </dl>
               <p className="body-small muted">功能绑定直接使用这条渠道的密钥；轮换密钥后无需改任何功能。</p>
               <div className="model-settings-actions">
                 <button type="button" className="button primary" disabled={Boolean(busy) || defaultChannelId === selected.id} onClick={() => void setAsDefault(selected)}>{busy === `activate-${selected.id}` ? '设置中…' : defaultChannelId === selected.id ? '当前对话默认' : '设为对话默认'}</button>
+                <button type="button" className="button secondary" disabled={Boolean(busy) || !selected.model} onClick={() => void testChannel(selected, 'llm')}>{busy === `test-${selected.id}-llm` ? '测试中…' : '测试连接'}</button>
+                {(selected.embeddings ?? []).length > 0 && <button type="button" className="button secondary" disabled={Boolean(busy)} onClick={() => void testChannel(selected, 'embedding')}>{busy === `test-${selected.id}-embedding` ? '测试中…' : '测试向量模型'}</button>}
                 <button type="button" className="button secondary" onClick={() => edit(selected)}>编辑</button>
               </div>
               <div className="channel-danger-zone">
@@ -365,7 +412,7 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
                       <td data-label="渠道">{channelLabel}</td>
                       <td data-label="模型">{entry.resolved.model || '未设置'}</td>
                       <td data-label="状态"><span className={`badge ${configured ? 'good' : ''}`}><span />{configured ? '已配置' : entry.resolved.mode === 'disabled' ? '已关闭' : '未配置'}</span></td>
-                      <td data-label="操作"><button type="button" className="text-button" aria-expanded={expandedPurpose === purpose} onClick={() => setExpandedPurpose(current => current === purpose ? null : purpose)}>{expandedPurpose === purpose ? '收起' : '调整'}</button></td>
+                      <td data-label="操作"><div className="binding-row-actions"><button type="button" className="text-button" aria-expanded={expandedPurpose === purpose} onClick={() => setExpandedPurpose(current => current === purpose ? null : purpose)}>{expandedPurpose === purpose ? '收起' : '调整'}</button>{configured && <button type="button" className="text-button" disabled={Boolean(busy)} title="按当前生效的渠道与模型实测" onClick={() => void testPurpose(purpose)}>{busy === `purpose-${purpose}` ? '测试中…' : '测试'}</button>}</div></td>
                     </tr>
                   })}</tbody>
                 </table>

@@ -421,30 +421,39 @@ def _cninfo(client, query, limit):
 
 
 # 来源登记表：来源页、采集路由、浏览器通路及前端下拉共用同一份事实，平台名不再各处硬编码。
+# login 说明采集前的前置条件，前端据此在采集表单里提前亮出「需要登录」，别等失败才让用户猜：
+#   required    未登录采集拿不到岗位（实测 BOSS 返回 code 7/8/9 要求登录）；
+#   recommended 建议登录（未登录可能遇到验证或可见内容受限），浏览器通路照常工作；
+#   none        公开接口，无需登录。
 SOURCES = {
     'boss': dict(name='BOSS 直聘', kind='jobs', transport='http_api', status='needs_verification',
-                 codes=CITY_CODES, hot=BOSS_HOT_CITIES,
-                 description='国内岗位接口；未登录直调可能触发验证，可尝试专属浏览器会话。'),
+                 login='required', codes=CITY_CODES, hot=BOSS_HOT_CITIES,
+                 description='国内岗位接口；需要登录后采集，未登录直调会要求登录或触发验证，请使用专属浏览器会话。'),
     'zhaopin': dict(name='智联招聘', kind='jobs', transport='browser_page', status='needs_verification',
-                   codes=ZHAOPIN_CITY_CODES,
-                   description='岗位随搜索页返回；本机直连会被来源风控拦下，需项目浏览器会话。'),
+                   login='recommended', codes=ZHAOPIN_CITY_CODES,
+                   description='岗位随搜索页返回；本机直连会被来源风控拦下，需项目浏览器会话，建议登录后再采集。'),
     '51job': dict(name='前程无忧', kind='jobs', transport='browser_page', status='needs_verification',
-                  codes=JOB51_CITY_CODES,
-                  description='检索接口需浏览器通过脚本校验；本机直连只得到验证页。'),
+                  login='recommended', codes=JOB51_CITY_CODES,
+                  description='检索接口需浏览器通过脚本校验；本机直连只得到验证页，建议登录后再采集。'),
     'liepin': dict(name='猎聘', kind='jobs', transport='http_api', status='available',
-                   codes=LIEPIN_CITY_CODES,
+                   login='none', codes=LIEPIN_CITY_CODES,
                    description='公开检索接口，无需登录即返回岗位列表；列表不含完整职责。'),
     'remotive': dict(name='Remotive', kind='jobs', transport='http_api', status='available',
+                     login='none',
                      description='公开远程岗位接口，主要为海外岗位；不是国内招聘数据源。'),
     'cninfo': dict(name='巨潮资讯', kind='evidence', transport='http_api', status='available',
+                   login='none',
                    description='公司公告检索，只保存已读取的公告元信息，不代表已解析财报正文。'),
     # company_web 是公司快查专用通路：不进 BROWSER_SOURCES/HTTP_SOURCES，岗位采集路由碰不到它。
     # 与 reliability 的企查查/天眼查开放平台（付费 API）是两套登记表，互不影响。
     'qcc': dict(name='企查查网页', kind='company', transport='company_web', status='needs_verification',
+                login='recommended',
                 description='公开搜索页快查公司工商信息；未登录数据有限，登录/验证需在项目浏览器手动完成。'),
     'tyc': dict(name='天眼查网页', kind='company', transport='company_web', status='needs_verification',
+                login='recommended',
                 description='公开搜索页快查公司工商信息；可见字段有限，解析到什么存什么，按公司名归档。'),
     'user_import': dict(name='手动导入', kind='manual', transport='manual', status='available',
+                        login='none',
                         description='用户提供的岗位或公司资料，保留用户材料来源标记。'),
 }
 BROWSER_SOURCES = tuple(source for source, item in SOURCES.items() if item['transport'] == 'browser_page')

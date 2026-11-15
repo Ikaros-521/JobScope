@@ -45,16 +45,21 @@ def collect_source(repo, data_dir, company, source_id, credit_code='', *, task=N
     saved = []
     status, message = 'failed', '信号采集失败，请检查来源配置与本地依赖后重试。'
     try:
-        from . import collectors, local, paid
+        from . import collectors, llm_industry, local, paid
         from .service import persist_outcome
         identity = identity or repo.resolve_company(company, credit_code)
         spec = SIGNAL_SOURCES[source_id]
         from_local = spec['transport'] == 'local'
         from_paid = spec['transport'] == 'http_api' and spec['tier'] == 'paid'
+        from_llm = spec['transport'] == 'llm'
         if from_local:
             outcome = local.collect(source_id, identity['name'], repo=repo, identity=identity)
         elif from_paid:
             outcome = paid.collect(source_id, identity['name'], client=store.client(source_id))
+        elif from_llm:
+            # 模型判断的上下文 = 已存材料（快照/公告等，不含岗位列表噪声）；判断全文存证据。
+            materials = repo.evidence(company=identity['name'], include_job_postings=False)
+            outcome = llm_industry.collect(identity['name'], materials)
         else:
             browser_module = importlib.import_module('..browser', __package__) if source_id in collectors.FLOWS else None
             outcome = collectors.collect(source_id, identity['name'], browser_module=browser_module, data_dir=data_dir,
@@ -67,7 +72,8 @@ def collect_source(repo, data_dir, company, source_id, credit_code='', *, task=N
         if status not in {'completed', 'partial', 'needs_login', 'needs_verification', 'backoff', 'unsupported', 'failed', 'skipped'}:
             raise ValueError('invalid collector status')
         message = str(outcome['message'])
-        kind = local.DERIVED_KIND if from_local else (paid.PAID_KIND if from_paid else 'disclosure')
+        kind = (local.DERIVED_KIND if from_local else paid.PAID_KIND if from_paid
+                else 'llm_judgment' if from_llm else 'disclosure')
         # Keep successful records if one later signal cannot be saved; count only saved signals.
         for signal in outcome['signals']:
             saved.extend(persist_outcome(repo, identity, source_id, {**outcome, 'signals': [signal]}, kind))

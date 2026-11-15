@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { api, date, post, type MarketMcp, type MarketPayload, type MarketSkill } from './api'
+import { api, date, post, type MarketMcp, type MarketPayload, type MarketSkill, type SystemSettings } from './api'
+import { updateSystemSettings, useSystemSettings } from './systemSettingsStore'
+import { toast } from './toast'
 
 // 旧后端进程没有市场路由：未知路径 GET 404 / POST 405，此时提示重启而不是抛状态码。
 function friendly(err: unknown) {
@@ -30,29 +32,37 @@ function SkillCard({ item, badge, busy, onInstall, onTemplate }: { item: MarketS
   </article>
 }
 
-const KIND_TEXT: Record<Kind, { catalogHeading: string; emptyCatalog: string; liveSource: string; searchLabel: string; searchPlaceholder: string; searchHint: string; help: string }> = {
+const KIND_TEXT: Record<Kind, { catalogHeading: string; emptyCatalog: string; sourceKey: 'npm' | 'github'; searchLabel: string; searchPlaceholder: string; searchHint: string; help: string }> = {
   mcp: {
     catalogHeading: '目录 · MCP 服务',
     emptyCatalog: '当前目录无匹配的 MCP 服务，可调整分类或搜索词。',
-    liveSource: 'npm',
+    sourceKey: 'npm',
     searchLabel: '搜索 MCP',
     searchPlaceholder: '搜索工具或服务',
     searchHint: '输入至少 2 个字符在线检索 npm；短词仅筛选本地目录。',
-    help: '精选目录离线可用。在线搜索使用 npm 注册表（自动附加 mcp），结果在本机缓存 5 分钟。「刷新在线目录」拉取最新推荐目录，缓存 15 分钟；失败时保留当前目录并提示。',
+    help: '精选目录离线可用。在线搜索使用 npm 注册表（自动附加 mcp），结果在本机缓存 5 分钟。「刷新在线目录」拉取最新推荐目录，缓存 15 分钟；失败时保留当前目录并提示。「在线检索源」选国内镜像后 npm 目录与技能文件下载走加速通道，切换即时生效、按源缓存。',
   },
   skill: {
     catalogHeading: '目录 · Skills',
     emptyCatalog: '当前目录无匹配的 Skills，可调整分类或搜索词。',
-    liveSource: 'GitHub',
+    sourceKey: 'github',
     searchLabel: '搜索 Skill',
     searchPlaceholder: '搜索工作方法',
     searchHint: '输入至少 2 个字符在线检索 GitHub；短词仅筛选本地目录。',
-    help: '精选目录与推荐仓库离线可用。在线搜索使用 GitHub 仓库搜索（自动附加 skill），免凭证但受公开 API 限额约束，结果在本机缓存 5 分钟。「刷新在线目录」拉取推荐技能仓库的最新 Skills，缓存 15 分钟；精选 Skills 可「基于此创建」修改。',
+    help: '精选目录与推荐仓库离线可用。在线搜索使用 GitHub 仓库搜索（自动附加 skill），免凭证但受公开 API 限额约束，结果在本机缓存 5 分钟。「刷新在线目录」拉取推荐技能仓库的最新 Skills，缓存 15 分钟；精选 Skills 可「基于此创建」修改。「在线检索源」选国内镜像后技能文件下载走加速通道，仓库检索仍走 GitHub 官方接口。',
   },
+}
+
+// 在线检索源：official 全部走官方接口；china 是国内镜像（npm 检索换 npmmirror，GitHub 文件下载走代理，仓库检索仍官方）。
+const SOURCE_TEXT: Record<SystemSettings['market_source'], { label: string; desc: string; npm: string; github: string }> = {
+  official: { label: '官方源', desc: 'npm 与 GitHub 均直连官方接口', npm: 'npm', github: 'GitHub' },
+  china: { label: '国内镜像', desc: 'npm 走 npmmirror 镜像，GitHub 文件下载走加速代理', npm: 'npm 镜像', github: 'GitHub 镜像' },
 }
 
 export function MarketView({ kind, busy, onInstallMcp, onInstallSkill, onTemplate }: { kind: Kind; busy: string; onInstallMcp: (entry: MarketMcp) => void; onInstallSkill: (entry: MarketSkill) => void; onTemplate: (content: string) => void }) {
   const text = KIND_TEXT[kind]
+  const settings = useSystemSettings()
+  const source = settings.market_source
   const [market, setMarket] = useState<MarketPayload | null>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
@@ -71,7 +81,7 @@ export function MarketView({ kind, busy, onInstallMcp, onInstallSkill, onTemplat
   }
   useEffect(() => { void load() }, [])
   useEffect(() => {
-    // 输入 ≥2 字符时防抖 400ms；换词或卸载后忽略旧请求的结果与状态。
+    // 输入 ≥2 字符时防抖 400ms；换词、切源或卸载后忽略旧请求的结果与状态。
     let active = true
     setLive(null); setLiveError(''); setLiveLoading(term.length >= 2)
     if (term.length < 2) return
@@ -82,7 +92,7 @@ export function MarketView({ kind, busy, onInstallMcp, onInstallSkill, onTemplat
         .finally(() => { if (active) setLiveLoading(false) })
     }, 400)
     return () => { active = false; clearTimeout(timer) }
-  }, [term])
+  }, [term, source])
   async function refresh() {
     if (refreshing || busy) return
     setRefreshing(true); setError('')
@@ -109,6 +119,13 @@ export function MarketView({ kind, busy, onInstallMcp, onInstallSkill, onTemplat
           <input id={`market-search-${kind}`} type="search" aria-describedby={`market-search-hint-${kind}`} placeholder={text.searchPlaceholder} value={search} onChange={event => setSearch(event.target.value)} />
           <p id={`market-search-hint-${kind}`} className="field-help">{text.searchHint}</p>
         </div>
+        <div className="market-chips" role="group" aria-label="在线检索源">
+          {(Object.keys(SOURCE_TEXT) as Array<SystemSettings['market_source']>).map(key => (
+            <button key={key} type="button" className={`market-chip ${source === key ? 'active' : ''}`} aria-pressed={source === key} title={SOURCE_TEXT[key].desc}
+              onClick={() => { if (source === key) return; void updateSystemSettings({ market_source: key }).then(() => toast(`在线检索源已切换为「${SOURCE_TEXT[key].label}」`)).catch(err => toast((err as Error).message || '设置保存失败，请稍后重试', 'error')) }}>
+              {SOURCE_TEXT[key].label}
+            </button>))}
+        </div>
         <button type="button" className="button secondary small" disabled={loading || refreshing || Boolean(busy)} onClick={() => void refresh()}>{refreshing ? '刷新中…' : '刷新在线目录'}</button>
       </div>
       <div className="market-chips" role="group" aria-label="本地目录分类筛选">{entries.categories.map(item => <button key={item} type="button" className={`market-chip ${category === item ? 'active' : ''}`} aria-pressed={category === item} onClick={() => setCategory(item)}>{item}</button>)}</div>
@@ -124,7 +141,7 @@ export function MarketView({ kind, busy, onInstallMcp, onInstallSkill, onTemplat
         ? entries.mcps.map(item => <McpCard key={item.id} item={item} badge={item.layer === '在线' ? '在线' : item.official ? '官方' : '社区'} busy={busy} onInstall={onInstallMcp} />)
         : entries.skills.map(item => <SkillCard key={item.id} item={item} badge={item.layer === '在线' ? '在线' : '内置'} busy={busy} onInstall={onInstallSkill} onTemplate={item.content ? onTemplate : undefined} />)}{!items.length && <p className="muted">{text.emptyCatalog}</p>}</div>
     </>}
-    {term.length >= 2 && <><h2 className="market-heading">在线搜索 · 「{term}」 <span role="status">{liveLoading ? `${text.liveSource} 检索中…` : currentLive ? `${kind === 'mcp' ? currentLive.mcp.length : currentLive.skills.length} 个结果` : ''}</span></h2>
+    {term.length >= 2 && <><h2 className="market-heading">在线搜索 · 「{term}」 <span role="status">{liveLoading ? `${SOURCE_TEXT[source][text.sourceKey]} 检索中…` : currentLive ? `${kind === 'mcp' ? currentLive.mcp.length : currentLive.skills.length} 个结果` : ''}</span></h2>
       {liveError && <p role="alert" className="market-error">{liveError}</p>}
       {kind === 'mcp' && <>
         <div className="market-grid">{(currentLive?.mcp || []).map(item => <McpCard key={item.id} item={item} badge="npm 在线" busy={busy} onInstall={onInstallMcp} />)}</div>

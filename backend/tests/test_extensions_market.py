@@ -283,3 +283,81 @@ def test_market_live_search_filters_and_caches(client, monkeypatch):
     assert len([text for text in calls if text]) == 1  # 同词大小写不敏感，命中本机缓存（另有一次 GitHub Skills 检索不计入）
     assert client.get('/api/agent/market/search').status_code == 422
     market._SEARCH_CACHE.clear()
+
+
+def test_market_china_source_uses_mirrors(client, monkeypatch):
+    """国内镜像源：npm 检索走 npmmirror、SKILL.md 下载走 gh-proxy 代理，且在线安装同步生效。"""
+    import jobscope.market as market
+    market._SEARCH_CACHE.clear()
+    NPM = {'objects': [{'package': {'name': '@playwright/mcp', 'description': 'Playwright MCP server', 'links': {}}}]}
+    REPOS = {'items': [{'full_name': 'user/mirror-skill', 'stargazers_count': 5, 'description': 'mirror skill'}]}
+    TREE = {'tree': [{'type': 'blob', 'path': 'SKILL.md'}]}
+    DOC = SKILL_MD.replace('name: folder-skill', 'name: mirror-skill')
+    urls = []
+
+    def fake_get(self, url, **kwargs):
+        if isinstance(self, TestClient):
+            return original_get(self, url, **kwargs)
+        url = str(url)
+        urls.append(url)
+        if url.startswith('https://registry.npmmirror.com/-/v1/search'):
+            return httpx.Response(200, json=NPM, request=httpx.Request('GET', url))
+        if 'search/repositories' in url:
+            return httpx.Response(200, json=REPOS, request=httpx.Request('GET', url))
+        if 'git/trees/HEAD' in url:
+            return httpx.Response(200, json=TREE, request=httpx.Request('GET', url))
+        if url == 'https://gh-proxy.com/https://raw.githubusercontent.com/user/mirror-skill/HEAD/SKILL.md':
+            return httpx.Response(200, text=DOC, request=httpx.Request('GET', url))
+        return httpx.Response(404, request=httpx.Request('GET', url))
+
+    original_get = httpx.Client.get
+    monkeypatch.setattr(httpx.Client, 'get', fake_get)
+    saved = client.put('/api/settings/system', json={'chat_display_mode': 'merged', 'show_reasoning': True, 'market_source': 'china',
+                                                     'agent_limits': dict(max_model_calls=60, max_tool_calls=50, context_characters=160000, max_seconds=900)})
+    assert saved.status_code == 200 and saved.json()['market_source'] == 'china'
+    result = client.get('/api/agent/market/search', params={'q': 'mirror'})
+    assert result.status_code == 200
+    payload = result.json()
+    assert payload['mcp'] and payload['skills_error'] is None
+    assert payload['skills'][0]['repo'] == 'user/mirror-skill'
+    assert any(url.startswith('https://registry.npmmirror.com/') for url in urls)
+    assert not any('registry.npmjs.org' in url for url in urls)
+    assert any(url.startswith('https://gh-proxy.com/https://raw.githubusercontent.com/') for url in urls)
+    assert not any(url.startswith('https://raw.githubusercontent.com/') for url in urls)
+    entry = payload['skills'][0]
+    installed = client.post('/api/agent/skills/install', json={'repo': entry['repo'], 'path': entry['path']})
+    assert installed.status_code == 200 and installed.json()['name'] == 'mirror-skill'
+    market._SEARCH_CACHE.clear()
+
+
+def test_market_search_cache_isolated_by_source(client, monkeypatch):
+    """同词两源各自缓存：切源后重新发 npm 请求；同源二次搜索命中缓存。"""
+    import jobscope.market as market
+    market._SEARCH_CACHE.clear()
+    NPM = {'objects': [{'package': {'name': '@playwright/mcp', 'description': 'Playwright MCP server', 'links': {}}}]}
+    hosts = []
+
+    def fake_get(self, url, **kwargs):
+        if isinstance(self, TestClient):
+            return original_get(self, url, **kwargs)
+        url = str(url)
+        if 'npmmirror.com' in url:
+            hosts.append('mirror')
+            return httpx.Response(200, json=NPM, request=httpx.Request('GET', url))
+        if 'registry.npmjs.org' in url:
+            hosts.append('official')
+            return httpx.Response(200, json=NPM, request=httpx.Request('GET', url))
+        return httpx.Response(404, request=httpx.Request('GET', url))
+
+    original_get = httpx.Client.get
+    monkeypatch.setattr(httpx.Client, 'get', fake_get)
+    limits = dict(max_model_calls=60, max_tool_calls=50, context_characters=160000, max_seconds=900)
+    body = lambda source: {'chat_display_mode': 'merged', 'show_reasoning': True, 'market_source': source, 'agent_limits': limits}
+    assert client.put('/api/settings/system', json=body('china')).status_code == 200
+    assert client.get('/api/agent/market/search', params={'q': 'dual'}).status_code == 200
+    assert client.put('/api/settings/system', json=body('official')).status_code == 200
+    assert client.get('/api/agent/market/search', params={'q': 'dual'}).status_code == 200
+    assert hosts == ['mirror', 'official']
+    assert client.get('/api/agent/market/search', params={'q': 'Dual'}).status_code == 200
+    assert hosts == ['mirror', 'official']  # 同源同词大小写不敏感，命中本机缓存
+    market._SEARCH_CACHE.clear()

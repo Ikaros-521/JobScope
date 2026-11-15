@@ -89,8 +89,12 @@ def test_a_free_source_can_be_switched_off_and_back_on(store):
 def test_every_registered_source_points_at_a_real_rubric_rule():
     for source_id, spec in SIGNAL_SOURCES.items():
         assert spec['tier'] in {'free', 'paid'}, source_id
-        assert spec['transport'] in {'browser_page', 'http_api', 'local'}, source_id
+        # 'llm'（2026-11-15）：AI 行业判断——模型结构化判断经规则折算，不是浏览器/本地/HTTP 采集。
+        assert spec['transport'] in {'browser_page', 'http_api', 'local', 'llm'}, source_id
         assert set(spec['rules']) <= set(RULES), source_id
+        if spec['transport'] == 'llm':
+            # manual_only 是 llm 来源的硬约束：消耗模型额度的来源不许混进任何默认选择。
+            assert spec.get('manual_only') is True, source_id
 
 
 def test_every_paid_source_declares_a_field_mapping_for_every_rule():
@@ -133,18 +137,22 @@ def test_public_listing_shows_the_mapping_so_the_user_can_correct_it(store):
 
 def test_implementation_and_readiness_are_separate_from_enabled_settings(store):
     public = store.public()
-    # 信用中国/裁判文书网采集器已实现（2026-11-13 侦察后接线）：默认启用、可直接手动选择；
-    # status 仍是 needs_verification——登录墙已实测，结果页解析正则待真实登录后人工验证。
+    # 三个浏览器来源 2026-11-15 全部暂停入口（gsxt 被 WAF 精准拦截；信用中国/裁判文书网按用户
+    # 要求暂缓自动化访问）：采集器仍 implemented，但 ready=False 且原因可见，暂停优先于一切。
     for source in ('credit_china', 'court_records'):
         assert public[source]['implemented'] is True
-        assert public[source]['mode'] == 'enabled' and public[source]['ready'] is True
         assert public[source]['status'] == 'needs_verification'
+        assert public[source]['ready'] is False
+        assert '暂停' in public[source]['unavailable_reason']
         assert '登录' in public[source]['description']
-        saved = store.save(source, SignalSourceInput(mode='enabled'))
-        assert saved['mode'] == 'enabled' and saved['ready']
-    assert public['gsxt']['implemented'] and public['gsxt']['ready']
+        assert store.save(source, SignalSourceInput(mode='enabled'))['ready'] is False
+    assert public['gsxt']['implemented']
     assert public['gsxt']['status'] == 'needs_verification'
-    assert '滑块' in public['gsxt']['description']
+    # 2026-11-15 起被知道创宇云WAF精准拦截，入口暂停：ready=False 且原因写明风控。
+    assert public['gsxt']['ready'] is False
+    assert 'WAF' in public['gsxt']['unavailable_reason'] and '拦截' in public['gsxt']['unavailable_reason']
+    # 2026-11-15 实测后描述更新：检索走实名子系统 + 极验点选，不再是「拖滑块」。
+    assert '实名' in public['gsxt']['description'] and '极验' in public['gsxt']['description']
     assert public['jobscope_jobs']['ready']
     saved = store.save('qcc', SignalSourceInput(mode='enabled', key='vendor-key'))
     assert saved['mode'] == 'enabled' and not saved['ready']

@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from .limits import MIN_CITY_JOBS, MIN_COMPANY_JOBS
 from .models import Dimension, RuleFinding, SignalInput, can_stand_alone
 
-RUBRIC_VERSION = 'rubric-4'
+RUBRIC_VERSION = 'rubric-5'
 
 # assessment 才允许产生维度分。material 衡量的只是本项目手上有多少材料：
 # 把「9/10 条岗位能解析出月薪」算成薪资待遇 90 分，用户读到的是「薪资给得好」，这是静默的谎言。
@@ -19,7 +19,9 @@ class DimensionSpec:
 
 
 DIMENSIONS: dict[str, DimensionSpec] = {
-    'stability': DimensionSpec('稳定性', 0.22),
+    # 标签写明「公司」：这里评的是公司主体的经营稳定（成立年限/参保趋势/涉诉），
+    # 不是这份工作或岗位的稳定——2026-11-15 用户反馈单写「稳定性」会被误读成后者。
+    'stability': DimensionSpec('公司稳定性', 0.22),
     'pay': DimensionSpec('薪资待遇', 0.20),
     'operations': DimensionSpec('实际经营', 0.18),
     'people': DimensionSpec('人员情况', 0.16),
@@ -98,14 +100,24 @@ def _same_material_trend_points(value):
 
 
 RULES: dict[str, RuleSpec] = {
+    # 2026-11-15 由线性（年数÷10）改分段：线性会让未满一年的公司落到 8 分这类极端值，
+    # 档位与同日用户确认——不满 2 年 20、2-5 年 45、5-10 年 70、10 年以上满分。
     'company_age': RuleSpec('stability', '年', 365, 'company_age',
-                            scorer=lambda v: min(1.0, (v.get('years') or 0) / 10)),
+                            scorer=lambda v: band(v.get('years') or 0, [(10, 1.0), (5, 0.7), (2, 0.45)], 0.2)),
     'insured_headcount_trend': RuleSpec('stability', '人', 400, 'headcount_trend',
                                         scorer=lambda v: max(0.0, min(1.0, 0.5 + ((v.get('after', 0) - v.get('before', 0)) / max(v.get('before', 1), 1)) / 2))),
     # 检索不到案件可能是覆盖面不够，不是正面结论；ratio 为 0 时不产出分数。
     'judicial_case_ratio': RuleSpec('stability', '件/万人', 180, 'judicial_cases',
                                     gate_note='检索不到案件数可能是检索覆盖不足，案件数为 0 不作为正面结论',
                                     scorer=lambda v: band(v['ratio'], [(25, 0.3), (10, 0.55), (3, 0.75)], 0.9) if v.get('ratio') else None),
+    # 2026-11-15 新增：工商登记企业类型指向的国企/非国企性质。flag 由采集端从公开页
+    # 「企业类型」字段确定性判定（国有独资/控股等=1，明确非国有=0，未取到字段不出信号）；
+    # 权重刻意低于同维度其他规则（0.6）：性质只是稳定性的一个侧面，不与年限/参保/涉诉等量齐观。
+    'soe_status': RuleSpec('stability', '类', 365, 'soe_status', weight=0.6,
+                           gate_note='需要先从商业站点公开页采集到「企业类型」字段才能判定',
+                           extract_hint='材料明确写明企业类型为国有独资/国有控股/全民所有制/国家出资等时 value 填 {"flag": 1}；'
+                                        '明确为自然人投资/私营/外商投资等非国有类型填 {"flag": 0}；材料没写或拿不准就不要输出',
+                           scorer=lambda v: 0.85 if v.get('flag') else 0.55),
     'salary_quote_coverage': RuleSpec('pay', '%', 120, 'salary_quote_coverage', kind=MATERIAL,
                                       scorer=lambda v: (v.get('known') or 0) / max(v.get('total') or 1, 1)),
     # R1：同城同层（职类/经验档/学历档一致）的报价中位数分层比值。样本闸门分两层：统计层
@@ -139,6 +151,12 @@ RULES: dict[str, RuleSpec] = {
     # R6：industry 维度 P1 不出分，只登记手上有几条行业与媒体材料，让缺口从「什么都没有」变成「有材料但无可评价依据」。
     'industry_media_count': RuleSpec('industry', '条', 365, 'industry_media_count', kind=MATERIAL,
                                      scorer=lambda v: min(1.0, (v.get('count') or 0) / 4)),
+    # 2026-11-15 新增：AI 行业趋势判断（industry 维度第一条评估规则）。direction 由 LLM 结构化
+    # 判断折算（上行 1 / 平稳 0 / 下行 -1），分数由本表固定映射（85/60/35）——模型只判断，
+    # 不产生分数。TTL 7 天：模型知识非实时，过期就该重判而不是沿用旧判断。
+    'industry_trend_llm': RuleSpec('industry', '档', 7, 'industry_trend_llm',
+                                   gate_note='尚未发起 AI 行业判断（需在「按来源补数据」手动选择，消耗模型额度）',
+                                   scorer=lambda v: {1: 0.85, 0: 0.6, -1: 0.35}.get(v.get('direction'))),
 }
 
 ASSESSING_BY_DIMENSION = {name: [rule for rule, spec in RULES.items() if spec.dimension == name and spec.kind == ASSESSMENT] for name in DIMENSIONS}

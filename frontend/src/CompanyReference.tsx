@@ -11,7 +11,7 @@ import { SignalCollector, signalStatusNames } from './SignalSources'
 // employee / media 的「未见独立核实」是后端加在正文里的，这里原样保留，不改写、不加强度。
 const sourceNames: Record<string, string> = {
   official: '官方公开材料', paid_api: '付费接口材料', platform: '平台统计',
-  user_material: '你提供的材料', employee: '个人自述', media: '媒体报道',
+  user_material: '你提供的材料', employee: '个人自述', media: '媒体报道', llm: '模型判断',
 }
 
 // 缺口的行动入口按规则归属：本地规则点「盘点已有资料」，抽取规则点「提取资料数字」，
@@ -237,6 +237,8 @@ export function CompanyReference({ report, history, busy, loading, action, compa
         <button type="button" className="button secondary small" disabled={Boolean(busy)} onClick={onCompute}>{busy ? '整理中…' : report ? '重新计算' : '生成参考'}</button>
       </div>
     </div>
+    {/* 评估对象是公司主体，不是岗位/个人——不写明这一点，「稳定性」会被读成工作稳不稳定。 */}
+    <p className="tiny-label">评估对象是「这家公司」本身：公司稳定性看成立年限、参保与涉诉，薪资待遇看其公开报价水平；都不是这份工作或你个人的稳定性。</p>
 
     {/* 没有综合分时不画空环、不摆占位大数字；读取中先说明数据在路上，别让慢请求被误读成「没生成过」。 */}
     {score === null

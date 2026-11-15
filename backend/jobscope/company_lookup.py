@@ -29,10 +29,14 @@ VERIFY_MARKERS = ('验证码', '滑动验证', '安全校验', '安全验证', '
                   'access denied', 'unauthorized')
 
 # 每个字段一行「标签 + 允许的间隔 + 值」。顺序就是卡片摘要的展示顺序，取到什么写什么。
+# founded 有两个标签：企查查/天眼查用「成立日期」，爱企查用「成立时间」（2026-11-15 实测）。
 FIELD_PATTERNS = (
     ('legal_rep', '法定代表人', r'[^\s，,。；;：:]{2,30}'),
     ('capital', '注册资本', r'[0-9][0-9,.]{0,12}\s*[万亿]?[美元港元人民币元]{0,3}'),
     ('founded', '成立日期', r'\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?'),
+    ('founded', '成立时间', r'\d{4}[-/年]\d{1,2}[-/月]\d{1,2}日?'),
+    # 企业类型（如「有限责任公司(国有控股)」）：reliability 的国企性质判定只用这个字段的值。
+    ('entity_kind', '企业类型', r'[^\s，,。；;]{2,50}'),
     ('status', '经营状态', r'[\u4e00-\u9fa5A-Za-z]{2,12}'),
     ('credit_code', '统一社会信用代码', r'[0-9A-Z]{18}'),
     ('phone', '电话', r'\d{3,4}-?\d{7,8}'),
@@ -58,6 +62,27 @@ CARDS_JS = (
     '     if ((node.innerText || "").length > 40) break;'
     '   }'
     '   cards.push({href: href, title: (a.innerText || "").trim().slice(0, 120),'
+    '               text: (node.innerText || "").slice(0, 1500)});'
+    '   if (cards.length >= 10) break;'
+    ' }'
+    ' return JSON.stringify(cards); })()'
+)
+
+# 2026-11-15 实测校准（爱企查）：结果卡片是「没有 href 的 <a>」，公司 ID 在
+# data-log-title="item-<pid>" 里，全名在内层锚点的 title 属性上；详情页地址由 pid 拼出。
+AQC_CARDS_JS = (
+    'return (() => { const seen = new Set(); const cards = [];'
+    ' for (const a of document.querySelectorAll("a[data-log-title][title]")) {'
+    '   const m = (a.getAttribute("data-log-title") || "").match(/^item-(\\d+)$/);'
+    '   if (!m || seen.has(m[1])) continue;'
+    '   seen.add(m[1]);'
+    '   let node = a;'
+    '   for (let i = 0; i < 5 && node.parentElement; i++) {'
+    '     node = node.parentElement;'
+    '     if ((node.innerText || "").length > 60) break;'
+    '   }'
+    '   cards.push({href: "https://aiqicha.baidu.com/company_detail_" + m[1],'
+    '               title: (a.getAttribute("title") || "").trim().slice(0, 120),'
     '               text: (node.innerText || "").slice(0, 1500)});'
     '   if (cards.length >= 10) break;'
     ' }'
@@ -103,7 +128,8 @@ def _html_of(tab):
         return ''
 
 
-# 渠道登记表：名称、搜索地址与详情链接特征共用一份事实；link_pattern 由 CARDS_JS 编译。
+# 渠道登记表：名称、搜索地址与详情链接特征共用一份事实；link_pattern 由 CARDS_JS 编译，
+# cards_js 是站点专属的卡片抽取脚本（爱企查卡片无 href，见 AQC_CARDS_JS 注释）。
 SITES = {
     'qcc': dict(name='企查查',
                 search=lambda keyword: 'https://www.qcc.com/web/search?' + urlencode({'key': keyword}),
@@ -111,6 +137,9 @@ SITES = {
     'tyc': dict(name='天眼查',
                 search=lambda keyword: 'https://www.tianyancha.com/search?' + urlencode({'key': keyword}),
                 link_pattern=r'/(?:company|firm)/[A-Za-z0-9]+'),
+    'aiqicha': dict(name='爱企查',
+                    search=lambda keyword: 'https://aiqicha.baidu.com/s?' + urlencode({'q': keyword}),
+                    cards_js=AQC_CARDS_JS),
 }
 
 
@@ -142,7 +171,7 @@ def _read_cards(tab, spec, keyword):
     _sleep(RENDER_DELAY)
     html = _html_of(tab)
     markers = _looks_blocked(html)
-    raw = tab.run_js(CARDS_JS, spec['link_pattern'])
+    raw = tab.run_js(spec.get('cards_js') or CARDS_JS, spec.get('link_pattern', ''))
     try:
         items = json.loads(raw) if isinstance(raw, str) else raw
     except ValueError:

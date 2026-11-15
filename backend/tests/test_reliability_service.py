@@ -55,10 +55,9 @@ def test_a_company_without_signals_gets_no_number_but_still_lists_gaps(tmp_path)
     assert [line.split('（')[0] for line in gaps['stability']] == sorted(
         rule for rule, spec in RULES.items() if spec.dimension == 'stability' and spec.kind == 'assessment')
     assert all('尚无来源' in line for line in gaps['stability'])
-    # P1 起除 industry 外都有评价规则：缺口是「尚无来源」；industry 仍只有材料登记，说明还没有可评价的规则。
-    for name in ('pay', 'operations', 'people', 'professional'):
+    # 2026-11-15 起六个维度都有评价规则：缺口一律是「尚无来源」（industry 的评估规则是 AI 行业判断）。
+    for name in ('pay', 'operations', 'people', 'professional', 'industry'):
         assert any('尚无来源' in line for line in gaps[name]), name
-    assert any('可评价的规则' in line for line in gaps['industry'])
     assert report['disclaimer'] and report['nature'] == 'subjective_reference'
 
 
@@ -74,7 +73,8 @@ def test_material_findings_persist_without_a_number(tmp_path):
     assert dimension(report, 'operations')['findings'][0]['score'] is None
     assert dimension(report, 'operations')['findings'][0]['text']
     assert dimension(report, 'stability')['findings'][0]['kind'] == 'assessment'
-    assert dimension(report, 'stability')['findings'][0]['score'] == 80.0
+    # 年限 8 年落在 5-10 年分带（2026-11-15）：70 分，不再是线性 80。
+    assert dimension(report, 'stability')['findings'][0]['score'] == 70.0
     assert any('尚无来源' in line for line in dimension(report, 'operations')['missing'])
 
 

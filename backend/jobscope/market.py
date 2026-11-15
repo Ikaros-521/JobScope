@@ -5,6 +5,7 @@ API，带缓存与显式失败回退，全部请求不带任何凭证。
 """
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 
@@ -193,39 +194,66 @@ keywords: [复盘, 投递]
 4. 数字全部来自用户自述，结论不构成对结果的承诺。'''),
 ]
 
+SOURCES = ('official', 'china')
 RAW_HOST = 'https://raw.githubusercontent.com'
+# 国内镜像：raw.githubusercontent.com 直连不可达，用 gh-proxy 前缀代理转发同样的 raw 路径
+# （含 /HEAD/ 引用，语义不变）；npm 检索换 npmmirror（同形 objects[].package，国内延迟约 0.1s）。
+RAW_HOST_CHINA = 'https://gh-proxy.com/https://raw.githubusercontent.com'
+NPM_HOST_OFFICIAL = 'https://registry.npmjs.org'
+NPM_HOST_CHINA = 'https://registry.npmmirror.com'
+
+
+def _raw_url(source, repo, path):
+    host = RAW_HOST_CHINA if source == 'china' else RAW_HOST
+    return f'{host}/{repo}/HEAD/{path}'
+
+
+def _npm_search_url(source):
+    return f'{NPM_HOST_CHINA if source == "china" else NPM_HOST_OFFICIAL}/-/v1/search'
 
 
 def _client(timeout=10):
     return httpx.Client(timeout=timeout, trust_env=False, follow_redirects=True)
 
 
-def refresh_online():
+def refresh_online(source: str = 'official'):
     """Fetch the online layer on explicit user action. Per-repo failures are
-    skipped; only a total failure raises so the old cache survives."""
+    skipped; only a total failure raises so the old cache survives.
+
+    仓库之间互不依赖，线程池并行取；单仓库内文件再并行，避免国内直连时串行长尾。"""
     online_skills, online_mcp, stars = [], [], {}
-    with _client() as client:
-        for repo in FEATURED_REPOS:
-            try:
-                tree = client.get(f'https://api.github.com/repos/{repo}/git/trees/HEAD', params={'recursive': '1'}).json()
-                paths = [item['path'] for item in tree.get('tree', []) if item.get('type') == 'blob' and item['path'].endswith('/SKILL.md')]
-                stars[repo] = client.get(f'https://api.github.com/repos/{repo}').json().get('stargazers_count')
-            except Exception:
-                continue
-            for path in sorted(paths)[:ONLINE_SKILL_LIMIT]:
-                try:
-                    raw = client.get(f'{RAW_HOST}/{repo}/HEAD/{path}')
-                    if raw.status_code != 200:
-                        continue
-                    content = raw.text[:60000]
-                    name, description, _, _ = parse_skill_markdown(content)
-                except Exception:
-                    continue
-                online_skills.append(dict(id='gh:' + repo + ':' + path, name=name[:80], desc=description[:200],
-                                          icon='≡', category='在线', repo=repo, path=path, official=repo == 'anthropics/skills',
-                                          stars=stars.get(repo)))
+
+    def work(client, repo):
         try:
-            search = client.get('https://registry.npmjs.org/-/v1/search', params={'text': 'mcp server', 'size': 25}).json()
+            tree = client.get(f'https://api.github.com/repos/{repo}/git/trees/HEAD', params={'recursive': '1'}).json()
+            paths = [item['path'] for item in tree.get('tree', []) if item.get('type') == 'blob' and item['path'].endswith('/SKILL.md')]
+            star = client.get(f'https://api.github.com/repos/{repo}').json().get('stargazers_count')
+        except Exception:
+            return repo, [], None
+
+        def fetch(path):
+            try:
+                raw = client.get(_raw_url(source, repo, path))
+                if raw.status_code != 200:
+                    return None
+                name, description, _, _ = parse_skill_markdown(raw.text[:60000])
+                return dict(id='gh:' + repo + ':' + path, name=name[:80], desc=description[:200],
+                            icon='≡', category='在线', repo=repo, path=path, official=repo == 'anthropics/skills',
+                            stars=star)
+            except Exception:
+                return None
+
+        with ThreadPoolExecutor(max_workers=8) as inner:
+            entries = [item for item in inner.map(fetch, sorted(paths)[:ONLINE_SKILL_LIMIT]) if item is not None]
+        return repo, entries, star
+
+    with _client() as client:
+        with ThreadPoolExecutor(max_workers=len(FEATURED_REPOS)) as pool:
+            for repo, entries, star in pool.map(lambda repo: work(client, repo), FEATURED_REPOS):
+                stars[repo] = star
+                online_skills.extend(entries)
+        try:
+            search = client.get(_npm_search_url(source), params={'text': 'mcp server', 'size': 25}).json()
             for package in search.get('objects', []):
                 info = package.get('package', {})
                 name = info.get('name', '')
@@ -253,7 +281,7 @@ def payload(store):
     return dict(curated_mcp=curated_mcp, curated_skills=curated_skills, online=cached if fresh else None, fetched_at=fetched_at)
 
 
-def install_online_skill(store, repo, path):
+def install_online_skill(store, repo, path, source: str = 'official'):
     """Install one online skill by refetching its SKILL.md; content never sits in the cache."""
     # 仓库与路径都做严格格式校验；内容仍经 parse_skill_markdown 解析与限额。
     if not isinstance(repo, str) or not re.fullmatch(r'[\w.\-]+/[\w.\-]+', repo):
@@ -262,7 +290,7 @@ def install_online_skill(store, repo, path):
     if not re.fullmatch(r'[\w./\-]{1,200}', clean) or '..' in clean or not (clean == 'SKILL.md' or clean.endswith('/SKILL.md')):
         raise ValueError('技能路径无效')
     with _client() as client:
-        response = client.get(f'{RAW_HOST}/{repo}/HEAD/{clean}')
+        response = client.get(_raw_url(source, repo, clean))
     if response.status_code != 200:
         raise ValueError('在线技能下载失败，请稍后重试')
     name, description, body, optional = parse_skill_markdown(response.text[:60000])
@@ -271,12 +299,12 @@ def install_online_skill(store, repo, path):
     return store._store_skill(entry)
 
 
-def search_online(term: str):
+def search_online(term: str, source: str = 'official'):
     """Live market search: npm registry for MCP servers, GitHub repos for Skills."""
     term = (term or '').strip()
     if not term or len(term) > 50:
         raise ValueError('搜索词为空或超过 50 字符')
-    key = term.lower()
+    key = f'{source}:{term.lower()}'  # 缓存按源隔离：切源后立即取新源的检索结果。
     now_ts = time.time()
     cached = _SEARCH_CACHE.get(key)
     if cached and now_ts - cached[0] < SEARCH_TTL:
@@ -284,7 +312,7 @@ def search_online(term: str):
     results = []
     with _client() as client:
         try:
-            search = client.get('https://registry.npmjs.org/-/v1/search', params={'text': f'{term} mcp', 'size': 20}).json()
+            search = client.get(_npm_search_url(source), params={'text': f'{term} mcp', 'size': 20}).json()
         except Exception:
             raise ValueError('在线搜索失败：npm 检索不可达，请稍后重试。') from None
         for package in search.get('objects', []):
@@ -300,7 +328,7 @@ def search_online(term: str):
                                 transport='stdio', command='npx', args=['-y', name],
                                 repo=(info.get('links') or {}).get('repository', '')))
         try:
-            skills = _search_skills(client, term)
+            skills = _search_skills(client, term, source)
             skills_error = None
         except Exception:
             skills, skills_error = [], 'Skills 在线检索失败（GitHub 不可达或超出限额），请稍后重试。'
@@ -309,37 +337,46 @@ def search_online(term: str):
     return payload
 
 
-def _search_skills(client, term):
-    """GitHub repo search (unauthenticated) → locate SKILL.md → fetch and parse."""
+def _search_skills(client, term, source: str = 'official'):
+    """GitHub repo search (unauthenticated) → locate SKILL.md → fetch and parse.
+
+    各仓库的 tree/raw 请求互不依赖，线程池并行取，保序合并后再去重。"""
     found = client.get('https://api.github.com/search/repositories', params={'q': f'{term} skill in:name,description', 'sort': 'stars', 'per_page': 6}).json()
     needle = term.lower()
-    entries: list[dict] = []
-    for repo in found.get('items', [])[:4]:
-        full = repo.get('full_name', '')
-        if not full:
-            continue
+    repos = [item for item in found.get('items', [])[:4] if item.get('full_name')]
+
+    def work(repo):
+        full = repo['full_name']
         try:
             tree = client.get(f'https://api.github.com/repos/{full}/git/trees/HEAD', params={'recursive': '1'}).json()
             paths = [item['path'] for item in tree.get('tree', []) if item.get('type') == 'blob' and item['path'].endswith('SKILL.md')]
         except Exception:
-            continue
+            return []
         # 根目录单技能仓库优先，其次路径中包含搜索词的条目。
         paths.sort(key=lambda path: (path != 'SKILL.md', needle not in path.lower()))
+        grouped: list[dict] = []
         for path in paths[:3]:
-            if len(entries) >= SEARCH_SKILL_LIMIT:
-                break
             try:
-                raw = client.get(f'{RAW_HOST}/{full}/HEAD/{path}')
+                raw = client.get(_raw_url(source, full, path))
                 if raw.status_code != 200:
                     continue
                 name, description, _, _ = parse_skill_markdown(raw.text[:60000])
             except Exception:
                 continue
-            if any(item['name'] == name for item in entries):
-                continue
-            entries.append(dict(id='gh:' + full + ':' + path, name=name[:80], desc=description[:200],
+            grouped.append(dict(id='gh:' + full + ':' + path, name=name[:80], desc=description[:200],
                                 icon='≡', category='在线搜索', repo=full, path=path, official=False,
                                 stars=repo.get('stargazers_count')))
+        return grouped
+
+    with ThreadPoolExecutor(max_workers=len(repos) or 1) as pool:
+        grouped = pool.map(work, repos)
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for group in grouped:
+        for item in group:
+            if item['name'] not in seen and len(entries) < SEARCH_SKILL_LIMIT:
+                seen.add(item['name'])
+                entries.append(item)
     return entries
 
 

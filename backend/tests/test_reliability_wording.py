@@ -24,6 +24,8 @@ VALUES = {
     'disclosure_revenue_trend': {'current': 120000000, 'previous': 100000000},
     'disclosure_headcount_trend': {'current': 240, 'previous': 260},
     'industry_media_count': {'count': 3},
+    'soe_status': {'flag': 1},
+    'industry_trend_llm': {'direction': 1},
 }
 
 
@@ -71,6 +73,13 @@ def test_headcount_wording_states_numbers_and_refuses_a_conclusion():
 def test_self_reported_material_is_labelled_as_unverified():
     text = render(next(iter(score([sig('employee_review_sample', VALUES['employee_review_sample'], 'employee')]).findings)))
     assert '未见独立核实' in text
+
+
+def test_llm_judgement_is_labelled_as_model_based():
+    """AI 行业判断的句子必须自带「模型判断，非实时数据」后缀，与实证依据一眼可分。"""
+    text = render(next(iter(score([sig('industry_trend_llm', {'direction': 1}, 'llm')]).findings)))
+    assert '上行' in text and '模型判断，非实时数据' in text
+    assert lint(text) == []
 
 
 def test_unsupported_rule_names_raise_instead_of_inventing_a_sentence():
@@ -143,5 +152,5 @@ def test_revenue_trend_template_states_both_periods_without_a_conclusion():
 
 def test_industry_media_count_is_a_material_statement_not_a_verdict():
     text = render(next(iter(score([sig('industry_media_count', VALUES['industry_media_count'])]).findings)))
-    # industry 维度 P1 不出分：这句话的作用是「有材料但无可评价依据」，不是任何评价。
-    assert '3' in text and '没有可评价行业前景的依据' in text and lint(text) == []
+    # 材料计数只是背景登记：不得出现任何评价性断言（2026-11-15 起 industry 由 AI 判断出分，这句仍是纯计数）。
+    assert '3' in text and '不代表行业前景好坏' in text and lint(text) == []

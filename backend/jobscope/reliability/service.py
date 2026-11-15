@@ -1,7 +1,7 @@
 """Collect -> normalise -> score -> word -> persist. The model never touches the number."""
 import json
 
-from ..repository import digest, now
+from ..repository import Repository, digest, now
 from . import wording
 from .models import (DISCLAIMER, DISCLAIMER_VERSION, DimensionScore, ReliabilityReport, ReportFinding,
                      SignalInput)
@@ -25,6 +25,83 @@ def persist_outcome(repo, identity, source_id, outcome, evidence_kind):
             unit=item.get('unit', ''), source_class=item['source_class'], evidence_id=evidence['id'],
             observed_at=item.get('observed_at', ''), collected_at=item.get('collected_at') or now())))
     return saved
+
+
+def company_materials(repo, identity):
+    """该公司已保存的非岗位材料。名称按实体规范化比对，否则 '甲 公司' 存的证据永远配不上 '甲公司'。
+
+    两类「自己写下的记录」都不算材料：本地计算记录会让计数随点击自增，付费接口原文则是
+    取数结果而不是证据来源，喂给抽取器等于让厂商字段第二轮变成「材料」。
+    """
+    from .local import DERIVED_KIND
+    from .paid import PAID_KIND
+    known = {identity['name'], *(identity.get('aliases') or [])}
+    return [item for item in repo.evidence(include_job_postings=False)
+            if Repository.normalise_name(item['company']) in known
+            and item['kind'] not in (DERIVED_KIND, PAID_KIND)]
+
+
+def company_jd_materials(repo, identity):
+    """完整 JD 的岗位证据（P1 起 team_size_statement 要从岗位描述里抽「团队 N 人」）。
+
+    只有 description_status == 'complete' 的岗位进材料：半截 JD 不能用来评估，这是 P0
+    在 /api/analyze 里就立过的规矩。证据行仍是 save_job 落的那条真实 job_posting 记录，
+    evidence_id 可回查原文；列表摘要与别家公司照样不进。
+    """
+    known = {identity['name'], *(identity.get('aliases') or [])}
+    complete = [item for item in repo.jobs()
+                if Repository.normalise_name(item['company']) in known
+                and item.get('description_status') == 'complete']
+    wanted = {evidence_id for job in complete for evidence_id in job.get('evidence_ids', [])}
+    return [item for item in repo.evidence(include_job_postings=True)
+            if item['kind'] == 'job_posting' and item['id'] in wanted and item['text'].strip()]
+
+
+def run_signal_extract(repo, company, credit_code='', *, limit=12, max_tokens=1200):
+    """把已存材料喂给抽取器：手动导入的公告与材料不会自己变成信号。
+
+    页面端点 /signals/extract 与 Agent 的 signal_extract 工具共用这一条管线：材料口径、
+    team_size_statement 的多条自述聚合、任务记录只写一处。公司不存在/名称为空时抛出的
+    ValueError 是写给用户看的中文说明，HTTP 层与 Agent 工具各自转述。
+    """
+    from . import extract
+    from .extract import aggregate_team_size
+    from .models import SignalInput
+    from .rubric import RULES
+    identity = repo.resolve_company(company, credit_code)
+    # 非岗位材料 + 完整 JD 的岗位证据，按证据编号去重后一起进抽取器；只有完整职责可被评估。
+    materials = {item['id']: item for item in [*company_materials(repo, identity), *company_jd_materials(repo, identity)]
+                 if item['text'].strip()}
+    materials = list(materials.values())[:limit]
+    outcome = extract.extract(identity['name'], materials, max_tokens=max_tokens) if materials \
+        else dict(status='skipped', message='该公司还没有可抽取的非岗位材料。', signals=[], raw='')
+    task = repo.create_task('reliability_extract', identity['name'])
+    kinds = {item['id']: item['kind'] for item in materials}
+    # team_size_statement 的多条原始自述在这里聚合成一条信号：中位数与相容数由代码算，
+    # 模型只交原始数字；repository.signals() 每条规则只留最新一条，聚合必须发生在落库前。
+    size_signals = [item for item in outcome['signals'] if item.rule == 'team_size_statement']
+    other_signals = [item for item in outcome['signals'] if item.rule != 'team_size_statement']
+    merged, participants = aggregate_team_size(size_signals)
+    aggregation_note = ''
+    if merged is not None:
+        aggregation_note = (f'team_size_statement 由 {len(participants)} 条自述聚合（中位数与相容数由代码计算，'
+                            f'锚条编号 {merged.evidence_id}，参与编号：{"、".join(participants)}）。')
+    saved = []
+    # 聚合成功 → 只落合并后的一条；不足两条时原始自述照常落库（闸门会在报告里解释为什么不出分）。
+    for item in ([*other_signals, merged] if merged is not None else outcome['signals']):
+        spec = RULES[item.rule]
+        saved.append(repo.save_signal(SignalInput(
+            company_id=identity['id'], dimension=item.dimension, rule=item.rule, value=item.value,
+            unit=spec.unit, source_class=extract.KIND_TO_SOURCE_CLASS.get(kinds.get(item.evidence_id, ''), 'user_material'),
+            evidence_id=item.evidence_id, observed_at='', collected_at=now())))
+    # 结构化状态与 raw 原文一起进 tasks，前端才显示得出真实状态、事后也查得到模型说了什么。
+    # 聚合说明也写进任务：未成为锚条的参与编号在这里留档，出处链才查得回去。
+    message = outcome['message'] + aggregation_note
+    task.update(kind='reliability_extract', status=outcome['status'], message=message,
+                count=len(saved), raw=str(outcome['raw'])[:4000])
+    repo.update_task(task)
+    return dict(status=outcome['status'], message=message, accepted=len(saved),
+                signals=saved, evidence=len(materials), task=task, identity=identity)
 
 
 def _report_finding(item):

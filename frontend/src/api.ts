@@ -8,7 +8,7 @@ export type Job = {
 }
 // 列表端点的 text 可能被裁剪（text_truncated），text_hit 是搜索命中处的全文摘要窗口。
 export type Evidence = { id: string; title: string; url: string; source: string; kind: string; company: string; text: string; collected_at: string; published_at: string | null; content_hash: string; text_truncated?: boolean; text_hit?: string }
-export type Source = { id: string; name: string; kind: string; transport_mode: string; status: string; description: string; cities: string[]; hot: string[]; browser_collectable?: boolean }
+export type Source = { id: string; name: string; kind: string; transport_mode: string; status: string; description: string; login?: string; cities: string[]; hot: string[]; browser_collectable?: boolean }
 export type Task = { id: string; source: string; query: string; status: string; message: string; created_at: string; count: number; kind?: string; total?: number; processed?: number; failed?: number }
 export type PageInfo = { page: number; page_size: number; total: number; pages: number }
 export type ResearchRun = { id: string; status: string; strategy: string; duration_ms: number; context_characters: number; limits?: { context_characters: number }; scope: { kind: string; company?: string }; plan?: { query: string; planner: string; concepts: string[]; companies: string[] }; degraded: string[]; events: ToolStep[] }
@@ -54,9 +54,9 @@ export type ToolStep = { step: number; tool: string; duration_ms: number; label?
 // 顺序显示模式的分段：思维链/正文按段追加，工具步骤穿插其间，与发生顺序一致。
 // step 段有两种来源：流式增量（step 键）与落库回放（event 键，general_agent._event），渲染层两个键都兼容。
 export type ChatSegment = { kind: 'reasoning' | 'text'; text: string } | { kind: 'step'; step?: ToolStep; event?: ToolStep }
-// 系统设置：存服务端（跨浏览器一致），含聊天显示模式、思维链显隐与 Agent 执行限额。
+// 系统设置：存服务端（跨浏览器一致），含聊天显示模式、思维链显隐、Agent 执行限额与市场检索源。
 export type AgentLimits = { max_model_calls: number; max_tool_calls: number; context_characters: number; max_seconds: number }
-export type SystemSettings = { chat_display_mode: 'merged' | 'sequential'; show_reasoning: boolean; agent_limits: AgentLimits }
+export type SystemSettings = { chat_display_mode: 'merged' | 'sequential'; show_reasoning: boolean; agent_limits: AgentLimits; market_source: 'official' | 'china' }
 export type ApprovalRequest = { approval_id: string; tool: string; arguments: Record<string, unknown>; reason: string; run_id?: string }
 export type ChatRunStatus = { run_id: string; conversation_id: string; done: boolean; cancelled: boolean; awaiting_approval: boolean; pending_approval: ApprovalRequest | null }
 export type ChatScope = { kind: 'global' } | { kind: 'company'; company: string } | { kind: 'job'; jobId: string; company: string; title?: string }
@@ -68,7 +68,8 @@ export type ModelProvider = { mode: string; channel: string; protocol: 'openai' 
 export type Channel = { id: string; name: string; url: string; protocol: 'openai' | 'anthropic'; models: string[]; embeddings: string[] | null; note?: string }
 export type ModelMetadata = { context_tokens: number; source: string; checked_at: string }
 // 已保存的对话渠道：每条自带地址/密钥/默认模型/模型列表，可激活为全局默认
-export type LlmChannel = { id: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models: string[]; embeddings?: string[]; context_tokens: number | null; key_set: boolean }
+export type ChannelTestRecord = { target: 'llm' | 'embedding'; model: string; ok: boolean; duration_ms: number; at: string }
+export type LlmChannel = { id: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models: string[]; embeddings?: string[]; context_tokens: number | null; key_set: boolean; last_test?: ChannelTestRecord | null }
 export type LlmChannelDraft = { id?: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models?: string[]; embeddings?: string[]; key?: string; clear_key?: boolean; context_tokens?: number | null }
 // 已保存渠道的测试/拉列表：带上 channel_id，后端才能用该渠道已保存的密钥而不是全局配置。
 export type ModelConnectionInput = { target: 'llm' | 'embedding'; channel_id?: string; config: { mode: 'disabled' | 'remote' | 'local'; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model?: string; key?: string; clear_key?: boolean; context_tokens?: number | null } }
@@ -115,6 +116,7 @@ export type SignalSourceDraft = { mode: 'disabled' | 'enabled'; key?: string; ur
 export type SignalSource = {
   name: string; tier: 'free' | 'paid'; transport: string; status: string; rules: string[]; description: string;
   mode: 'disabled' | 'enabled'; implemented: boolean; ready: boolean; unavailable_reason: string;
+  manual_only?: boolean;
   url?: string; updated_at?: string; key_set?: boolean; auth_header?: string; auth_prefix?: string;
   company_param?: string; fields?: SignalFieldMapping; last_run?: Task | null
 }
@@ -226,6 +228,10 @@ export function listLlmChannels() { return api<{ channels: LlmChannel[] }>('/set
 export function saveLlmChannel(draft: LlmChannelDraft) { return post<{ channel: LlmChannel; channels: LlmChannel[] }>('/settings/llm-channels', draft) }
 export function deleteLlmChannel(id: string) { return api<{ ok: boolean; channels: LlmChannel[]; bindings: BindingsPayload }>(`/settings/llm-channels/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
 export function activateLlmChannel(id: string) { return post<{ settings: Record<'llm' | 'embedding', ModelProvider>; bindings: BindingsPayload }>(`/settings/llm-channels/${encodeURIComponent(id)}/activate`) }
+// 按功能当前生效配置实测：服务端从绑定取渠道/模型/密钥，密钥不下发前端。
+export function testModelPurpose(purpose: ModelPurpose) {
+  return post<{ ok: boolean; dimensions: number | null; duration_ms: number; message: string }>(`/settings/models/test-purpose/${purpose}`)
+}
 export type CompressResult = { compacted_count: number; summary_message_id: string; message_count: number }
 export function compressConversation(id: string) { return post<CompressResult>(`/conversations/${encodeURIComponent(id)}/compress`) }
 // 功能级模型绑定：渠道是唯一事实源，绑定是指向渠道+模型的指针。

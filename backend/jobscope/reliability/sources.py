@@ -68,21 +68,55 @@ TYC_FIELDS = {
 SIGNAL_SOURCES = {
     'gsxt': dict(name='国家企业信用信息公示系统', tier='free', transport='browser_page', implemented=True,
                  status='needs_verification', rules=['company_age', 'insured_headcount_trend'],
-                 description='检索页走 /corpdashboard/pc-search.html；搜索需人工拖动滑块，页面会停在前台等你完成后重试。'
-                             '进入方式已实测，结果页解析正则仍待真实滑块通过后人工验证。不自动纳入公司研究。'),
+                 suspended='知道创宇云WAF正在精准拦截项目浏览器对该站的访问（2026-11-15 实测），'
+                           '入口暂停，待风控解除后移除本字段即可恢复。',
+                 description='检索走实名子系统 shiming.gsxt.gov.cn：需实名登录，检索时弹极验点选，'
+                             '由你完成后自动继续（等待窗口约两分钟，超时页面留在前台，重新发起即可）。'
+                             '2026-11-15 已按真实页面校准检索与详情通路；年报参保数字的页签当晚为空表，仍待校正。'
+                             '不自动纳入公司研究。'),
     'credit_china': dict(name='信用中国', tier='free', transport='browser_page', implemented=True,
                          status='needs_verification', rules=['judicial_case_ratio'],
+                         suspended='入口已按用户要求暂停（2026-11-15）：需登录使用且同为官方站点，'
+                                   '暂缓自动化访问；移除本字段即可恢复。',
                          description='需注册并登录信用中国（未登录访问会跳到登录页，页面会停在前台等你登录后重试）。'
                                      '登记严重失信主体等记录条数，与已存参保人数合并换算每万人比率；解析正则待登录后人工验证。'),
     'court_records': dict(name='中国裁判文书网', tier='free', transport='browser_page', implemented=True,
                           status='needs_verification', rules=['judicial_case_ratio'],
+                          suspended='入口已按用户要求暂停（2026-11-15）：需登录使用且同为官方站点，'
+                                    '暂缓自动化访问；移除本字段即可恢复。',
                           description='需登录裁判文书网（个人账号即可）；登记检索命中的文书数量作为涉诉数量口径。'
                                       '登录墙已实测，结果页解析正则待登录后人工验证。'),
+    # 商业站点公开页：不需要接口密钥，用项目浏览器读页面可见字段；与上方 qcc/tyc 付费 API
+    # 是两条独立通路。三家的字段正则均未逐站实测，先按快查同一口径预置，跑一次后按快照校正。
+    'qcc_web': dict(name='企查查公开页', tier='free', transport='browser_page', implemented=True,
+                    status='needs_verification',
+                    rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio', 'soe_status'],
+                    description='无需接口密钥：用项目浏览器读企查查公开搜索卡片与公司页可见字段'
+                                '（成立日期、参保人数、司法案件数）。未登录可见字段有限，'
+                                '遇到登录/验证页面会停在前台等你处理；解析正则待实测校正。'),
+    'tyc_web': dict(name='天眼查公开页', tier='free', transport='browser_page', implemented=True,
+                    status='needs_verification',
+                    rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio', 'soe_status'],
+                    description='无需接口密钥：用项目浏览器读天眼查公开搜索卡片与公司页可见字段。'
+                                '未登录可见字段有限，遇到登录/验证页面会停在前台等你处理；解析正则待实测校正。'),
+    'aiqicha_web': dict(name='爱企查公开页', tier='free', transport='browser_page', implemented=True,
+                        status='needs_verification',
+                        rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio', 'soe_status'],
+                        description='无需接口密钥：用项目浏览器读百度爱企查公开搜索卡片与公司页可见字段。'
+                                    '2026-11-15 已实测校准检索与详情通路（卡片走 data-log-title、标签用「成立时间」、'
+                                    '详情区块需等懒加载）；参保趋势与涉诉计数的数值口径仍待多样本验证。'),
     'jobscope_jobs': dict(name='已保存岗位与证据', tier='free', transport='local', implemented=True,
-                          status='available',
-                          rules=['salary_quote_coverage', 'disclosure_available', 'pay_vs_city_median',
-                                 'jd_specificity', 'industry_media_count'],
-                          description='不联网，使用本项目已有数据计算。默认启用。'),
+                         status='available',
+                         rules=['salary_quote_coverage', 'disclosure_available', 'pay_vs_city_median',
+                                'jd_specificity', 'industry_media_count'],
+                         description='不联网，使用本项目已有数据计算。默认启用。'),
+    # AI 行业判断（2026-11-15）：transport 'llm' 走模型结构化判断 → 规则折算。manual_only=True
+    # 表示不进公司研究默认选择——每次消耗模型额度，必须手动勾选（与付费来源同一交互）。
+    'llm_industry': dict(name='AI 行业判断', tier='free', transport='llm', implemented=True,
+                         status='available', manual_only=True, rules=['industry_trend_llm'],
+                         description='由配置的分析模型判断该公司所在行业近期趋势（上行/平稳/下行三档），'
+                                     '分数由固定规则折算（85/60/35），判断全文存证据可溯源。'
+                                     '基于模型知识与已存材料，非实时数据；每次运行消耗模型额度，需手动选择。'),
     'qcc': dict(name='企查查开放平台', tier='paid', transport='http_api', status='opt_in', implemented=True,
                 rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio',
                        'pay_vs_city_median', 'disclosure_revenue_trend', 'disclosure_headcount_trend'],
@@ -238,6 +272,9 @@ class SignalSourceStore:
     def unavailable_reason(self, source_id, state=None):
         spec = SIGNAL_SOURCES[source_id]
         state = self.effective()[source_id] if state is None else state
+        # suspended 优先于一切：来源被风控/政策暂停时，采集器再完备也不许发起请求。
+        if spec.get('suspended'):
+            return spec['suspended']
         if not spec['implemented']:
             return '该来源采集器尚未实现，暂不可启用。'
         if state['mode'] != 'enabled':

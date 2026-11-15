@@ -195,8 +195,12 @@ def test_research_validates_selection_before_creating_tasks_or_threads(client, m
 
 
 def test_research_accepts_explicit_credit_and_court_selections(client, stub_channels, monkeypatch):
-    """2026-11-13 接线后：信用中国/裁判文书网是合法的显式选择，执行走 collectors.collect。"""
+    """显式选择合法、执行走 collectors.collect（三个浏览器来源 2026-11-15 起暂停；本用例测
+    选择与执行链路，不测暂停，临时摘掉两者的 suspended 标记）。"""
     from jobscope.reliability import collectors
+    from jobscope.reliability.sources import SIGNAL_SOURCES
+    for source in ('credit_china', 'court_records'):
+        monkeypatch.delitem(SIGNAL_SOURCES[source], 'suspended')
     seen = []
 
     def browser_collect(source, company, **kwargs):
@@ -227,9 +231,12 @@ def test_research_empty_selection_and_disabled_default_do_not_collect(client, st
     assert result.status_code == 409
 
 
-def test_research_explicit_paid_and_gsxt_are_separate_from_web_and_local_runs_last(client, stub_channels, monkeypatch):
+def test_research_explicit_paid_and_browser_sources_run_last_before_local(client, stub_channels, monkeypatch):
+    """付费 API 与浏览器来源跟岗位渠道分开执行，本地统计垫底（三个浏览器来源 2026-11-15 起暂停；
+    本用例测执行顺序，不测暂停，临时摘掉信用中国的 suspended 标记让它代表浏览器来源）。"""
     from jobscope.reliability import collectors, local
-    from jobscope.reliability.sources import PaidClient
+    from jobscope.reliability.sources import PaidClient, SIGNAL_SOURCES
+    monkeypatch.delitem(SIGNAL_SOURCES['credit_china'], 'suspended')
     events = []
     original_local = local.collect
 
@@ -237,8 +244,8 @@ def test_research_explicit_paid_and_gsxt_are_separate_from_web_and_local_runs_la
         events.append(('paid', company))
         return {'establish_date': '2015-04-01'}
 
-    def gsxt_collect(source, company, **kwargs):
-        events.append(('gsxt', company))
+    def credit_collect(source, company, **kwargs):
+        events.append(('credit', company))
         return dict(status='needs_verification', message='请核对页面', signals=[])
 
     def local_collect(source, company, **kwargs):
@@ -247,20 +254,20 @@ def test_research_explicit_paid_and_gsxt_are_separate_from_web_and_local_runs_la
         return original_local(source, company, **kwargs)
 
     monkeypatch.setattr(PaidClient, 'fetch', paid_fetch)
-    monkeypatch.setattr(collectors, 'collect', gsxt_collect)
+    monkeypatch.setattr(collectors, 'collect', credit_collect)
     monkeypatch.setattr(local, 'collect', local_collect)
     assert client.put('/api/reliability/sources/qcc', json=dict(mode='enabled', key='vendor-key',
                       url='http://localhost:9999/company')).status_code == 200
     tasks = client.post('/api/company-research', json=dict(company='甲 公司',
-                        signal_sources=['jobscope_jobs', 'qcc', 'gsxt'])).json()['tasks']
+                        signal_sources=['jobscope_jobs', 'qcc', 'credit_china'])).json()['tasks']
     signals = [task for task in tasks if task['source'].startswith('signal_')]
-    assert [task['source'] for task in signals] == ['signal_qcc', 'signal_gsxt', 'signal_jobscope_jobs']
+    assert [task['source'] for task in signals] == ['signal_qcc', 'signal_credit_china', 'signal_jobscope_jobs']
     assert wait_task(client, tasks[-1]['id'])['status'] == 'completed'
-    assert events == [('paid', '甲公司'), ('gsxt', '甲公司'), ('local', '甲公司')]
+    assert events == [('paid', '甲公司'), ('credit', '甲公司'), ('local', '甲公司')]
     finals = {task['source']: wait_task(client, task['id']) for task in tasks}
     assert finals['qcc']['status'] == 'completed'  # public web lookup is distinct
     assert finals['signal_qcc']['status'] == 'partial' and finals['signal_qcc']['count'] == 1
-    assert finals['signal_gsxt']['status'] == 'needs_verification'
+    assert finals['signal_credit_china']['status'] == 'needs_verification'
     assert client.get('/api/companies/甲公司/reliability').json()['report']['score'] is not None
     assert len(client.app.state.repo.tasks()) == len(tasks)
 

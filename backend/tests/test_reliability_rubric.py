@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from jobscope.reliability.rubric import ASSESSMENT, DIMENSIONS, MATERIAL, RULES, score
@@ -174,4 +176,34 @@ def test_industry_stays_unscored_with_only_a_material_registration():
     # rubric 层的 RuleFinding 不带 kind：登记类这条在规则表里就是 MATERIAL，持久化后才写成 null 分。
     assert [item.rule for item in industry.findings] == ['industry_media_count']
     assert RULES['industry_media_count'].kind == MATERIAL
-    assert any('可评价的规则' in line for line in industry.missing)
+    # 2026-11-15 起 industry 有了评估规则（AI 行业判断）：只有材料时缺口指向那条规则尚无来源，
+    # 不再是「该维度没有可评价的规则」。
+    assert any('industry_trend_llm' in line and '尚无来源' in line for line in industry.missing)
+
+
+@pytest.mark.parametrize('years,expected', [(0.8, 20.0), (1.9, 20.0), (2, 45.0), (4.9, 45.0),
+                                            (5, 70.0), (9.9, 70.0), (10, 100.0), (39.2, 100.0)])
+def test_company_age_is_banded_not_linear(years, expected):
+    """2026-11-15 用户确认的分带：不满 2 年 20、2-5 年 45、5-10 年 70、10 年以上满分。
+
+    线性（年数÷10）会让未满一年的公司落到 8 分极端值；分带让「新」不再等于「几乎零分」。
+    """
+    result = score([sig('company_age', {'years': years})])
+    stability = next(item for item in result.dimensions if item.dimension == 'stability')
+    assert stability.score == expected
+
+
+def test_soe_status_scores_both_sides_and_industry_trend_maps_three_directions():
+    """国企性质：flag 折算 85/55（权重低于同维度其他规则）；行业趋势：上行/平稳/下行 85/60/35。"""
+    soe = lambda flag: next(item for item in result_dimensions([sig('soe_status', {'flag': flag})])
+                            if item.dimension == 'stability')
+    assert soe(1).score == 85.0 and soe(0).score == 55.0
+    for direction, expected in ((1, 85.0), (0, 60.0), (-1, 35.0)):
+        industry = next(item for item in result_dimensions([sig('industry_trend_llm', {'direction': direction}, 'llm')])
+                        if item.dimension == 'industry')
+        assert industry.score == expected
+        assert industry.confidence == 1.0
+
+
+def result_dimensions(signals):
+    return score(signals).dimensions

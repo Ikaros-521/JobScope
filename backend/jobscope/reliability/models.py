@@ -3,9 +3,11 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 Dimension = Literal['stability', 'pay', 'people', 'professional', 'industry', 'operations']
-SourceClass = Literal['official', 'paid_api', 'platform', 'user_material', 'employee', 'media']
+SourceClass = Literal['official', 'paid_api', 'platform', 'user_material', 'employee', 'media', 'llm']
 # Employee and media wording is a claim about somebody else's experience; it may not settle a dimension on its own.
-SOLO_EVIDENCE = {'official', 'paid_api', 'platform', 'user_material'}
+# llm 是 2026-11-15 新增：AI 结构化判断（行业趋势）——分数仍由 rubric 折算，判断本身可独立
+# 支撑 industry 维度（该维度没有其他评估规则），但文案必须带「模型判断，非实时数据」后缀。
+SOLO_EVIDENCE = {'official', 'paid_api', 'platform', 'user_material', 'llm'}
 
 
 def can_stand_alone(source_class: str) -> bool:
@@ -88,5 +90,7 @@ class ReliabilityReport(BaseModel):
     limitations: list[str]
 
 
-DISCLAIMER = '本页面是 JobScope 依据有限公开材料生成的主观参考，不构成对该公司的事实认定、信用评价或经营风险结论。每条依据都标出来源与抓取时间，请以可核实的原文为准，并自行在面试与背调中确认。'
-DISCLAIMER_VERSION = 'disclaimer-1'
+DISCLAIMER = ('本页面是 JobScope 依据有限公开材料生成的主观参考，不构成对该公司的事实认定、信用评价或经营风险结论。'
+              '其中标注「模型判断」的内容（如行业趋势）来自 AI 模型基于其知识与已存材料的判断，非实时数据。'
+              '每条依据都标出来源与抓取时间，请以可核实的原文为准，并自行在面试与背调中确认。')
+DISCLAIMER_VERSION = 'disclaimer-2'

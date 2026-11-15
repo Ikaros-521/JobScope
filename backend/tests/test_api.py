@@ -229,6 +229,11 @@ def test_sources_endpoint_describes_the_domestic_job_platforms(client):
     assert len(sources['boss']['cities']) > 300, '地点提示要靠接口给出的城市字典，前端不该自带名单'
     assert set(sources['boss']['hot']) <= set(sources['boss']['cities']) and sources['boss']['hot']
     assert all(item['name'] and item['description'] for item in sources.values())
+    # login 元数据驱动前端「采集前先说明需要登录」：只有实测过登录墙的来源才标 required，不许照感觉写。
+    assert sources['boss']['login'] == 'required'
+    assert sources['zhaopin']['login'] == 'recommended' and sources['51job']['login'] == 'recommended'
+    assert sources['liepin']['login'] == 'none' and sources['remotive']['login'] == 'none'
+    assert all(item['login'] in {'required', 'recommended', 'none'} for item in sources.values())
 
 
 def test_cities_endpoint_serves_the_shared_pinyin_table(client):
@@ -304,3 +309,69 @@ def test_locations_lists_saved_places_by_job_count(client):
     assert [(item['location'], item['jobs']) for item in items] == [('杭州', 2), ('北京-昌平区', 1)]
     assert client.get('/api/locations?limit=1').json()['locations'] == [dict(location='杭州', jobs=2)]
     assert client.get('/api/locations?limit=0').status_code == 422
+
+
+def _saved_test_channel(client, **overrides):
+    payload = dict(name='测试渠道', channel='siliconflow', protocol='openai', url='https://api.example.com/v1',
+                   model='deepseek-ai/DeepSeek-V3', models=['deepseek-ai/DeepSeek-V3'], embeddings=['BAAI/bge-m3'])
+    payload.update(overrides)
+    return client.post('/api/settings/llm-channels', json=payload).json()['channel']
+
+
+def test_channel_connection_test_persists_last_test_per_target(tmp_path, monkeypatch):
+    """渠道测试结果持久化到 last_test；对话与向量分开记录，草稿地址不冒充已保存渠道。"""
+    import httpx
+    import jobscope.model_transport as transport
+    import jobscope.research.providers as providers
+    monkeypatch.setattr(transport, 'complete', lambda *args, **kwargs: ('OK', {}))
+    monkeypatch.setattr(providers.EmbeddingProvider, 'embed', lambda self, texts: [[0.0] * 16 for _ in texts])
+    with TestClient(create_app(tmp_path)) as client:
+        channel = _saved_test_channel(client)
+        probe = dict(mode='remote', channel='siliconflow', protocol='openai', url=channel['url'], model=channel['model'], key='')
+        assert client.post('/api/settings/models/test', json=dict(target='llm', channel_id=channel['id'], config=probe)).status_code == 200
+        saved = client.get('/api/settings/llm-channels').json()['channels'][0]
+        assert saved['last_test']['ok'] is True and saved['last_test']['target'] == 'llm' and saved['last_test']['model'] == channel['model']
+
+        # 编辑中的草稿换了地址：测试成功也不写进已保存渠道
+        draft = dict(probe, url='https://other.example.com/v1', model='BAAI/bge-m3')
+        assert client.post('/api/settings/models/test', json=dict(target='embedding', channel_id=channel['id'], config=draft)).status_code == 200
+        assert client.get('/api/settings/llm-channels').json()['channels'][0]['last_test']['target'] == 'llm'
+
+        # 渠道详情页的「测试向量模型」：走已保存渠道的地址与密钥
+        vector = dict(mode='remote', channel='siliconflow', protocol='openai', url=channel['url'], model='BAAI/bge-m3', key='')
+        result = client.post('/api/settings/models/test', json=dict(target='embedding', channel_id=channel['id'], config=vector))
+        assert result.status_code == 200 and result.json()['dimensions'] == 16
+        saved = client.get('/api/settings/llm-channels').json()['channels'][0]
+        assert saved['last_test']['ok'] is True and saved['last_test']['target'] == 'embedding'
+
+        # 失败也落库，渠道页据此显示「测试失败」
+        def boom(*args, **kwargs):
+            raise httpx.ConnectError('connection refused')
+        monkeypatch.setattr(transport, 'complete', boom)
+        failed = client.post('/api/settings/models/test', json=dict(target='llm', channel_id=channel['id'], config=probe))
+        assert failed.status_code == 502
+        saved = client.get('/api/settings/llm-channels').json()['channels'][0]
+        assert saved['last_test']['ok'] is False and saved['last_test']['target'] == 'llm'
+
+
+def test_purpose_test_uses_effective_binding_and_records_to_channel(tmp_path, monkeypatch):
+    """「功能与模型」的行级测试按生效绑定实测；embedding 返回维度，结果写回绑定的渠道。"""
+    import jobscope.model_transport as transport
+    import jobscope.research.providers as providers
+    monkeypatch.setattr(transport, 'complete', lambda *args, **kwargs: ('OK', {}))
+    monkeypatch.setattr(providers.EmbeddingProvider, 'embed', lambda self, texts: [[0.0] * 8 for _ in texts])
+    with TestClient(create_app(tmp_path)) as client:
+        # 未绑定远端模型时拒绝测试
+        assert client.post('/api/settings/models/test-purpose/extraction').status_code == 422
+
+        channel = _saved_test_channel(client)
+        client.put('/api/settings/bindings', json=dict(purpose='embedding', kind='channel', channel_id=channel['id'], model='BAAI/bge-m3'))
+        result = client.post('/api/settings/models/test-purpose/embedding')
+        assert result.status_code == 200 and result.json()['dimensions'] == 8
+        saved = client.get('/api/settings/llm-channels').json()['channels'][0]
+        assert saved['last_test']['ok'] is True and saved['last_test']['target'] == 'embedding' and saved['last_test']['model'] == 'BAAI/bge-m3'
+
+        client.post(f"/api/settings/llm-channels/{channel['id']}/activate")
+        assert client.post('/api/settings/models/test-purpose/agent').status_code == 200
+        saved = client.get('/api/settings/llm-channels').json()['channels'][0]
+        assert saved['last_test']['target'] == 'llm'

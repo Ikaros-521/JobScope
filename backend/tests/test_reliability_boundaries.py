@@ -183,6 +183,15 @@ def test_no_reliability_response_echoes_the_configured_secret(client, tmp_path, 
     from jobscope.reliability.sources import PaidClient
 
     monkeypatch.setattr(PaidClient, 'fetch', lambda self, company: PAID_PAYLOAD)
+    # 浏览器来源的采集入口会在无会话时自动拉起真 Chrome；测试里替换成必败的假启动，
+    # 既不真开浏览器也不碰网络。三个浏览器来源 2026-11-15 起暂停；本用例扫密钥泄漏、
+    # 不测暂停，临时摘掉信用中国的 suspended 标记让它代表浏览器来源。
+    from jobscope import browser as browser_module
+    from jobscope.reliability.sources import SIGNAL_SOURCES
+    monkeypatch.delitem(SIGNAL_SOURCES['credit_china'], 'suspended')
+    monkeypatch.setattr(browser_module, 'start',
+                        lambda data_dir=None, source='boss': {'installed': True, 'running': False,
+                                                              'message': '项目 Chrome 启动失败；请关闭占用同一配置目录的浏览器后重试。'})
     client.post('/api/evidence', json=dict(title='年报摘要', company='甲公司', kind='disclosure',
                                            text='2024 年度报告：参保人数 240 人'))
     calls = [client.put('/api/reliability/sources/qcc', json=dict(mode='enabled', key=SECRET, url=PAID_URL)),
@@ -190,7 +199,7 @@ def test_no_reliability_response_echoes_the_configured_secret(client, tmp_path, 
              client.get('/api/reliability/sources'),
              client.post('/api/companies/甲公司/signals/collect', json=dict(source='qcc')),
              client.post('/api/companies/甲公司/signals/collect', json=dict(source='jobscope_jobs')),
-             client.post('/api/companies/甲公司/signals/collect', json=dict(source='gsxt')),
+             client.post('/api/companies/甲公司/signals/collect', json=dict(source='credit_china')),
              client.post('/api/companies/甲公司/signals/extract', json=dict()),
              client.post('/api/companies/甲公司/reliability', json=dict()),
              client.get('/api/companies/甲公司/reliability')]
@@ -277,11 +286,13 @@ def test_every_finding_cites_evidence_and_material_never_shows_a_number(client, 
 # 计划正文的字面写法是「除 rubric.py 外没有任何模块 import model_transport/get_model_config」。
 # 这条按字面实现不了：`extract.py` 的本职就是「证据正文 → 结构化信号」，它必须调用模型。
 # 真正要钉住的是「谁都不能拿模型算分」，所以下面把它写成两层：
-#   1. 除 extract 外，reliability/ 里任何模块不许导入模型层；
-#   2. extract 只能交信号，交不出分数（契约禁字段 + 不许碰措辞 + 见下条 mint 检查）。
+#   1. 除 extract / llm_industry 外，reliability/ 里任何模块不许导入模型层；
+#   2. 两个被放行的模块都只能交信号/判断，交不出分数（契约禁字段 + 不许产出措辞 + 见 mint 检查）。
+#      llm_industry（2026-11-15）额外允许导入 wording.lint——那是输出禁用词闸门，不是产出措辞。
 MODEL_ACCESS = {'model_transport', 'get_model_config', 'model_configured', 'chat', 'complete', 'stream_turn',
                 'tool_turn', 'openai', 'anthropic', 'dashscope'}
 MODEL_ALLOWED = {'extract'}
+MODEL_JUDGEMENT_ALLOWED = {'llm_industry'}  # 借 lint 闸门，但仍不认识 TEMPLATES/render，更不许评分
 
 
 def test_only_the_extractor_may_reach_the_model_layer():
@@ -293,6 +304,11 @@ def test_only_the_extractor_may_reach_the_model_layer():
         if module in MODEL_ALLOWED:
             # 唯一被放行去调模型的模块仍然只交信号：它不认识措辞，也不在任何地方调用评分函数。
             assert 'wording' not in names
+            assert 'score' not in called_names(module_tree(module))
+            continue
+        if module in MODEL_JUDGEMENT_ALLOWED:
+            # AI 行业判断模块：只许借 wording.lint 做禁用词闸门，不许渲染措辞，更不许评分。
+            assert 'lint' in names and 'render' not in names and 'TEMPLATES' not in names
             assert 'score' not in called_names(module_tree(module))
             continue
         assert offenders == [], f'{module}.py 不该接触模型层，却导入了 {offenders}'

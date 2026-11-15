@@ -151,6 +151,9 @@ def test_system_prompt_routes_business_facts_to_project_lookup(agent, monkeypatc
     assert '不要用浏览器MCP自己翻企业信息网站' in system
     # 无搜索MCP时，工商信息仍指向项目快查而不是一起判死
     assert '项目快查与采集' in system and '优先调用company_web_lookup' in system
+    # 补分工作流与四个新工具进了系统提示
+    assert '补分工作流' in system and 'signal_collect' in system
+    assert 'reliability_refresh' in system and 'job_deep_read' in system and 'signal_extract' in system
 
 
 @pytest.fixture
@@ -198,3 +201,247 @@ def test_chat_loop_executes_web_lookup_tool(client, monkeypatch):
     # 新工具已注册进模型可见的工具目录（openai wire 格式外面包一层 function）
     assert any(item['function']['name'] == 'company_web_lookup' for item in calls[0]['tools'])
     assert any(item['function']['name'] == 'collect_jobs' for item in calls[0]['tools'])
+    assert any(item['function']['name'] == 'signal_collect' for item in calls[0]['tools'])
+    assert any(item['function']['name'] == 'reliability_refresh' for item in calls[0]['tools'])
+
+
+# ---- 补分工具：signal_collect / job_deep_read / signal_extract / reliability_refresh ----
+# 与上方同一路数：管线全部打桩，断言工具层的范围纪律、状态透传与可引用证据登记。
+
+
+def stub_collect_source(monkeypatch, outcome=None, raises=None):
+    """打桩 reliability.collection.collect_source；Agent 分支在调用时才从模块取该函数。"""
+    from jobscope.reliability import collection
+    calls = []
+
+    def collect_source(repo, data_dir, company, source_id, credit_code='', *, task=None):
+        calls.append(dict(company=company, source=source_id))
+        if raises:
+            raise raises
+        return outcome
+
+    monkeypatch.setattr(collection, 'collect_source', collect_source)
+    return calls
+
+
+def test_signal_collect_refused_in_job_scope_without_task(agent, job, monkeypatch):
+    calls = stub_collect_source(monkeypatch, raises=AssertionError('不应执行'))
+    state = state_for(agent, scope_for('job', job))
+    result = agent._builtin(state, 'signal_collect', dict(company='甲公司', source='jobscope_jobs'))
+    assert result['status'] == 'out_of_scope' and result['executed'] is False
+    assert 'request_scope_expansion' in result['note'] and calls == [] and task_count(agent) == 0
+
+
+def test_signal_collect_out_of_scope_company_rejected_before_pipeline(agent, job, monkeypatch):
+    calls = stub_collect_source(monkeypatch, raises=AssertionError('不应执行'))
+    state = state_for(agent, scope_for('company', job))
+    with pytest.raises(ScopeBoundaryError):
+        agent._builtin(state, 'signal_collect', dict(company='乙公司', source='aiqicha_web'))
+    assert calls == [] and task_count(agent) == 0
+
+
+def test_signal_collect_paid_source_refused(agent, monkeypatch):
+    calls = stub_collect_source(monkeypatch, raises=AssertionError('不应执行'))
+    state = state_for(agent, scope_for('global'))
+    result = agent._builtin(state, 'signal_collect', dict(company='甲公司', source='qcc'))
+    assert result['status'] == 'unsupported' and '付费接口' in result['message'] and calls == []
+
+
+def test_signal_collect_unavailable_source_reports_skipped(agent, monkeypatch):
+    from jobscope.reliability.collection import SourceUnavailable
+    stub_collect_source(monkeypatch, raises=SourceUnavailable('入口已按用户要求暂停（2026-11-15）'))
+    state = state_for(agent, scope_for('global'))
+    result = agent._builtin(state, 'signal_collect', dict(company='甲公司', source='credit_china'))
+    assert result['status'] == 'skipped' and '暂停' in result['message']
+    # 停用/挂起来自管线内的 validate_source：不建任务、不落证据，只转述原因
+    assert result['citable_evidence'] == [] and state['evidence'] == {} and task_count(agent) == 0
+
+
+@pytest.mark.parametrize('status,message', [
+    ('needs_login', '请先启动项目浏览器并完成登录。'),
+    ('backoff', '另一个采集任务正占用项目浏览器，请稍后重试。'),
+])
+def test_signal_collect_passes_collector_status_through(agent, monkeypatch, status, message):
+    task = agent.repo.create_task('signal_aiqicha_web', '甲公司')
+    stub_collect_source(monkeypatch, dict(status=status, message=message, signals=[], task=task))
+    state = state_for(agent, scope_for('global'))
+    result = agent._builtin(state, 'signal_collect', dict(company='甲公司', source='aiqicha_web'))
+    assert result['status'] == status and message in result['message']
+    assert result['citable_evidence'] == [] and state['evidence'] == {}
+
+
+def test_signal_collect_persists_signals_and_registers_citable_evidence(agent, monkeypatch):
+    evidence = agent.repo.save_evidence(dict(title='甲公司 参保人数', company='甲公司', kind='disclosure',
+                                             text='2024 年报：参保 120 人', url=''), 'aiqicha_web')
+    signal = types.SimpleNamespace(rule='insured_headcount_trend', value={'after': 120, 'before': 100},
+                                   evidence_id=evidence['id'])
+    task = agent.repo.create_task('signal_aiqicha_web', '甲公司')
+    calls = stub_collect_source(monkeypatch, dict(status='completed', message='已保存 1 条信号。',
+                                                  signals=[signal], task=task))
+    state = state_for(agent, scope_for('global'))
+    result = agent._builtin(state, 'signal_collect', dict(company='甲公司', source='aiqicha_web'))
+    assert result['status'] == 'completed' and result['signals'][0]['rule'] == 'insured_headcount_trend'
+    assert result['citable_evidence'][0]['id'] == evidence['id'] and evidence['id'] in state['evidence']
+    assert calls[0]['source'] == 'aiqicha_web'
+    assert 'reliability_refresh' in result['note']
+
+
+def test_signal_collect_enum_matches_free_source_registry():
+    from jobscope.general_agent import BUILTINS
+    from jobscope.reliability.sources import SIGNAL_SOURCES
+    tool = next(item for item in BUILTINS if item['name'] == 'signal_collect')
+    enum = tool['parameters']['properties']['source']['enum']
+    # 枚举与登记表同源生成，付费接口（qcc/tyc http_api）不进对话工具
+    assert enum == [key for key, spec in SIGNAL_SOURCES.items() if spec['tier'] == 'free']
+    assert 'qcc' not in enum and 'tyc' not in enum
+
+
+def boss_pending(repo, company, external_id):
+    return repo.save_job(dict(title='Java 工程师', company=company, salary='20-30K', location='杭州',
+                              url=f'https://www.zhipin.com/job_detail/{external_id}.html',
+                              external_id=external_id, description_status='listing'), 'boss')
+
+
+def stub_detail_collector(monkeypatch):
+    from jobscope import job_details
+    seen = []
+
+    def collect_detail(job, data_dir):
+        seen.append(job['id'])
+        return dict(status='completed',
+                    job={**job, 'description': '完整职责：负责服务端开发\n团队 30 人', 'description_status': 'complete'},
+                    company_evidence=None)
+
+    monkeypatch.setattr(job_details, 'collect_detail', collect_detail)
+    return seen
+
+
+def test_job_deep_read_refused_in_job_scope_without_task(agent, job, monkeypatch):
+    seen = stub_detail_collector(monkeypatch)
+    state = state_for(agent, scope_for('job', job))
+    result = agent._builtin(state, 'job_deep_read', dict(company='甲公司', limit=3))
+    assert result['status'] == 'out_of_scope' and result['executed'] is False
+    assert 'request_scope_expansion' in result['note'] and seen == [] and task_count(agent) == 0
+
+
+def test_job_deep_read_backoff_when_batch_lock_held(agent, job, monkeypatch):
+    from jobscope import job_details
+    seen = stub_detail_collector(monkeypatch)
+    boss_pending(agent.repo, '甲公司', 'lock1')
+    assert job_details.batch_lock.acquire(blocking=False)
+    try:
+        state = state_for(agent, scope_for('company', job))
+        result = agent._builtin(state, 'job_deep_read', dict(company='甲公司', limit=3))
+    finally:
+        job_details.batch_lock.release()
+    assert result['status'] == 'backoff' and seen == [] and task_count(agent) == 0
+
+
+def test_job_deep_read_only_reads_scope_company_pending(agent, job, monkeypatch):
+    own = boss_pending(agent.repo, '甲公司', 'a1')
+    other = boss_pending(agent.repo, '乙公司', 'b1')
+    seen = stub_detail_collector(monkeypatch)
+    state = state_for(agent, scope_for('company', job))
+    result = agent._builtin(state, 'job_deep_read', dict(company='甲公司', limit=5))
+    assert result['status'] == 'completed' and result['saved'] == 1
+    # 只有范围公司的待补岗位进了反查；乙公司的岗位不进
+    assert seen == [own['id']] and other['id'] not in seen
+    assert result['company_complete_jds'] == 1
+    assert agent.repo.task(result['task_id'])['count'] == 1
+
+
+def test_job_deep_read_skips_when_nothing_pending(agent, job, monkeypatch):
+    seen = stub_detail_collector(monkeypatch)
+    state = state_for(agent, scope_for('company', job))
+    result = agent._builtin(state, 'job_deep_read', dict(company='甲公司'))
+    assert result['status'] == 'skipped' and result['saved'] == 0 and seen == [] and task_count(agent) == 0
+    assert 'collect_jobs' in result['note']
+
+
+def stub_run_extract(monkeypatch, outcome):
+    from jobscope.reliability import service
+    calls = []
+
+    def run_signal_extract(repo, company, credit_code='', *, limit=12, max_tokens=1200):
+        calls.append(dict(company=company, limit=limit, max_tokens=max_tokens))
+        return outcome
+
+    monkeypatch.setattr(service, 'run_signal_extract', run_signal_extract)
+    return calls
+
+
+def test_signal_extract_refused_in_job_scope_without_task(agent, job, monkeypatch):
+    calls = stub_run_extract(monkeypatch, dict())
+    state = state_for(agent, scope_for('job', job))
+    result = agent._builtin(state, 'signal_extract', dict(company='甲公司'))
+    assert result['status'] == 'out_of_scope' and result['executed'] is False and calls == []
+
+
+def test_signal_extract_returns_signals_and_citable_evidence(agent, job, monkeypatch):
+    evidence = agent.repo.save_evidence(dict(title='甲公司 年报', company='甲公司', kind='disclosure',
+                                             text='本期营业收入 1.2 亿，上年 1.0 亿', url=''), 'user_import')
+    signal = types.SimpleNamespace(rule='disclosure_revenue_trend', value={'current': 120000000, 'previous': 100000000},
+                                   evidence_id=evidence['id'])
+    task = agent.repo.create_task('reliability_extract', '甲公司')
+    calls = stub_run_extract(monkeypatch, dict(status='completed', message='抽取 1 条。', accepted=1, evidence=1,
+                                               signals=[signal], task=task, identity=None))
+    state = state_for(agent, scope_for('company', job))
+    result = agent._builtin(state, 'signal_extract', dict(company='甲公司', limit=20))
+    assert result['status'] == 'completed' and result['accepted'] == 1
+    assert result['citable_evidence'][0]['id'] == evidence['id'] and evidence['id'] in state['evidence']
+    assert calls[0]['limit'] == 20
+
+
+def test_reliability_refresh_refused_in_job_scope_without_task(agent, job):
+    state = state_for(agent, scope_for('job', job))
+    result = agent._builtin(state, 'reliability_refresh', dict(company='甲公司'))
+    assert result['status'] == 'out_of_scope' and result['executed'] is False
+    assert 'request_scope_expansion' in result['note']
+
+
+def test_reliability_refresh_reports_dimensions_missing_and_diff(agent, job):
+    from jobscope.reliability.models import SignalInput
+    identity = agent.repo.resolve_company('甲公司')
+    agent.repo.save_signal(SignalInput(company_id=identity['id'], dimension='stability', rule='company_age',
+                                       value={'years': 6}, unit='年', source_class='official', evidence_id='E-age',
+                                       observed_at='', collected_at='2026-01-01T00:00:00+00:00'))
+    state = state_for(agent, scope_for('company', job))
+    first = agent._builtin(state, 'reliability_refresh', dict(company='甲公司'))
+    assert first['status'] == 'completed'
+    stability = next(line for line in first['dimensions'] if line['dimension'] == 'stability')
+    pay = next(line for line in first['dimensions'] if line['dimension'] == 'pay')
+    # 有信号的维度出分，无信号的维度带缺口文案——补分工作流靠这两者定位下一步
+    assert stability['score'] is not None and pay['score'] is None and pay['missing']
+    assert first['diff'] is None  # 首次计算没有上一份快照
+    # 换一条更新的信号后重算：差分把变化归因到具体规则（取值跨档位才看得见分数变化；
+    # collected_at 错开，别让同秒并列取旧值）
+    agent.repo.save_signal(SignalInput(company_id=identity['id'], dimension='stability', rule='company_age',
+                                       value={'years': 12}, unit='年', source_class='official', evidence_id='E-age2',
+                                       observed_at='', collected_at='2026-01-02T00:00:00+00:00'))
+    second = agent._builtin(state, 'reliability_refresh', dict(company='甲公司'))
+    assert second['diff'] is not None
+    assert any(item['rule'] == 'company_age' for item in second['diff']['rules'])
+
+
+def test_company_profile_surfaces_missing_gaps(agent, job):
+    from jobscope.reliability.service import ReliabilityService
+    agent.repo.resolve_company('甲公司')
+    ReliabilityService(agent.repo).recompute('甲公司')
+    state = state_for(agent, scope_for('company', job))
+    result = agent._builtin(state, 'company_profile', dict(company='甲公司'))
+    assert result['found'] and result['reference']
+    pay = next(line for line in result['reference']['dimensions'] if line['dimension'] == 'pay')
+    assert pay['score'] is None and pay['missing']
+    assert 'reliability_refresh' in result['note']
+
+
+def test_chat_loop_executes_reliability_refresh_tool(client, monkeypatch):
+    configure(client)
+    calls = scripted(monkeypatch, [tool_reply('reliability_refresh', dict(company='甲公司')),
+                                   {'choices': [{'message': {'content': '已重算。'}}]}])
+    result = client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'message': '重算甲公司的参考分'})
+    assert result.status_code == 200
+    events = result.json()['trace']['events']
+    assert any(event['tool'] == 'reliability_refresh' and event['status'] == 'completed' for event in events)
+    tool_message = json.loads(calls[1]['messages'][-1]['content'])
+    assert tool_message['status'] == 'completed' and tool_message['dimensions']

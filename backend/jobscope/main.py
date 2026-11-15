@@ -158,7 +158,7 @@ def create_app(data_dir=None):
     def install_online_skill(data: OnlineSkillInput):
         from .market import install_online_skill as install
         try:
-            return install(extensions, data.repo, data.path)
+            return install(extensions, data.repo, data.path, system_settings.effective()['market_source'])
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
 
@@ -179,16 +179,18 @@ def create_app(data_dir=None):
     @app.get('/api/agent/market/search')
     async def search_market(q: str = Query(min_length=1, max_length=50)):
         from .market import search_online
+        source = system_settings.effective()['market_source']
         try:
-            return await run_in_threadpool(search_online, q)
+            return await run_in_threadpool(search_online, q, source)
         except ValueError as exc:
             raise HTTPException(503, str(exc)) from None
 
     @app.post('/api/agent/market/refresh')
     async def refresh_market():
         from .market import refresh_online, payload
+        source = system_settings.effective()['market_source']
         try:
-            result = await run_in_threadpool(refresh_online)
+            result = await run_in_threadpool(refresh_online, source)
         except ValueError as exc:
             raise HTTPException(503, str(exc)) from None
         extensions.save_market_cache(result)
@@ -282,6 +284,16 @@ def create_app(data_dir=None):
     def test_model_settings(data: ConnectionInput):
         try:
             return settings.test(data.target, data.config, data.channel_id)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except ConnectionError as exc:
+            raise HTTPException(502, str(exc)) from None
+
+    @app.post('/api/settings/models/test-purpose/{purpose}')
+    def test_model_purpose(purpose: str):
+        """按功能当前生效配置实测（渠道 + 模型 + 密钥全部来自绑定，不回显给前端）。"""
+        try:
+            return settings.test_purpose(purpose)
         except ValueError as exc:
             raise HTTPException(422, str(exc)) from None
         except ConnectionError as exc:
@@ -443,9 +455,10 @@ def create_app(data_dir=None):
         # unverified GSXT remains a manual option rather than silently running on every research.
         selected = data.signal_sources
         if selected is None:
+            # manual_only 来源（AI 行业判断，消耗模型额度）与付费源一样不进默认选择。
             selected = [source for source, spec in SIGNAL_SOURCES.items()
                         if spec['tier'] == 'free' and spec['implemented'] and spec['status'] == 'available'
-                        and store.ready(source)]
+                        and not spec.get('manual_only') and store.ready(source)]
         if len(set(selected)) != len(selected):
             raise HTTPException(400, '信号来源不能重复')
         try:
@@ -548,6 +561,7 @@ def create_app(data_dir=None):
         return {"sources": [
             dict(id=source, name=item['name'], kind=item['kind'], transport_mode=item['transport'],
                  status=item['status'], description=item['description'],
+                 login=item.get('login', 'none'),
                  cities=list(item.get('codes') or []), hot=list(item.get('hot') or []),
                  browser_collectable=source in collectable)
             for source, item in connectors.SOURCES.items()]}
@@ -620,41 +634,6 @@ def create_app(data_dir=None):
     # reliability 子模块全部走函数级 import：包的 __init__ 保持零导入，浏览器与模型依赖
     # 就不会被打进不需要它们的请求路径。
 
-    def company_materials(identity):
-        """该公司已保存的非岗位材料。名称按实体规范化比对，否则 '甲 公司' 存的证据永远配不上 '甲公司'。
-
-        两类「自己写下的记录」都不算材料：本地计算记录会让计数随点击自增，付费接口原文则是
-        取数结果而不是证据来源，喂给抽取器等于让厂商字段第二轮变成「材料」。
-        """
-        from .reliability.local import DERIVED_KIND
-        from .reliability.paid import PAID_KIND
-        known = {identity['name'], *(identity.get('aliases') or [])}
-        return [item for item in repo.evidence(include_job_postings=False)
-                if Repository.normalise_name(item['company']) in known
-                and item['kind'] not in (DERIVED_KIND, PAID_KIND)]
-
-    def company_jd_materials(identity):
-        """完整 JD 的岗位证据（P1 起 team_size_statement 要从岗位描述里抽「团队 N 人」）。
-
-        只有 description_status == 'complete' 的岗位进材料：半截 JD 不能用来评估，这是 P0
-        在 /api/analyze 里就立过的规矩。证据行仍是 save_job 落的那条真实 job_posting 记录，
-        evidence_id 可回查原文；列表摘要与别家公司照样不进。
-        """
-        known = {identity['name'], *(identity.get('aliases') or [])}
-        complete = [item for item in repo.jobs()
-                    if Repository.normalise_name(item['company']) in known
-                    and item.get('description_status') == 'complete']
-        wanted = {evidence_id for job in complete for evidence_id in job.get('evidence_ids', [])}
-        return [item for item in repo.evidence(include_job_postings=True)
-                if item['kind'] == 'job_posting' and item['id'] in wanted and item['text'].strip()]
-
-    def company_identity(name, credit_code=''):
-        """实体归一走 repository 的强键口径；service.company() 只接名称，这里还要带上信用代码。"""
-        try:
-            return repo.resolve_company(name, credit_code)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-
     @app.post('/api/companies/{company}/reliability')
     def recompute_reliability(company: str = PathParam(min_length=1, max_length=300), data: ReliabilityInput | None = None):
         from .reliability.service import ReliabilityService
@@ -695,45 +674,17 @@ def create_app(data_dir=None):
 
     @app.post('/api/companies/{company}/signals/extract')
     def extract_company_signals(data: SignalExtractInput, company: str = PathParam(min_length=1, max_length=300)):
-        """把已存材料喂给抽取器：手动导入的公告与材料不会自己变成信号。"""
-        from .reliability import extract
-        from .reliability.models import SignalInput
-        from .reliability.rubric import RULES
-        identity = company_identity(company, data.credit_code)
-        # 非岗位材料 + 完整 JD 的岗位证据，按证据编号去重后一起进抽取器；只有完整职责可被评估。
-        materials = {item['id']: item for item in [*company_materials(identity), *company_jd_materials(identity)]
-                     if item['text'].strip()}
-        materials = list(materials.values())[:data.limit]
-        outcome = extract.extract(identity['name'], materials, max_tokens=data.max_tokens) if materials \
-            else dict(status='skipped', message='该公司还没有可抽取的非岗位材料。', signals=[], raw='')
-        task = repo.create_task('reliability_extract', identity['name'])
-        kinds = {item['id']: item['kind'] for item in materials}
-        # team_size_statement 的多条原始自述在这里聚合成一条信号：中位数与相容数由代码算，
-        # 模型只交原始数字；repository.signals() 每条规则只留最新一条，聚合必须发生在落库前。
-        from .reliability.extract import aggregate_team_size
-        size_signals = [item for item in outcome['signals'] if item.rule == 'team_size_statement']
-        other_signals = [item for item in outcome['signals'] if item.rule != 'team_size_statement']
-        merged, participants = aggregate_team_size(size_signals)
-        aggregation_note = ''
-        if merged is not None:
-            aggregation_note = (f'team_size_statement 由 {len(participants)} 条自述聚合（中位数与相容数由代码计算，'
-                                f'锚条编号 {merged.evidence_id}，参与编号：{"、".join(participants)}）。')
-        saved = []
-        # 聚合成功 → 只落合并后的一条；不足两条时原始自述照常落库（闸门会在报告里解释为什么不出分）。
-        for item in ([*other_signals, merged] if merged is not None else outcome['signals']):
-            spec = RULES[item.rule]
-            saved.append(repo.save_signal(SignalInput(
-                company_id=identity['id'], dimension=item.dimension, rule=item.rule, value=item.value,
-                unit=spec.unit, source_class=extract.KIND_TO_SOURCE_CLASS.get(kinds.get(item.evidence_id, ''), 'user_material'),
-                evidence_id=item.evidence_id, observed_at='', collected_at=now())))
-        # 结构化状态与 raw 原文一起进 tasks，前端才显示得出真实状态、事后也查得到模型说了什么。
-        # 聚合说明也写进任务：未成为锚条的参与编号在这里留档，出处链才查得回去。
-        message = outcome['message'] + aggregation_note
-        task.update(kind='reliability_extract', status=outcome['status'], message=message,
-                    count=len(saved), raw=str(outcome['raw'])[:4000])
-        repo.update_task(task)
-        return dict(status=outcome['status'], message=message, accepted=len(saved),
-                    signals=saved, evidence=len(materials), task=task)
+        """把已存材料喂给抽取器：手动导入的公告与材料不会自己变成信号。
+
+        管线在 reliability.service.run_signal_extract（与 Agent 的 signal_extract 工具共用），
+        这里只做 HTTP 包装；identity 是管线给工具层的内部信息，不进响应。"""
+        from .reliability.service import run_signal_extract
+        try:
+            result = run_signal_extract(repo, company, data.credit_code, limit=data.limit, max_tokens=data.max_tokens)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        result.pop('identity', None)
+        return result
 
     @app.get('/api/reliability/sources')
     def reliability_sources():

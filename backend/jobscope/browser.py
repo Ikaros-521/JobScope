@@ -65,11 +65,21 @@ PAGES = {
 }
 
 
-# 公司快查渠道没有岗位搜索页，只要能打开站点首页让用户登录/过验证即可；start() 按
-# PAGES → LOOKUP_PAGES → boss 的顺序找落点，公司快查面板的「打开专用浏览器」复用同一入口。
+# 公司快查渠道与信号来源没有岗位搜索页，只要能打开站点首页让用户登录/过验证即可；start() 按
+# PAGES → LOOKUP_PAGES → boss 的顺序找落点，公司快查面板的「打开专用浏览器」与信号采集的
+# 自动拉起（reliability/collectors.py 无会话时调 start）复用同一入口。gsxt 落点是实名子系统
+# 的检索壳页（2026-11-15 实测：检索必须从这里进，未实名登录时这里就是登录入口）。
 LOOKUP_PAGES = {
     'qcc': dict(name='企查查', home='https://www.qcc.com'),
     'tyc': dict(name='天眼查', home='https://www.tianyancha.com'),
+    'aiqicha': dict(name='爱企查', home='https://aiqicha.baidu.com'),
+    'gsxt': dict(name='国家企业信用信息公示系统', home='https://shiming.gsxt.gov.cn/corp-query-search-1.html'),
+    'credit_china': dict(name='信用中国', home='https://public.creditchina.gov.cn'),
+    'court_records': dict(name='中国裁判文书网', home='https://wenshu.court.gov.cn'),
+    # 商业站点公开页的信号来源（reliability/collectors.py 的 *_web 流）：落点与快查同一批站点。
+    'qcc_web': dict(name='企查查公开页', home='https://www.qcc.com'),
+    'tyc_web': dict(name='天眼查公开页', home='https://www.tianyancha.com'),
+    'aiqicha_web': dict(name='爱企查公开页', home='https://aiqicha.baidu.com'),
 }
 
 

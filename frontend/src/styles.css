@@ -279,6 +279,8 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .collect-limit { display: flex; align-items: center; border-left: 1px solid var(--line); padding-left: 12px; }
 .collect-limit input { width: 88px; border: 0; background: transparent; padding: 9px 2px; }
 .search-footnote { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid var(--line); margin-top: 8px; padding: 7px 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
+/* 检索表单的登录前置说明：所选平台需要登录时在提交前就亮出来，放独立元素避免被矮屏 footnote 折叠规则藏掉。 */
+.collect-login-note { margin: 12px 0 0; padding: 8px 12px; border: 1px solid #eab4a6; border-left: 4px solid #b3492f; background: #fdece8; color: #7f2d1d; border-radius: 8px; font-size: 12.5px; line-height: 1.8; }
 .search-footnote > span { display: flex; align-items: baseline; gap: 8px; }
 .search-footnote button { font-size: 12px; white-space: nowrap; color: #525252; padding: 0; align-self: start; min-height: 24px; }
 .research-layout { display: grid; grid-template-columns: minmax(340px, .48fr) minmax(0, 1fr); gap: 20px; align-items: start; }
@@ -700,6 +702,10 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .browser-fields input, .browser-fields select { width: 100%; }
 .browser-form-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 12px; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--line); }
 .browser-form-note { font-size: 12px; color: var(--muted); line-height: 1.8; margin-top: 12px; }
+/* 登录前置说明：采集前就把「需要登录」亮出来，而不是等失败让用户从报错里猜。 */
+.browser-form-note.login-required { color: #9a342b; font-weight: 600; }
+.browser-form-note.login-recommended { color: #8a6116; }
+.browser-form-note.login-required strong, .browser-form-note.login-recommended strong { font-weight: 700; }
 /* 公司快查：单张面板放下表单与结果，卡片最多三行字段摘要，保证一屏读完。 */
 .lookup-panel { margin: 0; display: flex; flex-direction: column; gap: 16px; }
 .lookup-panel .section-heading { margin-bottom: 0; }
@@ -765,7 +771,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .toast .spinner { margin-top: 5px; }
 .toast button { flex: none; min-width: 28px; min-height: 28px; margin: -4px -6px -4px 0; font-size: 16px; line-height: 1; }
 .toast.notice { color: #315943; background: #f1f6f2; border-color: #d8e5da; }
-.toast.error { color: #8c3a2a; background: #fbf4f1; border-color: #ecd8d0; }
+.toast.error { color: #7f2d1d; background: #fdece8; border-color: #eab4a6; border-left: 4px solid #b3492f; box-shadow: 0 14px 30px rgba(140, 42, 26, .2); }
 .toast .toast-action { flex: none; margin: -2px 0 -2px -4px; padding: 3px 10px; border: 1px solid currentColor; border-radius: 999px; background: none; color: inherit; font-size: 12.5px; font-weight: 600; line-height: 1.5; min-width: 0; min-height: 0; }
 .toast .toast-action:hover { opacity: .75; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
@@ -1061,7 +1067,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .skill-scripts { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
 .skill-scripts code { font-size: 12px; color: #525252; }
 @media (max-width: 800px) { .ext-shell { grid-template-columns: 1fr; } .ext-list { border-right: 0; border-bottom: 1px solid var(--line); } .ext-list-items { max-height: 280px; } .market-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); } }
-@media (max-width: 600px) { .extensions-workspace .agent-extension-body .market-view { padding: 16px; } .market-tools { flex-wrap: wrap; } .market-tools input { max-width: none; width: 100%; } .market-grid { grid-template-columns: 1fr; } .ext-shell { margin: 0 16px 16px; } .ext-detail { padding: 16px; } .ext-detail-actions { gap: 10px; } }
+@media (max-width: 600px) { .extensions-workspace .agent-extension-body .market-view { padding: 16px; } .market-tools { flex-wrap: wrap; } .market-tools input { max-width: none; width: 100%; } .market-tools > .market-chips, .market-tools > .button { margin-top: 0; } .market-grid { grid-template-columns: 1fr; } .ext-shell { margin: 0 16px 16px; } .ext-detail { padding: 16px; } .ext-detail-actions { gap: 10px; } }
 
 .extensions-workspace { min-width: 0; }
 .extensions-overview { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-bottom: 24px; }
@@ -1079,6 +1085,8 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .extensions-safety { margin: 0 24px; padding: 16px 0; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.9; }
 .market-tools { align-items: flex-start; gap: 16px; }
 .market-tools > .button { margin-top: 26px; min-height: 44px; }
+/* 源切换 chips 与刷新按钮同行对齐：避开搜索框 label 的高度。 */
+.market-tools > .market-chips { margin-top: 26px; }
 .market-search-field .field-help { margin: 0; }
 .extensions-workspace .market-search-field .field-help { margin: 0; }
 .extension-summary small { color: var(--muted); font-size: 11px; white-space: nowrap; }
@@ -1646,6 +1654,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .binding-matrix tbody tr:hover { background: var(--surface); }
 .binding-matrix tbody td strong { font-weight: 600; }
 .binding-matrix .text-button { min-height: 36px; }
+.binding-row-actions { display: flex; align-items: center; gap: 14px; }
 .binding-matrix .badge { font-size: 11px; padding: 2px 8px; }
 .binding-placeholder { display: flex; align-items: center; gap: 10px; margin: 0; padding: 18px 20px; border: 1px dashed var(--line); border-radius: 12px; background: var(--paper); color: var(--muted); font-size: 13px; }
 .purpose-heading-actions { display: flex; align-items: center; gap: 12px; flex: 0 0 auto; }
@@ -1955,6 +1964,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
   .job-entry-actions > button { flex: 1; }
   .manual-jd { padding: 12px; }
 }
+
 /* ---- Boss 捕获篮导入面板（BossImport.tsx / docs/design/boss-import.md）---- */
 .boss-import-section { margin-top: 16px; }
 .boss-import-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }

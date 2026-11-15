@@ -95,7 +95,7 @@ def test_latest_report_is_none_until_a_run_happened(client):
 
 def test_company_path_param_is_bounded_and_blank_is_rejected(client):
     assert client.post('/api/companies/%20/reliability', json=dict()).status_code == 422
-    assert client.post('/api/companies/%20/signals/collect', json=dict(source='gsxt')).status_code == 422
+    assert client.post('/api/companies/%20/signals/collect', json=dict(source='jobscope_jobs')).status_code == 422
     assert client.post(f"/api/companies/{'甲' * 301}/reliability", json=dict()).status_code == 422
     assert client.get('/api/companies/%20/reliability').status_code == 422
 
@@ -143,9 +143,48 @@ def test_collect_refuses_sources_the_user_has_not_switched_on(client):
     assert client.post('/api/companies/甲公司/signals/collect', json=dict(source='not_a_source')).status_code == 400
 
 
-def test_collect_reports_an_honest_status_without_touching_the_network(client):
-    browser = client.post('/api/companies/甲公司/signals/collect', json=dict(source='gsxt')).json()
-    # 本机有没有装 DrissionPage / 有没有项目 Chrome 会话，两种真实结果都可能出现。
+def test_llm_industry_collect_persists_a_judgement_and_scores_the_industry(client, monkeypatch):
+    """AI 行业判断走 transport=llm 分发：判断存为 llm_judgment 证据，行业维度按固定表折算出分。"""
+    from jobscope.reliability import llm_industry
+
+    def fake_collect(company, materials):
+        assert company == '甲公司' and materials == []  # 无材料时也允许纯模型知识判断
+        return dict(status='completed', message='AI 行业判断完成：通信设备·上行（模型判断，非实时数据）。',
+                    signals=[dict(rule='industry_trend_llm', dimension='industry', value={'direction': 1},
+                                  unit='档', source_class='llm', observed_at='', url='',
+                                  text='AI 行业判断：行业「通信设备」，趋势「上行」。说明：需求增长。'
+                                       '依据：模型知识。（模型判断，非实时数据）')])
+
+    monkeypatch.setattr(llm_industry, 'collect', fake_collect)
+    result = client.post('/api/companies/甲公司/signals/collect', json=dict(source='llm_industry')).json()
+    assert result['status'] == 'completed' and result['task']['count'] == 1
+    stored = client.get('/api/evidence', params=dict(company='甲公司')).json()['evidence'][0]
+    assert stored['source'] == 'llm_industry' and stored['kind'] == 'llm_judgment'
+    report = client.post('/api/companies/甲公司/reliability', json=dict()).json()
+    industry = next(item for item in report['dimensions'] if item['dimension'] == 'industry')
+    assert industry['score'] == 85.0 and industry['confidence'] == 1.0
+    # 同维度还有材料登记句（0 条材料）排在前面：按规则定位 AI 判断那条。
+    judgment = next(item for item in industry['findings'] if item['rule'] == 'industry_trend_llm')
+    assert '模型判断，非实时数据' in judgment['text'] and judgment['source_class'] == 'llm'
+    assert judgment['score'] == 85.0
+
+
+def test_collect_reports_an_honest_status_without_touching_the_network(client, monkeypatch):
+    # 2026-11-15 起三个浏览器来源入口全部暂停：显式选择直接 409 并说明原因，绝不发起请求。
+    from jobscope.reliability.sources import SIGNAL_SOURCES
+    for source in ('gsxt', 'credit_china', 'court_records'):
+        blocked = client.post('/api/companies/甲公司/signals/collect', json=dict(source=source))
+        assert blocked.status_code == 409 and '暂停' in blocked.json()['detail']
+    # 无会话时采集器会自动拉起项目浏览器（与岗位采集入口同一行为）；测试里替换成必败的
+    # 假启动，断言诚实上报，绝不在测试机上开真 Chrome。浏览器通路的诚实状态用信用中国验证
+    # （本用例测机制不测暂停，临时摘掉它的 suspended 标记）。
+    monkeypatch.delitem(SIGNAL_SOURCES['credit_china'], 'suspended')
+    from jobscope import browser as browser_module
+    monkeypatch.setattr(browser_module, 'start',
+                        lambda data_dir=None, source='boss': {'installed': True, 'running': False,
+                                                              'message': '项目 Chrome 启动失败；请关闭占用同一配置目录的浏览器后重试。'})
+    browser = client.post('/api/companies/甲公司/signals/collect', json=dict(source='credit_china')).json()
+    # 本机有没有装 DrissionPage / 拉起是否成功，两种真实结果都可能出现。
     assert browser['status'] in {'needs_login', 'unsupported'}
     assert browser['signals'] == [] and browser['message']
     # 本地来源登记着五条规则，就必须真的算出东西，不能一直退成 unsupported。
@@ -203,7 +242,10 @@ def test_local_collection_is_traceable_and_never_needs_the_browser(client, tmp_p
 def test_collect_stores_the_page_the_signal_came_from(client, monkeypatch):
     """出处缺失等于法律兜底失效：落 evidence 时用的必须是采集器实际访问过的那个 URL。"""
     from jobscope.reliability import collectors
-    visited = 'https://www.gsxt.gov.cn/index.html?keyword=%E7%94%B2%E5%85%AC%E5%8F%B8'
+    from jobscope.reliability.sources import SIGNAL_SOURCES
+    # 本用例测证据出处链路，不测暂停：临时摘掉信用中国的 suspended 标记。
+    monkeypatch.delitem(SIGNAL_SOURCES['credit_china'], 'suspended')
+    visited = 'https://public.creditchina.gov.cn/home?keyword=%E7%94%B2%E5%85%AC%E5%8F%B8'
 
     def fake_collect(source, company, **kwargs):
         return dict(status='completed', message='采集完成。', signals=[dict(
@@ -211,12 +253,12 @@ def test_collect_stores_the_page_the_signal_came_from(client, monkeypatch):
             source_class='official', observed_at='2015-04-01', url=visited, source=source)])
 
     monkeypatch.setattr(collectors, 'collect', fake_collect)
-    result = client.post('/api/companies/甲公司/signals/collect', json=dict(source='gsxt')).json()
+    result = client.post('/api/companies/甲公司/signals/collect', json=dict(source='credit_china')).json()
     signal = result['signals'][0]
     stored = client.get('/api/evidence', params=dict(company='甲公司')).json()['evidence'][0]
     assert signal['evidence_id'] == stored['id']
     assert stored['url'] == visited
-    assert stored['source'] == 'gsxt' and stored['kind'] == 'disclosure'
+    assert stored['source'] == 'credit_china' and stored['kind'] == 'disclosure'
 
 
 # 付费接口的假响应：字段名来自 sources.SIGNAL_SOURCES['qcc']['fields'] 那份待校正映射。
@@ -556,25 +598,31 @@ def test_unknown_source_is_rejected_without_tasks(client):
     assert client.app.state.repo.tasks() == []
 
 
-def test_credit_and_court_sources_are_now_implemented_and_selectable(client):
-    """2026-11-13 接线后：信用中国/裁判文书网默认启用、可选择；解析仍待真实登录验证（status 不变）。"""
+def test_credit_and_court_sources_stay_implemented_but_suspended(client):
+    """2026-11-13 接线、2026-11-15 起按用户要求暂停入口：采集器在、状态可见、不可选择（409）。"""
     sources = client.get('/api/reliability/sources').json()['sources']
     for source in ('credit_china', 'court_records'):
-        assert sources[source]['implemented'] and sources[source]['ready']
+        assert sources[source]['implemented'] and not sources[source]['ready']
         assert sources[source]['mode'] == 'enabled'
         assert sources[source]['status'] == 'needs_verification'
+        assert '暂停' in sources[source]['unavailable_reason']
+        blocked = client.post('/api/companies/甲公司/signals/collect', json=dict(source=source))
+        assert blocked.status_code == 409
 
 
 @pytest.mark.parametrize('status', ['partial', 'unsupported', 'needs_login', 'needs_verification', 'failed'])
 def test_manual_collect_records_final_task_even_without_signals(client, monkeypatch, status):
     from jobscope.reliability import collectors
+    from jobscope.reliability.sources import SIGNAL_SOURCES
+    # 本用例测任务收尾记录，不测暂停：临时摘掉信用中国的 suspended 标记。
+    monkeypatch.delitem(SIGNAL_SOURCES['credit_china'], 'suspended')
     monkeypatch.setattr(collectors, 'collect', lambda *args, **kwargs: dict(status=status, message='来源结果说明', signals=[]))
-    result = client.post('/api/companies/甲公司/signals/collect', json=dict(source='gsxt')).json()
+    result = client.post('/api/companies/甲公司/signals/collect', json=dict(source='credit_china')).json()
     assert result['status'] == status and result['signals'] == []
     task = client.get('/api/tasks/' + result['task']['id']).json()['task']
-    assert task['status'] == status and task['source'] == 'signal_gsxt' and task['count'] == 0
+    assert task['status'] == status and task['source'] == 'signal_credit_china' and task['count'] == 0
     assert task['updated_at'] and task['message'] == result['message']
-    assert client.get('/api/reliability/sources').json()['sources']['gsxt']['last_run'] == task
+    assert client.get('/api/reliability/sources').json()['sources']['credit_china']['last_run'] == task
 
 
 def test_unexpected_collector_exception_is_finalized_and_secret_free(client, monkeypatch):
@@ -595,12 +643,14 @@ def test_unexpected_collector_exception_is_finalized_and_secret_free(client, mon
 def test_partial_persistence_count_is_honest_and_identity_credit_code_is_preserved(client, monkeypatch):
     from jobscope.reliability import collectors
     from jobscope.reliability.rubric import RULES
+    from jobscope.reliability.sources import SIGNAL_SOURCES
+    monkeypatch.delitem(SIGNAL_SOURCES['credit_china'], 'suspended')  # 测落库口径，不测暂停
     signal = dict(rule='company_age', dimension='stability', value={'years': 8}, unit=RULES['company_age'].unit,
                   source_class='official', url='https://example.com/company', observed_at='2018-01-01')
     monkeypatch.setattr(collectors, 'collect', lambda *args, **kwargs: dict(
         status='completed', message='读到信号', signals=[signal, {**signal, 'value': None}]))
     response = client.post('/api/companies/甲 公司/signals/collect',
-                           json=dict(source='gsxt', credit_code='91110000' + 'MA01ABCD7X')).json()
+                           json=dict(source='credit_china', credit_code='91110000' + 'MA01ABCD7X')).json()
     assert response['status'] == 'partial' and response['task']['count'] == len(response['signals']) == 1
     entity = client.app.state.repo.find_company('甲公司', '91110000' + 'MA01ABCD7X')
     assert entity['id'] == response['signals'][0]['company_id']
@@ -719,7 +769,8 @@ def test_compare_endpoint_lists_latest_snapshot_per_company(client, tmp_path):
     rows = client.get('/api/reliability/compare?q=甲').json()['companies']
     assert [item['company'] for item in rows] == ['甲公司']
     # 顶层 confidence 是按权重算的维度覆盖度：只有稳定性（权重 0.22）出分，覆盖就是 0.22。
-    assert rows[0]['score'] == 80.0 and rows[0]['confidence'] == pytest.approx(0.22)
+    # 年限 8 年按 2026-11-15 分带（5-10 年档）= 70 分。
+    assert rows[0]['score'] == 70.0 and rows[0]['confidence'] == pytest.approx(0.22)
     assert rows[0]['computed_at']
     # 乙公司只登记过实体、从没算过：仍可作为候选列出，但分数与时间是 null。
     Repository(tmp_path).resolve_company('乙公司')

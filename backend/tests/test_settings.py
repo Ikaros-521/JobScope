@@ -142,7 +142,8 @@ def test_url_validation_accepts_supported_addresses(client, url):
 def test_system_settings_defaults_persist_and_clamp(client, tmp_path):
     defaults = client.get('/api/settings/system').json()
     assert defaults == {'chat_display_mode': 'merged', 'show_reasoning': True,
-                        'agent_limits': {'max_model_calls': 60, 'max_tool_calls': 50, 'context_characters': 160000, 'max_seconds': 900}}
+                        'agent_limits': {'max_model_calls': 60, 'max_tool_calls': 50, 'context_characters': 160000, 'max_seconds': 900},
+                        'market_source': 'official'}
     saved = client.put('/api/settings/system', json={'chat_display_mode': 'sequential', 'show_reasoning': False,
                                                      'agent_limits': {'max_model_calls': 0, 'max_tool_calls': 9999, 'context_characters': 20000, 'max_seconds': 300}})
     assert saved.status_code == 200
@@ -155,3 +156,12 @@ def test_system_settings_defaults_persist_and_clamp(client, tmp_path):
     assert client.put('/api/settings/system', json={'chat_display_mode': 'other', 'show_reasoning': True,
                                                     'agent_limits': dict(max_model_calls=60, max_tool_calls=50, context_characters=160000, max_seconds=900)}).status_code == 422
     assert client.get('/api/settings/system').json()['chat_display_mode'] == 'sequential'
+
+
+def test_system_settings_market_source_persist_and_validate(client):
+    saved = client.put('/api/settings/system', json={'chat_display_mode': 'merged', 'show_reasoning': True, 'market_source': 'china',
+                                                     'agent_limits': dict(max_model_calls=60, max_tool_calls=50, context_characters=160000, max_seconds=900)})
+    assert saved.status_code == 200 and saved.json()['market_source'] == 'china'
+    assert client.put('/api/settings/system', json={'chat_display_mode': 'merged', 'show_reasoning': True, 'market_source': 'bogus',
+                                                    'agent_limits': dict(max_model_calls=60, max_tool_calls=50, context_characters=160000, max_seconds=900)}).status_code == 422
+    assert client.get('/api/settings/system').json()['market_source'] == 'china'

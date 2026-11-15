@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api, post, safeUrl, openBossSearch } from './api'
-import { toast } from './toast'
+import { toast, failedTaskToast, taskSucceeded } from './toast'
 import type { BrowserStatus, Task } from './api'
 
 type LookupCard = { name: string; url: string; fields: Record<string, string>; text: string }
@@ -10,10 +10,11 @@ type LookupResult = { task: Task; cards: LookupCard[] }
 const CHANNELS = [
   { id: 'qcc', name: '企查查' },
   { id: 'tyc', name: '天眼查' },
+  { id: 'aiqicha', name: '爱企查' },
 ] as const
 
 export function CompanyLookup({ refreshMetadata }: { refreshMetadata: () => Promise<unknown> }) {
-  const [channel, setChannel] = useState<'qcc' | 'tyc'>('qcc')
+  const [channel, setChannel] = useState<'qcc' | 'tyc' | 'aiqicha'>('qcc')
   const [company, setCompany] = useState('')
   const [browser, setBrowser] = useState<BrowserStatus | null>(null)
   const [result, setResult] = useState<LookupResult | null>(null)
@@ -45,13 +46,16 @@ export function CompanyLookup({ refreshMetadata }: { refreshMetadata: () => Prom
       if (result.status === 'ok') toast(result.message)
       else toast(result.message, 'error')
     } catch (err) { setError((err as Error).message) } finally { setBossBusy(false) }
+  }
   async function lookup(event: FormEvent) {
     event.preventDefault()
     setBusy(true); setError('')
     try {
       const data = await post<LookupResult>('/company/lookup', { channel, company })
       setResult(data)
-      toast(data.task.message)
+      // 未登录/需验证的结果同样要红色长提示，快查失败静悄悄会让用户以为查过了没这公司。
+      if (taskSucceeded(data.task)) toast(data.task.message)
+      else failedTaskToast(data.task, CHANNELS.find(item => item.id === channel)?.name || channel)
       if (data.cards.length) await refreshMetadata()
     } catch (err) { setError((err as Error).message) } finally { setBusy(false) }
   }
@@ -59,12 +63,12 @@ export function CompanyLookup({ refreshMetadata }: { refreshMetadata: () => Prom
     <div className="section-heading"><div><h2>公司快查</h2><p className="body-small muted">用项目浏览器打开企查查 / 天眼查公开搜索页，把页面可见的公司信息快照存进资料库。公开页数据有限，取到什么存什么。</p></div></div>
     <form onSubmit={lookup}>
       <div className="browser-fields">
-        <div><label className="field-label" htmlFor="lookup-channel">快查渠道</label><select id="lookup-channel" value={channel} onChange={event => setChannel(event.target.value as 'qcc' | 'tyc')}>{CHANNELS.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
+        <div><label className="field-label" htmlFor="lookup-channel">快查渠道</label><select id="lookup-channel" value={channel} onChange={event => setChannel(event.target.value as 'qcc' | 'tyc' | 'aiqicha')}>{CHANNELS.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
         <div><label className="field-label" htmlFor="lookup-company">公司名称</label><input id="lookup-company" value={company} onChange={event => setCompany(event.target.value)} placeholder="例如：华为技术有限公司" required maxLength={120} /></div>
       </div>
       <div className="browser-form-actions">
         {!browser?.running && <button className="button secondary" type="button" disabled={startBusy || busy} onClick={() => void startBrowser()}>{startBusy ? <span className="spinner" /> : null}打开专用浏览器</button>}
-                <button className="button secondary" type="button" disabled={bossBusy || busy || !company.trim()} title="在项目浏览器打开 Boss 上该公司的岗位检索；浏览器没开会自动拉起" onClick={() => void openBoss()}>{bossBusy ? <span className="spinner" /> : null}在 Boss 打开岗位</button>
+        <button className="button secondary" type="button" disabled={bossBusy || busy || !company.trim()} title="在项目浏览器打开 Boss 上该公司的岗位检索；浏览器没开会自动拉起" onClick={() => void openBoss()}>{bossBusy ? <span className="spinner" /> : null}在 Boss 打开岗位</button>
         <button className="button primary" type="submit" disabled={busy || startBusy}>{busy ? <span className="spinner" /> : null}查询快照</button>
       </div>
     </form>

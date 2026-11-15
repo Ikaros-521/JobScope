@@ -9,7 +9,6 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode
 
 import httpx
 
@@ -60,17 +59,24 @@ class FakeClient:
 
 
 class _FlowTab:
-    """gsxt 新流程的多页回放：只用来对拍「日期 → 年数」的同一把尺子。"""
+    """gsxt 检索通路的极简回放：只用来对拍「日期 → 年数」的同一把尺子（点条目后同标签翻到详情页）。"""
 
-    def __init__(self, pages):
+    def __init__(self, pages, results_html=None):
         self.pages = pages
+        self.results_html = results_html
         self.visited = []
         self.current = ''
+        self.submitted = False
+        self.closed = False
+        self.browser = self
 
     def get(self, url, timeout=None):
         self.visited.append(url)
         if url in self.pages:
             self.current = url
+
+    def get_tabs(self):
+        return [self]
 
     @property
     def url(self):
@@ -78,10 +84,41 @@ class _FlowTab:
 
     @property
     def html(self):
+        if (self.submitted and self.current == collectors.GSXT_SEARCH_URL
+                and self.results_html is not None):
+            return self.results_html
         return self.pages.get(self.current, '')
 
+    def ele(self, selector, timeout=None):
+        if selector == 'css:#keyword':
+            class _Box:
+                def attr(_, name):
+                    return 'keyword' if name == 'id' else None
+
+                def input(_, text, clear=False):
+                    pass
+            return _Box()
+        if selector == 'css:#btn_query':
+            class _Btn:
+                def click(_):
+                    self.submitted = True
+            return _Btn()
+        if selector.startswith('css:a[href="'):
+            href = selector[len('css:a[href="'):-2]
+
+            class _Anchor:
+                def click(_):
+                    self.current = href
+            return _Anchor()
+        if selector == 'css:[data-tag-name="annualreport"]':
+            class _Noop:
+                def click(_):
+                    pass
+            return _Noop()
+        return None
+
     def close(self):
-        pass
+        self.closed = True
 
 
 class _Browser:
@@ -166,11 +203,12 @@ def test_the_first_declared_candidate_name_wins():
 def test_the_only_present_candidate_is_used_and_a_date_string_becomes_years(monkeypatch):
     names = paid.candidate_names('qcc', 'company_age', 'founded_date')
     _outcome, by_rule = run({names[-1]: '2015年04月01日'})
-    search_url = (collectors.GSXT_ORIGIN + collectors.GSXT_SEARCH_PATH + '?'
-                  + urlencode({'tab': 'main', 'searchWord': '甲公司'}))
-    pages = {search_url: '<a href="/d.html">甲公司</a>',
-             collectors.GSXT_ORIGIN + '/d.html': '<p>成立日期 2015-04-01</p>'}
-    monkeypatch.setattr(collectors, '_open_tab', lambda module, data_dir: _FlowTab(pages))
+    detail_url = 'https://shiming.gsxt.gov.cn/d.html'
+    results = ('<a class="search_list_item db" target="_blank" href="' + detail_url + '">'
+               '<h1 class="f20">甲公司</h1></a>')
+    pages = {collectors.GSXT_SEARCH_URL: '<input id="keyword">' + ' ' * 3000,
+             detail_url: '<p>成立日期 2015-04-01</p>' + ' ' * 3000}
+    monkeypatch.setattr(collectors, '_open_tab', lambda module, data_dir: _FlowTab(pages, results))
     monkeypatch.setattr(collectors, '_sleep', lambda seconds: None)
     monkeypatch.setattr(collectors, 'CHALLENGE_WAIT', 0)
     outcome = collectors.collect('gsxt', '甲公司', browser_module=_Browser())

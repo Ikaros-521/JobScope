@@ -8,6 +8,7 @@ const DEFAULTS: SystemSettings = {
   chat_display_mode: 'merged',
   show_reasoning: true,
   agent_limits: { max_model_calls: 60, max_tool_calls: 50, context_characters: 160000, max_seconds: 900 },
+  market_source: 'official',
 }
 
 let current: SystemSettings = { ...DEFAULTS, agent_limits: { ...DEFAULTS.agent_limits } }

@@ -10,8 +10,9 @@ import type { ChartOption } from './EChart'
 import { SignalSourceChoices, SignalTaskResults, signalTaskNames, useSignalSourceSelection } from './SignalSources'
 
 // 六维的固定顺序与中文标签，与后端 rubric.DIMENSIONS 对齐；雷达图与明细表共用。
+// 「公司稳定性」评的是公司主体经营稳定（成立年限/参保/涉诉），不是这份工作的稳定性。
 const DIMENSIONS: [key: string, label: string][] = [
-  ['stability', '稳定性'], ['pay', '薪资待遇'], ['operations', '实际经营'],
+  ['stability', '公司稳定性'], ['pay', '薪资待遇'], ['operations', '实际经营'],
   ['people', '人员情况'], ['professional', '专业性'], ['industry', '行业前景'],
 ]
 const PALETTE = ['#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4', '#ec4899', '#84cc16']
@@ -198,7 +199,8 @@ export function CompanyCompare() {
   // 自动重算该公司并刷新分层——把「缺数据 → 补采 → 出分」闭环留在横评页里。一次只跑一家。
   async function collectCompanyData(company: string, sourceIds = [...signalSelection.selected]) {
     if (collecting || computing || signalSelection.loading || signalSelection.error) return
-    signalSelection.setSelected(ids => ids.filter(id => signalSelection.sources?.[id].tier !== 'paid'))
+    // 发起即取消付费勾选（防后续误触逐家计费）；非付费勾选保留并随 setSelected 写入记忆。
+    signalSelection.setSelected(signalSelection.selected.filter(id => signalSelection.sources?.[id].tier !== 'paid'))
     setCollecting(company)
     const progressToast = toast(`正在为「${company}」补充岗位、完整 JD 与所选信号来源，约需几分钟…`, 'notice', true)
     try {
@@ -435,9 +437,9 @@ export function CompanyCompare() {
       </div>
       <details className="signal-collection compare-signal-sources">
         <summary>补数据来源 · 已选 {signalSelection.selected.length} 个信号来源{signalSelection.sources && signalSelection.selected.some(id => signalSelection.sources![id].tier === 'paid') ? ' · 含付费 API' : ''}</summary>
-        <p className="tiny-label">补数据会先检索岗位、公告与公开网页，再执行下列所选来源并重算。批量操作会对每家公司分别调用；勾选付费 API 可能逐家计费。待实测来源和付费 API 默认不选。</p>
+        <p className="tiny-label">补数据会先检索岗位、公告与公开网页，再执行下列所选来源并重算。批量操作会对每家公司分别调用；勾选付费 API 可能逐家计费。待实测来源初始不选，勾选会记住（付费 API 除外，每次手动勾选）。</p>
         {signalSelection.loading ? <p className="tiny-label" role="status">正在读取来源设置…</p> : signalSelection.error ? <p className="tiny-label" role="status">读取失败：{signalSelection.error}</p> : signalSelection.sources ? <SignalSourceChoices sources={signalSelection.sources} selected={signalSelection.selected} onChange={signalSelection.setSelected} disabled={computing || Boolean(collecting) || Boolean(batchProgress)} /> : null}
-        <button className="text-button" type="button" disabled={computing || Boolean(collecting) || Boolean(batchProgress) || signalSelection.loading} onClick={() => void signalSelection.load()}>刷新来源设置（恢复默认选择）</button>
+        <button className="text-button" type="button" disabled={computing || Boolean(collecting) || Boolean(batchProgress) || signalSelection.loading} onClick={() => void signalSelection.load()}>刷新来源设置（保留已记住的勾选）</button>
       </details>
       {Object.keys(collectionResults).length ? <details className="signal-collection compare-collection-results"><summary>本轮逐渠道执行结果</summary>{Object.entries(collectionResults).map(([company, tasks]) => <div key={company}><h3>{company}</h3><SignalTaskResults tasks={tasks} /></div>)}</details> : null}
       <form className="compare-add-row" onSubmit={submitSearch}>
