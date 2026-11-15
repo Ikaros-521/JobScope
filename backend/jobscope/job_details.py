@@ -90,6 +90,10 @@ def _normalize_boss(job, snapshot):
                'detail_source_url': job['url'], 'detail_transport': 'browser_dom'}
     if snapshot.get('salary'):
         updated['salary'] = snapshot['salary']
+    # 「列表公司名是身份范围」的前提是存在列表公司名：链接导入的占位岗位没有可被覆盖的
+    # 身份，此时才允许用详情页公司名回填（只取首行，去掉自述区带出的规模/融资等附文）。
+    if not str(job.get('company') or '').strip() and snapshot.get('company'):
+        updated['company'] = plain(snapshot['company']).split('\n')[0][:300].strip()
     # The listing company is the identity scope; a detail-page name is attributed
     # as a platform statement, not silently substituted as a legal entity.
     company_text = '\n\n'.join(str(snapshot.get(k, '')).strip() for k in

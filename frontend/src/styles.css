@@ -1955,3 +1955,29 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
   .job-entry-actions > button { flex: 1; }
   .manual-jd { padding: 12px; }
 }
+/* ---- Boss 捕获篮导入面板（BossImport.tsx / docs/design/boss-import.md）---- */
+.boss-import-section { margin-top: 16px; }
+.boss-import-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.boss-import-heading h3 { font-size: 14px; margin: 0; }
+.boss-import-heading h3 span { color: var(--muted); font-weight: 400; }
+.boss-import-note { margin: 8px 0 0; }
+.boss-import-tabs { display: grid; gap: 8px; margin-top: 10px; }
+.boss-import-tab { display: flex; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px; background: var(--paper); }
+.boss-import-tab-info { display: grid; gap: 2px; min-width: 0; }
+.boss-import-tab-info strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.boss-import-tab-info span { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.boss-import textarea { margin-top: 10px; font-size: 13px; }
+.boss-import-actions { display: flex; justify-content: flex-end; margin-top: 8px; }
+.boss-import-basket { display: grid; gap: 6px; margin-top: 10px; max-height: 280px; overflow-y: auto; border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.boss-import-item { display: flex; align-items: flex-start; gap: 10px; padding: 6px 4px; cursor: pointer; }
+.boss-import-item input { width: 16px; height: 16px; min-height: 16px; margin-top: 2px; accent-color: #173e35; flex: none; }
+.boss-import-item-body { display: grid; gap: 2px; min-width: 0; }
+.boss-import-item-body strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.boss-import-item-body > span { font-size: 12px; color: #525252; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.boss-import-item-meta { font-size: 12px; color: var(--muted); }
+.boss-import-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
+.boss-import-footer-buttons { display: flex; align-items: center; gap: 12px; margin-left: auto; }
+.boss-import-done { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; background: var(--paper); }
+.boss-import-browse { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
+.boss-import-browse .tiny-label { margin: 0; min-width: 0; }
+.boss-import-heading-buttons { display: flex; align-items: center; gap: 10px; }

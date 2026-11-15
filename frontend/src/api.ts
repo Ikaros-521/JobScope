@@ -135,6 +135,29 @@ export function getCompanyLayers(companies: string[], gate?: { own_min: number; 
 // 岗位收藏与反查：PATCH 支持部分字段（starred 显式 false = 取消收藏）；批量反查 ids 与完整JD补采共用一条任务管道。
 export function patchJobs(ids: string[], patch: { starred?: boolean; location?: string; salary?: string; tags?: string[] }) { return api<{ updated: number }>('/jobs', { method: 'PATCH', body: JSON.stringify({ ids, ...patch }) }) }
 export function startDetailBatch(ids?: string[]) { return post<{ task: Task }>('/browser/details', ids ? { ids } : {}) }
+// ---- Boss 捕获篮导入（docs/design/boss-import.md）：当前页捕获 + 链接粘贴 → 篮子 → 确认入库 ----
+export type BossTab = { id: string; url: string; title: string }
+// 篮子条目：in_library 表示库里已有同一条岗位（source=boss + encryptJobId 幂等归并）。
+export type BasketItem = {
+  external_id: string; title: string; company: string; location: string; salary: string; url: string;
+  tags: string[]; imported_via: 'link' | 'current_page' | 'favorite' | 'browse' | 'script'; captured_at: string; in_library: boolean
+}
+export function listBossImportTabs() { return api<{ status: string; tabs: BossTab[]; message: string }>('/import/boss/tabs') }
+export function captureBossPage(tabId: string) { return post<{ status: string; added: number; updated?: number; message: string }>('/import/boss/page', { tab_id: tabId }) }
+export function parseImportLinks(text: string) { return post<{ added: number; updated: number; message: string }>('/import/links', { text }) }
+export function getImportBasket() { return api<{ items: BasketItem[]; total: number }>('/import/basket') }
+export function clearImportBasket() { return post<{ cleared: number }>('/import/basket/clear', {}) }
+export function confirmImport(ids: string[] | null, autoStar: boolean) {
+  return post<{ status: string; imported: number; message: string; jobs: Job[] }>('/import/confirm', { ...(ids ? { ids } : {}), auto_star: autoStar })
+}
+// P1：一键收藏导入（后台任务，轮询 /tasks/{id}）；逛即采集开关；公司快查联动「在 Boss 打开」。
+export function getTask(id: string) { return api<{ task: Task }>(`/tasks/${encodeURIComponent(id)}`) }
+export function startFavoritesImport() { return post<{ task: Task }>('/import/boss/favorites', {}) }
+export type BrowseCaptureStatus = { status: string; running: boolean; captured: number; message: string }
+export function getBrowseStatus() { return api<BrowseCaptureStatus>('/import/boss/browse') }
+export function startBrowseCapture() { return post<BrowseCaptureStatus>('/import/boss/browse/start', {}) }
+export function stopBrowseCapture() { return post<BrowseCaptureStatus>('/import/boss/browse/stop', {}) }
+export function openBossSearch(company: string) { return post<{ status: string; message: string }>('/import/boss/open', { company }) }
 // 主体归并：规则+LLM 扫描产候选，人工确认/手动合并/拆分是最终事实源；合并即别名并集，
 // jobs/evidence 的原始名不动，读路径按「名称+别名」集合聚数据。
 export type MergeEntity = { id: string; name: string; credit_code: string; aliases: string[]; jobs_count: number }

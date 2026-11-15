@@ -234,3 +234,30 @@ class OptimizeResumeInput(RequestModel):
 class ManualDescriptionInput(RequestModel):
     description: str = Field(min_length=1, max_length=100000)
     source_note: str = Field(min_length=1, max_length=1000)
+
+
+class ImportLinksInput(RequestModel):
+    """Boss 链接粘贴导入：App 分享文本或整页复制下来的多行链接。"""
+    text: str = Field(min_length=1, max_length=50000)
+
+
+class BossTabPageInput(RequestModel):
+    """「捕获当前页」所选的项目浏览器 Boss 标签页。"""
+    tab_id: str = Field(min_length=1, max_length=100)
+
+
+class ImportConfirmInput(RequestModel):
+    """捕获篮确认入库：ids 缺省 = 导入篮内全部；auto_star 入库后统一加星。"""
+    ids: list[Annotated[str, Field(min_length=1, max_length=100)]] | None = Field(default=None, max_length=500)
+    auto_star: bool = False
+
+
+class BossOpenInput(RequestModel):
+    """在项目浏览器打开 Boss 上某公司的岗位检索（公司快查页联动入口）。"""
+    company: str = Field(min_length=1, max_length=120)
+
+
+class RemoteBasketInput(RequestModel):
+    """油猴脚本推送：卡片字段在服务端清洗重建，page_url 用于来源校验与溯源。"""
+    page_url: str = Field(min_length=1, max_length=1000)
+    items: list[dict] = Field(min_length=1, max_length=200)

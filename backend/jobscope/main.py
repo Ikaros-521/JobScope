@@ -23,7 +23,7 @@ from . import collect_service
 from . import company_merge
 from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
-from .models import AnalyzeInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ReliabilityInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput, SplitInput
+from .models import AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, RemoteBasketInput, ReliabilityInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput, SplitInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, SystemSettingsInput, SystemSettingsStore, ConnectionInput, _active, get_model_config, purpose_configured, use_config
@@ -905,6 +905,93 @@ def create_app(data_dir=None):
     def import_job(data: JobInput):
         return {"job": repo.save_job(data.model_dump(), "user_import")}
 
+    # ---- Boss 捕获篮导入（docs/design/boss-import.md）：当前页捕获 + 链接粘贴 → 篮子 → 确认入库。
+    # 篮子是 boss_import 模块的进程内单例；load_module 走 importlib 缓存，状态跨请求保留。
+
+    @app.post("/api/import/links")
+    def import_links(data: ImportLinksInput):
+        module = load_module("boss_import")
+        items, overflow = module.parse_links(data.text)
+        if not items:
+            raise HTTPException(400, "没有解析到 Boss 岗位链接；请粘贴含 zhipin.com/job_detail/ 链接的文本")
+        outcome = module.basket_add(items, data_dir=data_dir)
+        note = '；链接较多已截断，请分批粘贴' if overflow else ''
+        return {"added": outcome['added'], "updated": outcome['updated'],
+                "message": f"解析到 {len(items)} 条链接：新增 {outcome['added']}、合并 {outcome['updated']}{note}。"}
+
+    @app.get("/api/import/boss/tabs")
+    def boss_import_tabs():
+        return load_module("boss_import").list_tabs(data_dir=data_dir)
+
+    @app.post("/api/import/boss/page")
+    def boss_import_page(data: BossTabPageInput):
+        return load_module("boss_import").capture_page(data_dir=data_dir, tab_id=data.tab_id)
+
+    @app.get("/api/import/basket")
+    def import_basket():
+        return load_module("boss_import").basket_view(repo)
+
+    @app.post("/api/import/basket/clear")
+    def import_basket_clear():
+        return load_module("boss_import").basket_clear(data_dir=data_dir)
+
+    @app.post("/api/import/basket/remote")
+    def import_basket_remote(data: RemoteBasketInput):
+        # 油猴脚本推送入口：任意浏览器（日常 Chrome）的 Boss 页面 → 本地 JobScope。
+        # 服务端重建 id/URL 并限 zhipin.com 来源；走 GM_xmlhttpRequest，不需要 CORS。
+        outcome = load_module("boss_import").absorb_remote(data.items, data.page_url, data_dir=data_dir)
+        if outcome['status'] != 'ok':
+            raise HTTPException(400, outcome['message'])
+        return outcome
+
+    @app.post("/api/import/confirm")
+    def import_confirm(data: ImportConfirmInput):
+        module = load_module("boss_import")
+        summary = module.confirm(repo, data.ids, data.auto_star)
+        # 导入也留任务记录：与采集同口径，任务记录保留真实状态。
+        task = repo.create_task('boss', 'Boss 捕获篮导入')
+        task.update(kind='boss_import', status='completed' if summary['imported'] else 'skipped',
+                    count=summary['imported'], message=summary['message'])
+        repo.update_task(task)
+        return summary
+
+    @app.post("/api/import/boss/favorites")
+    def boss_import_favorites():
+        # 自动翻页 + 页面渲染等待可能超过一分钟：后台线程 + 任务轮询，与 /api/browser/collect 同模式。
+        module = load_module("boss_import")
+        task = repo.create_task('boss', 'Boss 收藏导入')
+
+        def worker():
+            try:
+                outcome = module.import_favorites(repo, task, data_dir=data_dir)
+            except Exception:
+                outcome = {'status': 'failed', 'message': '收藏导入中断；已捕获的条目保留在捕获篮。'}
+            task.update(kind='boss_import', status=outcome['status'], message=outcome['message'])
+            repo.update_task(task)
+
+        try:
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception:
+            task.update(status='failed', message='后台任务未能启动，请重试')
+            repo.update_task(task)
+        return {"task": task}
+
+    @app.post("/api/import/boss/browse/start")
+    def boss_browse_start():
+        return load_module("boss_import").browse_start(data_dir=data_dir)
+
+    @app.post("/api/import/boss/browse/stop")
+    def boss_browse_stop():
+        return load_module("boss_import").browse_stop()
+
+    @app.get("/api/import/boss/browse")
+    def boss_browse_status():
+        return load_module("boss_import").browse_status()
+
+    @app.post("/api/import/boss/open")
+    def boss_open_search(data: BossOpenInput):
+        return load_module("boss_import").open_search(data_dir=data_dir, company=data.company)
+
     @app.get("/api/evidence")
     def evidence(company: str | None = Query(default=None, max_length=300), q: str = Query(default="", max_length=300), page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=100)):
         # 50 条/页的公司资料库：正文裁剪 + 命中窗口，展开全文时前端按 id 走下面的详情端点。
@@ -1354,7 +1441,9 @@ def create_app(data_dir=None):
     @app.post("/api/browser/start")
     def browser_start(source: str = Query(default="boss", max_length=30)):
         module = load_module("browser")
-        if source not in module.PAGES:
+        # start() 落点按 PAGES → LOOKUP_PAGES 顺序解析（公司快查面板传 qcc/tyc 等也走同一入口），
+        # 守卫必须与它同口径，否则快查渠道会被这里 400 拦掉。
+        if source not in module.PAGES and source not in module.LOOKUP_PAGES:
             raise HTTPException(400, "该来源不由项目浏览器采集")
         try:
             return module.start(data_dir=data_dir, source=source)

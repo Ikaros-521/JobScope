@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { api, post, safeUrl } from './api'
+import { api, post, safeUrl, openBossSearch } from './api'
 import { toast } from './toast'
 import type { BrowserStatus, Task } from './api'
 
@@ -19,6 +19,7 @@ export function CompanyLookup({ refreshMetadata }: { refreshMetadata: () => Prom
   const [result, setResult] = useState<LookupResult | null>(null)
   const [busy, setBusy] = useState(false)
   const [startBusy, setStartBusy] = useState(false)
+  const [bossBusy, setBossBusy] = useState(false)
   const [error, setError] = useState('')
   useEffect(() => {
     let active = true
@@ -34,6 +35,16 @@ export function CompanyLookup({ refreshMetadata }: { refreshMetadata: () => Prom
       await refreshMetadata()
     } catch (err) { setError((err as Error).message) } finally { setStartBusy(false) }
   }
+  // 联动入口：在项目浏览器打开 Boss 上该公司的岗位检索；用户自己筛到满意后，
+  // 回岗位页「从 Boss 导入」捕获本页（或开着逛即采集自动入篮）。
+  async function openBoss() {
+    if (!company.trim()) return
+    setBossBusy(true); setError('')
+    try {
+      const result = await openBossSearch(company.trim())
+      if (result.status === 'ok') toast(result.message)
+      else toast(result.message, 'error')
+    } catch (err) { setError((err as Error).message) } finally { setBossBusy(false) }
   async function lookup(event: FormEvent) {
     event.preventDefault()
     setBusy(true); setError('')
@@ -53,6 +64,7 @@ export function CompanyLookup({ refreshMetadata }: { refreshMetadata: () => Prom
       </div>
       <div className="browser-form-actions">
         {!browser?.running && <button className="button secondary" type="button" disabled={startBusy || busy} onClick={() => void startBrowser()}>{startBusy ? <span className="spinner" /> : null}打开专用浏览器</button>}
+                <button className="button secondary" type="button" disabled={bossBusy || busy || !company.trim()} title="在项目浏览器打开 Boss 上该公司的岗位检索；浏览器没开会自动拉起" onClick={() => void openBoss()}>{bossBusy ? <span className="spinner" /> : null}在 Boss 打开岗位</button>
         <button className="button primary" type="submit" disabled={busy || startBusy}>{busy ? <span className="spinner" /> : null}查询快照</button>
       </div>
     </form>
