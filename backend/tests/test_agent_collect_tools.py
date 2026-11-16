@@ -136,6 +136,74 @@ def test_collect_jobs_persists_and_returns_compact_summary(agent, job, monkeypat
     assert 'project_search' in result['note']
 
 
+def stub_channels(monkeypatch, direct, browser_result):
+    """直连 connectors 与浏览器通道一起打桩，按调用顺序记录，验证降级路由。"""
+    calls = []
+
+    fake_connectors = types.ModuleType('jobscope.connectors')
+    fake_connectors.BROWSER_SOURCES = ()
+
+    def fake_direct(source, query, location='', limit=10, cache_dir=None):
+        calls.append(('direct', source, query, location, limit))
+        return direct
+
+    fake_connectors.collect = fake_direct
+
+    fake_browser = types.ModuleType('jobscope.browser')
+    fake_browser.PAGES = {'boss': dict(name='BOSS 直聘')}
+
+    def fake_browser_collect(source, query, location='', limit=20, data_dir=None, progress=None):
+        calls.append(('browser', source, query, location, limit))
+        return browser_result
+
+    fake_browser.collect = fake_browser_collect
+    monkeypatch.setitem(sys.modules, 'jobscope.connectors', fake_connectors)
+    monkeypatch.setitem(sys.modules, 'jobscope.browser', fake_browser)
+    return calls
+
+
+BOSS_BLOCKED = dict(status='needs_verification', message='BOSS 返回访问验证状态；请使用项目浏览器正常登录并完成人工验证后采集。', jobs=[], evidence=[])
+BOSS_BROWSER_JOBS = [dict(title='Java 工程师', company='甲公司', location='杭州', salary='20-30K',
+                          url='https://job/boss1', external_id='boss1')]
+
+
+def test_collect_jobs_boss_degrades_to_browser_channel(agent, job, monkeypatch):
+    """boss 直连被风控时自动降级浏览器通道并正常落库，而不是只回一句人工验证提示。"""
+    calls = stub_channels(monkeypatch, BOSS_BLOCKED,
+                          dict(status='completed', message='BOSS直聘浏览器采集：已读取 BOSS 搜索列表 1 条。',
+                               jobs=BOSS_BROWSER_JOBS, evidence=[]))
+    state = state_for(agent, scope_for('global'))
+    result = agent._builtin(state, 'collect_jobs', dict(source='boss', query='甲公司 Java', limit=20))
+    assert calls == [('direct', 'boss', '甲公司 Java', '', 20), ('browser', 'boss', '甲公司 Java', '', 20)]
+    assert result['status'] == 'completed' and result['saved'] == 1
+    assert agent.repo.task(result['task_id'])['status'] == 'completed'
+
+
+@pytest.mark.parametrize('blocked_status', ['needs_verification', 'needs_login'])
+def test_collect_jobs_degrade_covers_both_blocked_statuses(agent, job, monkeypatch, blocked_status):
+    """直连要求登录或验证都触发降级；浏览器通道也要人工时，状态与文案原样透传。"""
+    calls = stub_channels(monkeypatch, dict(status=blocked_status, message='拦截', jobs=[], evidence=[]),
+                          dict(status='needs_verification',
+                               message='BOSS直聘浏览器采集：未收到岗位响应。请查看项目浏览器是否需要登录或人工验证；不会自动反复请求。',
+                               jobs=[], evidence=[]))
+    state = state_for(agent, scope_for('global'))
+    result = agent._builtin(state, 'collect_jobs', dict(source='boss', query='甲公司 Java'))
+    assert len(calls) == 2 and calls[1][0] == 'browser'
+    assert result['status'] == 'needs_verification' and '登录或人工验证' in result['message']
+    assert result['saved'] == 0
+
+
+def test_collect_jobs_direct_success_skips_browser_channel(agent, job, monkeypatch):
+    """公开接口直连成功时不碰浏览器：降级只在被拦截后发生。"""
+    calls = stub_channels(monkeypatch,
+                          dict(status='completed', message='公开接口取得 1 条岗位', jobs=BOSS_BROWSER_JOBS, evidence=[]),
+                          dict(status='failed', message='不应执行', jobs=[], evidence=[]))
+    state = state_for(agent, scope_for('global'))
+    result = agent._builtin(state, 'collect_jobs', dict(source='liepin', query='甲公司 Java'))
+    assert calls == [('direct', 'liepin', '甲公司 Java', '', 20)]
+    assert result['status'] == 'completed' and result['saved'] == 1
+
+
 def test_system_prompt_routes_business_facts_to_project_lookup(agent, monkeypatch):
     captured = []
 

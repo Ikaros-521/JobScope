@@ -428,7 +428,7 @@ def _cninfo(client, query, limit):
 SOURCES = {
     'boss': dict(name='BOSS 直聘', kind='jobs', transport='http_api', status='needs_verification',
                  login='required', codes=CITY_CODES, hot=BOSS_HOT_CITIES,
-                 description='国内岗位接口；需要登录后采集，未登录直调会要求登录或触发验证，请使用专属浏览器会话。'),
+                 description='国内岗位接口；直连会被访问验证拦截，采集入口自动降级为项目浏览器通道，首次需在弹出的窗口完成登录/人工验证。'),
     'zhaopin': dict(name='智联招聘', kind='jobs', transport='browser_page', status='needs_verification',
                    login='recommended', codes=ZHAOPIN_CITY_CODES,
                    description='岗位随搜索页返回；本机直连会被来源风控拦下，需项目浏览器会话，建议登录后再采集。'),

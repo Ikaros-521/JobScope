@@ -50,8 +50,12 @@ def execute_collection(repo, data_dir, source, query, task, location='', limit=1
     connectors = _module("connectors")
     if use_browser or source in connectors.BROWSER_SOURCES:
         result = _module("browser").collect(source, query, location=location, limit=limit, data_dir=data_dir)
-    else:
-        result = connectors.collect(source, query, location=location, limit=limit, cache_dir=data_dir / "cache")
+        return persist_collection(repo, task, result)
+    result = connectors.collect(source, query, location=location, limit=limit, cache_dir=data_dir / "cache")
+    if result.get('status') in ('needs_verification', 'needs_login') and source in _module("browser").PAGES:
+        # 直连被风控/要求登录（BOSS 直连每次必触发验证）：自动降级走项目浏览器通道。浏览器没开会
+        # 拉起窗口，需人工登录/验证时页面顶到前台——用户完成后重试即可，不该只收到一句提示。
+        result = _module("browser").collect(source, query, location=location, limit=limit, data_dir=data_dir)
     return persist_collection(repo, task, result)
 
 
