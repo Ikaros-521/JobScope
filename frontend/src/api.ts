@@ -320,16 +320,39 @@ export function optimizeResume(payload: { resume_text?: string; job_id?: string;
 export function exportResumeVersion(id: number, format: 'pdf' | 'docx' | 'html' | 'md', filename: string) {
   return download(`/resume-versions/${id}/export?format=${format}`, filename)
 }
-// ---- 知识库：用户录入的知识条目，Agent 对话经 knowledge_search 检索引用（K-…） ----
-export type KnowledgeEntry = { id: string; title: string; content: string; tags: string[]; created_at: string; updated_at: string; content_truncated?: boolean }
-export type KnowledgeList = { entries: KnowledgeEntry[]; tags: string[]; total: number; page: number; page_size: number; pages: number }
+// ---- 知识库：分块文档模型——手写条目与上传文档统一入库，Agent 经 knowledge_search 检索引用（K-…） ----
+export type KnowledgeStrategy = 'recursive' | 'hard' | 'punct' | 'semantic' | 'llm'
+export type KnowledgeRetrievalMode = 'lexical' | 'hybrid'
+export type KnowledgeDoc = {
+  id: string; title: string; content: string; tags: string[]; created_at: string; updated_at: string
+  source: 'manual' | 'upload'; file_name?: string; file_size?: number
+  chunk_strategy: KnowledgeStrategy; chunk_size: number; chunk_overlap: number; chunk_count: number
+  content_truncated?: boolean; characters?: number; hit_excerpt?: string
+}
+export type KnowledgeChunk = { ordinal: number; text: string; characters: number }
+export type KnowledgeSettings = { strategy: KnowledgeStrategy; size: number; overlap: number; separators: string[]; retrieval_mode: KnowledgeRetrievalMode }
+export type KnowledgeStatus = { docs: number; chunks: number; embedded: number; pending: number; stale: boolean; embedding_model: string | null; embedding_ready: boolean }
+export type KnowledgeSettingsPayload = { settings: KnowledgeSettings } & KnowledgeStatus
+export type KnowledgeList = { entries: KnowledgeDoc[]; tags: string[]; total: number; page: number; page_size: number; pages: number } & KnowledgeStatus
+export type KnowledgeImportResult = { entry: KnowledgeDoc; warnings: string[] }
 export function listKnowledge(q = '', tag = '', page = 1, pageSize = 20) {
   const params = new URLSearchParams({ q, tag, page: String(page), page_size: String(pageSize) })
   return api<KnowledgeList>(`/knowledge?${params.toString()}`)
 }
-export function getKnowledge(id: string) { return api<KnowledgeEntry>(`/knowledge/${encodeURIComponent(id)}`) }
-export function createKnowledge(draft: { title: string; content: string; tags: string[] }) { return post<KnowledgeEntry>('/knowledge', draft) }
+export function getKnowledge(id: string) { return api<KnowledgeDoc>(`/knowledge/${encodeURIComponent(id)}`) }
+export function getKnowledgeChunks(id: string) { return api<{ chunks: KnowledgeChunk[] }>(`/knowledge/${encodeURIComponent(id)}/chunks`) }
+export function createKnowledge(draft: { title: string; content: string; tags: string[] }) { return post<KnowledgeDoc>('/knowledge', draft) }
 export function updateKnowledge(id: string, patch: { title?: string; content?: string; tags?: string[] }) {
-  return api<KnowledgeEntry>(`/knowledge/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) })
+  return api<KnowledgeDoc>(`/knowledge/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) })
 }
 export function deleteKnowledge(id: string) { return api<{ deleted: boolean }>(`/knowledge/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+// 文件上传走与简历导入相同的裸流通道（项目不引入 multipart 依赖）；前端逐文件调用并聚合结果。
+export function uploadKnowledge(filename: string, file: File) {
+  return upload<KnowledgeImportResult>(`/knowledge/upload?filename=${encodeURIComponent(filename)}`, file)
+}
+export function getKnowledgeSettings() { return api<KnowledgeSettingsPayload>('/knowledge/settings') }
+export function updateKnowledgeSettings(patch: Partial<Pick<KnowledgeSettings, 'strategy' | 'size' | 'overlap' | 'separators' | 'retrieval_mode'>>) {
+  return api<KnowledgeSettingsPayload>('/knowledge/settings', { method: 'PUT', body: JSON.stringify(patch) })
+}
+export type KnowledgeReembedResult = KnowledgeStatus & { model: string }
+export function reembedKnowledge() { return post<KnowledgeReembedResult>('/knowledge/reembed') }

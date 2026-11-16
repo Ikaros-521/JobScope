@@ -38,9 +38,10 @@ def test_punct_chunks_merge_and_fallback():
     # 超限片段滑窗兜底
     long_segment = '超' * 30 + '。'
     assert all(len(piece) <= 20 for piece in punct_chunks(long_segment, 20, 0))
-    # 自定义分隔符
+    # 自定义分隔符：a/b 都是短片段，合并到 size 上限内（换行连接）。
     custom = punct_chunks('a\n\nb', 10, 0, separators=['\n\n'])
-    assert custom == ['a', 'b']
+    assert custom == ['a\nb']
+    assert punct_chunks('a\n\nb', 1, 0, separators=['\n\n']) == ['a', 'b']
 
 
 def test_recursive_respects_structure_and_size_cap():
@@ -94,9 +95,10 @@ def test_chunk_text_fallbacks_are_explicit():
 
 
 def test_llm_chunks_use_reported_boundaries():
-    # 每句约 45 字，两组各 3 句都超过 minimum=size/4，边界切分才能保留为两块。
-    sentence = lambda index: f'这是第{index}段长句，主题{"甲" if index <= 3 else "乙"}的内容，包含足够的细节信息量用于测试。'
-    content = ''.join(sentence(index) for index in range(1, 7))
+    # 每句只在句末一个句号（保证切句数与模型编号一致），两组各 3 句都超过 minimum=size/4。
+    sentence = lambda index: (f'这是第{index}段长句，主题{"甲" if index <= 3 else "乙"}的内容，'
+                              '补充足够的细节描述与背景说明文字用于占位测试直到句末结束')
+    content = ''.join(sentence(index) + '。' for index in range(1, 7))
     chat = lambda prompt: '响应前缀 [3] 响应后缀'  # 第 3 句之后开新主题
     chunks = llm_chunks(content, 500, 'plain', chat)
     assert len(chunks) == 2 and '第3段' in chunks[0] and '第4段' in chunks[1]

@@ -50,16 +50,16 @@ class ResumeInput(RequestModel):
 
 
 class KnowledgeInput(RequestModel):
-    """用户录入的知识条目：Agent 对话经 knowledge_search 检索引用（K-…）。"""
+    """用户录入的知识文档：Agent 对话经 knowledge_search 检索引用（K-…）。上限与文件导入一致。"""
     title: str = Field(min_length=1, max_length=200)
-    content: str = Field(min_length=1, max_length=50000)
+    content: str = Field(min_length=1, max_length=200000)
     tags: list[Annotated[str, Field(max_length=30)]] = Field(default_factory=list, max_length=10)
 
 
 class KnowledgePatch(RequestModel):
     """二次编辑：缺省字段保持不变；content 变更按该文档原策略重切。"""
     title: str | None = Field(default=None, min_length=1, max_length=200)
-    content: str | None = Field(default=None, min_length=1, max_length=50000)
+    content: str | None = Field(default=None, min_length=1, max_length=200000)
     tags: list[Annotated[str, Field(max_length=30)]] | None = None
 
 

@@ -664,7 +664,7 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .management-tabs button[aria-selected="true"] { color: var(--green); border-bottom-color: var(--green); font-weight: 600; }
 .management-tabs button:hover { color: var(--green); background: var(--selected); }
 /* 知识库页：两格概况 + 检索工具栏 + 条目卡片列表 */
-.knowledge-view .management-overview { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.knowledge-view .management-overview { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .knowledge-panel { padding: 20px; display: grid; gap: 14px; }
 .knowledge-toolbar { display: flex; align-items: center; gap: 10px; }
 .knowledge-toolbar .search-input { border: 1px solid var(--line); border-radius: 8px; padding: 0 10px; background: var(--surface); }
@@ -681,6 +681,29 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .knowledge-card-body { color: #525252; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
 .knowledge-card-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .knowledge-card-meta .knowledge-tag { cursor: default; }
+.knowledge-intro-actions { display: flex; gap: 10px; }
+.knowledge-settings { padding: 0; margin-bottom: 20px; }
+.knowledge-settings summary { display: flex; align-items: center; gap: 10px; padding: 14px 20px; cursor: pointer; color: #171717; font-weight: 600; list-style: none; }
+.knowledge-settings summary::-webkit-details-marker { display: none; }
+.knowledge-settings summary:hover { background: var(--surface); }
+.knowledge-settings-body { padding: 4px 20px 18px; display: grid; gap: 8px; }
+.knowledge-settings-grid { display: grid; grid-template-columns: 160px 160px minmax(0, 1fr) 200px; gap: 14px; align-items: start; }
+.knowledge-settings-grid input, .knowledge-settings-grid select { width: 100%; }
+.kb-separators input { font-family: ui-monospace, monospace; font-size: 12px; }
+.knowledge-settings-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; flex-wrap: wrap; }
+.knowledge-settings-actions > span { margin-right: auto; }
+.knowledge-source-tag { display: inline-flex; margin-left: 8px; padding: 1px 8px; border-radius: 999px; background: var(--surface); border: 1px solid var(--line); color: var(--muted); font-size: 11px; font-weight: 400; vertical-align: middle; }
+.knowledge-preview { width: min(880px, calc(100vw - 32px)); max-height: calc(100dvh - 48px); overflow: hidden; display: flex; flex-direction: column; }
+.knowledge-preview-meta { margin: -8px 0 10px; }
+.knowledge-preview-tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 12px; }
+.knowledge-preview-tabs button { padding: 8px 16px; border-bottom: 2px solid transparent; color: var(--muted); }
+.knowledge-preview-tabs button.active { color: var(--green); border-bottom-color: var(--green); font-weight: 600; }
+.knowledge-preview-body, .knowledge-preview-chunks { overflow-y: auto; min-height: 120px; max-height: calc(100dvh - 320px); padding: 4px 2px; white-space: pre-wrap; word-break: break-word; font-size: 13px; line-height: 1.7; }
+.knowledge-chunk-card { display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: 8px 12px; border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; margin-bottom: 10px; background: var(--surface); }
+.knowledge-chunk-card p { grid-column: 1 / -1; margin: 0; color: #525252; white-space: pre-wrap; word-break: break-word; }
+.knowledge-chunk-index { display: inline-flex; padding: 2px 9px; border-radius: 999px; background: var(--paper); border: 1px solid var(--line); color: var(--green); font-size: 12px; font-weight: 600; }
+@media (max-width: 900px) { .knowledge-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .knowledge-view .management-overview { grid-template-columns: 1fr; } }
+
 .management-tabs button span { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--selected); padding: 2px 7px; border-radius: 5px; font-size: 12px; font-weight: 400; }
 .management-section-heading { margin-bottom: 16px; }
 .management-section-heading h2 { font-size: 16px; }

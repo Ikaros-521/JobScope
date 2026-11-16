@@ -12,7 +12,8 @@ from .repository import digest, now
 
 SCHEMA_VERSION = 'knowledge-store-2'
 LIST_SNIPPET_CHARS = 400
-READ_WINDOW_CHARS = 6000
+SEARCH_TEXT_CHARS = 4000   # Agent 检索结果里单文档拼接分块的窗口；超长用 knowledge_read 翻页
+READ_WINDOW_CHARS = 6000   # knowledge_read 的 offset 窗口（与 project_read/skill_resource 同口径）
 MAX_TAGS = 10
 MAX_SEARCH_DOCS = 8
 MAX_EVIDENCE_DOCS = 12
@@ -93,7 +94,7 @@ class KnowledgeStore:
         merged['separators'] = [str(s).strip()[:20] for s in (merged.get('separators') or []) if str(s).strip()][:10]
         with self.repo.connection() as conn:
             conn.execute('INSERT OR REPLACE INTO knowledge_meta VALUES (?,?)', ('settings', json.dumps(merged, ensure_ascii=False)))
-        return self.status()
+        return dict(settings=self.settings(), **self.status())
 
     # ---------- chunking & persistence ----------
 
@@ -253,24 +254,25 @@ class KnowledgeStore:
 
     def list(self, q='', tag='', page=1, page_size=20):
         """UI listing；q 走分块 FTS（与 Agent 同通道），命中时附最佳分块摘录。"""
-        with self.repo.connection() as conn:
-            entries = [self._public(json.loads(row['payload'])) for row in
-                       conn.execute('SELECT payload FROM knowledge ORDER BY updated_at DESC')]
-        tags = sorted({tag for entry in entries for tag in entry['tags']})
-        if tag:
-            entries = [entry for entry in entries if tag in entry['tags']]
         hit_by_doc = {}
-        if q.strip():
-            from .research.query import tokenize
-            terms = tokenize(q)
-            if terms:
-                expression = ' OR '.join('"' + term.replace('"', '""') + '"' for term in terms)
-                rows = conn.execute('''SELECT c.doc_id,c.text FROM knowledge_fts
-                                       JOIN knowledge_chunks c ON c.id=knowledge_fts.rowid
-                                       WHERE knowledge_fts MATCH ? ORDER BY bm25(knowledge_fts)''', (expression,)).fetchall()
-                for row in rows:
-                    hit_by_doc.setdefault(row['doc_id'], row['text'])
-            entries = [entry for entry in entries if entry['id'] in hit_by_doc]
+        with self.repo.connection() as conn:
+            entries = [json.loads(row['payload']) for row in
+                       conn.execute('SELECT payload FROM knowledge ORDER BY updated_at DESC')]
+            tags = sorted({tag for entry in entries for tag in entry['tags']})
+            if tag:
+                entries = [entry for entry in entries if tag in entry['tags']]
+            if q.strip():
+                from .research.query import tokenize
+                terms = tokenize(q)
+                if terms:
+                    expression = ' OR '.join('"' + term.replace('"', '""') + '"' for term in terms)
+                    rows = conn.execute('''SELECT c.doc_id,c.text FROM knowledge_fts
+                                           JOIN knowledge_chunks c ON c.id=knowledge_fts.rowid
+                                           WHERE knowledge_fts MATCH ? ORDER BY bm25(knowledge_fts)''', (expression,)).fetchall()
+                    for row in rows:
+                        hit_by_doc.setdefault(row['doc_id'], row['text'])
+                entries = [entry for entry in entries if entry['id'] in hit_by_doc]
+        entries = [self._public(entry) for entry in entries]
         listed = []
         for entry in entries:
             listed.append({**entry, 'hit_excerpt': (hit_by_doc.get(entry['id']) or entry['content'])[:LIST_SNIPPET_CHARS]})
