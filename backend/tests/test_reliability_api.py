@@ -491,6 +491,40 @@ def test_extracted_team_size_statements_aggregate_into_one_signal(client, tmp_pa
     assert '相互兼容' in people['findings'][0]['text']
 
 
+def test_extract_aggregation_includes_stored_primitive_staff_range(client, tmp_path, monkeypatch):
+    """2026-11-15 起：公开页工商照面的人员规模（原始形态已存信号）与 JD 团队自述一起聚合。
+
+    signals() 每规则只留最新一条，不把已存原始形态拉回聚合就会被本轮结果顶掉；
+    聚合形态（median_size）与同证据编号的重复自述都不参与。
+    """
+    model_on(monkeypatch)
+    jd = client.post('/api/evidence', json=dict(title='岗位描述', company='甲公司', kind='company_statement',
+                                                text='公司整体约 9000 人，本团队为平台组')).json()['evidence']
+    # 公开页采集落库的原始形态（official，人员规模登记口径）；web_company_profile 快照
+    # 只能由快查管线落库，这里与真实管线同路径直接写 repo。
+    from jobscope.reliability.models import SignalInput
+    from jobscope.repository import now
+    from jobscope.reliability.rubric import RULES
+    repo = client.app.state.repo
+    identity = repo.resolve_company('甲公司')
+    snapshot = repo.save_evidence(dict(title='企业信息快照', company='甲公司', kind='web_company_profile',
+                                       text='法定代表人：张三\n人员规模：10000人以上'), 'qcc_web')
+    stored = repo.save_signal(SignalInput(company_id=identity['id'], dimension=RULES['team_size_statement'].dimension,
+                                          rule='team_size_statement', value={'size': 10000}, unit='人',
+                                          source_class='official', evidence_id=snapshot['id'],
+                                          observed_at='', collected_at=now()))
+    content = json.dumps(dict(signals=[
+        dict(rule='team_size_statement', dimension='people', value={'size': 9000}, evidence_id=jd['id']),
+    ]), ensure_ascii=False)
+    mock_model(monkeypatch, content)
+    result = client.post('/api/companies/甲公司/signals/extract', json=dict()).json()
+    assert result['status'] == 'completed'
+    saved = next(item for item in result['signals'] if item['rule'] == 'team_size_statement')
+    # 两条公司级自述（登记人员规模 10000 + JD 约 9000）相容聚合。
+    assert saved['value'] == {'median_size': 9500.0, 'statements': 2, 'compatible': 2}
+    assert snapshot['id'] in result['message'] and jd['id'] in result['message']
+
+
 def test_complete_job_descriptions_enter_the_extractor_but_summaries_do_not(client, tmp_path, monkeypatch):
     """R3 的「团队 N 人」写在岗位描述里：完整 JD 的岗位证据进材料，列表摘要仍然不进。"""
     model_on(monkeypatch)

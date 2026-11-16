@@ -81,6 +81,19 @@ def run_signal_extract(repo, company, credit_code='', *, limit=12, max_tokens=12
     # 模型只交原始数字；repository.signals() 每条规则只留最新一条，聚合必须发生在落库前。
     size_signals = [item for item in outcome['signals'] if item.rule == 'team_size_statement']
     other_signals = [item for item in outcome['signals'] if item.rule != 'team_size_statement']
+    # 已存的「原始形态」规模自述（如公开页工商照面的人员规模）一并纳入聚合：signals()
+    # 每规则只留最新一条，聚合落库后原始行会被顶掉，不从这里拉回来就永久丢失该口径。
+    # 只认原始形态（value 含 'size' 不含 'median_size'），聚合形态不重复计数；
+    # 同一证据编号（本轮模型已从快照里抽到的）不重复纳入。
+    from .extract import RawSignal, TEAM_SIZE_RULE
+    seen_evidence = {item.evidence_id for item in size_signals}
+    for row in repo.raw_signals(identity['id']):
+        payload = json.loads(row['payload']) if isinstance(row.get('payload'), str) else (row.get('payload') or {})
+        value = payload.get('value') or {}
+        if (payload.get('rule') == TEAM_SIZE_RULE and 'size' in value and 'median_size' not in value
+                and payload.get('evidence_id') not in seen_evidence):
+            size_signals.append(RawSignal(rule=TEAM_SIZE_RULE, dimension=RULES[TEAM_SIZE_RULE].dimension,
+                                          value=dict(value), evidence_id=payload.get('evidence_id') or ''))
     merged, participants = aggregate_team_size(size_signals)
     aggregation_note = ''
     if merged is not None:

@@ -628,6 +628,48 @@ def test_aiqicha_without_two_annual_reports_skips_the_trend(monkeypatch, tmp_pat
                for item in outcome['signals'])
 
 
+# 2026-11-15 实测回放：爱企查/企查查卡片「企业类型」后跟的是变更流水（「变更查看动态…」
+# 「从X变更为Y」），没有结构词的值是脏数据；天眼查 JSON 的 companyOrgType 才是干净口径。
+DIRTY_TYPE_HTML = ('<span>企业类型 变更查看动态2026-09-10新增</span>' + PAD)
+TYC_TYPE_DETAIL = ('<script>{"companyOrgType":"有限责任公司（法人独资）","scale":"大型"}</script>'
+                   '<span>人员规模10000人以上</span>' + PAD)
+
+
+def test_dirty_entity_type_is_discarded_not_guessed(monkeypatch, tmp_path):
+    """卡片/文本里的企业类型值没有结构词（全是变更流水）→ 不判定，宁缺勿猜。"""
+    dirty_card = {'href': CARD_HREF, 'title': NAME, 'fields': {'企业类型': '态2026-09-10新增'},
+                  'text': '企业类型：态2026-09-10新增'}
+    registry, tab = commercial_replay('aiqicha_web', [dirty_card], {CARD_HREF: DIRTY_TYPE_HTML})
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    outcome = collectors.collect('aiqicha_web', NAME, browser_module=browser, data_dir=tmp_path)
+    assert all(item['rule'] != 'soe_status' for item in outcome['signals'])
+
+
+def test_tyc_org_type_comes_from_the_page_json_and_staff_range_becomes_a_statement(monkeypatch, tmp_path):
+    """天眼查：企业类型优先取 JSON（干净），人员规模文本行 → team_size_statement 原始形态。"""
+    registry, tab = commercial_replay('tyc_web', [CARD], {CARD_HREF: TYC_TYPE_DETAIL})
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    outcome = collectors.collect('tyc_web', NAME, browser_module=browser, data_dir=tmp_path)
+    soe = next(item for item in outcome['signals'] if item['rule'] == 'soe_status')
+    assert soe['value'] == {'flag': 0} and '法人独资' in soe['text']
+    staff = next(item for item in outcome['signals'] if item['rule'] == 'team_size_statement')
+    assert staff['value'] == {'size': 10000}
+    assert staff['source_class'] == 'official' and '人员规模' in staff['text']
+
+
+def test_staff_range_interval_keeps_both_ends(monkeypatch, tmp_path):
+    """区间口径「100-499人」：size 取下界、size_max 保留，证据写明区间。"""
+    detail = '<span>人员规模100-499人</span><span>企业类型：有限责任公司（自然人投资或控股）</span>' + PAD
+    registry, tab = commercial_replay('tyc_web', [CARD], {CARD_HREF: detail})
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    outcome = collectors.collect('tyc_web', NAME, browser_module=browser, data_dir=tmp_path)
+    staff = next(item for item in outcome['signals'] if item['rule'] == 'team_size_statement')
+    assert staff['value'] == {'size': 100, 'size_max': 499}
+
+
 def test_aiqicha_cards_come_from_the_pid_extraction_and_founded_uses_both_labels(monkeypatch):
     """2026-11-15 实测校准：爱企查卡片无 href（pid 在 data-log-title 里），标签用「成立时间」。"""
     from jobscope import company_lookup

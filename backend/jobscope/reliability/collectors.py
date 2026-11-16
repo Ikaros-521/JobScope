@@ -493,21 +493,64 @@ def _commercial_founded(card):
         return None
 
 
-# 国企性质判定只认「企业类型」字段的值，不扫全页正文——页面里出现的「国有企业」新闻字样
+# 国企性质判定只认「企业类型」的值，不扫全页正文——页面里出现的「国有企业」新闻字样
 # 不构成这家公司性质的依据。命中任一关键词 → 1；字段明确存在但无命中 → 0；没字段 → None。
 SOE_MARKERS = ('国有', '全民所有制', '集体所有制', '国家出资')
+# 类型值必须像登记类型（2026-11-15 实测：爱企查「企业类型」标签后会跟「变更查看动态…」
+# 变更流水，企查查卡片会跟「从"X"变更为"Y"」——没结构词的值一律当脏数据弃用，不猜）。
+ENTITY_TYPE_WORDS = ('有限公司', '有限责任公司', '合伙', '独资', '所有制', '出资', '股份', '个体')
+ENTITY_TYPE_DIRTY = ('变更', '新增', '动态', '查看', '国标行业')
+# 天眼查把企业类型嵌在页面 JSON 里（干净，无粘连）：优先于渲染文本。
+TYC_ORG_TYPE_JSON = re.compile(r'"companyOrgType":"([^"]{2,50})"')
 
 
-def _soe_flag(card, plain):
-    """(flag, 企业类型原文)；未取到字段返回 (None, '')。确定性关键词判定，不猜。"""
+def _entity_type(card, plain, html=''):
+    """(类型原文或 None)：天眼查 JSON > 卡片字段 > 文本行；值必须过结构词校验。"""
+    candidates = []
+    json_match = TYC_ORG_TYPE_JSON.search(str(html or ''))
+    if json_match:
+        candidates.append(json_match[1])
     fields = card.get('fields') or {}
-    value = str(fields.get('企业类型') or '')
-    if not value:
-        match = re.search(r'企业类型[^：:]{0,6}[：:]?\s*([^\s，,。；;]{2,50})', plain)
-        value = match.group(1) if match else ''
-    if not value:
+    if fields.get('企业类型'):
+        candidates.append(str(fields['企业类型']))
+    text_match = re.search(r'企业类型[（(]?[^：:\s]{0,10}[：:]?\s*([^\s，,。；;（）()]{2,40})', plain)
+    if text_match:
+        candidates.append(text_match[1])
+    for value in candidates:
+        if (any(word in value for word in ENTITY_TYPE_WORDS)
+                and not any(word in value for word in ENTITY_TYPE_DIRTY)):
+            return value
+    return None
+
+
+def _soe_flag(card, plain, html=''):
+    """(flag, 企业类型原文)；未取得可信类型返回 (None, '')。确定性关键词判定，不猜。"""
+    value = _entity_type(card, plain, html)
+    if value is None:
         return None, ''
     return (1 if any(marker in value for marker in SOE_MARKERS) else 0), value
+
+
+# 人员规模（工商照面登记口径，天眼查详情文本行）：「10000人以上」「100-499人」「58435人」。
+# 这是 company_size 的一条公司口径自述，与 JD 里的团队自述一起进 team_size_statement 聚合。
+STAFF_RANGE_RE = re.compile(r'人员规模\s*([^\s，,。；;：:]{1,15})')
+
+
+def _staff_range_value(text):
+    """「10000人以上」→ {'size': 10000}；「100-499人」→ {'size': 100, 'size_max': 499}；解析不出 → None。
+
+    「以上」取下界当规模点值：证据正文写明口径是登记下界，不冒充精确值。
+    """
+    match = STAFF_RANGE_RE.search(str(text or ''))
+    if match is None:
+        return None
+    value = match[1]
+    interval = re.search(r'(\d[\d,]*)\s*[-~至]\s*(\d[\d,]*)', value)
+    if interval:
+        low = int(interval[1].replace(',', ''))
+        return {'size': low, 'size_max': int(interval[2].replace(',', ''))} if low > 0 else None
+    floor = re.search(r'(\d[\d,]*)', value)
+    return {'size': int(floor[1].replace(',', ''))} if floor and int(floor[1].replace(',', '')) > 0 else None
 
 
 def _commercial_insured(source_id, html, plain):
@@ -672,13 +715,24 @@ def _commercial_pass(tab, keyword, source_id, on_status, data_dir, drafts):
         draft['needs_denominator'] = True
         drafts.append(draft)
         got.append('涉诉计数')
-    flag, entity_kind = _soe_flag(card, plain)
+    flag, entity_kind = _soe_flag(card, plain, html)
     if flag is not None:
         nature = '国有性质' if flag else '非国有'
         drafts.append(_signal('soe_status', {'flag': flag}, '', str(card.get('url') or detail_url),
                               f'登记的企业类型为「{entity_kind}」（取自{spec["name"]}公开页），'
                               f'按关键词确定性判定为{nature}；性质只是稳定性的一个侧面，不推断经营好坏。'))
         got.append('国企性质')
+    # 人员规模（工商照面登记口径）：一条「公司口径自述」，与 JD 团队自述一起进
+    # team_size_statement 聚合（聚合发生在提取端点，会把这条已存原始形态纳入）。
+    staff = _staff_range_value(plain)
+    if staff:
+        raw = STAFF_RANGE_RE.search(plain)[0]
+        suffix = f"（登记区间 {staff['size']}-{staff['size_max']} 人）" if 'size_max' in staff else ''
+        drafts.append(_signal('team_size_statement', staff, '', str(card.get('url') or detail_url),
+                              f'人员规模取自{spec["name"]}公开页工商照面信息（{raw}）{suffix}；'
+                              '这是登记口径的规模自述，与岗位描述里的团队规模自述一起衡量口径一致性，'
+                              '不评价规模好坏。'))
+        got.append('人员规模')
     if source_id == 'aiqicha_web' and len(annual) == 2:
         # 爱企查年报序列：operations 维度的人数/营收同比（相邻年度、同一来源序列，
         # 口径写进证据正文；两期同一口径都成立才出信号）。年报已在上面读取复用。

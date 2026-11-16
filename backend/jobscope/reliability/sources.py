@@ -90,15 +90,18 @@ SIGNAL_SOURCES = {
     # 是两条独立通路。三家的字段正则均未逐站实测，先按快查同一口径预置，跑一次后按快照校正。
     'qcc_web': dict(name='企查查公开页', tier='free', transport='browser_page', implemented=True,
                     status='needs_verification',
-                    rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio', 'soe_status'],
+                    rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio', 'soe_status',
+                           'team_size_statement'],
                     description='无需接口密钥：用项目浏览器读企查查公开搜索卡片与公司页可见字段'
                                 '（成立日期、参保人数、司法案件数）。未登录可见字段有限，'
                                 '遇到登录/验证页面会停在前台等你处理；解析正则待实测校正。'),
     'tyc_web': dict(name='天眼查公开页', tier='free', transport='browser_page', implemented=True,
                     status='needs_verification',
-                    rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio', 'soe_status'],
-                    description='无需接口密钥：用项目浏览器读天眼查公开搜索卡片与公司页可见字段。'
-                                '未登录可见字段有限，遇到登录/验证页面会停在前台等你处理；解析正则待实测校正。'),
+                    rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio', 'soe_status',
+                           'team_size_statement'],
+                    description='无需接口密钥：用项目浏览器读天眼查公开页（企业类型/人员规模从页面 JSON '
+                                '与工商照面文本取，参保数从内嵌 JSON 取）。2026-11-15 已实测校准；'
+                                '遇登录/验证页面会停在前台等你处理。'),
     'aiqicha_web': dict(name='爱企查公开页', tier='free', transport='browser_page', implemented=True,
                         status='needs_verification',
                         rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio', 'soe_status',
