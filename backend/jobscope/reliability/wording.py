@@ -1,6 +1,6 @@
 """All outward-facing sentences come from here. Numbers and sources, never verdicts."""
 
-WORDING_VERSION = 'wording-6'
+WORDING_VERSION = 'wording-7'
 
 # 这些词把「可核实的数字」升级成了对他人商誉的断言，任何模板产出命中即视为缺陷。
 BANNED = ('欠薪', '拖欠工资', '黑心', '血汗', '骗子', '诈骗', '皮包公司', '跑路', '老赖', '倒闭',
@@ -33,7 +33,8 @@ TEMPLATES = {
     # R2 衡量的是「把要做什么讲清楚没有」，模板必须把这条边界写死，不许滑成「技术强不强」。
     'jd_specificity': '该公司 {jobs} 条完整岗位描述平均 {chars_mean} 字，职责或要求条目平均 {items_mean} 条，可识别技术栈平均 {skills_mean} 项，含量化结果的条目占比 {quantified_share}；这衡量岗位描述把要做什么讲得有多具体，不代表公司技术实力。',
     # R3 只说明规模与自述一致度：公司口径、未见独立核实、不评价规模好坏、不说明氛围，四个边界都写进句子。
-    'team_size_statement': '岗位与公司自述材料给出的团队规模中位数约 {median_size} 人（{statements} 条自述中 {compatible} 条相互兼容）；规模属公司口径的自述，未见独立核实，分数量的是这些自述之间是否一致，不评价规模好坏，也不说明团队氛围。',
+    # 仅 1 条自述时一致性无从校验（中性参考），句子写明，不许让「中性」冒充「一致」。
+    'team_size_statement': '公司口径的规模自述中位数约 {median_size} 人（共 {statements} 条自述、{compatible} 条相互兼容；仅 1 条时一致性无从校验，按中性参考计入）；规模属登记或招聘平台自述口径，未见独立核实，不评价规模好坏，也不说明团队氛围。',
     # R4/R5 的数字带着公告自己的口径（万元/亿元等），模板不添单位后缀；R5 严禁出现「裁员」「裁撤」。
     'disclosure_revenue_trend': '同一份公告里本期营业收入或营收数字为 {current}、上一期为 {previous}；同比由固定规则换算，营收变动有多种成因，本工具不推断经营好坏。',
     'disclosure_headcount_trend': '公告口径在职员工数由 {previous} 变为 {current}；人数变动有多种成因，本工具不推断经营好坏，也不据此判断招聘冻结。',

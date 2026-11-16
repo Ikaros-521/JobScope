@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+from jobscope.reliability.wording import render
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from jobscope.reliability.rubric import ASSESSMENT, DIMENSIONS, MATERIAL, RULES, score
@@ -111,11 +113,20 @@ def test_pay_gate_fails_without_a_positive_ratio_or_median():
     assert any('pay_vs_city_median' in line and '分层' in line for line in pay.missing)
 
 
-def test_team_size_gate_fails_with_fewer_than_two_statements():
+def test_team_size_scores_neutral_with_a_single_statement():
+    """2026-11-15 起（rubric-7）：仅 1 条自述按中性 60 参考计入——一致性无从校验就不按矛盾打分，
+    句子写明「仅 1 条」；原始形态（仅 size）在展示层归一成 statements=1，仍可渲染。"""
     result = score([sig('team_size_statement', {'median_size': 30, 'statements': 1, 'compatible': 1})])
     people = next(item for item in result.dimensions if item.dimension == 'people')
-    assert people.score is None and people.confidence == 0
-    assert any('team_size_statement' in line and '至少需要 2 条' in line for line in people.missing)
+    assert people.score == 60.0 and people.findings[0].score == 60.0
+    primitive = score([sig('team_size_statement', {'size': 8000, 'size_max': 9999})])
+    p_people = next(item for item in primitive.dimensions if item.dimension == 'people')
+    assert p_people.score == 60.0
+    text = render(p_people.findings[0])
+    assert '仅 1 条' in text and '中性参考' in text and '{' not in text
+    # 零值/无值仍不出分：中性 60 只给有数字的自述。
+    empty = score([sig('team_size_statement', {})])
+    assert next(item for item in empty.dimensions if item.dimension == 'people').score is None
 
 
 def test_trend_gate_fails_without_a_positive_previous_value():

@@ -103,8 +103,20 @@ def _normalize_boss(job, snapshot):
         evidence = dict(title=f"{job['company']} · 招聘平台公司自述", company=job['company'],
                         url=job['url'], kind='company_statement',
                         text='来源为招聘详情页的公司自述及平台展示，非独立核验。\n' + company_text[:100000])
+    # 人员情况的确定性通路（2026-11-15）：公司侧栏自述里的「1000-9999人」「10000人以上」
+    # 直接解析成一条公司口径规模自述（platform），不依赖模型转写；解析不出就不产出。
+    company_size = None
+    if evidence:
+        interval = re.search(r'(\d[\d,]*)\s*[-~至]\s*(\d[\d,]*)\s*人', company_text)
+        if interval:
+            low = int(interval[1].replace(',', ''))
+            company_size = {'size': low, 'size_max': int(interval[2].replace(',', ''))} if low > 0 else None
+        else:
+            floor = re.search(r'(\d[\d,]*)\s*人以上', company_text)
+            if floor and int(floor[1].replace(',', '')) > 0:
+                company_size = {'size': int(floor[1].replace(',', ''))}
     return dict(status='completed', message='完整职位描述已读取并保存，平台自述仍需核实',
-                job=updated, company_evidence=evidence)
+                job=updated, company_evidence=evidence, company_size=company_size)
 
 
 def _normalize_zhaopin(job, snapshot):
@@ -171,7 +183,20 @@ def collect_detail(job, data_dir):
 def save_detail(repo, output):
     saved = repo.save_job(output['job'], output['job'].get('source', 'boss'))
     if output.get('company_evidence'):
-        repo.save_evidence(output['company_evidence'], output['job'].get('source', 'boss') + '_detail')
+        stored = repo.save_evidence(output['company_evidence'], output['job'].get('source', 'boss') + '_detail')
+        # 平台侧栏里确定性解析出的规模自述照常落库（人员情况维度的一条公司口径自述）；
+        # 后续「提取资料数字」聚合时按证据编号去重，不会与模型转写重复计数。
+        size = output.get('company_size')
+        if size and stored and output['job'].get('company', '').strip():
+            from .reliability.models import SignalInput
+            from .reliability.rubric import RULES
+            from .repository import now
+            identity = repo.resolve_company(output['job']['company'])
+            repo.save_signal(SignalInput(
+                company_id=identity['id'], dimension=RULES['team_size_statement'].dimension,
+                rule='team_size_statement', value=size, unit=RULES['team_size_statement'].unit,
+                source_class='platform', evidence_id=stored['id'],
+                observed_at='', collected_at=now()))
     return saved
 
 

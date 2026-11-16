@@ -88,6 +88,21 @@ def test_recompute_is_idempotent_for_identical_inputs(tmp_path):
     assert len(repo.reliability_history(company['id'])) == 1
 
 
+def test_same_input_recompute_updates_the_stored_report_in_place(tmp_path):
+    # 输入哈希不变时原位更新而不是丢弃：TTL 过期这类判定随时间变化而输入不变，旧版
+    # INSERT OR IGNORE 会把新报告静默丢掉，重算响应与库里 latest 各说各话——打开详情
+    # 即自动重算之后，这种漂移每次刷新都会发生。历史仍按输入变化记行：同输入只有一行。
+    repo, service = build(tmp_path)
+    company = repo.resolve_company('甲公司')
+    add(repo, company, 'company_age', {'years': 8}, 'E-' + 'a' * 24)
+    first = service.recompute('甲公司')
+    restamped = dict(first, computed_at='2026-11-16T08:00:00+00:00')
+    repo.save_reliability(restamped)
+    latest = repo.latest_reliability(company['id'])
+    assert latest['computed_at'] == '2026-11-16T08:00:00+00:00'
+    assert len(repo.reliability_history(company['id'])) == 1
+
+
 def test_new_evidence_changes_the_hash_and_keeps_history(tmp_path):
     repo, service = build(tmp_path)
     company = repo.resolve_company('甲公司')

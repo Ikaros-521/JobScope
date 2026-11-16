@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from .limits import MIN_CITY_JOBS, MIN_COMPANY_JOBS
 from .models import Dimension, RuleFinding, SignalInput, can_stand_alone
 
-RUBRIC_VERSION = 'rubric-6'
+RUBRIC_VERSION = 'rubric-7'
 
 # assessment 才允许产生维度分。material 衡量的只是本项目手上有多少材料：
 # 把「9/10 条岗位能解析出月薪」算成薪资待遇 90 分，用户读到的是「薪资给得好」，这是静默的谎言。
@@ -84,10 +84,17 @@ def _jd_points(value):
 
 def _team_size_points(value):
     """团队规模自述的一致性。分数与规模大小完全无关：大公司写 5000-10000 人不是矛盾。
-    compatible 是聚合层算出的「最大相互兼容自述子集」条数，share 只衡量自述之间说不说得拢。"""
+    compatible 是聚合层算出的「最大相互兼容自述子集」条数，share 只衡量自述之间说不说得拢。
+    2026-11-15 起单条自述按中性 60 参考（用户要求维度可出分）：一致性无从校验就不按
+    「矛盾」打分，句子会写明仅 1 条、中性计入；多条时仍按兼容比例评分。"""
     statements, compatible = value.get('statements') or 0, value.get('compatible') or 0
-    if statements < 2 or not value.get('median_size'):
+    if not value.get('median_size'):
+        size = value.get('size')
+        if isinstance(size, (int, float)) and not isinstance(size, bool) and size > 0:
+            return 0.6
         return None
+    if statements < 2:
+        return 0.6
     share = compatible / statements
     return 0.9 if share >= 1 else (0.6 if share >= 0.66 else 0.3)
 
@@ -132,9 +139,10 @@ RULES: dict[str, RuleSpec] = {
     'jd_specificity': RuleSpec('professional', '条', 180, 'jd_specificity',
                                gate_note='出分需要至少 1 条完整岗位描述（完整职责未采集、只有列表摘要的岗位不参与）；有几条评几条，样本量随句子展示',
                                scorer=_jd_points),
-    # R3：公司口径的规模自述一致程度。value 由抽取端把多条自述聚合成一条（median_size/statements/compatible）。
+    # R3：公司口径的规模自述一致程度。value 由抽取端把多条自述聚合成一条（median_size/statements/compatible）；
+    # 原始形态（仅 size）是公开页人员规模或单条 JD 自述，按中性 60 参考计入（rubric-7 起）。
     'team_size_statement': RuleSpec('people', '人', 240, 'team_size_statement',
-                                    gate_note='至少需要 2 条团队规模自述（如「团队 N 人」）才能比较它们是否一致；只有一条时不判断',
+                                    gate_note='需要至少 1 条公司口径的规模自述（招聘平台公司自述、登记人员规模、JD 团队自述均可）；仅 1 条时按中性参考计入，多条按一致性评分',
                                     extract_hint='每条材料单独一条，value 只填 {"size": 数字}；材料写的是区间（如 5000-10000 人）时另加 "size_max"；聚合由本项目代码完成，不要自己算中位数',
                                     scorer=_team_size_points),
     # R4/R5 刻意拆成两条而不是用 metric 字符串参数区分：_for_signal() 只保留数字字段，字符串塞不进去。
@@ -198,8 +206,14 @@ def _for_signal(signal: SignalInput, spec: RuleSpec):
     if points is None:
         # 缺口文案必须说清缺了什么：gate_note 按规则写死阈值，不再笼统一句「数字不足」。
         return None, f'{signal.rule}（{spec.gate_note or "现有数字不足以判断"}）'
+    # 团队规模的原始形态（仅 size，来自公开页登记或单条 JD 自述）在展示层归一成
+    # statements=1 的形状，模板一句话覆盖单条与多条两种口径，存储值保持原样不迁移。
+    data = value
+    if spec.template == 'team_size_statement' and 'median_size' not in value and 'size' in value:
+        data = {'median_size': value['size'], 'statements': 1, 'compatible': 1,
+                **{key: number for key, number in value.items() if key != 'size'}}
     return RuleFinding(rule=signal.rule, dimension=spec.dimension, score=round(100 * max(0.0, min(1.0, points)), 1),
-                       template=spec.template, data=value, evidence_id=signal.evidence_id,
+                       template=spec.template, data=data, evidence_id=signal.evidence_id,
                        source_class=signal.source_class, weight=spec.weight,
                        collected_at=signal.collected_at), ''
 

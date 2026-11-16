@@ -806,7 +806,11 @@ class Repository:
 
     def save_reliability(self, report):
         with self.connection() as conn:
-            conn.execute('INSERT OR IGNORE INTO company_reliability VALUES (?,?,?,?)',
+            # 同一输入重算时原位更新而不是 IGNORE：TTL 过期这类判定随时间变化而输入哈希不变，
+            # IGNORE 会把新算的报告静默丢掉，重算响应与库里 latest 各说各话（打开详情即自动
+            # 重算后这种漂移每次刷新都会发生）。历史仍按输入变化记行：同输入永远只有一行。
+            conn.execute('INSERT INTO company_reliability VALUES (?,?,?,?) '
+                         'ON CONFLICT(company_id, input_hash) DO UPDATE SET created_at=excluded.created_at, payload=excluded.payload',
                          (report['company_id'], report['input_hash'], report['computed_at'], json.dumps(report, ensure_ascii=False)))
 
     def latest_reliability(self, company_id):
