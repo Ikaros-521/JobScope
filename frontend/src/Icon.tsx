@@ -23,6 +23,7 @@ const paths: Record<string, ReactNode> = {
   chart: <><path d="M4 20h16" /><path d="M7 16v-5M12 16V5M17 16v-8" /></>,
   wand: <><path d="M4 20 13.5 10.5" /><path d="m15 3.5.8 1.7 1.7.8-1.7.8-.8 1.7-.8-1.7-1.7-.8 1.7-.8Z" /><path d="m19.5 9.5.5 1.2 1.2.5-1.2.5-.5 1.2-.5-1.2-1.2-.5 1.2-.5Z" /></>,
   star: <path d="m12 3.5 2.6 5.4 5.9.8-4.3 4.1 1.1 5.8L12 16.9l-5.3 2.7 1.1-5.8-4.3-4.1 5.9-.8Z" />,
+  knowledge: <><path d="M19 21V5a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v16" /><path d="m5 21 7-4 7 4" /><path d="M9 8h6M9 12h4" /></>,
 }
 
 export function Icon({ name, size = 18 }: { name: string; size?: number }) {

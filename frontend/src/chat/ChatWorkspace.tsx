@@ -15,7 +15,7 @@ import { useChatRun } from './useChatRun'
 import { ScopeExpansionCard } from './ScopeExpansionCard'
 import './chatRecovery.css'
 
-const SUGGESTIONS = ['结合我的简历，制定 Agent 岗位面试计划', '检索 Python 岗位并比较薪资', '哪些公司仍缺少独立资料？']
+const SUGGESTIONS = ['结合我的简历，制定 Agent 岗位面试计划', '检索 Python 岗位并比较薪资', '我的知识库里有哪些内容？']
 
 const COMPANY_SUGGESTIONS = ['这家公司有哪些岗位要求？', '公司经营情况有哪些证据？', '薪资还有哪些口径需要核实？']
 const JOB_SUGGESTIONS = ['这份岗位有哪些要求？', '公司有哪些可核实的信息？', '面试时还应该问清什么？']
@@ -25,9 +25,10 @@ const STICK_THRESHOLD = 80
 // 上下文估算基数：system 提示 + 工具声明，不随会话变化。
 const CONTEXT_BASE_TOKENS = 600
 
-export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onConfigureModel, navigation, onNavigateConversation, onOpened, prefill }: {
+export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onConfigureModel, onOpenKnowledge, navigation, onNavigateConversation, onOpened, prefill }: {
   scope: ChatScope; modelConfigured: boolean; onManageExtensions?: () => void
   onConfigureModel?: () => void
+  onOpenKnowledge?: () => void
   navigation?: ConversationNavigation | null
   onNavigateConversation?: (navigation: ConversationNavigation) => void
   onOpened?: (requestId: string) => void
@@ -307,7 +308,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCo
   const welcome = !isGlobal && !isJob && !company
     ? { title: '先确认公司主体，再开始对话', text: '在上方输入资料库中的精确公司名称，Agent 将围绕这一主体检索。' }
     : isGlobal
-      ? { title: '让 Agent 帮你查资料、做比较、准备面试', text: '可检索本项目全部岗位与公司资料，按需读取简历、Skills 或调用 MCP；回答保留来源。' }
+      ? { title: '让 Agent 帮你查资料、做比较、准备面试', text: '可检索项目岗位与公司资料、你录入的知识库和简历，按需调用 Skills 或 MCP；回答保留来源。' }
       : isJob
         ? { title: '围绕这份岗位展开', text: 'Agent 可检索本岗位与同公司的公共资料。需要比较其他岗位或公司时，可复制对话并扩大范围。' }
         : { title: `围绕 ${company} 展开`, text: 'Agent 可检索该公司的岗位与资料。需要跨公司比较时，可复制对话进入全局范围。' }
@@ -349,7 +350,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCo
         <div className="chat-main-title">
           <h2>{isGlobal ? conversation.title : scope.kind === 'job' ? (scope.title || scope.company) : `${company || '未选定公司'} · 对话`}</h2>
           <span className="chat-main-sub">
-            Agent · {isGlobal ? '全部岗位与公司资料' : isJob ? '本岗位与同公司公共资料' : '本公司岗位与资料'}
+            Agent · {isGlobal ? '全部岗位、公司资料与知识库' : isJob ? '本岗位与同公司公共资料' : '本公司岗位与资料'}
             {modelSuffix}
           </span>
         </div>
@@ -473,6 +474,7 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCo
         onCancelEdit={cancelEdit}
         onManageExtensions={onManageExtensions}
         onConfigureModel={onConfigureModel}
+        onOpenKnowledge={onOpenKnowledge}
         scopeLabel={scopeLabel}
         onExpandScope={!isGlobal && onNavigateConversation ? () => setShowScopeOptions(value => !value) : undefined}
         locked={opening ? '正在打开会话…' : starting ? '正在开始本轮对话…' : cloning ? '正在复制并打开对话…' : proposing ? '正在生成范围扩展卡片…' : isGlobal || isJob || company ? '' : '请先在上方确认公司主体'}

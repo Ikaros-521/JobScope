@@ -320,3 +320,16 @@ export function optimizeResume(payload: { resume_text?: string; job_id?: string;
 export function exportResumeVersion(id: number, format: 'pdf' | 'docx' | 'html' | 'md', filename: string) {
   return download(`/resume-versions/${id}/export?format=${format}`, filename)
 }
+// ---- 知识库：用户录入的知识条目，Agent 对话经 knowledge_search 检索引用（K-…） ----
+export type KnowledgeEntry = { id: string; title: string; content: string; tags: string[]; created_at: string; updated_at: string; content_truncated?: boolean }
+export type KnowledgeList = { entries: KnowledgeEntry[]; tags: string[]; total: number; page: number; page_size: number; pages: number }
+export function listKnowledge(q = '', tag = '', page = 1, pageSize = 20) {
+  const params = new URLSearchParams({ q, tag, page: String(page), page_size: String(pageSize) })
+  return api<KnowledgeList>(`/knowledge?${params.toString()}`)
+}
+export function getKnowledge(id: string) { return api<KnowledgeEntry>(`/knowledge/${encodeURIComponent(id)}`) }
+export function createKnowledge(draft: { title: string; content: string; tags: string[] }) { return post<KnowledgeEntry>('/knowledge', draft) }
+export function updateKnowledge(id: string, patch: { title?: string; content?: string; tags?: string[] }) {
+  return api<KnowledgeEntry>(`/knowledge/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) })
+}
+export function deleteKnowledge(id: string) { return api<{ deleted: boolean }>(`/knowledge/${encodeURIComponent(id)}`, { method: 'DELETE' }) }

@@ -17,7 +17,10 @@ WORD_NS = '{http://schemas.openxmlformats.org/wordprocessingml/2006/main}'
 COMPAT_NS = '{http://schemas.openxmlformats.org/markup-compatibility/2006}'
 
 
-def pdf_text(content):
+def pdf_text(content, *, max_pages=None, max_chars=None):
+    """知识库导入以更宽的页数/字符上限复用本解析器；缺省保持简历口径。"""
+    max_pages = max_pages or MAX_PAGES
+    max_chars = max_chars or MAX_TEXT_CHARS
     import pymupdf
     if not content.lstrip().startswith(b'%PDF-'):
         raise ValueError('文件不是有效 PDF，请重新导出后导入')
@@ -28,8 +31,8 @@ def pdf_text(content):
     with document:
         if document.needs_pass:
             raise ValueError('PDF 有密码保护，请先解除密码再导入')
-        if len(document) > MAX_PAGES:
-            raise ValueError(f'PDF 超过 {MAX_PAGES} 页，请仅保留简历页面后导入')
+        if len(document) > max_pages:
+            raise ValueError(f'PDF 超过 {max_pages} 页，请缩减后导入')
         sections, blank = [], []
         for index, page in enumerate(document):
             text = page.get_text('text', sort=True).strip()
@@ -37,10 +40,10 @@ def pdf_text(content):
                 sections.append(text)
             else:
                 blank.append(str(index + 1))
-            if sum(map(len, sections)) > MAX_TEXT_CHARS:
-                raise ValueError('提取文本超过 100,000 字符，请缩减文件后导入')
+            if sum(map(len, sections)) > max_chars:
+                raise ValueError(f'提取文本超过 {max_chars:,} 字符，请缩减文件后导入')
         if not sections:
-            raise ValueError('PDF 没有可提取文字，可能是扫描件或图片简历；请先使用 OCR 转为可搜索 PDF，或导入 Word / 文本文件')
+            raise ValueError('PDF 没有可提取文字，可能是扫描件或图片版式；请先使用 OCR 转为可搜索 PDF，或导入 Word / 文本文件')
         warnings = ['多栏 PDF 的阅读顺序可能与页面不同，请核对技能、日期和项目经历。']
         if blank:
             warnings.append('第 ' + '、'.join(blank) + ' 页未提取到文字，可能为空白页或扫描页，请核对是否缺少经历。')

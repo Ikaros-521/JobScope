@@ -22,7 +22,7 @@ function tokensLabel(value: number) { return value >= 10000 ? `${Math.round(valu
 // 下拉选项值编码：''=跟随全局；'|model'=覆盖全局配置上的模型；'channelId|model'=指定渠道的模型；'channelId|'=渠道默认模型
 function selectValue(model: string, channelId: string) { return channelId ? `${channelId}|${model}` : model ? `|${model}` : '' }
 
-export function ChatComposer({ input, onInputChange, model, llmChannel = '', modelChannels = [], globalModels = [], onModelChange, permissionMode = 'autonomous', onPermissionModeChange, running, awaiting, onStop, onSend, onQueue, queueCount = 0, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, onConfigureModel, scopeLabel = '全项目', onExpandScope, locked = '', scopeName = '全项目资料', contextTokens = 0, contextWindow = 128000, compressing = false, hasConversation = false, canCompress = true, onCompress }: {
+export function ChatComposer({ input, onInputChange, model, llmChannel = '', modelChannels = [], globalModels = [], onModelChange, permissionMode = 'autonomous', onPermissionModeChange, running, awaiting, onStop, onSend, onQueue, queueCount = 0, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, onConfigureModel, onOpenKnowledge, scopeLabel = '全项目', onExpandScope, locked = '', scopeName = '全项目资料', contextTokens = 0, contextWindow = 128000, compressing = false, hasConversation = false, canCompress = true, onCompress }: {
   input: string
   onInputChange: (value: string) => void
   model: string
@@ -46,6 +46,8 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
   onCancelEdit: () => void
   onManageExtensions?: () => void
   onConfigureModel?: () => void
+  // 跳转知识库页面：录入/维护 Agent 可检索引用的用户知识。
+  onOpenKnowledge?: () => void
   scopeLabel?: string
   onExpandScope?: () => void
   locked?: string
@@ -113,6 +115,7 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
         <span className="composer-scope-tag" title={scopeLabel}>{scopeLabel}</span>
         {onExpandScope && <button type="button" className="composer-expand" disabled={running || awaiting || compressing || !hasConversation || Boolean(locked)} onClick={onExpandScope}>扩大范围 ↗</button>}
       </div>
+      {onOpenKnowledge && <button type="button" className="composer-knowledge" title="录入或维护你的知识条目，Agent 对话可检索引用" onClick={onOpenKnowledge}>知识库</button>}
       {onConfigureModel && <button type="button" className="composer-configure" onClick={onConfigureModel}>{modelConfigured ? '模型设置' : '配置模型后发送（草稿已保存）'}</button>}
       <details className="composer-options"><summary>模型与工具选项</summary><div className="composer-options-body">
       <label className="composer-model">

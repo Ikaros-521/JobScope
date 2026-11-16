@@ -49,6 +49,29 @@ class ResumeInput(RequestModel):
     format: Literal["text", "facts_yaml"] = "text"
 
 
+class KnowledgeInput(RequestModel):
+    """用户录入的知识条目：Agent 对话经 knowledge_search 检索引用（K-…）。"""
+    title: str = Field(min_length=1, max_length=200)
+    content: str = Field(min_length=1, max_length=50000)
+    tags: list[Annotated[str, Field(max_length=30)]] = Field(default_factory=list, max_length=10)
+
+
+class KnowledgePatch(RequestModel):
+    """二次编辑：缺省字段保持不变；content 变更按该文档原策略重切。"""
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    content: str | None = Field(default=None, min_length=1, max_length=50000)
+    tags: list[Annotated[str, Field(max_length=30)]] | None = None
+
+
+class KnowledgeSettingsInput(RequestModel):
+    """分块与检索设置：全部可选，缺省字段保持现值；钳制在服务端再核一道。"""
+    strategy: Literal['recursive', 'hard', 'punct', 'semantic', 'llm'] | None = None
+    size: int | None = Field(default=None, ge=64, le=2000)
+    overlap: int | None = Field(default=None, ge=0, le=2000)
+    separators: list[Annotated[str, Field(max_length=20)]] | None = Field(default=None, max_length=10)
+    retrieval_mode: Literal['lexical', 'hybrid'] | None = None
+
+
 class CollectInput(RequestModel):
     source: Literal["remotive", "boss", "cninfo", "liepin", "zhaopin", "51job"]
     query: str = Field(min_length=1, max_length=200)

@@ -25,7 +25,7 @@ const DIMENSION_CHANNELS: Record<string, string> = {
   stability: '补法：企查查/天眼查/爱企查公开页采司龄·参保·企业类型',
   pay: '补法：该公司 1 条报价即可比，需同城同层对照 ≥5 条（库里其他公司岗位自动充当，一次多平台检索就够）',
   operations: '补法：采集「爱企查公开页」自动读最近两期年报的人数/营收同比；或手动导入年报材料跑「提取资料数字」',
-  people: '补法：采「天眼查公开页」取登记人员规模 + 补全 JD 取团队自述，凑 2 条后跑「提取资料数字」',
+  people: '补法：采「天眼查公开页」或读完整 JD（BOSS 公司自述带规模）得规模自述，1 条即按中性出分，多条比一致',
   professional: '补法：补全该岗位完整描述（有 1 条评 1 条，样本量随句子展示）',
   industry: '补法：在「按来源补数据」手动勾选「AI 行业判断」',
 }
@@ -269,7 +269,7 @@ export function CompanyReference({ report, history, busy, loading, action, compa
 
     {/* 没有综合分时不画空环、不摆占位大数字；读取中先说明数据在路上，别让慢请求被误读成「没生成过」。 */}
     {score === null
-      ? <p className="reliability-empty"><strong>{loading ? '正在读取这家公司的参考…' : '依据不足，暂不出分'}</strong><span className="muted body-small">{loading ? '参考数据来自本地资料库，读取完成后会在这里展示。' : report ? report.summary : '这家公司的参考还没有生成过。生成只使用本项目已保存的信号，不会联网。'}</span></p>
+      ? <p className="reliability-empty"><strong>{loading ? '正在读取这家公司的参考…' : '依据不足，暂不出分'}</strong><span className="muted body-small">{loading ? '打开详情时会用已存数据自动生成本地参考，完成后会在这里展示。' : report ? report.summary : '打开详情时会自动用已存数据生成参考，这次自动生成没有成功，点「生成参考」可重试。生成只使用本项目已保存的信号，不会联网。'}</span></p>
       : <div className="reliability-score">
         <strong style={{ color: tone(score) }}>{number(score)}</strong>
         <span>综合参考分 · 维度覆盖 {Math.round((report?.confidence ?? 0) * 100)}%（按权重）</span>

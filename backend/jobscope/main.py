@@ -23,7 +23,8 @@ from . import collect_service
 from . import company_merge
 from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
-from .models import AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, RemoteBasketInput, ReliabilityInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput, SplitInput
+from .knowledge import KnowledgeStore
+from .models import AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, RemoteBasketInput, ReliabilityInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput, SplitInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, SystemSettingsInput, SystemSettingsStore, ConnectionInput, _active, get_model_config, purpose_configured, use_config
@@ -89,6 +90,7 @@ def create_app(data_dir=None):
     bindings.migrate_legacy_activation(settings)
     runs = RunManager(repo)
     scope_expansions = ScopeExpansionStore(repo)
+    knowledge = KnowledgeStore(repo)
     app.state.runs = runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
@@ -1002,6 +1004,73 @@ def create_app(data_dir=None):
         except (ValueError, RecursionError) as exc:
             raise HTTPException(400, "简历格式无效，请检查 facts.yaml 结构或改用纯文本") from exc
         return repo.save_resume(data.text, data.format)
+
+    @app.get('/api/knowledge')
+    def list_knowledge(q: str = Query('', max_length=300), tag: str = Query('', max_length=30),
+                       page: int = Query(1, ge=1, le=10000), page_size: int = Query(20, ge=1, le=100)):
+        return knowledge.list(q=q, tag=tag, page=page, page_size=page_size)
+
+    @app.post('/api/knowledge')
+    def create_knowledge(data: KnowledgeInput):
+        return knowledge.save(data.model_dump())
+
+    # 字面路由必须在 {entry_id} 之前注册，否则 "settings"/"reembed" 会被当成条目 ID。
+    @app.get('/api/knowledge/settings')
+    def knowledge_settings():
+        return dict(settings=knowledge.settings(), **knowledge.status())
+
+    @app.put('/api/knowledge/settings')
+    def save_knowledge_settings(data: KnowledgeSettingsInput):
+        return knowledge.save_settings(data.model_dump())
+
+    @app.post('/api/knowledge/reembed')
+    def reembed_knowledge():
+        try:
+            return knowledge.reembed()
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.post('/api/knowledge/upload')
+    async def upload_knowledge(request: Request, filename: str = Query(min_length=1, max_length=255)):
+        from .resume_import import MAX_FILE_BYTES
+        content = bytearray()
+        async for chunk in request.stream():
+            if len(content) + len(chunk) > MAX_FILE_BYTES:
+                raise HTTPException(413, '文件超过 10 MB，请压缩或缩减后导入')
+            content.extend(chunk)
+        try:
+            result = await run_in_threadpool(knowledge.import_file, filename, bytes(content))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        return result
+
+    @app.get('/api/knowledge/{entry_id}')
+    def get_knowledge(entry_id: str = PathParam(max_length=100)):
+        entry = knowledge.get(entry_id)
+        if entry is None:
+            raise HTTPException(404, '知识条目不存在')
+        return entry
+
+    @app.get('/api/knowledge/{entry_id}/chunks')
+    def knowledge_chunks(entry_id: str = PathParam(max_length=100)):
+        if knowledge.get(entry_id) is None:
+            raise HTTPException(404, '知识条目不存在')
+        return dict(chunks=knowledge.doc_chunks(entry_id))
+
+    @app.put('/api/knowledge/{entry_id}')
+    def update_knowledge(data: KnowledgePatch, entry_id: str = PathParam(max_length=100)):
+        # data 为部分更新，缺省字段沿用现值；content 变更按该文档原策略重切。
+        entry = knowledge.get(entry_id)
+        if entry is None:
+            raise HTTPException(404, '知识条目不存在')
+        patch = data.model_dump(exclude_none=True)
+        return knowledge.save({**entry, **patch, 'id': entry_id})
+
+    @app.delete('/api/knowledge/{entry_id}')
+    def delete_knowledge(entry_id: str):
+        if not knowledge.delete(entry_id):
+            raise HTTPException(404, '知识条目不存在')
+        return dict(deleted=True)
 
     @app.post("/api/analyze")
     def analysis(data: AnalyzeInput):

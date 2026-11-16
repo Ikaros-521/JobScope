@@ -21,6 +21,7 @@ import { CompanyReference } from './CompanyReference'
 import { ResumeImport } from './ResumeImport'
 import { ResumeWorkshop } from './ResumeWorkshop'
 import type { WorkshopPrefill } from './ResumeWorkshop'
+import { KnowledgeView } from './KnowledgeView'
 import { navigateTabs } from './tabNavigation'
 import { useCompareSelection } from './compareSelectionStore'
 import { ChatWorkspace } from './chat/ChatWorkspace'
@@ -51,8 +52,61 @@ function Empty({ title, children, icon = 'book' }: { title: string; children: Re
 function Badge({ value }: { value: string }) { return <span className={`badge ${['completed', 'success', 'available', 'ready'].includes(value) ? 'good' : ['failed', 'blocked'].includes(value) ? 'bad' : ''}`}><span />{statusNames[value] || value}</span> }
 function External({ url, children }: { url: string; children: ReactNode }) { const href = safeUrl(url); return href ? <a className="external-link" href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={13} /></a> : <span className="muted">无来源链接</span> }
 
+type ViewId = 'jobs' | 'favorites' | 'resume' | 'workshop' | 'sources' | 'evidence' | 'compare' | 'global' | 'knowledge' | 'settings' | 'extensions' | 'system'
+// 导航二级菜单：按工作流分四组；组可折叠，展开状态持久化，切换视图自动展开所在组。
+const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon: string; label: string }[] }[] = [
+  { id: 'research', label: '岗位研究', items: [
+    { id: 'jobs', icon: 'jobs', label: '岗位研究' },
+    { id: 'favorites', icon: 'star', label: '收藏' },
+    { id: 'evidence', icon: 'book', label: '公司资料库' },
+    { id: 'compare', icon: 'chart', label: '数据分析' },
+  ] },
+  { id: 'dialogue', label: '对话与知识', items: [
+    { id: 'global', icon: 'chat', label: '全局对话' },
+    { id: 'knowledge', icon: 'knowledge', label: '知识库' },
+  ] },
+  { id: 'profile', label: '个人材料', items: [
+    { id: 'resume', icon: 'resume', label: '我的简历' },
+    { id: 'workshop', icon: 'wand', label: '简历工坊' },
+  ] },
+  { id: 'manage', label: '系统管理', items: [
+    { id: 'sources', icon: 'source', label: '数据与采集' },
+    { id: 'extensions', icon: 'settings', label: 'Agent 扩展' },
+    { id: 'settings', icon: 'settings', label: '模型设置' },
+    { id: 'system', icon: 'settings', label: '系统设置' },
+  ] },
+]
+const NAV_STORAGE_KEY = 'jobscope-nav-expanded'
+
 export default function App() {
-  const [view, setView] = useState<'jobs' | 'favorites' | 'resume' | 'workshop' | 'sources' | 'evidence' | 'compare' | 'global' | 'settings' | 'extensions' | 'system'>('jobs')
+  const [view, setView] = useState<ViewId>('jobs')
+  // 导航组展开状态：默认全展开（首次访问能看到全部功能）；切换视图自动展开所在组，从不自动收起。
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => {
+    try {
+      const stored = localStorage.getItem(NAV_STORAGE_KEY)
+      return stored ? new Set(JSON.parse(stored) as string[]) : new Set(NAV_GROUPS.map(group => group.id))
+    } catch { return new Set(NAV_GROUPS.map(group => group.id)) }
+  })
+  // 知识库侧栏角标：轻请求取 total，增删改经 KnowledgeView 回写。
+  const [knowledgeTotal, setKnowledgeTotal] = useState(0)
+  function toggleGroup(id: string) {
+    setExpandedGroups(previous => {
+      const next = new Set(previous)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      try { localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify([...next])) } catch { /* 存储不可用时仅本次会话生效 */ }
+      return next
+    })
+  }
+  useEffect(() => {
+    const group = NAV_GROUPS.find(item => item.items.some(nav => nav.id === view))
+    if (!group) return
+    setExpandedGroups(previous => {
+      if (previous.has(group.id)) return previous
+      const next = new Set([...previous, group.id])
+      try { localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify([...next])) } catch { /* 同上 */ }
+      return next
+    })
+  }, [view])
   // 岗位详情「优化简历」跳转工坊时的预填（工坊消费后清空，避免切回时重复生效）。
   const [workshopPrefill, setWorkshopPrefill] = useState<WorkshopPrefill | null>(null)
   // 横评已选列表（共享 store）：侧栏徽标用；资料库/岗位详情「加入横评」直接写这份 store。
@@ -173,6 +227,7 @@ export default function App() {
       api<BrowserStatus>('/browser/status'),
       api<{ locations: SavedLocation[] }>('/locations'),
       api<{ pinyin: Record<string, string[]> }>('/cities'),
+      api<PageInfo>('/knowledge?page_size=1'),
     ])
     if (results[0].status === 'fulfilled') { setOnline(true); setModelConfigured(results[0].value.model_configured) } else setOnline(false)
     if (results[1].status === 'fulfilled') setSources(results[1].value.sources)
@@ -180,6 +235,7 @@ export default function App() {
     if (results[3].status === 'fulfilled') setBrowser(results[3].value)
     if (results[4].status === 'fulfilled') setLocations(results[4].value.locations)
     if (results[5].status === 'fulfilled') setCityPinyin(results[5].value.pinyin)
+    if (results[6].status === 'fulfilled') setKnowledgeTotal(results[6].value.total)
   }, [])
   useEffect(() => {
     let active = true
@@ -210,11 +266,39 @@ export default function App() {
         void Promise.allSettled([
           getReliability(company).then(result => {
             if (token === detailRequest.current && data.job.id === activeJobId.current) setReliability(result.report)
+            return result.report // 带出去给自动重算做「输入有没有变」的对照；条件不满足时 undefined 同样按「没有已存报告」处理
           }), // 没有生成过参考时这里什么都不显示；失败同样只结束 loading，不算「已生成」
           getReliabilityHistory(company).then(result => {
             if (token === detailRequest.current && data.job.id === activeJobId.current) setReliabilityHistory(result.history)
           }), // 没有历史快照时趋势区不显示
-        ]).then(() => { if (token === detailRequest.current) setReliabilityLoading(false) })
+        ]).then(async settled => {
+          // 打开详情即自动重算：打分全程是本地代码（本地统计 → 规则打分 → 措辞模板），不联网、
+          // 不用模型；输入没变时信号与报告落库都是幂等写入，不产生重复历史快照。采集完「还得
+          // 手动点一下生成」的点击就省在这里；「生成参考」按钮保留给手动刷新与失败重试。
+          if (token !== detailRequest.current || data.job.id !== activeJobId.current) return
+          const stored = settled[0].status === 'fulfilled' ? settled[0].value : null
+          try {
+            const report = await computeReliability(company)
+            if (token !== detailRequest.current || data.job.id !== activeJobId.current) return
+            setReliability(report)
+            // 输入没变就收掉状态行，别在每次打开岗位时留常驻提示；变了才说明本地统计刷新了什么。
+            const changed = !stored || stored.input_hash !== report.input_hash
+              || stored.rubric_version !== report.rubric_version || stored.wording_version !== report.wording_version
+            setReliabilityAction(changed && report.collection
+              ? { label: '已按已存数据自动重算', status: report.collection.status, message: report.collection.message }
+              : null)
+            const history = await getReliabilityHistory(company)
+            if (token === detailRequest.current && data.job.id === activeJobId.current) setReliabilityHistory(history.history)
+          } catch (err) {
+            if (token !== detailRequest.current || data.job.id !== activeJobId.current) return
+            // 自动路径失败不弹 toast：已有报告就照常显示上次结果，只留一行可行动的失败说明。
+            setReliabilityAction({ label: '自动重算未完成', status: 'failed',
+              message: `${(err as Error).message}；${stored ? '仍显示上次报告，可点「重新计算」重试。' : '可点「生成参考」重试。'}` })
+          } finally {
+            // 首次生成期间保持「正在读取」占位；结束后才让「暂不出分 / 还没生成过」的兜底文案露面。
+            if (token === detailRequest.current && data.job.id === activeJobId.current) setReliabilityLoading(false)
+          }
+        })
       }
     } catch (err) { if (token === detailRequest.current) toast((err as Error).message, 'error') }
     finally { if (token === detailRequest.current) setDetailLoading(false) }
@@ -492,30 +576,42 @@ export default function App() {
     <aside className={`sidebar${navigationOpen ? ' nav-open' : ''}`}>
       <a className="brand" href="#" onClick={event => { event.preventDefault(); setView('jobs') }}><span className="brand-symbol" aria-hidden="true"><i /><i /></span><span>知根<span className="brand-english">JobScope</span></span></a>
       <button className="mobile-nav-toggle" aria-expanded={navigationOpen} aria-controls="workspace-navigation" onClick={() => setNavigationOpen(value => !value)}><Icon name={navigationOpen ? 'close' : 'menu'} />{navigationOpen ? '收起导航' : '工作区导航'}</button>
-      <nav id="workspace-navigation" aria-label="主导航" onClick={event => { if ((event.target as HTMLElement).closest('button')) { setNavigationOpen(false); if (window.matchMedia('(max-width: 800px)').matches) document.getElementById('workspace-main')?.focus() } }}>
-        <div className="sidebar-caption">研究工作区</div>
-        <button aria-current={view === 'jobs' ? 'page' : undefined} className={view === 'jobs' ? 'active' : ''} onClick={() => setView('jobs')}><Icon name="jobs" />岗位研究<span className="nav-count">{jobsTotal}</span></button>
-        <button aria-current={view === 'favorites' ? 'page' : undefined} className={view === 'favorites' ? 'active' : ''} onClick={() => setView('favorites')}><Icon name="star" />收藏{favTotal > 0 && <span className="nav-count">{favTotal}</span>}</button>
-        <button aria-current={view === 'resume' ? 'page' : undefined} className={view === 'resume' ? 'active' : ''} onClick={() => setView('resume')}><Icon name="resume" />我的简历{resumeSaved && <span className="nav-dot" />}</button>
-        <button aria-current={view === 'workshop' ? 'page' : undefined} className={view === 'workshop' ? 'active' : ''} onClick={() => setView('workshop')}><Icon name="wand" />简历工坊</button>
-        <button aria-current={view === 'evidence' ? 'page' : undefined} className={view === 'evidence' ? 'active' : ''} onClick={() => setView('evidence')}><Icon name="book" />公司资料库</button>
-        <button aria-current={view === 'compare' ? 'page' : undefined} className={view === 'compare' ? 'active' : ''} onClick={() => setView('compare')}><Icon name="chart" />数据分析{compareSelected.length > 0 && <span className="nav-count">{compareSelected.length}</span>}</button>
-        <button aria-current={view === 'global' ? 'page' : undefined} className={view === 'global' ? 'active' : ''} onClick={() => setView('global')}><Icon name="chat" />全局对话</button>
-        <div className="sidebar-caption nav-settings-caption">工作区管理</div>
-        <button aria-current={view === 'sources' ? 'page' : undefined} className={view === 'sources' ? 'active' : ''} onClick={() => setView('sources')}><Icon name="source" />数据与采集</button>
-        <button aria-current={view === 'extensions' ? 'page' : undefined} className={view === 'extensions' ? 'active' : ''} onClick={() => setView('extensions')}><Icon name="settings" />Agent 扩展</button>
-        <button aria-current={view === 'settings' ? 'page' : undefined} className={view === 'settings' ? 'active' : ''} onClick={() => setView('settings')}><Icon name="settings" />模型设置</button>
-        <button aria-current={view === 'system' ? 'page' : undefined} className={view === 'system' ? 'active' : ''} onClick={() => setView('system')}><Icon name="settings" />系统设置</button>
+      <nav id="workspace-navigation" aria-label="主导航" onClick={event => {
+        // 组头切换不收起移动端导航：用户只是折叠分组，不是完成了页面跳转。
+        const button = (event.target as HTMLElement).closest('button')
+        if (!button || button.classList.contains('nav-group-toggle')) return
+        setNavigationOpen(false)
+        if (window.matchMedia('(max-width: 800px)').matches) document.getElementById('workspace-main')?.focus()
+      }}>
+        {NAV_GROUPS.map(group => {
+          const expanded = expandedGroups.has(group.id)
+          return <div key={group.id} className={`nav-group${expanded ? ' expanded' : ''}`}>
+            <button type="button" className="nav-group-toggle" aria-expanded={expanded} aria-controls={`nav-group-${group.id}`} onClick={() => toggleGroup(group.id)}>
+              {group.label}<Icon name="chevron" size={13} />
+            </button>
+            <div id={`nav-group-${group.id}`} className="nav-group-items">
+              {group.items.map(item => {
+                const badge = item.id === 'jobs' ? jobsTotal : item.id === 'favorites' ? favTotal : item.id === 'compare' ? compareSelected.length : item.id === 'knowledge' ? knowledgeTotal : 0
+                return <button key={item.id} aria-current={view === item.id ? 'page' : undefined} className={view === item.id ? 'active' : ''} onClick={() => setView(item.id)}>
+                  <Icon name={item.icon} />{item.label}
+                  {item.id === 'resume' ? (resumeSaved && <span className="nav-dot" />) : badge > 0 && <span className="nav-count">{badge}</span>}
+                </button>
+              })}
+            </div>
+          </div>
+        })}
       </nav>
 
       <div className="sidebar-bottom"><span className={`connection-dot ${online ? 'connected' : ''}`} />{online ? '本地工作区已连接' : '等待本地服务'}<span className="version">v0.1</span></div>
     </aside>
 
-    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'extensions' || view === 'settings' || view === 'compare' || view === 'system' || view === 'favorites' ? 'main main-compact' : 'main'}>
-      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'resume' ? '我的简历' : view === 'workshop' ? '简历工坊' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'extensions' ? 'Agent 扩展' : view === 'settings' ? '模型设置' : view === 'system' ? '系统设置' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata(), refreshFavCount()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
-      <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} onConfigureModel={configureModel} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} onOpenCompare={() => setView('compare')} /></div>
+    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'extensions' || view === 'settings' || view === 'compare' || view === 'system' || view === 'favorites' || view === 'knowledge' ? 'main main-compact' : 'main'}>
+      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'resume' ? '我的简历' : view === 'workshop' ? '简历工坊' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'knowledge' ? '知识库' : view === 'extensions' ? 'Agent 扩展' : view === 'settings' ? '模型设置' : view === 'system' ? '系统设置' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata(), refreshFavCount()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
+      <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} onConfigureModel={configureModel} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} onOpenCompare={() => setView('compare')} onOpenKnowledge={() => setView('knowledge')} /></div>
 
-      {view === 'global' && <><section className="page-intro chat-intro"><div><h1>全局对话</h1><p>跨岗位、跨公司检索项目资料，回答标注公司与出处</p></div><span className="revision-label">会话保存在本机</span></section><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onManageExtensions={() => setView('extensions')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} prefill={chatPrompt} /></>}
+      {view === 'knowledge' && <KnowledgeView onCountChange={setKnowledgeTotal} />}
+
+      {view === 'global' && <><section className="page-intro chat-intro"><div><h1>全局对话</h1><p>跨岗位、跨公司检索项目资料与知识库，回答标注公司与出处</p></div><span className="revision-label">会话保存在本机</span></section><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onManageExtensions={() => setView('extensions')} onOpenKnowledge={() => setView('knowledge')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} prefill={chatPrompt} /></>}
 
       {view === 'compare' && <CompanyCompare />}
 
@@ -577,7 +673,7 @@ export default function App() {
               </div>
             </>}
           </section>
-          {job && <section className="chat-section job-chat"><button className="button secondary small job-return" onClick={returnToJob}>返回岗位</button><ChatWorkspace key={job.id} scope={{ kind: 'job', jobId: job.id, company: job.company, title: job.title }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} /></section>}
+          {job && <section className="chat-section job-chat"><button className="button secondary small job-return" onClick={returnToJob}>返回岗位</button><ChatWorkspace key={job.id} scope={{ kind: 'job', jobId: job.id, company: job.company, title: job.title }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} onOpenKnowledge={() => setView('knowledge')} /></section>}
         </div>}
       </>}
 
