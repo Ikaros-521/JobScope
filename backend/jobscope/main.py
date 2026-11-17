@@ -27,7 +27,7 @@ from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, JobPreferenceInput, JobPreferencePatch, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, ObsidianImportInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalSourceInput, SplitInput
+from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, JobPreferenceInput, JobPreferencePatch, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, ObsidianImportInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -1028,13 +1028,22 @@ def create_app(data_dir=None):
         return dict(deleted=True)
 
     def analyze_preconditions(job_id):
-        """评估适配共用闸门：完整JD、已有简历；返回 (job, resume, company_evidence)。"""
+        """评估适配共用闸门：完整JD、已有简历；返回 (job, resume, company_evidence)。
+
+        简历解析顺序：岗位绑定的「评估用」存档（工坊版本 markdown 作全文）→ 全局我的简历。
+        label 随报告落库，前端可见本次评估用的到底是哪份。
+        """
         job = get_job(job_id)
         # 早期保存的 BOSS 岗位还没有正文标记，一律按列表摘要处理，避免用半截职责评估适配。
         status = job.get('description_status')
         if status == 'listing' or (job['source'] == 'boss' and status != 'complete'):
             raise HTTPException(409, '当前只有搜索列表摘要，请先取得完整岗位职责后再评估适配')
-        resume = repo.resume()
+        pinned = repo.pinned_resume_version(job_id)
+        if pinned and pinned['markdown'].strip():
+            resume = dict(text=pinned['markdown'], format='text', revision=pinned['id'],
+                          label=f"存档《{pinned['title']}》")
+        else:
+            resume = repo.resume()
         if not resume["text"].strip():
             raise HTTPException(400, "请先保存简历或 facts.yaml")
         company_evidence = repo.evidence(company=job["company"], include_job_postings=False)
@@ -1179,8 +1188,8 @@ def create_app(data_dir=None):
         return {"html": workshop.render_document(data.markdown, data.template_id)}
 
     @app.get("/api/resume-versions")
-    def resume_versions():
-        return {"versions": repo.list_resume_versions()}
+    def resume_versions(job_id: str = Query('', max_length=100)):
+        return {"versions": repo.list_resume_versions(job_id=job_id or None)}
 
     @app.post("/api/resume-versions")
     def create_resume_version(data: ResumeVersionInput):
@@ -1209,6 +1218,16 @@ def create_app(data_dir=None):
         if not repo.delete_resume_version(version_id):
             raise HTTPException(404, "简历版本不存在")
         return {"ok": True}
+
+    @app.post("/api/resume-versions/{version_id}/pin")
+    def pin_resume_version(version_id: int, data: ResumeVersionPinInput):
+        """岗位绑定「评估用」存档：pin 互斥同岗位旧 pin；评估适配自动取用。"""
+        version = repo.resume_version(version_id)
+        if version is None:
+            raise HTTPException(404, "简历版本不存在")
+        if data.pinned and not version["job_id"]:
+            raise HTTPException(422, "未绑定岗位的存档不能设为评估用；请先在工坊里绑定目标岗位")
+        return repo.set_pinned_resume_version(version_id, data.pinned)
 
     # ── 个人资料库（2026-11-17）：完整版个人材料，简历工坊优化时按需取材 ──
     # 条目是用户手写的第一手事实；「我的简历」保持可为适配篇幅而删减的版本，两者分离。
@@ -1316,10 +1335,14 @@ def create_app(data_dir=None):
                                                             instructions=data.instructions, profile_materials=profile_materials)
         except ValueError as exc:
             raise HTTPException(502, str(exc)) from None
-        return repo.save_resume_version(dict(
+        version = repo.save_resume_version(dict(
             title=workshop.compose_title(job_title, company), markdown=markdown_text, template_id="classic",
             job_id=data.job_id, company=company, job_title=job_title,
             jd_digest=jd_text[:2000], base_text=base_text, notes=notes))
+        if data.job_id:
+            # 优化产出即该岗位的最新投递简历：自动接管「评估用」标记，同岗位旧 pin 被替代。
+            repo.set_pinned_resume_version(version['id'], True)
+        return version
 
     @app.get("/api/resume-versions/{version_id}/export")
     def export_resume_version(version_id: int, format: str = Query("pdf", pattern="^(pdf|docx|html|md)$")):

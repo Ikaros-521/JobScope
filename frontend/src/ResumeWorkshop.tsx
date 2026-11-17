@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import {
   api, date, listResumeTemplates, previewResumeDocument, listResumeVersions, getResumeVersion,
   createResumeVersion, updateResumeVersion, deleteResumeVersion, optimizeResume, exportResumeVersion,
-  listProfileEntries, PROFILE_CATEGORY_NAMES,
+  pinResumeVersion, listProfileEntries, PROFILE_CATEGORY_NAMES,
 } from './api'
 import type { Job, PageInfo, ProfileEntry, ResumeTemplate, ResumeVersion, ResumeVersionSummary } from './api'
 import { toast } from './toast'
@@ -36,6 +36,9 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
   const [busy, setBusy] = useState<string | null>(null)
   const [formError, setFormError] = useState('')
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  // 存档管理：按公司筛选 + 行内快捷导出菜单；pin 的版本是该岗位「评估用」简历。
+  const [companyFilter, setCompanyFilter] = useState('')
+  const [exportMenuId, setExportMenuId] = useState<number | null>(null)
   // 优化配置表单
   const [baseMode, setBaseMode] = useState<'saved' | 'paste'>('saved')
   const [pasteResume, setPasteResume] = useState('')
@@ -65,6 +68,21 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
 
   async function refreshVersions() {
     try { setVersions((await listResumeVersions()).versions) } catch { /* 列表加载失败保持原状，操作反馈走 toast */ }
+  }
+
+  async function togglePin(version: ResumeVersionSummary) {
+    setBusy(`pin-${version.id}`)
+    try {
+      await pinResumeVersion(version.id, !version.pinned)
+      toast(version.pinned ? '已取消评估用，该岗位评估将回退「我的简历」。' : '已设为该岗位评估用简历，评估适配自动使用。')
+      await refreshVersions()
+    } catch (err) { toast((err as Error).message, 'error') } finally { setBusy(null) }
+  }
+
+  function quickExport(version: ResumeVersionSummary, format: 'pdf' | 'docx' | 'html' | 'md') {
+    setExportMenuId(null)
+    const name = `${version.title.replace(/[\\/:*?"<>|]/g, '_')}.${EXPORT_EXTENSIONS[format]}`
+    void exportResumeVersion(version.id, format, name).catch(err => toast((err as Error).message, 'error'))
   }
 
   // 岗位详情跳转预填：拉取该岗位并自动选中。
@@ -205,20 +223,39 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
     </section>
     <div className="workshop-layout">
       <aside className="workshop-panel workshop-versions" aria-label="简历版本列表">
-        <div className="panel-title"><h2>投递版本 <span>{versions.length}</span></h2></div>
+        <div className="panel-title"><h2>投递存档 <span>{versions.length}</span></h2></div>
+        {versions.length > 0 && <div className="workshop-company-filter">
+          <select value={companyFilter} aria-label="按公司筛选存档" onChange={event => setCompanyFilter(event.target.value)}>
+            <option value="">全部公司</option>
+            {[...new Set(versions.map(version => version.company).filter(Boolean))].sort().map(company => <option key={company} value={company}>{company}</option>)}
+          </select>
+        </div>}
         <div className="workshop-version-list">
-          {versions.length === 0 ? <Empty title="还没有定制版本">在右侧选择目标岗位并开始优化，每次优化都会保存为一个可二次编辑的版本。</Empty>
-            : versions.map(version => <div className={`workshop-version ${current?.id === version.id ? 'active' : ''}`} key={version.id}>
+          {(() => {
+            const visible = versions.filter(version => !companyFilter || version.company === companyFilter)
+            return visible.length === 0 ? <Empty title={companyFilter ? '该公司还没有存档' : '还没有定制版本'}>在右侧选择目标岗位并开始优化，每次优化都会保存为一个可二次编辑的版本，并自动设为该岗位的评估用简历。</Empty>
+              : visible.map(version => <div className={`workshop-version ${current?.id === version.id ? 'active' : ''}`} key={version.id}>
               <button type="button" className="workshop-version-main" onClick={() => void selectVersion(version.id)} title={version.title}>
-                <strong>{version.title}</strong>
+                <strong>{version.title}{version.pinned && <span className="pin-badge" title="该岗位评估适配当前使用的简历">评估用</span>}</strong>
                 <span>{version.company || version.job_title || '未绑定岗位'}</span>
                 <time>{date(version.updated_at)} · {version.characters.toLocaleString()} 字</time>
               </button>
-              <button type="button" className={`workshop-version-delete ${deletingId === version.id ? 'confirm' : ''}`} disabled={Boolean(busy)}
-                onClick={() => void removeVersion(version.id)}>{deletingId === version.id ? '确认' : '删除'}</button>
-            </div>)}
+              <div className="workshop-version-actions">
+                {version.job_id && <button type="button" className="text-button" disabled={busy === `pin-${version.id}`}
+                  title={version.pinned ? '取消评估用，该岗位评估回退「我的简历」' : '设为该岗位评估适配使用的简历'}
+                  onClick={() => void togglePin(version)}>{version.pinned ? '解绑' : '设评估用'}</button>}
+                <details className="workshop-version-export" open={exportMenuId === version.id}
+                  onToggle={event => setExportMenuId((event.target as HTMLDetailsElement).open ? version.id : null)}>
+                  <summary>导出</summary>
+                  <div>{EXPORT_ITEMS.map(item => <button type="button" key={item.format} onClick={() => quickExport(version, item.format)}>{item.label}</button>)}</div>
+                </details>
+                <button type="button" className={`workshop-version-delete ${deletingId === version.id ? 'confirm' : ''}`} disabled={Boolean(busy)}
+                  onClick={() => void removeVersion(version.id)}>{deletingId === version.id ? '确认' : '删除'}</button>
+              </div>
+            </div>)
+          })()}
         </div>
-        <p className="workshop-footnote">版本保存在本机；优化说明随版本保留，方便对照修改。</p>
+        <p className="workshop-footnote">存档保存在本机；标「评估用」的版本会在该岗位评估适配时自动作为简历参与匹配。</p>
       </aside>
 
       <section className="workshop-panel workshop-editor" aria-label="简历编辑">

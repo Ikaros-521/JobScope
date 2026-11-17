@@ -29,7 +29,9 @@ def rule_client(tmp_path, monkeypatch):
 
 
 def save_job(repo, **extra):
-    return repo.save_job(dict(title='Python 后端', company='甲公司', description='负责数据平台', location='杭州', **extra), 'user_import')
+    data = dict(title='Python 后端', company='甲公司', description='负责数据平台', location='杭州')
+    data.update(extra)
+    return repo.save_job(data, 'user_import')
 
 
 def save_resume(client):
@@ -263,3 +265,55 @@ def test_status_override_updates_semantic_report(client, monkeypatch):
     # 历史报告同步改判 + 记忆持久：直接再读最新报告应已是改判后状态
     latest = client.get(f"/api/jobs/{job['id']}/reports").json()['latest']
     assert latest['requirements'][0]['status'] == 'met'
+
+
+def test_resume_archive_pin_semantics_and_filter(client):
+    repo = client.app.state.repo
+    job = save_job(repo)
+    a = repo.save_resume_version(dict(title='甲公司·后端', markdown='# 简历A', job_id=job['id'], company='甲公司'))
+    b = repo.save_resume_version(dict(title='甲公司·前端', markdown='# 简历B', job_id=job['id'], company='甲公司'))
+    free = repo.save_resume_version(dict(title='未绑定岗位', markdown='# 自由版本'))
+    # 未绑定岗位的存档不能设为评估用
+    assert client.post(f'/api/resume-versions/{free["id"]}/pin', json=dict(pinned=True)).status_code == 422
+    assert client.post('/api/resume-versions/999999/pin', json=dict(pinned=True)).status_code == 404
+    # pin 互斥：pin b 时 a 自动解绑
+    assert client.post(f'/api/resume-versions/{a["id"]}/pin', json=dict(pinned=True)).json()['pinned'] is True
+    assert client.post(f'/api/resume-versions/{b["id"]}/pin', json=dict(pinned=True)).json()['pinned'] is True
+    assert not repo.resume_version(a['id'])['pinned']
+    # 解 pin
+    assert client.post(f'/api/resume-versions/{b["id"]}/pin', json=dict(pinned=False)).json()['pinned'] is False
+    # 列表按岗位过滤
+    listing = client.get(f"/api/resume-versions?job_id={job['id']}").json()['versions']
+    assert {v['id'] for v in listing} == {a['id'], b['id']}
+
+
+def test_evaluation_uses_pinned_archive_and_reports_label(rule_client):
+    repo = rule_client.app.state.repo
+    job = save_job(repo, description='负责 Java 微服务开发')
+    assert rule_client.put('/api/resume', json=dict(text='熟悉 Python', format='text')).status_code == 200
+    version = repo.save_resume_version(dict(title='甲公司定制简历', markdown='负责 Java 微服务开发，熟悉 Spring Cloud',
+                                            job_id=job['id'], company='甲公司'))
+    rule_client.post(f"/api/resume-versions/{version['id']}/pin", json=dict(pinned=True))
+    report = rule_client.post('/api/analyze/runs', json=dict(job_id=job['id'])).json()['report']
+    assert report['resume_label'] == '存档《甲公司定制简历》'
+    assert report['resume_revision'] == version['id']
+    # 解 pin → 回退全局我的简历
+    rule_client.post(f"/api/resume-versions/{version['id']}/pin", json=dict(pinned=False))
+    report = rule_client.post('/api/analyze/runs', json=dict(job_id=job['id'])).json()['report']
+    assert report['resume_label'] == '我的简历'
+
+
+def test_optimize_output_auto_pins_to_job(client, monkeypatch):
+    from jobscope import resume_workshop
+    repo = client.app.state.repo
+    job = save_job(repo)
+    save_resume(client)
+    monkeypatch.setattr(resume_workshop, 'optimize_resume',
+                        lambda base, jd, company='', job_title='', instructions='', profile_materials='':
+                        ('# 优化后的简历，包含足够长度的事实重组内容。', ['要点']))
+    old = repo.save_resume_version(dict(title='旧版', markdown='# 旧版内容', job_id=job['id'], company='甲公司'))
+    repo.set_pinned_resume_version(old['id'], True)
+    response = client.post('/api/resume-versions/optimize', json=dict(job_id=job['id'], company='甲公司', job_title='后端'))
+    assert response.status_code == 200
+    assert repo.resume_version(response.json()['id'])['pinned'] is True
+    assert not repo.resume_version(old['id'])['pinned']  # 同岗位旧 pin 被新产出接管

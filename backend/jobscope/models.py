@@ -351,3 +351,8 @@ class AnalysisStatusInput(RequestModel):
     jd_quote: str = Field(min_length=1, max_length=1500)
     status: Literal['met', 'partial', 'unmet', 'unknown']
     note: str = Field(default='', max_length=500)
+
+
+class ResumeVersionPinInput(RequestModel):
+    """岗位绑定「评估用」简历的开关；仅绑定了岗位的存档版本可 pin。"""
+    pinned: bool

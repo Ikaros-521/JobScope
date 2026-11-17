@@ -49,6 +49,10 @@ class Repository:
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(profile_entries)')}
             if 'source' not in columns:
                 conn.execute("ALTER TABLE profile_entries ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+            # resume_versions.pinned：岗位绑定「评估用」简历（同岗位互斥），评估适配自动取用。
+            columns = {row['name'] for row in conn.execute('PRAGMA table_info(resume_versions)')}
+            if 'pinned' not in columns:
+                conn.execute('ALTER TABLE resume_versions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0')
             # 读路径高频查询的二级索引（放在 _migrate_conversations 之后：conversations 的
             # updated_at 等列由迁移补齐）。列表排序、公司过滤、取最新报告与最新会话不再随数据量
             # 增长退化为全表扫描；首次对既有库建索引是一次性开销。
@@ -260,19 +264,42 @@ class Repository:
 
     # ---- 简历工坊：每次针对岗位的定制结果保存为一个可二次编辑的投递版本 ----
 
-    _VERSION_COLUMNS = "id,title,job_id,company,job_title,jd_digest,base_text,markdown,template_id,notes,created_at,updated_at"
+    _VERSION_COLUMNS = "id,title,job_id,company,job_title,jd_digest,base_text,markdown,template_id,notes,created_at,updated_at,pinned"
 
-    def list_resume_versions(self):
+    def list_resume_versions(self, job_id=None):
+        """存档摘要（新→旧）；job_id 给定时只看绑定该岗位的版本。"""
         with self.connection() as conn:
-            rows = conn.execute("SELECT id,title,company,job_title,template_id,created_at,updated_at,length(markdown) AS characters FROM resume_versions ORDER BY updated_at DESC").fetchall()
-            return [dict(row) for row in rows]
+            sql = "SELECT id,title,job_id,company,job_title,template_id,pinned,created_at,updated_at,length(markdown) AS characters FROM resume_versions"
+            params = ()
+            if job_id:
+                sql += " WHERE job_id=?"
+                params = (job_id,)
+            rows = conn.execute(sql + " ORDER BY updated_at DESC", params).fetchall()
+            return [dict(row, pinned=bool(row['pinned'])) for row in rows]
+
+    def set_pinned_resume_version(self, version_id, pinned):
+        """岗位级「评估用」标记：pin 时清除同岗位其他 pin（互斥），返回更新后整行；版本不存在返回 None。"""
+        version = self.resume_version(version_id)
+        if version is None:
+            return None
+        with self.connection() as conn:
+            if pinned:
+                conn.execute('UPDATE resume_versions SET pinned=0 WHERE job_id=? AND id!=?', (version['job_id'], version_id))
+            conn.execute('UPDATE resume_versions SET pinned=? WHERE id=?', (int(pinned), version_id))
+        return self.resume_version(version_id)
+
+    def pinned_resume_version(self, job_id):
+        """该岗位当前「评估用」的存档版本；未 pin 返回 None（调用方回退全局我的简历）。"""
+        with self.connection() as conn:
+            row = conn.execute("SELECT id,title,markdown,template_id,updated_at FROM resume_versions WHERE job_id=? AND pinned=1 ORDER BY updated_at DESC LIMIT 1", (job_id,)).fetchone()
+        return dict(row) if row else None
 
     def resume_version(self, version_id):
         with self.connection() as conn:
             row = conn.execute(f"SELECT {self._VERSION_COLUMNS} FROM resume_versions WHERE id=?", (version_id,)).fetchone()
         if row is None:
             return None
-        item = dict(row)
+        item = dict(row, pinned=bool(row['pinned']))
         try:
             item["notes"] = json.loads(item.get("notes") or "[]")
         except ValueError:

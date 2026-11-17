@@ -2204,3 +2204,19 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .status-select { font-size: 12px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
 .overridden-badge { font-size: 11px; color: #3a7d44; border: 1px solid #3a7d44; border-radius: 4px; padding: 0 4px; margin-left: 6px; white-space: nowrap; }
 .profile-preference-statement { margin: 0; font-size: 13px; line-height: 1.7; }
+
+/* 简历存档：工坊侧栏 pin/公司筛选/行内导出 + 岗位详情评估简历选择条。 */
+.workshop-company-filter { margin-bottom: 8px; }
+.workshop-company-filter select { width: 100%; font-size: 12px; padding: 5px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
+.workshop-version strong { display: inline-flex; align-items: center; gap: 6px; }
+.pin-badge { font-size: 11px; color: #3a7d44; border: 1px solid #3a7d44; border-radius: 4px; padding: 0 4px; font-weight: 400; white-space: nowrap; }
+.workshop-version-actions { display: inline-flex; align-items: center; gap: 6px; }
+.workshop-version-export { position: relative; }
+.workshop-version-export summary { cursor: pointer; font-size: 12px; color: var(--muted); list-style: none; }
+.workshop-version-export summary::before { content: '导出'; }
+.workshop-version-export[open] summary::before { content: '收起'; }
+.workshop-version-export > div { position: absolute; right: 0; z-index: 12; background: var(--paper); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 16px rgba(0,0,0,.12); display: grid; min-width: 96px; }
+.workshop-version-export > div button { text-align: left; padding: 5px 10px; font-size: 12px; background: none; border: none; cursor: pointer; }
+.workshop-version-export > div button:hover { background: var(--surface); }
+.eval-resume-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.eval-resume-bar select { font-size: 13px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }

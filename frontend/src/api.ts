@@ -29,7 +29,7 @@ export type ChatMessage = { role: 'user' | 'assistant'; content: string; mode?: 
 export type Analysis = {
   job_id: string; resume_revision: number; score: number | null; coverage: number; method: string;
   requirements: { requirement: string; status: string; evidence: unknown; dimension: string; rationale?: string; jd_quote?: string; hard?: boolean; overridden?: boolean }[];
-  strengths: string[]; gaps: string[]; questions: string[]; salary: unknown; company_summary: unknown; evidence_ids: string[]; limitations?: string | string[]
+  strengths: string[]; gaps: string[]; questions: string[]; salary: unknown; company_summary: unknown; evidence_ids: string[]; limitations?: string | string[]; resume_label?: string
   hard_conditions?: unknown[]; dimensions?: Record<string, unknown>
 }
 export type BrowserStatus = { installed: boolean; running: boolean; message: string }
@@ -351,20 +351,22 @@ export function isStale(value: string | null | undefined, days: number) {
 export function safeUrl(url: string) { try { const parsed = new URL(url); return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : undefined } catch { return undefined } }
 // ---- 简历工坊：JD 定向优化、版本管理、模板预览与多格式导出 ----
 export type ResumeTemplate = { id: string; name: string; description: string }
-export type ResumeVersionSummary = { id: number; title: string; company: string; job_title: string; template_id: string; created_at: string; updated_at: string; characters: number }
+export type ResumeVersionSummary = { id: number; title: string; job_id: string; company: string; job_title: string; template_id: string; pinned: boolean; created_at: string; updated_at: string; characters: number }
 export type ResumeVersion = ResumeVersionSummary & { job_id: string; jd_digest: string; base_text: string; markdown: string; notes: string[] }
 export type ResumeVersionDraft = { title: string; markdown: string; template_id?: string; job_id?: string; company?: string; job_title?: string; jd_digest?: string; base_text?: string; notes?: string[] }
 export function listResumeTemplates() { return api<{ templates: ResumeTemplate[] }>('/resume-templates') }
 export function previewResumeDocument(markdown: string, templateId: string) {
   return post<{ html: string }>('/resume-templates/preview', { markdown, template_id: templateId })
 }
-export function listResumeVersions() { return api<{ versions: ResumeVersionSummary[] }>('/resume-versions') }
+export function listResumeVersions(jobId?: string) { return api<{ versions: ResumeVersionSummary[] }>(`/resume-versions${jobId ? `?job_id=${encodeURIComponent(jobId)}` : ''}`) }
 export function getResumeVersion(id: number) { return api<ResumeVersion>(`/resume-versions/${id}`) }
 export function createResumeVersion(draft: ResumeVersionDraft) { return post<ResumeVersion>('/resume-versions', draft) }
 export function updateResumeVersion(id: number, patch: Partial<Pick<ResumeVersionDraft, 'title' | 'markdown' | 'template_id' | 'notes'>>) {
   return api<ResumeVersion>(`/resume-versions/${id}`, { method: 'PUT', body: JSON.stringify(patch) })
 }
 export function deleteResumeVersion(id: number) { return api<{ ok: boolean }>(`/resume-versions/${id}`, { method: 'DELETE' }) }
+// 岗位绑定「评估用」存档：pin 互斥同岗位旧标记，评估适配自动取用；解 pin 回退全局我的简历。
+export function pinResumeVersion(id: number, pinned: boolean) { return post<ResumeVersion>(`/resume-versions/${id}/pin`, { pinned }) }
 export function optimizeResume(payload: { resume_text?: string; job_id?: string; jd_text?: string; company?: string; job_title?: string; instructions?: string; profile_entry_ids?: string[] }) {
   return post<ResumeVersion>('/resume-versions/optimize', payload)
 }

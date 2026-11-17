@@ -69,8 +69,8 @@ def analyze(job, resume, company_evidence):
         coverage = len(met) / len(requirements)
     evidence_ids = list(job.get("evidence_ids", [])) + [e["id"] for e in company_evidence]
     return dict(
-        job_id=job["id"], resume_revision=resume["revision"], score=None,
-        coverage=round(coverage, 4), method="rule_assisted", rule_version="lexical-1",
+        job_id=job["id"], resume_revision=resume["revision"], resume_label=resume.get("label", "我的简历"),
+        score=None, coverage=round(coverage, 4), method="rule_assisted", rule_version="lexical-1",
         requirements=requirements,
         strengths=[f"简历材料包含 {r['requirement']}；仅确认词项出现，熟练程度需进一步核实。" for r in met],
         gaps=[f"{r['requirement']}：现有已确认材料未找到对应词项，标为未知。" for r in unknown],
