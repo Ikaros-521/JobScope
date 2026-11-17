@@ -28,7 +28,7 @@ export type Citation = { id: string; title: string; url: string; excerpt: string
 export type ChatMessage = { role: 'user' | 'assistant'; content: string; mode?: string; citations?: Citation[]; trace?: ResearchRun; metrics?: SalaryMetrics | null }
 export type Analysis = {
   job_id: string; resume_revision: number; score: number | null; coverage: number; method: string;
-  requirements: { requirement: string; status: string; evidence: unknown; dimension: string; rationale?: string; jd_quote?: string; hard?: boolean }[];
+  requirements: { requirement: string; status: string; evidence: unknown; dimension: string; rationale?: string; jd_quote?: string; hard?: boolean; overridden?: boolean }[];
   strengths: string[]; gaps: string[]; questions: string[]; salary: unknown; company_summary: unknown; evidence_ids: string[]; limitations?: string | string[]
   hard_conditions?: unknown[]; dimensions?: Record<string, unknown>
 }
@@ -449,3 +449,13 @@ export function updateKnowledgeSettings(patch: Partial<Pick<KnowledgeSettings, '
 }
 export type KnowledgeReembedResult = KnowledgeStatus & { model: string }
 export function reembedKnowledge() { return post<KnowledgeReembedResult>('/knowledge/reembed') }
+
+// 求职偏好：硬性条件提前申报（到岗方式/排班/薪资期望等），评估时作为已确认事实注入管线。
+export type JobPreference = { id: string; dimension: string; statement: string; enabled: boolean }
+export function listJobPreferences(enabledOnly = false) { return api<{ preferences: JobPreference[] }>(`/job-preferences${enabledOnly ? '?enabled_only=true' : ''}`) }
+export function createJobPreference(data: { dimension: string; statement: string; enabled: boolean }) { return post<JobPreference>('/job-preferences', data) }
+export function updateJobPreference(id: string, patch: Partial<{ dimension: string; statement: string; enabled: boolean }>) { return api<JobPreference>(`/job-preferences/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) }) }
+export function deleteJobPreference(id: string) { return api<{ deleted: boolean }>(`/job-preferences/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+// 需求行手动改判：改判记忆按岗位保存（重评沿用），并同步重算所有已存报告；返回最新报告。
+export type AnalysisStatusResult = { report: Analysis | null; message: string | null }
+export function updateAnalysisStatus(jobId: string, jdQuote: string, status: string) { return post<AnalysisStatusResult>(`/jobs/${encodeURIComponent(jobId)}/analysis/status`, { jd_quote: jdQuote, status }) }

@@ -181,11 +181,11 @@ def test_analyze_selects_semantic_when_configured_and_surfaces_error(client, mon
     job = client.post("/api/import/job", json=dict(title="开发", company="甲", description="Python")).json()["job"]
     client.put("/api/resume", json=dict(text="Python", format="text"))
     module = types.ModuleType("jobscope.semantic")
-    module.analyze_semantically = lambda job, resume, company_evidence: dict(job_id=job["id"], method="model_assisted", score=80, coverage=1)
+    module.analyze_semantically = lambda job, resume, company_evidence, extra_facts=None, overrides=None: dict(job_id=job["id"], method="model_assisted", score=80, coverage=1)
     monkeypatch.setitem(sys.modules, "jobscope.semantic", module)
     response = client.post("/api/analyze", json=dict(job_id=job["id"]))
     assert response.json()["method"] == "model_assisted"
-    def failed(*args):
+    def failed(*args, **kwargs):
         raise ValueError("模型引用无效")
     module.analyze_semantically = failed
     response = client.post("/api/analyze", json=dict(job_id=job["id"]))

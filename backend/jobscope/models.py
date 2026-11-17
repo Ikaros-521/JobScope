@@ -330,3 +330,24 @@ class RemoteBasketInput(RequestModel):
     """油猴脚本推送：卡片字段在服务端清洗重建，page_url 用于来源校验与溯源。"""
     page_url: str = Field(min_length=1, max_length=1000)
     items: list[dict] = Field(min_length=1, max_length=200)
+
+
+class JobPreferenceInput(RequestModel):
+    """求职偏好申报：硬性条件（到岗方式/排班/薪资期望等）的提前答案，评估时作为已确认事实注入。"""
+    dimension: Literal['skill', 'experience', 'industry', 'preference'] = 'preference'
+    statement: str = Field(min_length=2, max_length=1000)
+    enabled: bool = True
+
+
+class JobPreferencePatch(RequestModel):
+    """部分更新：启停开关、内容微调；缺省字段保持不变。"""
+    dimension: Literal['skill', 'experience', 'industry', 'preference'] | None = None
+    statement: str | None = Field(default=None, min_length=2, max_length=1000)
+    enabled: bool | None = None
+
+
+class AnalysisStatusInput(RequestModel):
+    """评估适配需求行手动改判：按 jd_quote 摘要记忆，重评自动沿用。"""
+    jd_quote: str = Field(min_length=1, max_length=1500)
+    status: Literal['met', 'partial', 'unmet', 'unknown']
+    note: str = Field(default='', max_length=500)

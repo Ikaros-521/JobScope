@@ -27,9 +27,10 @@ from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, ObsidianImportInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalSourceInput, SplitInput
+from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, JobPreferenceInput, JobPreferencePatch, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, ObsidianImportInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalSourceInput, SplitInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
+from .semantic import aggregate_requirements, apply_overrides, quote_digest
 from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, SystemSettingsInput, SystemSettingsStore, ConnectionInput, _active, get_model_config, purpose_configured, use_config
 
 
@@ -1039,13 +1040,20 @@ def create_app(data_dir=None):
         company_evidence = repo.evidence(company=job["company"], include_job_postings=False)
         return job, resume, company_evidence
 
+    def analysis_extras(job_id):
+        """评估管线的本地注入：启用的求职偏好转已确认事实 + 该岗位的手动改判记忆。"""
+        extra_facts = [{'id': pref['id'], 'statement': pref['statement']}
+                       for pref in repo.job_preferences(enabled_only=True)]
+        return extra_facts, repo.list_overrides(job_id)
+
     @app.post("/api/analyze")
     def analysis(data: AnalyzeInput):
         job, resume, company_evidence = analyze_preconditions(data.job_id)
         try:
             if purpose_configured('analysis'):
                 semantic = importlib.import_module(".semantic", __package__)
-                report = semantic.analyze_semantically(job, resume, company_evidence)
+                extra_facts, overrides = analysis_extras(job['id'])
+                report = semantic.analyze_semantically(job, resume, company_evidence, extra_facts=extra_facts, overrides=overrides)
             else:
                 report = analyze(job, resume, company_evidence)
         except ValueError as exc:
@@ -1053,6 +1061,61 @@ def create_app(data_dir=None):
             raise HTTPException(502, str(exc)) from exc
         repo.save_report(report)
         return report
+
+    # ---- 求职偏好：硬性条件（到岗方式/排班/薪资期望）提前申报，评估时作为已确认事实注入 ----
+
+    @app.get('/api/job-preferences')
+    def list_job_preferences(enabled_only: bool = Query(False)):
+        return dict(preferences=repo.job_preferences(enabled_only=enabled_only))
+
+    @app.post('/api/job-preferences')
+    def create_job_preference(data: JobPreferenceInput):
+        preference_id = repo.save_job_preference(data.model_dump())
+        return repo.job_preference(preference_id)
+
+    @app.put('/api/job-preferences/{preference_id}')
+    def update_job_preference(data: JobPreferencePatch, preference_id: str = PathParam(max_length=40)):
+        existing = repo.job_preference(preference_id)
+        if existing is None:
+            raise HTTPException(404, '求职偏好不存在')
+        repo.save_job_preference({**existing, **data.model_dump(exclude_none=True), 'id': preference_id})
+        return repo.job_preference(preference_id)
+
+    @app.delete('/api/job-preferences/{preference_id}')
+    def delete_job_preference(preference_id: str = PathParam(max_length=40)):
+        if not repo.delete_job_preference(preference_id):
+            raise HTTPException(404, '求职偏好不存在')
+        return dict(deleted=True)
+
+    @app.put('/api/jobs/{job_id}/analysis/status')
+    def update_analysis_status(data: AnalysisStatusInput, job_id: str = PathParam(max_length=100)):
+        """需求行手动改判：改判记忆按岗位保存（重评沿用），并同步重算所有已存报告。"""
+        get_job(job_id)
+        repo.save_override(job_id, quote_digest(data.jd_quote), data.status, data.note)
+        overrides = repo.list_overrides(job_id)
+        summaries, _latest = repo.list_reports(job_id)
+        latest_report = None
+        for summary in summaries:
+            report = repo.get_report(job_id, summary['id'])
+            if report is None:
+                continue
+            rows, _count = apply_overrides(report.get('requirements', []), overrides)
+            confirmed = sum(1 for row in rows if row.get('overridden'))
+            if rows == report.get('requirements', []) and not confirmed:
+                continue  # 该报告没有可改判的行（如规则报告），原样保留
+            report['requirements'] = rows
+            withhold = any('模型未完整映射此岗位原文' in row.get('rationale', '') for row in rows)
+            report.update(aggregate_requirements(rows, withhold_score=withhold))
+            limitations = [line for line in report.get('limitations', []) if '条要求按你的手动确认计分' not in line]
+            if confirmed:
+                limitations.append(f'{confirmed} 条要求按你的手动确认计分，重新评估时自动沿用。')
+            report['limitations'] = limitations
+            repo.update_report(summary['id'], report)
+            if summary['id'] == summaries[0]['id']:
+                latest_report = report
+        if latest_report is None:
+            return dict(report=None, message='改判已记录，重新评估时生效')
+        return dict(report=latest_report, message=None)
 
     # ---- 评估适配流式运行：拆解/分组匹配/计分三阶段进度经 SSE 推送 ----
 

@@ -66,7 +66,7 @@ def join_worker(client, run_id, timeout=5):
 
 def patch_pipeline(monkeypatch, runner):
     """把 analyze_runs 引用的管线替换为可控 fake；runner 签名 (job, resume, evidence, on_event, should_stop)。"""
-    def fake(job, resume, company_evidence, on_event=None, should_stop=None):
+    def fake(job, resume, company_evidence, on_event=None, should_stop=None, extra_facts=None, overrides=None):
         return runner(job, resume, company_evidence, on_event or (lambda kind, payload: None), should_stop or (lambda: False))
     monkeypatch.setattr('jobscope.analyze_runs.analyze_pipeline', fake)
 
@@ -209,3 +209,57 @@ def test_reports_readback_list_detail_and_404(rule_client):
     assert detail.status_code == 200 and detail.json()['job_id'] == job['id']
     assert rule_client.get(f"/api/jobs/{job['id']}/reports/nope").status_code == 404
     assert rule_client.get('/api/jobs/J-not-exist/reports').status_code == 404
+
+
+def test_job_preferences_crud(rule_client):
+    created = rule_client.post('/api/job-preferences', json=dict(dimension='preference', statement='接受做六休一，周日固定休息'))
+    assert created.status_code == 200
+    pref = created.json()
+    assert pref['enabled'] is True
+    assert any(item['id'] == pref['id'] for item in rule_client.get('/api/job-preferences?enabled_only=true').json()['preferences'])
+    assert rule_client.put(f"/api/job-preferences/{pref['id']}", json=dict(enabled=False)).json()['enabled'] is False
+    assert rule_client.get('/api/job-preferences?enabled_only=true').json()['preferences'] == []
+    assert rule_client.delete(f"/api/job-preferences/{pref['id']}").json()['deleted'] is True
+    assert rule_client.delete(f"/api/job-preferences/{pref['id']}").status_code == 404
+
+
+def test_status_override_on_rule_report_records_memory_only(rule_client):
+    # 规则报告的行没有 jd_quote，改判只记录记忆（重评走语义管线时生效），返回提示而不改报告。
+    repo = rule_client.app.state.repo
+    job = save_job(repo)
+    assert rule_client.put('/api/resume', json=dict(text='Python', format='text')).status_code == 200
+    assert rule_client.post('/api/analyze/runs', json=dict(job_id=job['id'])).json()['report']['method'] == 'rule_assisted'
+    response = rule_client.put(f"/api/jobs/{job['id']}/analysis/status", json=dict(jd_quote='必须双休', status='met'))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['report'] is None and '重新评估时生效' in payload['message']
+
+
+def test_status_override_updates_semantic_report(client, monkeypatch):
+    repo = client.app.state.repo
+    job = save_job(repo)
+    save_resume(client)
+    quote = '杭州线下办公，并能参加线下面试'
+
+    def runner(job, resume, evidence, on_event, should_stop):
+        return dict(job_id=job['id'], method='model_assisted', score=None, coverage=0,
+                    requirements=[dict(requirement='杭州线下办公', jd_quote=quote, status='unknown', evidence=[],
+                                       dimension='preference', hard=True, rationale='简历未提供所在地与可用性')],
+                    strengths=[], gaps=[], questions=[], salary=None, company_summary=None,
+                    evidence_ids=[], limitations=[], resume_revision=1)
+
+    patch_pipeline(monkeypatch, runner)
+    run_id = client.post('/api/analyze/runs', json=dict(job_id=job['id'])).json()['run_id']
+    await_done(client, run_id)
+    join_worker(client, run_id)
+    response = client.put(f"/api/jobs/{job['id']}/analysis/status", json=dict(jd_quote=quote, status='met', note='可线下面试'))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload['message'] is None
+    row = payload['report']['requirements'][0]
+    assert row['status'] == 'met' and row['overridden'] is True
+    assert row['rationale'].startswith('用户确认：可线下面试')
+    assert any('手动确认' in line for line in payload['report']['limitations'])
+    # 历史报告同步改判 + 记忆持久：直接再读最新报告应已是改判后状态
+    latest = client.get(f"/api/jobs/{job['id']}/reports").json()['latest']
+    assert latest['requirements'][0]['status'] == 'met'

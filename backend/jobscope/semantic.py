@@ -4,6 +4,7 @@
 并行多组，组完成即回调）→ 计分（纯代码校验与聚合）。on_event/should_stop 供流式
 运行（analyze_runs）订阅进度与合作式取消；analyze_semantically 保持同步入口不变。
 """
+import hashlib
 import json
 import logging
 import re
@@ -175,8 +176,63 @@ def _match_requirements(requirements, facts, config, on_event, should_stop):
     return [item for index in range(total_groups) for item in results[index]]
 
 
-def _finalize(job, resume, company_evidence, matched, suggestions, on_event):
-    """阶段3：omitted 兜底 + 维度计分 + 报告合成，纯代码无模型调用。"""
+def aggregate_requirements(requirements, withhold_score=False):
+    """确定性聚合：分数/覆盖率/维度/衍生列表只由 requirements 决定，管线与手动改判共用。
+
+    withhold_score 即"存在未完整映射的 JD 语句不展示总分"的保守闸门（历史报告以
+    omitted 行的固定 rationale 标记 _OMITTED_MARKER 扫描判定，改判端点用法见 main.py）。
+    """
+    active_weight = judged_weight = weighted_score = coverage_weight = 0
+    dimensions = {}
+    for dimension, weight in WEIGHTS.items():
+        items = [r for r in requirements if r['dimension'] == dimension]
+        if not items:
+            continue
+        judged = [r for r in items if r['status'] != 'unknown']
+        coverage = len(judged) / len(items)
+        score = sum(VALUES[r['status']] for r in judged) / len(judged) if judged else None
+        dimensions[dimension] = dict(coverage=coverage, score=round(score * 100, 1) if score is not None else None, weight=weight)
+        active_weight += weight
+        coverage_weight += weight * coverage
+        if score is not None:
+            judged_weight += weight
+            weighted_score += weight * score
+    coverage = coverage_weight / active_weight if active_weight else 0
+    score = round(weighted_score / judged_weight * 100, 1) if coverage >= .6 and judged_weight and not withhold_score else None
+    return dict(score=score, coverage=round(coverage, 4), dimensions=dimensions,
+                hard_conditions=[r for r in requirements if r['hard']],
+                strengths=[r['requirement'] + '：' + r['rationale'] for r in requirements if r['status'] == 'met'],
+                gaps=[r['requirement'] + '：' + r['rationale'] for r in requirements if r['status'] in ('partial', 'unmet', 'unknown')])
+
+
+def quote_digest(jd_quote):
+    """需求行身份：jd_quote 空白归一后摘要。改判跨重评沿用、历史报告同步改判都靠它对行。"""
+    return hashlib.sha256(''.join(str(jd_quote).split()).encode('utf-8')).hexdigest()[:16]
+
+
+_OVERRIDE_PREFIX = re.compile(r'^用户确认(?:：[^；]*)?；?')
+_OMITTED_MARKER = '模型未完整映射此岗位原文'
+
+
+def apply_overrides(requirements, overrides):
+    """套用手动改判：返回 (新行列表, 改判条数)。rationale 幂等重写（先剥旧前缀），无 jd_quote 的规则行跳过。"""
+    rows, overridden = [], 0
+    for row in requirements:
+        quote = row.get('jd_quote')
+        override = overrides.get(quote_digest(quote)) if quote else None
+        if not override:
+            rows.append(row)
+            continue
+        note = f'：{override["note"]}' if override.get('note') else ''
+        stripped = _OVERRIDE_PREFIX.sub('', row.get('rationale', ''))
+        rows.append({**row, 'status': override['status'], 'overridden': True,
+                     'rationale': f'用户确认{note}；{stripped}' if stripped else f'用户确认{note}'})
+        overridden += 1
+    return rows, overridden
+
+
+def _finalize(job, resume, company_evidence, matched, suggestions, on_event, overrides=None, preference_count=0):
+    """阶段3：omitted 兜底 + 改判套用 + 维度计分 + 报告合成，纯代码无模型调用。"""
     _emit(on_event, 'stage', dict(stage='score', status='running'))
     seen = {r['jd_quote'] for r in matched}
     requirements = list(matched)
@@ -198,36 +254,22 @@ def _finalize(job, resume, company_evidence, matched, suggestions, on_event):
         dimension = 'experience' if hard else 'skill' if re.search(r'熟悉|掌握|技能|技术|proficien|skill', clause, re.I) else 'experience'
         omitted.append(dict(requirement=clause, jd_quote=clause, status='unknown', evidence=[], dimension=dimension, hard=hard, rationale='模型未完整映射此岗位原文，保留为未知，需人工核实。'))
     requirements.extend(omitted)
-
-    active_weight = judged_weight = weighted_score = coverage_weight = 0
-    dimensions = {}
-    for dimension, weight in WEIGHTS.items():
-        items = [r for r in requirements if r['dimension'] == dimension]
-        if not items:
-            continue
-        judged = [r for r in items if r['status'] != 'unknown']
-        coverage = len(judged) / len(items)
-        score = sum(VALUES[r['status']] for r in judged) / len(judged) if judged else None
-        dimensions[dimension] = dict(coverage=coverage, score=round(score * 100, 1) if score is not None else None, weight=weight)
-        active_weight += weight
-        coverage_weight += weight * coverage
-        if score is not None:
-            judged_weight += weight
-            weighted_score += weight * score
-    coverage = coverage_weight / active_weight if active_weight else 0
-    score = round(weighted_score / judged_weight * 100, 1) if coverage >= .6 and judged_weight and not omitted else None
+    requirements, overridden = apply_overrides(requirements, overrides or {})
 
     downgraded = sum(1 for r in matched if r['status'] == 'unknown' and '已按未知处理' in r['rationale'])
+    derived = aggregate_requirements(requirements, withhold_score=bool(omitted))
     base = analyze(job, resume, company_evidence)
     limitations = ['模型负责要求与事实映射，引用存在及JD原文已校验；语义支持仍需人工核对。', '分数由代码按已判定要求计算，未知不算满足；覆盖率低于60%或发现未完整映射的JD语句时不展示总分。', '未涉及的维度被排除；硬性不满足单独呈现，分数不是录用概率，不适合跨不同证据覆盖率直接排名。']
     if downgraded:
         limitations.append(f'模型返回的 {downgraded} 条映射未通过校验，已按未知处理，未参与计分。')
+    if overridden:
+        limitations.append(f'{overridden} 条要求按你的手动确认计分，重新评估时自动沿用。')
+    if preference_count:
+        limitations.append(f'已将 {preference_count} 条求职偏好申报作为已确认事实参与匹配。')
     base.update(
-        method='model_assisted', rule_version='semantic-mapping-2', score=score,
-        coverage=round(coverage, 4), requirements=requirements, dimensions=dimensions,
-        hard_conditions=[r for r in requirements if r['hard']],
-        strengths=[r['requirement'] + '：' + r['rationale'] for r in requirements if r['status'] == 'met'],
-        gaps=[r['requirement'] + '：' + r['rationale'] for r in requirements if r['status'] in ('partial', 'unmet', 'unknown')],
+        method='model_assisted', rule_version='semantic-mapping-2', score=derived['score'],
+        coverage=derived['coverage'], requirements=requirements, dimensions=derived['dimensions'],
+        hard_conditions=derived['hard_conditions'], strengths=derived['strengths'], gaps=derived['gaps'],
         questions=[s[:1500] for s in suggestions],
         limitations=limitations,
     )
@@ -235,17 +277,20 @@ def _finalize(job, resume, company_evidence, matched, suggestions, on_event):
     return base
 
 
-def analyze_pipeline(job, resume, company_evidence, on_event=None, should_stop=None):
+def analyze_pipeline(job, resume, company_evidence, on_event=None, should_stop=None, extra_facts=None, overrides=None):
     from .settings import get_purpose_config
     facts = parse_resume(resume['text'], resume['format'])
+    extra_facts = list(extra_facts or [])
+    facts = facts + extra_facts
     if not facts:
         raise ValueError('没有可用于匹配的已确认简历事实')
     config = get_purpose_config('analysis')
     _emit(on_event, 'start', dict(job_id=job['id']))
     requirements, suggestions = _extract_requirements(job, config, on_event, should_stop)
     matched = _match_requirements(requirements, facts, config, on_event, should_stop)
-    return _finalize(job, resume, company_evidence, matched, suggestions, on_event)
+    return _finalize(job, resume, company_evidence, matched, suggestions, on_event,
+                     overrides=overrides, preference_count=len(extra_facts))
 
 
-def analyze_semantically(job, resume, company_evidence):
-    return analyze_pipeline(job, resume, company_evidence)
+def analyze_semantically(job, resume, company_evidence, extra_facts=None, overrides=None):
+    return analyze_pipeline(job, resume, company_evidence, extra_facts=extra_facts, overrides=overrides)

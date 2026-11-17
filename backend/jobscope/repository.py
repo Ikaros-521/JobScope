@@ -41,6 +41,8 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS resume_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, job_id TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', job_title TEXT NOT NULL DEFAULT '', jd_digest TEXT NOT NULL DEFAULT '', base_text TEXT NOT NULL DEFAULT '', markdown TEXT NOT NULL, template_id TEXT NOT NULL DEFAULT 'classic', notes TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS wage_baselines (id TEXT PRIMARY KEY, city TEXT NOT NULL, role TEXT NOT NULL, education TEXT NOT NULL, year TEXT NOT NULL, monthly_median REAL NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS profile_entries (id TEXT PRIMARY KEY, category TEXT NOT NULL, title TEXT NOT NULL, org TEXT NOT NULL DEFAULT '', period TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS job_preferences (id TEXT PRIMARY KEY, dimension TEXT NOT NULL, statement TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS requirement_overrides (job_id TEXT NOT NULL REFERENCES jobs(id), quote_digest TEXT NOT NULL, status TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY(job_id, quote_digest));
             """)
             self._migrate_conversations(conn)
             # profile_entries.source 记录条目来源（Obsidian 导入的文件相对路径），幂等重导靠它原位更新。
@@ -391,6 +393,55 @@ class Repository:
         with self.connection() as conn:
             row = conn.execute('SELECT payload FROM reports WHERE job_id = ? AND id = ?', (job_id, report_id)).fetchone()
         return json.loads(row['payload']) if row else None
+
+    def update_report(self, report_id, payload):
+        with self.connection() as conn:
+            conn.execute('UPDATE reports SET payload=? WHERE id=?', (json.dumps(payload, ensure_ascii=False), report_id))
+
+    # ---- 求职偏好：硬性条件提前申报，评估时作为已确认事实注入管线 ----
+
+    def save_job_preference(self, data):
+        """有 id 视为更新（不存在返回 None），否则新增；返回偏好 id。"""
+        timestamp = now()
+        with self.connection() as conn:
+            if data.get('id'):
+                if conn.execute('SELECT id FROM job_preferences WHERE id=?', (data['id'],)).fetchone() is None:
+                    return None
+                conn.execute('UPDATE job_preferences SET dimension=?, statement=?, enabled=?, updated_at=? WHERE id=?',
+                             (data['dimension'], data['statement'], int(data.get('enabled', True)), timestamp, data['id']))
+            else:
+                data = {**data, 'id': 'PREF-' + uuid.uuid4().hex[:20]}
+                conn.execute('INSERT INTO job_preferences (id, dimension, statement, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?)',
+                             (data['id'], data['dimension'], data['statement'], int(data.get('enabled', True)), timestamp, timestamp))
+        return data['id']
+
+    def job_preference(self, preference_id):
+        with self.connection() as conn:
+            row = conn.execute('SELECT * FROM job_preferences WHERE id=?', (preference_id,)).fetchone()
+        return dict(row, enabled=bool(row['enabled'])) if row else None
+
+    def job_preferences(self, enabled_only=False):
+        sql = 'SELECT * FROM job_preferences' + (' WHERE enabled=1' if enabled_only else '') + ' ORDER BY dimension, created_at'
+        with self.connection() as conn:
+            rows = conn.execute(sql).fetchall()
+        return [dict(row, enabled=bool(row['enabled'])) for row in rows]
+
+    def delete_job_preference(self, preference_id):
+        with self.connection() as conn:
+            return conn.execute('DELETE FROM job_preferences WHERE id=?', (preference_id,)).rowcount > 0
+
+    # ---- 需求状态手动改判：按岗位 + jd_quote 摘要记忆，重评自动沿用 ----
+
+    def save_override(self, job_id, quote_digest, status, note=''):
+        with self.connection() as conn:
+            conn.execute('INSERT INTO requirement_overrides (job_id, quote_digest, status, note, updated_at) VALUES (?,?,?,?,?) '
+                         'ON CONFLICT(job_id, quote_digest) DO UPDATE SET status=excluded.status, note=excluded.note, updated_at=excluded.updated_at',
+                         (job_id, quote_digest, status, note, now()))
+
+    def list_overrides(self, job_id):
+        with self.connection() as conn:
+            rows = conn.execute('SELECT quote_digest, status, note FROM requirement_overrides WHERE job_id=?', (job_id,)).fetchall()
+        return {row['quote_digest']: dict(status=row['status'], note=row['note']) for row in rows}
 
     def task(self, task_id):
         with self.connection() as conn:

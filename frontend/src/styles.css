@@ -2192,3 +2192,15 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .analysis-history-list button { font-size: 12px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--muted); cursor: pointer; }
 .analysis-history-list button:hover { border-color: var(--muted); color: inherit; }
 .analysis-history-list button.active { border-color: #3a7d44; color: #3a7d44; font-weight: 600; }
+
+/* 评估适配：两栏布局（宽屏左映射表/右信息栏）+ 表格工具栏 + 行内改判控件。 */
+.analysis-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 18px; align-items: start; }
+@media (max-width: 1100px) { .analysis-grid { grid-template-columns: 1fr; } }
+.analysis-side { display: grid; gap: 14px; align-content: start; }
+.analysis-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 10px; }
+.analysis-toolbar .requirement-heading { margin: 0 auto 0 0; }
+.analysis-toolbar select { font-size: 12px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
+.status-cell { display: inline-flex; align-items: center; }
+.status-select { font-size: 12px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
+.overridden-badge { font-size: 11px; color: #3a7d44; border: 1px solid #3a7d44; border-radius: 4px; padding: 0 4px; margin-left: 6px; white-space: nowrap; }
+.profile-preference-statement { margin: 0; font-size: 13px; line-height: 1.7; }

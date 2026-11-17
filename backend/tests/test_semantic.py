@@ -144,6 +144,30 @@ def test_cancel_raises_at_stage_boundary(context, monkeypatch):
         semantic().analyze_pipeline(*context, [], should_stop=lambda: True)
 
 
+def test_extra_facts_reach_model_and_allowed_set(context, monkeypatch):
+    # 求职偏好申报作为已确认事实注入：与简历事实一起发给模型，其 id 也在允许引用集里。
+    extra = [dict(id='PREF-1', statement='当前在杭州，可线下面试')]
+    _, seen_facts = mock_model(monkeypatch, [item('熟悉 Python')], {0: met()})
+    semantic().analyze_semantically(*context, [], extra_facts=extra)
+    assert seen_facts == ['F-1', 'PREF-1']
+    mock_model(monkeypatch, [item('熟悉 Python')], {0: ('met', ['PREF-1'], '偏好申报支持')})
+    report = semantic().analyze_semantically(*context, [], extra_facts=extra)
+    assert report['requirements'][0]['evidence'] == ['PREF-1']
+
+
+def test_overrides_change_status_and_recompute(context, monkeypatch):
+    from jobscope.semantic import quote_digest
+    mock_model(monkeypatch, [item('熟悉 Python')], {0: ('unknown', [], '证据不足')})
+    overrides = {quote_digest('熟悉 Python'): dict(status='met', note='我可以线下面试')}
+    report = semantic().analyze_semantically(*context, [], overrides=overrides)
+    row = report['requirements'][0]
+    assert row['status'] == 'met' and row['overridden'] is True
+    assert row['rationale'].startswith('用户确认：我可以线下面试')
+    assert any('手动确认' in line for line in report['limitations'])
+    # 改判影响聚合：该行从 unknown 变 met，已判定依据列表随状态走
+    assert row['requirement'] in [line.split('：')[0] for line in report['strengths']]
+
+
 def test_extract_model_http_error_detail_reaches_failure_message(context, monkeypatch):
     def post(self, url, **kwargs):
         return httpx.Response(401, request=httpx.Request('POST', url))
