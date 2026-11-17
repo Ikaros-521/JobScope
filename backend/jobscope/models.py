@@ -294,6 +294,12 @@ class ProfileEntryPatch(RequestModel):
     enabled: bool | None = None
 
 
+class ObsidianImportInput(RequestModel):
+    """Obsidian 库目录导入：只读该目录下的 .md，frontmatter/目录名映射类别，幂等重导原位更新。"""
+    path: str = Field(min_length=2, max_length=500)
+    dry_run: bool = Field(default=False)
+
+
 class ManualDescriptionInput(RequestModel):
     description: str = Field(min_length=1, max_length=100000)
     source_note: str = Field(min_length=1, max_length=1000)

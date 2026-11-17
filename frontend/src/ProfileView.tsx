@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { PROFILE_CATEGORY_NAMES, createProfileEntry, deleteProfileEntry, listProfileEntries, patchProfileEntry, replaceProfileEntry } from './api'
-import type { ProfileCategory, ProfileEntry } from './api'
+import { PROFILE_CATEGORY_NAMES, createProfileEntry, deleteProfileEntry, importObsidianVault, listProfileEntries, patchProfileEntry, replaceProfileEntry } from './api'
+import type { ObsidianImportResult, ProfileCategory, ProfileEntry } from './api'
 import { toast } from './toast'
 import { Icon } from './Icon'
 
@@ -16,6 +16,10 @@ export function ProfileView() {
   const [draft, setDraft] = useState<typeof EMPTY_DRAFT | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [busy, setBusy] = useState('')
+  // Obsidian 导入：路径记在 localStorage（本机库路径，换机器无意义）；预览不落库。
+  const [obsidianOpen, setObsidianOpen] = useState(false)
+  const [vaultPath, setVaultPath] = useState(() => { try { return localStorage.getItem('jobscope-obsidian-path') || '' } catch { return '' } })
+  const [obsidianResult, setObsidianResult] = useState<ObsidianImportResult | null>(null)
 
   const load = useCallback(async () => {
     try { setEntries((await listProfileEntries()).entries) }
@@ -26,6 +30,19 @@ export function ProfileView() {
   function run(key: string, action: () => Promise<void>) {
     setBusy(key)
     void action().catch(err => toast((err as Error).message, 'error')).finally(() => setBusy(''))
+  }
+
+  function importVault(dryRun: boolean) {
+    if (!vaultPath.trim()) { toast('请先填写 Obsidian 库（或任意 markdown 目录）路径', 'error'); return }
+    run(dryRun ? 'obsidian-preview' : 'obsidian-import', async () => {
+      const result = await importObsidianVault(vaultPath.trim(), dryRun)
+      setObsidianResult(result)
+      try { localStorage.setItem('jobscope-obsidian-path', vaultPath.trim()) } catch { /* 路径记忆失败无碍 */ }
+      if (!dryRun) {
+        toast(`已导入 ${result.imported ?? 0} 条（更新 ${result.updated ?? 0} 条）${result.errors.length ? `，${result.errors.length} 条跳过` : ''}。`)
+        await load()
+      }
+    })
   }
 
   function startCreate() { setEditingId(null); setDraft({ ...EMPTY_DRAFT }) }
@@ -73,8 +90,31 @@ export function ProfileView() {
           <button type="button" className={`pipeline-filter-chip${filter === '' ? ' active' : ''}`} onClick={() => setFilter('')}>全部</button>
           {CATEGORIES.map(category => <button key={category} type="button" className={`pipeline-filter-chip${filter === category ? ' active' : ''}`} onClick={() => setFilter(category)}>{PROFILE_CATEGORY_NAMES[category]}</button>)}
         </div>
-        <button type="button" className="button primary small" onClick={startCreate} disabled={Boolean(draft)}><Icon name="plus" size={14} />新增条目</button>
+        <div className="profile-toolbar-actions">
+          <button type="button" className="button secondary small" onClick={() => setObsidianOpen(value => !value)}>从 Obsidian 导入</button>
+          <button type="button" className="button primary small" onClick={startCreate} disabled={Boolean(draft)}><Icon name="plus" size={14} />新增条目</button>
+        </div>
       </div>
+
+      {obsidianOpen && <div className="obsidian-import">
+        <p className="tiny-label">填写本机 Obsidian 库（或任意 markdown 目录）的完整路径，只读其中的 .md 提炼入库：<br />
+          frontmatter 的 类别/标题/公司/组织/时间段/标签（中文）或 category/title/org/period/tags 会映射成条目字段；类别也可以由顶层目录名（项目/工作/技能…）识别；正文里的 #内联标签 一并归入标签。同一文件重复导入会在原位更新，不产生重复；在本系统里手改过的条目，重导会以库文件为准。</p>
+        <div className="obsidian-import-row">
+          <input value={vaultPath} onChange={event => setVaultPath(event.target.value)} maxLength={500}
+            placeholder="如 D:\\Notes\\MyVault" aria-label="Obsidian 库路径" spellCheck={false} />
+          <button type="button" className="button secondary small" disabled={busy === 'obsidian-preview'} onClick={() => void importVault(true)}>{busy === 'obsidian-preview' ? <span className="spinner" /> : null}预览</button>
+          <button type="button" className="button primary small" disabled={busy === 'obsidian-import'} onClick={() => void importVault(false)}>{busy === 'obsidian-import' ? <span className="spinner" /> : null}导入</button>
+        </div>
+        {obsidianResult && <div className="obsidian-result">
+          <p className="tiny-label">解析到 {obsidianResult.total} 条{obsidianResult.updated !== undefined ? `（新建 ${obsidianResult.imported}、更新 ${obsidianResult.updated}）` : '（预览，未入库）'}{obsidianResult.errors.length ? `；跳过 ${obsidianResult.errors.length} 项` : ''}。</p>
+          {obsidianResult.preview?.length ? <ul>{obsidianResult.preview.map(item => <li key={item.source}>
+            <b>{PROFILE_CATEGORY_NAMES[item.category] || item.category} · {item.title}</b>
+            <span className="tiny-label">{[item.org, item.period].filter(Boolean).join(' · ')}{item.tags.length ? ` · ${item.tags.join('/')}` : ''} — {item.source}</span>
+          </li>)}</ul> : null}
+          {obsidianResult.errors.length > 0 && <ul className="obsidian-errors">{obsidianResult.errors.slice(0, 10).map((line, index) => <li key={index}>{line}</li>)}</ul>}
+        </div>}
+        <p className="tiny-label">另一条路：在「Agent 扩展」里接入 Obsidian 的 MCP 服务（如 filesystem 指向库目录），全局对话的 Agent 可以直接读你的库回答问题——那不落库；要把材料变成工坊可取材的条目，用本导入。</p>
+      </div>}
 
       {draft && <div className="profile-editor" role="form" aria-label={editingId ? '编辑条目' : '新增条目'}>
         <div className="form-two">

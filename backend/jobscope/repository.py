@@ -43,6 +43,10 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS profile_entries (id TEXT PRIMARY KEY, category TEXT NOT NULL, title TEXT NOT NULL, org TEXT NOT NULL DEFAULT '', period TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
             """)
             self._migrate_conversations(conn)
+            # profile_entries.source 记录条目来源（Obsidian 导入的文件相对路径），幂等重导靠它原位更新。
+            columns = {row['name'] for row in conn.execute('PRAGMA table_info(profile_entries)')}
+            if 'source' not in columns:
+                conn.execute("ALTER TABLE profile_entries ADD COLUMN source TEXT NOT NULL DEFAULT ''")
             # 读路径高频查询的二级索引（放在 _migrate_conversations 之后：conversations 的
             # updated_at 等列由迁移补齐）。列表排序、公司过滤、取最新报告与最新会话不再随数据量
             # 增长退化为全表扫描；首次对既有库建索引是一次性开销。
@@ -326,26 +330,35 @@ class Repository:
             rows = conn.execute(f'SELECT * FROM profile_entries{clause} ORDER BY category, created_at').fetchall()
         return [self._profile_row(row) for row in rows]
 
+    def profile_entry_by_source(self, source):
+        """按来源路径取条目（Obsidian 导入的幂等锚点）：没有就是 None。"""
+        with self.connection() as conn:
+            row = conn.execute('SELECT * FROM profile_entries WHERE source=?', (source,)).fetchone()
+        return None if row is None else self._profile_row(row)
+
     def save_profile_entry(self, data):
         """带 id 更新既有条目，否则新建；更新时保留创建时间，enabled 恒为 0/1 整数。"""
         timestamp = now()
-        item = {**dict(category='project', title='', org='', period='', content='', tags=[], enabled=True), **data}
+        item = {**dict(category='project', title='', org='', period='', content='', tags=[], enabled=True, source=''), **data}
         if item.get('tags') is None:
             item['tags'] = []  # PATCH 未携带 tags 时保持空集，不让 None 进 json.dumps
         item['tags'] = json.dumps(list(dict.fromkeys(item['tags'])), ensure_ascii=False)
         item['enabled'] = 1 if item['enabled'] else 0
         with self.connection() as conn:
             if item.get('id') and self.profile_entry(item['id']):
-                fields = {key: item[key] for key in ('category', 'title', 'org', 'period', 'content', 'tags', 'enabled')}
+                fields = {key: item[key] for key in ('category', 'title', 'org', 'period', 'content', 'tags', 'enabled', 'source')}
                 fields['updated_at'] = timestamp
                 conn.execute(f'UPDATE profile_entries SET {",".join(key + "=?" for key in fields)} WHERE id=?',
                              (*fields.values(), item['id']))
             else:
                 item['id'] = 'P-' + uuid.uuid4().hex[:20]
                 item['created_at'] = timestamp
-                conn.execute('INSERT INTO profile_entries VALUES (?,?,?,?,?,?,?,?,?,?)',
+                # 列名显式：迁移给表尾追加过 source 列，物理列序不再是建表顺序，位置插值会错位。
+                conn.execute('INSERT INTO profile_entries (id,category,title,org,period,content,tags,enabled,source,created_at,updated_at) '
+                             'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                              (item['id'], item['category'], item['title'], item['org'], item['period'],
-                              item['content'], item['tags'], item['enabled'], item['created_at'], timestamp))
+                              item['content'], item['tags'], item['enabled'], item.get('source', ''),
+                              item['created_at'], timestamp))
         return self.profile_entry(item['id'])
 
     def patch_profile_entry(self, entry_id, patch):
