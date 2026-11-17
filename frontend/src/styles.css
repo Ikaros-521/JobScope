@@ -703,6 +703,30 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .knowledge-chunk-card p { grid-column: 1 / -1; margin: 0; color: #525252; white-space: pre-wrap; word-break: break-word; }
 .knowledge-chunk-index { display: inline-flex; padding: 2px 9px; border-radius: 999px; background: var(--paper); border: 1px solid var(--line); color: var(--green); font-size: 12px; font-weight: 600; }
 @media (max-width: 900px) { .knowledge-settings-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .knowledge-view .management-overview { grid-template-columns: 1fr; } }
+/* 知识库导入任务：拖拽遮罩 + 任务进度卡 */
+.knowledge-view { position: relative; }
+.kb-drop-overlay { position: fixed; inset: 0; z-index: 60; display: grid; place-content: center; justify-items: center; gap: 8px; border: 2px dashed var(--green); border-radius: 14px; background: rgba(233, 241, 229, .92); color: var(--green); pointer-events: none; }
+.kb-drop-overlay svg { opacity: .7; }
+.kb-drop-overlay strong { font-size: 18px; }
+.kb-drop-overlay span { color: #525252; font-size: 13px; }
+.kb-import-card { display: grid; gap: 10px; margin-bottom: 20px; padding: 14px 18px; border: 1px solid #d5e4d4; }
+.kb-import-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.kb-import-head strong { min-width: 0; }
+.kb-import-head .kb-import-actions { margin-left: auto; display: flex; gap: 8px; }
+.kb-import-state { display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px; border-radius: 999px; background: var(--surface); font-size: 12px; font-weight: 600; color: var(--muted); }
+.kb-import-state.running, .kb-import-state.pending { color: #8a6d1a; background: #faf3d9; }
+.kb-import-state.completed { color: var(--green); background: var(--selected); }
+.kb-import-state.failed { color: #a33a3a; background: #fbe4e4; }
+.kb-import-state.cancelled { color: var(--muted); }
+.kb-import-files { display: grid; gap: 6px; }
+.kb-import-file { display: grid; grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1.2fr); align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.kb-import-file .kb-file-state { font-size: 12px; font-weight: 600; color: var(--muted); flex: none; }
+.kb-import-file.imported .kb-file-state { color: var(--green); }
+.kb-import-file.failed .kb-file-state { color: #a33a3a; }
+.kb-import-file.processing .kb-file-state { color: #8a6d1a; }
+.kb-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.kb-file-error { color: #a33a3a; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 680px) { .kb-import-file { grid-template-columns: auto minmax(0, 1fr); row-gap: 2px; } .kb-import-file .kb-file-error { grid-column: 1 / -1; } }
 
 .management-tabs button span { max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: var(--selected); padding: 2px 7px; border-radius: 5px; font-size: 12px; font-weight: 400; }
 .management-section-heading { margin-bottom: 16px; }

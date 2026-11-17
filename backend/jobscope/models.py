@@ -63,6 +63,11 @@ class KnowledgePatch(RequestModel):
     tags: list[Annotated[str, Field(max_length=30)]] | None = None
 
 
+class KnowledgeImportInput(RequestModel):
+    """批量导入任务登记：只登记文件名（前端随后逐个上传），单批最多 20 个。"""
+    names: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(min_length=1, max_length=20)
+
+
 class KnowledgeSettingsInput(RequestModel):
     """分块与检索设置：全部可选，缺省字段保持现值；钳制在服务端再核一道。"""
     strategy: Literal['recursive', 'hard', 'punct', 'semantic', 'llm'] | None = None

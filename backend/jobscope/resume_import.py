@@ -90,11 +90,16 @@ def word_xml_text(content):
     return ''.join(chunks).strip()
 
 
-def docx_text(content):
+def docx_text(content, *, max_total=None, max_xml=None, max_entries=None):
+    """知识库导入以更宽的解压/条目上限复用本解析器；XML 单文件上限独立约束内存。
+    缺省保持简历口径（20MB 解压总量）。"""
+    max_total = max_total or 20 * 1024 * 1024
+    max_xml = max_xml or max_total
+    max_entries = max_entries or 1000
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as archive:
             entries = archive.infolist()
-            if len(entries) > 1000 or sum(info.file_size for info in entries) > 20 * 1024 * 1024:
+            if len(entries) > max_entries or sum(info.file_size for info in entries) > max_total:
                 raise ValueError('Word 解压后内容过大，请删除大图或缩减文件后导入')
             if any(info.flag_bits & 1 for info in entries):
                 raise ValueError('Word 文件有密码保护，请先解除密码再导入')
@@ -102,7 +107,10 @@ def docx_text(content):
                 raise ValueError('文件不是有效 Word .docx，请从 Word 重新另存为 .docx')
             headers = sorted(info.filename for info in entries if re.fullmatch(r'word/header\d+\.xml', info.filename))
             footers = sorted(info.filename for info in entries if re.fullmatch(r'word/footer\d+\.xml', info.filename))
-            sections = [word_xml_text(archive.read(name)) for name in [*headers, 'word/document.xml', *footers]]
+            parts = [*headers, 'word/document.xml', *footers]
+            if any(archive.getinfo(name).file_size > max_xml for name in parts):
+                raise ValueError('Word 文档正文 XML 过大，请拆分后导入')
+            sections = [word_xml_text(archive.read(name)) for name in parts]
             return '\n\n'.join(text for text in sections if text), None, ['已提取正文、表格、文本框及页眉页脚；请核对排版转换后的阅读顺序。']
     except (zipfile.BadZipFile, KeyError, NotImplementedError, RuntimeError, OSError, zlib.error):
         raise ValueError('Word 文件损坏、加密或不是有效 .docx，请重新另存后导入') from None

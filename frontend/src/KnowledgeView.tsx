@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
-import type { FormEvent } from 'react'
+import type { DragEvent as ReactDragEvent, FormEvent } from 'react'
 import {
-  createKnowledge, date, deleteKnowledge, getKnowledge, getKnowledgeChunks, getKnowledgeSettings,
-  listKnowledge, reembedKnowledge, updateKnowledge, updateKnowledgeSettings, uploadKnowledge,
+  cancelKnowledgeImport, createKnowledge, createKnowledgeImport, date, deleteKnowledge, getKnowledge,
+  getKnowledgeChunks, getKnowledgeImport, getKnowledgeSettings, getLatestKnowledgeImport, listKnowledge,
+  reembedKnowledge, startKnowledgeImport, stageKnowledgeImportFile, updateKnowledge, updateKnowledgeSettings,
 } from './api'
-import type { KnowledgeChunk, KnowledgeDoc, KnowledgeSettings, KnowledgeStatus, PageInfo } from './api'
+import type { KnowledgeChunk, KnowledgeDoc, KnowledgeImportTask, KnowledgeSettings, KnowledgeStatus, PageInfo } from './api'
 import { toast } from './toast'
 import { Pagination, emptyPage } from './Pagination'
 import { Icon } from './Icon'
@@ -21,7 +22,9 @@ const STRATEGY_HINTS: Record<string, string> = {
   llm: '对话模型判断主题边界；需要已配置对话模型，否则自动回退递归',
 }
 const RETRIEVAL_LABELS: Record<string, string> = { lexical: '词法（BM25）', hybrid: '混合（向量+词法）' }
-const KB_DOCUMENTS_TIP = '支持 PDF / Word .docx / Markdown / 纯文本等格式，单文件 ≤10MB；解析后按当前分块策略切块入库。'
+const KB_DOCUMENTS_TIP = '支持 PDF / Word .docx / Markdown / 纯文本等格式，单文件 ≤100MB、单批 ≤20 个；上传完成后后台导入，可随时停止。'
+const IMPORT_FILE_STATE_LABELS: Record<string, string> = { pending: '等待上传', staged: '已上传', processing: '导入中', imported: '已导入', failed: '失败', skipped: '重复跳过', cancelled: '已取消' }
+const IMPORT_ACTIVE = new Set(['pending', 'running'])
 
 export function KnowledgeView({ onCountChange }: { onCountChange?: (total: number) => void }) {
   const [query, setQuery] = useState('')
@@ -38,7 +41,12 @@ export function KnowledgeView({ onCountChange }: { onCountChange?: (total: numbe
   const [preview, setPreview] = useState<{ doc: KnowledgeDoc; mode: 'text' | 'chunks'; chunks: KnowledgeChunk[] } | null>(null)
   const [armedDelete, setArmedDelete] = useState<string | null>(null)
   const [settingsDraft, setSettingsDraft] = useState<{ strategy: string; size: number; overlap: number; separators: string; retrieval_mode: string } | null>(null)
+  const [importTask, setImportTask] = useState<KnowledgeImportTask | null>(null)
+  const [stagingText, setStagingText] = useState('')
+  const [dragging, setDragging] = useState(false)
+  const dragDepth = useRef(0)
   const request = useRef(0)
+  const pollToken = useRef(0)
   const fileInput = useRef<HTMLInputElement>(null)
 
   async function load(q = query, t = tag, page = 1) {
@@ -56,6 +64,8 @@ export function KnowledgeView({ onCountChange }: { onCountChange?: (total: numbe
   useEffect(() => {
     void load()
     getKnowledgeSettings().then(payload => { setSettings(payload.settings); setMeta(payload) }).catch(() => { /* 设置读取失败时面板显示未知状态 */ })
+    // 页面重开时恢复未完成的导入任务（轮询继续，直到任务结束）
+    getLatestKnowledgeImport().then(task => { if (task && IMPORT_ACTIVE.has(task.status)) { setImportTask(task); pollImport(task.id) } }).catch(() => { /* 查询失败忽略 */ })
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function search(event: FormEvent) {
@@ -68,24 +78,79 @@ export function KnowledgeView({ onCountChange }: { onCountChange?: (total: numbe
     void load(query, next, 1)
   }
 
-  async function handleUpload(files: FileList | null) {
-    if (!files || !files.length || busy) return
+  function pollImport(taskId: string) {
+    pollToken.current += 1
+    const token = pollToken.current
+    const tick = async () => {
+      if (pollToken.current !== token) return
+      try {
+        const task = await getKnowledgeImport(taskId)
+        if (pollToken.current !== token) return
+        setImportTask(task)
+        if (IMPORT_ACTIVE.has(task.status)) { window.setTimeout(() => void tick(), 1500); return }
+        // 终态：提示结果并刷新列表；轮询到此为止（保留卡片供查看，可手动关闭）
+        if (task.status === 'completed') toast(task.message || '导入完成', task.files.some(f => f.state === 'failed') ? 'error' : 'notice')
+        else if (task.status === 'cancelled') toast(task.message || '导入已停止', 'notice')
+        else if (task.status === 'failed') toast(task.message || '导入失败', 'error', false, undefined, 10000)
+        void load(query, tag)
+      } catch { window.setTimeout(() => { if (pollToken.current === token) void tick() }, 3000) }
+    }
+    void tick()
+  }
+
+  async function handleUpload(files: File[] | FileList | null) {
+    const list = files ? Array.from(files) : []
+    if (!list.length) return
+    if (importTask && IMPORT_ACTIVE.has(importTask.status)) { toast('已有导入任务在进行中，请等待完成或先停止', 'error'); return }
     setBusy('knowledge-upload')
-    const failed: string[] = []
-    const warnings: string[] = []
-    let imported = 0
+    setStagingText('正在创建导入任务…')
     try {
-      for (const file of Array.from(files)) {
-        try {
-          const result = await uploadKnowledge(file.name, file)
-          imported += 1
-          for (const warning of result.warnings || []) warnings.push(`${file.name}：${warning}`)
-        } catch (err) { failed.push(`${file.name}：${(err as Error).message}`) }
+      const task = await createKnowledgeImport(list.map(file => file.name))
+      setImportTask(task)
+      for (let index = 0; index < list.length; index++) {
+        setStagingText(`正在上传 ${index + 1}/${list.length}：${list[index].name}`)
+        await stageKnowledgeImportFile(task.id, index, list[index].name, list[index])
       }
-      if (imported) toast(`已导入 ${imported} 个文档${warnings.length ? '；' + warnings.join('；') : ''}`, 'notice', warnings.length > 0)
-      if (failed.length) toast(failed.join('；'), 'error', false, undefined, 12000)
-      await load(query, tag)
-    } finally { setBusy(''); if (fileInput.current) fileInput.current.value = '' }
+      setStagingText('')
+      const started = await startKnowledgeImport(task.id)
+      setImportTask(started)
+      pollImport(task.id)
+      toast(`已开始后台导入 ${list.length} 个文件，完成后会提示结果`, 'notice')
+    } catch (err) {
+      toast((err as Error).message, 'error', false, undefined, 10000)
+      setImportTask(current => current && IMPORT_ACTIVE.has(current.status) ? current : null)
+      pollToken.current += 1
+    } finally { setBusy(''); setStagingText(''); if (fileInput.current) fileInput.current.value = '' }
+  }
+
+  async function stopImport() {
+    if (!importTask || !IMPORT_ACTIVE.has(importTask.status)) return
+    try {
+      const task = await cancelKnowledgeImport(importTask.id)
+      setImportTask(task)
+      toast(task.status === 'cancelled' ? '导入任务已停止' : '正在停止导入任务，当前文件完成后收尾', 'notice')
+    } catch (err) { toast((err as Error).message, 'error') }
+  }
+
+  // 拖拽上传：进入知识库页面即高亮，松手走与文件选择相同的导入任务流程。
+  function onDragEnter(event: ReactDragEvent) {
+    if (!Array.from(event.dataTransfer.types || []).includes('Files')) return
+    event.preventDefault()
+    dragDepth.current += 1
+    setDragging(true)
+  }
+  function onDragOver(event: ReactDragEvent) { event.preventDefault() }
+  function onDragLeave(event: ReactDragEvent) {
+    if (!Array.from(event.dataTransfer.types || []).includes('Files')) return
+    dragDepth.current = Math.max(0, dragDepth.current - 1)
+    if (dragDepth.current === 0) setDragging(false)
+  }
+  function onDrop(event: ReactDragEvent) {
+    if (!Array.from(event.dataTransfer.types || []).includes('Files')) return
+    event.preventDefault()
+    dragDepth.current = 0
+    setDragging(false)
+    void handleUpload(event.dataTransfer.files)
   }
 
   async function openEditor(id: string | null) {
@@ -173,15 +238,20 @@ export function KnowledgeView({ onCountChange }: { onCountChange?: (total: numbe
     { icon: 'source', label: '向量状态', main: meta.embedding_ready ? `${meta.embedded}/${meta.chunks}` : '未配置', sub: meta.stale ? '嵌入模型已变更，建议重建' : meta.pending > 0 ? `${meta.pending} 个分块待补` : meta.embedding_ready ? '向量已就绪' : '配置 Embedding 后可启用混合检索' },
   ] : []
 
-  return <div className="knowledge-view">
+  const importActive = Boolean(importTask && IMPORT_ACTIVE.has(importTask.status))
+  return <div className={`knowledge-view${dragging ? ' dragging' : ''}`} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+    {dragging && <div className="kb-drop-overlay" role="status"><Icon name="source" size={36} /><strong>松开鼠标，导入文件到知识库</strong><span>支持多选；单文件 ≤100MB，单批 ≤20 个</span></div>}
     <section className="page-intro"><div><h1>知识库</h1><p>录入或上传你的知识（面试复盘、行业认知、PDF/Word 文档），对话中的 Agent 会按分块检索并引用它们。</p></div>
       <div className="knowledge-intro-actions">
         <input ref={fileInput} type="file" multiple accept={KB_ACCEPT} hidden onChange={event => void handleUpload(event.target.files)} aria-hidden="true" tabIndex={-1} />
-        <button className="button secondary" title={KB_DOCUMENTS_TIP} disabled={Boolean(busy)} onClick={() => fileInput.current?.click()}>
+        <button className="button secondary" title={KB_DOCUMENTS_TIP} disabled={Boolean(busy) || importActive} onClick={() => fileInput.current?.click()}>
           {busy === 'knowledge-upload' ? <span className="spinner" /> : <Icon name="source" size={16} />}上传文档
         </button>
         <button className="button primary" onClick={() => void openEditor(null)}><Icon name="plus" size={16} />新建知识</button>
       </div></section>
+
+    {stagingText && <div className="kb-import-card paper-panel" role="status"><span className="spinner" /><strong>{stagingText}</strong><span className="muted body-small">大文件上传可能需要一些时间；上传完成后自动开始后台导入</span></div>}
+    {importTask && !stagingText && <ImportTaskCard task={importTask} onStop={() => void stopImport()} onClose={() => { pollToken.current += 1; setImportTask(null) }} />}
 
     <div className="management-overview" aria-label="知识库概况">
       {overviewCards.map(card => <div key={card.label}><span className="overview-icon"><Icon name={card.icon} /></span><div><span>{card.label}</span><strong>{card.main}<small>{card.sub}</small></strong></div></div>)}
@@ -313,4 +383,29 @@ function EmptyState({ title, query, onUpload, onNew }: { title: string; query: b
   return <div className="empty"><div className="empty-icon"><Icon name="knowledge" /></div><h3>{title}</h3>
     <p>{query ? <>换个关键词试试，或<button className="inline-button" onClick={onNew}>新建一条</button>知识。</>
       : <>把面试后的复盘、对行业与公司的判断<button className="inline-button" onClick={onNew}>手动录入</button>，或<button className="inline-button" onClick={onUpload}>上传 PDF / Word / Markdown 文档</button>；入库后对话中的 Agent 会按分块检索引用。</>}</p></div>
+}
+
+
+function ImportTaskCard({ task, onStop, onClose }: { task: KnowledgeImportTask; onStop: () => void; onClose: () => void }) {
+  const active = IMPORT_ACTIVE.has(task.status)
+  const statusLabel = { pending: '上传中', running: '导入中', completed: '已完成', failed: '失败', cancelled: '已停止' }[task.status] || task.status
+  return <div className="kb-import-card paper-panel" role="status">
+    <div className="kb-import-head">
+      <span className={`kb-import-state ${task.status}`}><span className={active ? 'spinner' : ''} />{statusLabel}</span>
+      <strong>{task.message}</strong>
+      <span className="muted body-small">{task.files.length} 个文件 · 成功 {task.files.filter(f => f.state === 'imported').length} · 失败 {task.files.filter(f => f.state === 'failed').length}</span>
+      <div className="kb-import-actions">
+        {active && <button className="button secondary small danger-text" onClick={onStop}>停止导入</button>}
+        {!active && <button className="text-button" onClick={onClose}>关闭</button>}
+      </div>
+    </div>
+    <div className="kb-import-files">
+      {task.files.map(file => <div key={file.index} className={`kb-import-file ${file.state}`}>
+        <span className="kb-file-state">{IMPORT_FILE_STATE_LABELS[file.state] || file.state}</span>
+        <span className="kb-file-name" title={file.name}>{file.name}</span>
+        <span className="muted body-small">{file.chunks ? `${file.chunks} 块` : file.size ? `${(file.size / 1024).toFixed(0)} KB` : ''}</span>
+        <span className="kb-file-error">{file.error || (file.warnings || []).join('；')}</span>
+      </div>)}
+    </div>
+  </div>
 }

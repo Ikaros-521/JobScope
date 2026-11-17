@@ -33,7 +33,7 @@ import { BossImport } from './BossImport'
 import type { Analysis, BrowserStatus, Evidence, Job, PageInfo, ReliabilityHistory, ReliabilityReport, Source, Task } from './api'
 
 const transportNames: Record<string, string> = { http_api: '接口', browser_page: '需浏览器', company_web: '网页快查', manual: '手动' }
-const statusNames: Record<string, string> = { completed: '已完成', success: '已完成', running: '采集中', pending: '等待中', failed: '失败', needs_login: '需要登录', needing_login: '需要登录', login_required: '需要登录', needs_verification: '需要验证', verification_required: '需要验证', requires_verification: '需要验证', unsupported: '暂不支持', available: '可用', ready: '可用', not_configured: '未配置', blocked: '访问受限', backoff: '退避等待', opt_in: '需你自行开启', skipped: '已跳过', degraded: '已降级留档' }
+const statusNames: Record<string, string> = { completed: '已完成', success: '已完成', running: '采集中', pending: '等待中', cancelled: '已停止', failed: '失败', needs_login: '需要登录', needing_login: '需要登录', login_required: '需要登录', needs_verification: '需要验证', verification_required: '需要验证', requires_verification: '需要验证', unsupported: '暂不支持', available: '可用', ready: '可用', not_configured: '未配置', blocked: '访问受限', backoff: '退避等待', opt_in: '需你自行开启', skipped: '已跳过', degraded: '已降级留档' }
 const dimensionNames: Record<string, string> = { skill: '技能', skills: '技能', experience: '经历与职责', domain: '行业与业务', industry: '行业与业务', preference: '求职偏好', preferences: '求职偏好' }
 const requirementNames: Record<string, string> = { met: '满足', matched: '满足', satisfied: '满足', partial: '部分满足', not_met: '未满足', unmet: '未满足', missing: '未满足', unknown: '待确认', confirmed: '满足' }
 function needsFullJd(job: Job) {
@@ -534,7 +534,7 @@ export default function App() {
   }
   const evidenceTotal = detail?.evidence_total ?? 0
   const selectedSource = sources.find(item => item.id === source)
-  const sourceNames: Record<string, string> = { ...Object.fromEntries(sources.map(item => [item.id, item.name])), ...signalTaskNames }
+  const sourceNames: Record<string, string> = { ...Object.fromEntries(sources.map(item => [item.id, item.name])), ...signalTaskNames, knowledge_import: '知识库导入' }
   const jobSources = sources.filter(item => item.kind === 'jobs')
   const browserSources = sources.filter(item => item.browser_collectable)
   const browserSourceItem = browserSources.find(item => item.id === browserSource)

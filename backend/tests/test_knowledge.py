@@ -140,7 +140,7 @@ def test_knowledge_read_pages_long_entries_and_knowledge_available_in_all_scopes
 
 def test_validation_rejects_oversize_and_empty_inputs(client):
     assert client.post('/api/knowledge', json=dict(title='', content='x')).status_code == 422
-    assert client.post('/api/knowledge', json=dict(title='t', content='x' * 50001)).status_code == 422
+    assert client.post('/api/knowledge', json=dict(title='t', content='x' * 200001)).status_code == 422
     assert client.post('/api/knowledge', json=dict(title='t', content='x', tags=['a' * 31])).status_code == 422
     assert client.post('/api/knowledge', json=dict(title='t', content='x', tags=[str(i) for i in range(11)])).status_code == 422
 
@@ -243,3 +243,145 @@ def test_agent_chunk_hits_note_and_mode(client, monkeypatch):
     assert any(c['id'] == entry['id'] for c in result['citations'])
     tool_message = next(message for message in calls[-1]['messages'] if message.get('role') == 'tool')
     assert '[块' in tool_message['content'] and '词法检索' in tool_message['content']
+
+
+def stage_import_file(client, task_id, index, filename, content):
+    return client.post(f'/api/knowledge/imports/{task_id}/files', params={'index': index, 'filename': filename},
+                       content=content, headers={'Content-Type': 'application/octet-stream'})
+
+
+def wait_import_terminal(client, task_id, timeout=10.0):
+    import time
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        task = client.get(f'/api/knowledge/imports/{task_id}').json()
+        if task['status'] in ('completed', 'failed', 'cancelled'):
+            return task
+        time.sleep(0.05)
+    raise AssertionError('导入任务未在时限内结束')
+
+
+def test_import_task_full_flow_stages_processes_and_cleans_up(client):
+    names = ['指南一.md', '指南二.md']
+    created = client.post('/api/knowledge/imports', json=dict(names=names))
+    assert created.status_code == 200
+    task = created.json()
+    assert task['status'] == 'pending' and [f['name'] for f in task['files']] == names
+    body = '召回率与忠实度是评测重点，样本需要分层抽样，避免偏差集中。'
+    ok1 = stage_import_file(client, task['id'], 0, '指南一.md', body.encode('utf-8'))
+    ok2 = stage_import_file(client, task['id'], 1, '指南二.md', body.encode('utf-8'))
+    assert ok1.status_code == 200 and ok2.status_code == 200
+    assert ok2.json()['files'][0]['state'] == 'staged'
+    # 同文查重在导入阶段以 skip 收场（两个文件内容相同）
+    started = client.post(f"/api/knowledge/imports/{task['id']}/start")
+    assert started.status_code == 200
+    final = wait_import_terminal(client, task['id'])
+    assert final['status'] == 'completed' and final['count'] == 1 and final['failed'] == 0
+    skipped = [f for f in final['files'] if f['state'] == 'skipped']
+    imported = [f for f in final['files'] if f['state'] == 'imported']
+    assert len(skipped) == 1 and '内容已存在' in skipped[0]['error']
+    assert len(imported) == 1 and imported[0]['entry_id'].startswith('K-') and imported[0]['chunks'] >= 1
+    doc = client.get(f"/api/knowledge/{imported[0]['entry_id']}").json()
+    assert doc['title'] == '指南一' and doc['source'] == 'upload'
+    # 暂存目录已清理
+    import tempfile
+    assert not (client.app.state.repo.data_dir / 'knowledge_imports' / task['id']).exists()
+
+
+def test_import_task_cancel_keeps_imported_and_blocks_rest(client, monkeypatch):
+    from jobscope import knowledge as kb_module
+    original_write = kb_module.KnowledgeStore._write_doc
+
+    def slow_write(self, conn, entry, **kwargs):
+        if '慢文件标记' in entry.get('content', ''):
+            import time
+            time.sleep(1.2)
+        return original_write(self, conn, entry, **kwargs)
+
+    monkeypatch.setattr(kb_module.KnowledgeStore, '_write_doc', slow_write)
+    names = ['快.md', '慢.md', '第三.md']
+    task = client.post('/api/knowledge/imports', json=dict(names=names)).json()
+    stage_import_file(client, task['id'], 0, '快.md', '第一个文件内容很快导入完成。'.encode('utf-8'))
+    stage_import_file(client, task['id'], 1, '慢.md', '慢文件标记，用于拉长导入窗口。'.encode('utf-8'))
+    stage_import_file(client, task['id'], 2, '第三.md', '第三个文件内容，取消后不应入库。'.encode('utf-8'))
+    client.post(f"/api/knowledge/imports/{task['id']}/start")
+    # 等第二个文件进入处理中（此时 worker 正持有写事务），再取消
+    import time
+    deadline = time.time() + 5
+    while time.time() < deadline:
+        state = client.get(f"/api/knowledge/imports/{task['id']}").json()
+        if state['status'] == 'running' and any(f['state'] == 'processing' and f['name'] == '慢.md' for f in state['files']):
+            break
+        time.sleep(0.05)
+    cancelled = client.post(f"/api/knowledge/imports/{task['id']}/cancel")
+    assert cancelled.status_code == 200
+    final = wait_import_terminal(client, task['id'])
+    assert final['status'] == 'cancelled' and '成功导入' in final['message']
+    states = {f['name']: f['state'] for f in final['files']}
+    assert states['快.md'] == 'imported'
+    assert states['慢.md'] in ('imported', 'processing')  # 取消不打断当前文件：完成后完整入库
+    assert states['第三.md'] == 'cancelled'
+    # 已导入的文件是完整文档（非脏数据）；取消的文件没有入库
+    from jobscope.knowledge import KnowledgeStore
+    store = KnowledgeStore(client.app.state.repo)
+    titles = [entry['title'] for entry in store.list()['entries']]
+    assert '快' in titles and '第三' not in titles
+
+
+def test_import_task_rejects_conflicts_and_oversize(client, monkeypatch):
+    # 并发任务互斥
+    first = client.post('/api/knowledge/imports', json=dict(names=['a.md']))
+    second = client.post('/api/knowledge/imports', json=dict(names=['b.md']))
+    assert first.status_code == 200 and second.status_code == 409
+    task_id = first.json()['id']
+    # 超过单批数量
+    assert client.post('/api/knowledge/imports', json=dict(names=[])).status_code == 422
+    # 文件名与登记不一致 / 重复上传
+    assert stage_import_file(client, task_id, 0, '别的名字.md', b'x').status_code == 409
+    assert stage_import_file(client, task_id, 0, 'a.md', b'x').status_code == 200
+    assert stage_import_file(client, task_id, 0, 'a.md', b'x').status_code == 409
+    # 未传完不允许 start（登记了 2 个文件只传了 1 个）
+    client.post('/api/knowledge/imports', json=dict(names=[]))  # 空名单 422 已在上面覆盖
+    conflict_task = client.post('/api/knowledge/imports', json=dict(names=['部分.md', '缺失.md']))
+    assert conflict_task.status_code == 409  # 与活动任务互斥
+    client.post(f'/api/knowledge/imports/{task_id}/cancel')
+    pending_task = client.post('/api/knowledge/imports', json=dict(names=['部分.md', '缺失.md'])).json()
+    stage_import_file(client, pending_task['id'], 0, '部分.md', b'x')
+    assert client.post(f"/api/knowledge/imports/{pending_task['id']}/start").status_code == 409
+    client.post(f"/api/knowledge/imports/{pending_task['id']}/cancel")
+    # 已取消的任务再操作一律拒绝，暂存目录已清理
+    assert client.post(f'/api/knowledge/imports/{task_id}/cancel').status_code == 409
+    assert client.post(f'/api/knowledge/imports/{task_id}/start').status_code == 409
+    assert not (client.app.state.repo.data_dir / 'knowledge_imports' / task_id).exists()
+    # 单文件超限（把上限改小验证流式拒绝）
+    from jobscope import kb_import as kb_import_module
+    monkeypatch.setattr(kb_import_module, 'KB_MAX_FILE_BYTES', 8)
+    fresh = client.post('/api/knowledge/imports', json=dict(names=['big.md'])).json()
+    oversize = stage_import_file(client, fresh['id'], 0, 'big.md', b'x' * 32)
+    assert oversize.status_code == 413
+    client.post(f"/api/knowledge/imports/{fresh['id']}/cancel")
+
+
+def test_staging_cleanup_on_restart(client):
+    from jobscope.knowledge import KnowledgeImportManager
+    repo = client.app.state.repo
+    orphan = repo.data_dir / 'knowledge_imports' / 'T-orphan'
+    orphan.mkdir(parents=True, exist_ok=True)
+    (orphan / 'leftover.bin').write_bytes(b'x')
+    manager = KnowledgeImportManager(KnowledgeStore2 := __import__('jobscope.knowledge', fromlist=['KnowledgeStore']).KnowledgeStore(repo), repo)
+    assert not orphan.exists()
+    # 已结束任务的暂存目录同样清理
+    done = client.post('/api/knowledge/imports', json=dict(names=['清理.md'])).json()
+    stale_dir = repo.data_dir / 'knowledge_imports' / done['id']
+    stale_dir.mkdir(parents=True, exist_ok=True)
+    client.post(f"/api/knowledge/imports/{done['id']}/cancel")
+    KnowledgeImportManager(__import__('jobscope.knowledge', fromlist=['KnowledgeStore']).KnowledgeStore(repo), repo)
+    assert not stale_dir.exists()
+
+
+def test_latest_import_task_endpoint(client):
+    assert client.get('/api/knowledge/imports/latest').json() is None
+    created = client.post('/api/knowledge/imports', json=dict(names=['最新.md'])).json()
+    latest = client.get('/api/knowledge/imports/latest').json()
+    assert latest['id'] == created['id'] and latest['kind'] == 'knowledge_import'
+    client.post(f"/api/knowledge/imports/{created['id']}/cancel")

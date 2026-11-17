@@ -334,7 +334,13 @@ export type KnowledgeSettings = { strategy: KnowledgeStrategy; size: number; ove
 export type KnowledgeStatus = { docs: number; chunks: number; embedded: number; pending: number; stale: boolean; embedding_model: string | null; embedding_ready: boolean }
 export type KnowledgeSettingsPayload = { settings: KnowledgeSettings } & KnowledgeStatus
 export type KnowledgeList = { entries: KnowledgeDoc[]; tags: string[]; total: number; page: number; page_size: number; pages: number } & KnowledgeStatus
-export type KnowledgeImportResult = { entry: KnowledgeDoc; warnings: string[] }
+// 批量导入任务：登记→逐文件上传暂存→后台导入（可取消）；Task 基础字段复用采集记录类型。
+export type KnowledgeImportFile = {
+  index: number; name: string; size: number | null
+  state: 'pending' | 'staged' | 'processing' | 'imported' | 'failed' | 'skipped' | 'cancelled'
+  entry_id?: string | null; chunks?: number | null; error?: string | null; warnings?: string[]
+}
+export type KnowledgeImportTask = Task & { kind: 'knowledge_import'; files: KnowledgeImportFile[] }
 export function listKnowledge(q = '', tag = '', page = 1, pageSize = 20) {
   const params = new URLSearchParams({ q, tag, page: String(page), page_size: String(pageSize) })
   return api<KnowledgeList>(`/knowledge?${params.toString()}`)
@@ -346,10 +352,15 @@ export function updateKnowledge(id: string, patch: { title?: string; content?: s
   return api<KnowledgeDoc>(`/knowledge/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) })
 }
 export function deleteKnowledge(id: string) { return api<{ deleted: boolean }>(`/knowledge/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
-// 文件上传走与简历导入相同的裸流通道（项目不引入 multipart 依赖）；前端逐文件调用并聚合结果。
-export function uploadKnowledge(filename: string, file: File) {
-  return upload<KnowledgeImportResult>(`/knowledge/upload?filename=${encodeURIComponent(filename)}`, file)
+// 导入任务：创建（登记文件名）→ 逐个上传暂存 → start 触发后台导入 → 轮询进度 → 可取消。
+export function createKnowledgeImport(names: string[]) { return post<KnowledgeImportTask>('/knowledge/imports', { names }) }
+export function stageKnowledgeImportFile(taskId: string, index: number, filename: string, file: File) {
+  return upload<KnowledgeImportTask>(`/knowledge/imports/${encodeURIComponent(taskId)}/files?index=${index}&filename=${encodeURIComponent(filename)}`, file)
 }
+export function startKnowledgeImport(taskId: string) { return post<KnowledgeImportTask>(`/knowledge/imports/${encodeURIComponent(taskId)}/start`) }
+export function cancelKnowledgeImport(taskId: string) { return post<KnowledgeImportTask>(`/knowledge/imports/${encodeURIComponent(taskId)}/cancel`) }
+export function getKnowledgeImport(taskId: string) { return api<KnowledgeImportTask>(`/knowledge/imports/${encodeURIComponent(taskId)}`) }
+export function getLatestKnowledgeImport() { return api<KnowledgeImportTask | null>('/knowledge/imports/latest') }
 export function getKnowledgeSettings() { return api<KnowledgeSettingsPayload>('/knowledge/settings') }
 export function updateKnowledgeSettings(patch: Partial<Pick<KnowledgeSettings, 'strategy' | 'size' | 'overlap' | 'separators' | 'retrieval_mode'>>) {
   return api<KnowledgeSettingsPayload>('/knowledge/settings', { method: 'PUT', body: JSON.stringify(patch) })

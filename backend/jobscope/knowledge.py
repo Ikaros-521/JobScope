@@ -2,10 +2,14 @@
 
 分块/检索设计对齐 kb-kit（packages/core）：文档按策略切块后逐块入 FTS 与向量缓存；
 检索 = 词法(BM25) 与可选向量通道的 RRF 融合；语义/LLM 分块依赖缺失时显式回退 recursive。
+批量文件导入为后台任务：文件先落盘暂存、逐个解析入库（事务级），可取消、崩溃不留脏数据。
 """
 
 import json
+import shutil
+import threading
 import uuid
+from pathlib import Path
 
 from .kb_chunking import STRATEGIES, clamp_overlap, clamp_size, chunk_text, format_for
 from .repository import digest, now
@@ -159,8 +163,9 @@ class KnowledgeStore:
         provider = self._embedder()
         return provider.identity if provider else None
 
-    def _embed_chunks(self, pairs):
-        """pairs: [(text, content_hash)]，只为缺失/换模型的分块补向量；返回补上的数量。"""
+    def _embed_chunks(self, pairs, should_stop=None):
+        """pairs: [(text, content_hash)]，只为缺失/换模型的分块补向量；返回补上的数量。
+        should_stop 为真时在批间停止（余下保持待补，词法检索不受影响）。"""
         provider = self._embedder()
         if provider is None or not pairs:
             return 0
@@ -173,6 +178,8 @@ class KnowledgeStore:
                     pending.append((text, content_hash))
         count = 0
         for start in range(0, len(pending), VECTOR_BATCH):
+            if should_stop is not None and should_stop():
+                break
             batch = pending[start:start + VECTOR_BATCH]
             vectors = provider.embed([text for text, _ in batch])
             with self.repo.connection() as conn:
@@ -391,3 +398,247 @@ class KnowledgeStore:
         content = entry.get('content', '')
         return {**entry, 'content': content[:LIST_SNIPPET_CHARS],
                 'content_truncated': len(content) > LIST_SNIPPET_CHARS, 'characters': len(content)}
+
+
+class KnowledgeImportManager:
+    """知识库批量导入任务：暂存→后台逐文件解析入库，可取消；崩溃/中断不留脏数据。
+
+    生命周期：pending（前端逐文件上传暂存）→ running（后台线程逐文件解析、事务落库）
+    → completed / failed / cancelled。脏数据防线：
+    · 每个文件解析+分块+落库在单事务内完成，失败只影响该文件；
+    · 内容 sha256 查重（含同批先入库的），重复文件 skip 不重复入库；
+    · 取消只阻止「未来」文件，已导入文件是完整提交的文档，非半成品；
+    · 向量补齐批间检查取消标志，中断只留下 pending 向量，词法检索不受影响；
+    · 进程重启后：Repository 启动即把 running 任务标失败，本管理器初始化时清理孤儿暂存目录。
+    """
+
+    KIND = 'knowledge_import'
+    ACTIVE = ('pending', 'running')
+    MAX_FILES = 20
+    _STAGING = 'knowledge_imports'
+
+    def __init__(self, store, repo):
+        self.store = store
+        self.repo = repo
+        self._cancel_events = {}
+        self._cleanup_staging()
+
+    # ---------- staging paths ----------
+
+    def _staging_dir(self, task_id):
+        return Path(self.repo.data_dir) / self._STAGING / task_id
+
+    def _cleanup_staging(self):
+        """进程启动时清理孤儿暂存目录：任务不存在或已非活动态即删（Repository 启动已把
+        中断的 running 任务标失败，所以这里只需按当前任务状态判断）。"""
+        root = Path(self.repo.data_dir) / self._STAGING
+        if not root.is_dir():
+            return
+        for child in root.iterdir():
+            task = self.get(child.name) if child.is_dir() else None
+            if task is None or task['status'] not in self.ACTIVE:
+                shutil.rmtree(child, ignore_errors=True)
+
+    # ---------- task persistence ----------
+
+    def _load(self, task_id):
+        task = self.repo.task(task_id)
+        return task if task and task.get('kind') == self.KIND else None
+
+    def _save(self, task):
+        task['updated_at'] = now()
+        self.repo.update_task(task)
+        return task
+
+    def get(self, task_id):
+        return self._load(task_id)
+
+    def latest(self):
+        with self.repo.connection() as conn:
+            row = conn.execute("SELECT payload FROM tasks WHERE json_extract(payload,'$.kind')=? ORDER BY rowid DESC LIMIT 1",
+                               (self.KIND,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    # ---------- lifecycle ----------
+
+    def create(self, names):
+        names = [str(name).strip() for name in names if str(name).strip()]
+        if not names:
+            raise ValueError('请先选择要导入的文件')
+        if len(names) > self.MAX_FILES:
+            raise ValueError(f'单批最多 {self.MAX_FILES} 个文件，请分批导入')
+        latest = self.latest()
+        if latest and latest['status'] in self.ACTIVE:
+            raise ValueError('已有导入任务在进行中，请等待完成或先停止')
+        files = [dict(index=index, name=name, size=None, state='pending', entry_id=None,
+                      chunks=None, error=None, warnings=[]) for index, name in enumerate(names)]
+        task = dict(id='T-' + uuid.uuid4().hex, source=self.KIND, kind=self.KIND,
+                    query=f'{len(files)} 个文件', status='pending', message='等待文件上传',
+                    created_at=now(), count=0, total=len(files), processed=0, failed=0, files=files)
+        self._save(task)
+        self._staging_dir(task['id']).mkdir(parents=True, exist_ok=True)
+        return task
+
+    def stage(self, task_id, index, filename, content):
+        task = self._require_active(task_id)
+        if task['status'] != 'pending':
+            raise ValueError('导入已开始，不能再上传文件')
+        if not 0 <= index < len(task['files']):
+            raise ValueError('文件序号超出任务范围')
+        declared = task['files'][index]
+        if declared['name'] != str(filename):
+            raise ValueError(f'文件名与任务登记不一致：{declared["name"]}')
+        from .kb_import import KB_MAX_FILE_BYTES
+        if len(content) > KB_MAX_FILE_BYTES:
+            raise ValueError(f'文件超过 {KB_MAX_FILE_BYTES // (1024 * 1024)} MB，请压缩或拆分后导入')
+        if declared['state'] != 'pending':
+            raise ValueError('该文件已上传过，请重新创建导入任务')
+        target = self._staging_dir(task_id) / f'{index:04d}-{declared["name"]}'
+        target.write_bytes(content)
+        declared.update(size=len(content), state='staged')
+        staged = sum(1 for f in task['files'] if f['state'] == 'staged')
+        task['message'] = f'已上传 {staged}/{len(task["files"])} 个文件'
+        self._save(task)
+        return task
+
+    def start(self, task_id):
+        task = self._require_active(task_id)
+        if task['status'] != 'pending':
+            raise ValueError('导入任务已开始')
+        pending = [f['name'] for f in task['files'] if f['state'] != 'staged']
+        if pending:
+            raise ValueError('仍有未上传完成的文件：' + '、'.join(pending[:3]))
+        task.update(status='running', message='正在导入…')
+        self._save(task)
+        event = threading.Event()
+        self._cancel_events[task_id] = event
+        settings = self.store.settings()
+        thread = threading.Thread(target=self._run, args=(task_id, event, settings), daemon=True)
+        thread.start()
+        return task
+
+    def cancel(self, task_id):
+        task = self._load(task_id)
+        if task is None:
+            raise ValueError('导入任务不存在')
+        if task['status'] not in self.ACTIVE:
+            raise ValueError('任务已结束，无法停止')
+        event = self._cancel_events.get(task_id)
+        if event is not None:
+            # running：只设置取消标志，不写任务载荷——running 期间 worker 独占任务写入，
+            # 双写会互相覆盖文件状态；worker 在当前文件后停止并把余下文件标记取消。
+            event.set()
+            return task
+        # pending（还在收文件）：直接取消并清理暂存
+        task.update(status='cancelled', message='已取消，未导入任何文件')
+        for file_state in task['files']:
+            if file_state['state'] in ('pending', 'staged'):
+                file_state['state'] = 'cancelled'
+        self._save(task)
+        shutil.rmtree(self._staging_dir(task_id), ignore_errors=True)
+        return task
+
+    def _require_active(self, task_id):
+        task = self._load(task_id)
+        if task is None or task['status'] not in self.ACTIVE:
+            raise ValueError('导入任务不存在或已结束')
+        return task
+
+    # ---------- worker ----------
+
+    def _run(self, task_id, event, settings):
+        task = self._load(task_id)
+        imported = failed = skipped = 0
+        try:
+            self._process_files(task, event, settings)
+        except Exception as exc:  # noqa: BLE001 — 后台线程异常必须落库可见，静默死亡会让任务永远停在 running
+            task.update(status='failed', message=f'导入任务异常终止：{exc}'[:500])
+        finally:
+            self._cancel_events.pop(task_id, None)
+            shutil.rmtree(self._staging_dir(task_id), ignore_errors=True)
+            self._save(task)
+
+    def _process_files(self, task, event, settings):
+        task_id = task['id']
+        imported = failed = skipped = 0
+        for file_state in task['files']:
+            if event.is_set():
+                break
+            if file_state['state'] != 'staged':
+                continue
+            file_state['state'] = 'processing'
+            task['message'] = f'正在导入 {imported + failed + skipped + 1}/{len(task["files"])}：{file_state["name"]}'
+            self._save(task)
+            try:
+                outcome = self._process_file(task_id, file_state, settings)
+                if outcome.get('skipped'):
+                    skipped += 1
+                    file_state.update(state='skipped', error=outcome.get('error'))
+                else:
+                    imported += 1
+                    file_state.update(state='imported', entry_id=outcome['entry']['id'],
+                                      chunks=outcome['entry']['chunk_count'], warnings=outcome.get('warnings') or [])
+            except (ValueError, RuntimeError, OSError) as exc:
+                failed += 1
+                file_state.update(state='failed', error=str(exc))
+            staged_file = self._staging_dir(task_id) / f'{file_state["index"]:04d}-{file_state["name"]}'
+            staged_file.unlink(missing_ok=True)
+        cancelled = event.is_set()
+        for file_state in task['files']:
+            if file_state['state'] in ('pending', 'staged'):
+                file_state['state'] = 'cancelled'
+        # 向量补齐：批间响应取消；取消/失败只留下 pending 向量，不影响已入库文档。
+        embedded_note = ''
+        if imported and not cancelled:
+            pairs = self._pending_pairs([f['entry_id'] for f in task['files'] if f['state'] == 'imported'])
+            if pairs:
+                task['message'] = f'导入完成，向量补齐中（{len(pairs)} 个分块）…'
+                self._save(task)
+                done = self.store._embed_chunks(pairs, should_stop=event.is_set)
+                if done < len(pairs):
+                    embedded_note = f'；向量补齐被中断（剩 {len(pairs) - done} 个分块待补，可稍后重建）'
+        task['count'], task['processed'], task['failed'] = imported, imported + failed + skipped, failed
+        if cancelled:
+            task.update(status='cancelled', message=f'已停止：成功导入 {imported} 个文件，余下文件未导入')
+        elif imported == 0 and failed > 0:
+            first_error = next((f['error'] for f in task['files'] if f['state'] == 'failed'), '')
+            task.update(status='failed', message=f'导入失败（{failed} 个文件均失败）：{first_error}'[:500])
+        else:
+            note = f'（{skipped} 个重复跳过）' if skipped else ''
+            task.update(status='completed',
+                        message=f'导入完成：成功 {imported}、失败 {failed}{note}{embedded_note}'[:500])
+
+    def _process_file(self, task_id, file_state, settings):
+        content = (self._staging_dir(task_id) / f'{file_state["index"]:04d}-{file_state["name"]}').read_bytes()
+        from . import kb_import
+        parsed = kb_import.extract_file(file_state['name'], content)
+        content_hash = digest(parsed['text'])
+        with self.repo.connection() as conn:
+            dup = conn.execute("SELECT payload FROM knowledge WHERE json_extract(payload,'$.content_hash')=?",
+                               (content_hash,)).fetchone()
+            if dup:
+                dup_entry = json.loads(dup['payload'])
+                return dict(skipped=True, error=f'内容已存在：{dup_entry["title"]}')
+        entry = dict(id='K-' + uuid.uuid4().hex, title=kb_import.title_from_filename(file_state['name']),
+                     content=parsed['text'], tags=[], created_at=now(), source='upload',
+                     file_name=parsed['file_name'], file_size=parsed['file_size'],
+                     chunk_strategy=settings['strategy'], chunk_size=settings['size'],
+                     chunk_overlap=settings['overlap'])
+        with self.repo.connection() as conn:
+            entry = self.store._write_doc(conn, entry, strategy=settings['strategy'], size=settings['size'],
+                                          overlap=settings['overlap'], embed=False)
+        return dict(entry=entry, warnings=parsed['warnings'])
+
+    def _pending_pairs(self, doc_ids):
+        from .research.providers import EmbeddingProvider
+        provider = EmbeddingProvider()
+        if not provider.configured or not doc_ids:
+            return []
+        pairs = []
+        with self.repo.connection() as conn:
+            for doc_id in doc_ids:
+                rows = conn.execute('''SELECT c.text,c.content_hash FROM knowledge_chunks c
+                     LEFT JOIN knowledge_vectors v ON v.content_hash=c.content_hash AND v.model=?
+                     WHERE c.doc_id=? AND v.content_hash IS NULL''', (provider.identity, doc_id)).fetchall()
+                pairs.extend((row['text'], row['content_hash']) for row in rows)
+        return pairs

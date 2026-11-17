@@ -2,6 +2,7 @@
 
 import importlib
 import json
+import logging
 import os
 import threading
 from pathlib import Path
@@ -23,11 +24,16 @@ from . import collect_service
 from . import company_merge
 from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
-from .knowledge import KnowledgeStore
-from .models import AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, RemoteBasketInput, ReliabilityInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput, SplitInput
+from .knowledge import KnowledgeImportManager, KnowledgeStore
+from .logs import setup as setup_logs
+from .models import AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, RemoteBasketInput, ReliabilityInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput, SplitInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, SystemSettingsInput, SystemSettingsStore, ConnectionInput, _active, get_model_config, purpose_configured, use_config
+
+
+setup_logs()
+logger = logging.getLogger(__name__)
 
 
 SUMMARY_SYSTEM = ('你是求职情报工作台的对话上下文压缩引擎，把早期对话提炼为高密度结构化摘要。'
@@ -80,6 +86,7 @@ def summarise_messages(config, messages):
 def create_app(data_dir=None):
     root = Path(__file__).resolve().parents[2]
     data_dir = Path(data_dir or os.getenv("JOBSCOPE_DATA_DIR", str(root / ".data")))
+    logger.info('JobScope 服务启动：数据目录=%s', data_dir)
     repo = Repository(data_dir)
     app = FastAPI(title="知根 JobScope", docs_url="/api/docs", redoc_url=None)
     app.state.repo = repo
@@ -91,6 +98,7 @@ def create_app(data_dir=None):
     runs = RunManager(repo)
     scope_expansions = ScopeExpansionStore(repo)
     knowledge = KnowledgeStore(repo)
+    knowledge_imports = KnowledgeImportManager(knowledge, repo)
     app.state.runs = runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
@@ -487,6 +495,8 @@ def create_app(data_dir=None):
             repo.update_task(task)
 
         def worker():
+            logger.info('一键调研开始：「%s」渠道=%s 信号源=%s 待补JD=%s',
+                        company, ','.join(plan), ','.join(selected) or '无', len(detail_ids) if detail_task else 0)
             try:
                 for source, task in zip(plan, channel_tasks):
                     try:
@@ -495,17 +505,20 @@ def create_app(data_dir=None):
                         else:
                             execute_collection(source, company, task, limit=data.limit)
                     except Exception:
+                        logger.exception('渠道检索失败：%s「%s」', source, company)
                         fail(task, '该渠道检索失败，已跳过；不影响其他渠道')
                 if detail_task is not None:
                     try:
                         collect_service.run_company_details(repo, company, detail_task, detail_ids)
                     except Exception:
+                        logger.exception('完整JD补读失败：「%s」', company)
                         fail(detail_task, '完整JD补读失败，可在岗位档案里单独重试')
                 for source, task in signal_tasks:
                     try:
                         # collect_source rechecks current settings and reuses this queued task.
                         collect_source(repo, data_dir, company, source, task=task)
                     except Exception:
+                        logger.exception('信号来源采集失败：%s「%s」', source, company)
                         fail(task, '该信号来源采集失败，已跳过；不影响其他来源')
                 try:
                     from .reliability.service import ReliabilityService
@@ -514,7 +527,9 @@ def create_app(data_dir=None):
                                         count=1, updated_at=now())
                     repo.update_task(compute_task)
                 except Exception:
+                    logger.exception('求职参考报告重算失败：「%s」', company)
                     fail(compute_task, '求职参考报告重算失败，可单独重新计算')
+                logger.info('一键调研完成：「%s」', company)
             finally:
                 # Even a helper returning early must not leave a permanently running task.
                 for task in tasks:
@@ -543,6 +558,7 @@ def create_app(data_dir=None):
                                                         limit=data.limit, data_dir=data_dir, progress=report)
                 persist_collection(task, result)
             except Exception:
+                logger.exception('浏览器采集失败：%s「%s」', data.source, data.query)
                 task.update(status="failed", message="采集未完成，请检查来源状态及本地依赖后重试")
                 repo.update_task(task)
 
@@ -756,6 +772,7 @@ def create_app(data_dir=None):
                     summary = company_merge.scan(repo)
                 task.update(status='completed', message=summary['message'], count=summary.get('merged', 0))
             except Exception as exc:
+                logger.exception('主体归并扫描失败：%s', exc)
                 task.update(status='failed', message=f'归并扫描失败：{exc}')
             repo.update_task(task)
 
@@ -918,6 +935,7 @@ def create_app(data_dir=None):
             try:
                 outcome = module.import_favorites(repo, task, data_dir=data_dir)
             except Exception:
+                logger.exception('Boss 收藏导入中断')
                 outcome = {'status': 'failed', 'message': '收藏导入中断；已捕获的条目保留在捕获篮。'}
             task.update(kind='boss_import', status=outcome['status'], message=outcome['message'])
             repo.update_task(task)
@@ -1030,13 +1048,61 @@ def create_app(data_dir=None):
         except ValueError as exc:
             raise HTTPException(409, str(exc)) from None
 
-    @app.post('/api/knowledge/upload')
-    async def upload_knowledge(request: Request, filename: str = Query(min_length=1, max_length=255)):
-        from .resume_import import MAX_FILE_BYTES
+    # ---- 知识库批量导入任务：登记→逐文件暂存→后台导入→可取消 ----
+    @app.post('/api/knowledge/imports')
+    def create_knowledge_import(data: KnowledgeImportInput):
+        try:
+            return knowledge_imports.create(data.names)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.get('/api/knowledge/imports/latest')
+    def latest_knowledge_import():
+        return knowledge_imports.latest()
+
+    @app.get('/api/knowledge/imports/{task_id}')
+    def get_knowledge_import(task_id: str = PathParam(min_length=1, max_length=100)):
+        task = knowledge_imports.get(task_id)
+        if task is None:
+            raise HTTPException(404, '导入任务不存在')
+        return task
+
+    @app.post('/api/knowledge/imports/{task_id}/files')
+    async def stage_knowledge_import_file(request: Request, task_id: str = PathParam(min_length=1, max_length=100),
+                                          index: int = Query(ge=0, le=19), filename: str = Query(min_length=1, max_length=255)):
+        from .kb_import import KB_MAX_FILE_BYTES
         content = bytearray()
         async for chunk in request.stream():
-            if len(content) + len(chunk) > MAX_FILE_BYTES:
-                raise HTTPException(413, '文件超过 10 MB，请压缩或缩减后导入')
+            if len(content) + len(chunk) > KB_MAX_FILE_BYTES:
+                raise HTTPException(413, f'文件超过 {KB_MAX_FILE_BYTES // (1024 * 1024)} MB，请压缩或拆分后导入')
+            content.extend(chunk)
+        try:
+            return await run_in_threadpool(knowledge_imports.stage, task_id, index, filename, bytes(content))
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.post('/api/knowledge/imports/{task_id}/start')
+    def start_knowledge_import(task_id: str = PathParam(min_length=1, max_length=100)):
+        try:
+            return knowledge_imports.start(task_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.post('/api/knowledge/imports/{task_id}/cancel')
+    def cancel_knowledge_import(task_id: str = PathParam(min_length=1, max_length=100)):
+        try:
+            return knowledge_imports.cancel(task_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+
+    @app.post('/api/knowledge/upload')
+    async def upload_knowledge(request: Request, filename: str = Query(min_length=1, max_length=255)):
+        from .kb_import import KB_MAX_FILE_BYTES
+        limit_mb = KB_MAX_FILE_BYTES // (1024 * 1024)
+        content = bytearray()
+        async for chunk in request.stream():
+            if len(content) + len(chunk) > KB_MAX_FILE_BYTES:
+                raise HTTPException(413, f'文件超过 {limit_mb} MB，请压缩或拆分后导入')
             content.extend(chunk)
         try:
             result = await run_in_threadpool(knowledge.import_file, filename, bytes(content))
@@ -1371,6 +1437,7 @@ def create_app(data_dir=None):
             except OverflowError:
                 raise HTTPException(422, '历史记录过长，单次压缩会超出模型额度；请先删除部分较早消息后重试') from None
             except Exception:
+                logger.exception('上下文压缩摘要生成失败 conv=%s', conversation_id)
                 raise HTTPException(502, '摘要生成失败，请检查模型服务后重试；历史未被修改') from None
             if not summary.strip():
                 raise HTTPException(502, '模型返回了空摘要，历史未被修改')

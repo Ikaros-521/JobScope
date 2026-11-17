@@ -3,11 +3,16 @@
 from html.parser import HTMLParser
 from pathlib import PurePosixPath
 
-from .resume_import import MAX_FILE_BYTES, decode_text, docx_text, pdf_text
+from .resume_import import decode_text, docx_text, pdf_text
 
-# 知识文档上限比简历宽：300 页 / 20 万字符（kb-kit 同思路的防超界口径）。
-MAX_PAGES = 300
-MAX_TEXT_CHARS = 200000
+# 知识文档上限比简历宽：文件 ≤100MB（用户口径），提取文本 ≤200 万字符（500 字块约 4000 块，
+# FTS/向量规模可控），PDF ≤1000 页；docx 解压总量 ≤200MB、单个 XML 部件 ≤30MB（约束 ET 内存）。
+KB_MAX_FILE_BYTES = 100 * 1024 * 1024
+KB_MAX_TEXT_CHARS = 2000000
+KB_MAX_PAGES = 1000
+KB_DOCX_MAX_TOTAL = 200 * 1024 * 1024
+KB_DOCX_MAX_XML = 30 * 1024 * 1024
+KB_DOCX_MAX_ENTRIES = 5000
 
 TEXT_EXTENSIONS = {'.txt', '.text', '.md', '.markdown', '.mdx', '.csv', '.tsv', '.json', '.jsonl',
                    '.log', '.html', '.htm', '.xml', '.yaml', '.yml', '.ini', '.conf', '.properties',
@@ -74,12 +79,13 @@ def extract_file(filename, content):
         raise ValueError(f'不支持此文件格式（{extension or "无扩展名"}），知识库支持：{supported}')
     if not content:
         raise ValueError('文件为空，请选择有内容的文件')
-    if len(content) > MAX_FILE_BYTES:
-        raise ValueError('文件超过 10 MB，请压缩或缩减后导入')
+    if len(content) > KB_MAX_FILE_BYTES:
+        raise ValueError('文件超过 100 MB，请压缩或拆分后导入')
     if extension == '.pdf':
-        text, _pages, warnings = pdf_text(content, max_pages=MAX_PAGES, max_chars=MAX_TEXT_CHARS)
+        text, _pages, warnings = pdf_text(content, max_pages=KB_MAX_PAGES, max_chars=KB_MAX_TEXT_CHARS)
     elif extension == '.docx':
-        text, _pages, warnings = docx_text(content)
+        text, _pages, warnings = docx_text(content, max_total=KB_DOCX_MAX_TOTAL,
+                                           max_xml=KB_DOCX_MAX_XML, max_entries=KB_DOCX_MAX_ENTRIES)
     elif extension in {'.html', '.htm'}:
         text, warnings = html_text(content), []
     else:
@@ -87,7 +93,7 @@ def extract_file(filename, content):
     text = normalize_text(text)
     if not text:
         raise ValueError('提取内容为空，请确认文件中有文字；扫描件请先使用 OCR 识别')
-    if len(text) > MAX_TEXT_CHARS:
-        raise ValueError(f'提取文本超过 {MAX_TEXT_CHARS:,} 字符，请缩减文件后导入')
+    if len(text) > KB_MAX_TEXT_CHARS:
+        raise ValueError(f'提取文本超过 {KB_MAX_TEXT_CHARS:,} 字符，请缩减文件后导入')
     return dict(text=text, characters=len(text), file_name=name, file_size=len(content),
                 warnings=warnings)
