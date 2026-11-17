@@ -460,12 +460,24 @@ def _collect_court(tab, keyword, on_status=None, data_dir=None):
 #
 # 与官方登记站点不同，这三家不需要接口密钥也不强制登录：完全复用 `company_lookup.py` 的
 # 公开搜索页通路（同一套 SITES/卡片抽取），取到什么登记什么。诚实边界与快查同一口径：
-# 搜索卡片与详情页的字段正则均未在真实会话里逐站实测，解析不到就如实报缺 + 快照待校正；
-# 未登录会话两家商业站会遮蔽部分数字（如「登录后查看」），那类值抽不出来、也不猜。
+# 卡片正则与企查查详情正则已于 2026-11-17 真实会话实测校准（海康威视页回放：卡片六字段、
+# 参保「主体+分支机构同年」、司法案件计数、历史行排除）；天眼查/爱企查此前各自实测。
+# 解析不到就如实报缺 + 快照待校正；未登录会话两家商业站会遮蔽部分数字（如「登录后查看」），
+# 那类值抽不出来、也不猜。
 
 # 详情页要抽的数字（对去标签后的纯文本配对）。
 INSURED_RE = re.compile(r'参保人数[^0-9]{0,12}(\d+)\s*人?')
-CASES_RE = re.compile(r'(?:司法案件|裁判文书|开庭公告)[^0-9<]{0,10}(\d+)')
+# 涉诉计数（2026-11-17 实测校准）：企查查风险区块首格「司法案件 361」最具代表性；
+# 「历史裁判文书 64」等带「历史」前缀的行是历史口径，不能混入现行计数（lookbehind 排除）。
+JUDICIAL_PRIMARY_RE = re.compile(r'司法案件[^0-9<]{0,10}(\d+)')
+CASES_RE = re.compile(r'(?<!历史)(?:司法案件|裁判文书|开庭公告)[^0-9<]{0,10}(\d+)')
+
+
+def _judicial_cases(plain):
+    """现行涉诉计数：优先「司法案件 N」，缺失再退回裁判文书/开庭公告（非历史行）。"""
+    return JUDICIAL_PRIMARY_RE.search(str(plain or '')) or CASES_RE.search(str(plain or ''))
+
+
 DATE_RE = re.compile(r'(\d{4})[-/年]\s*(\d{1,2})[-/月]\s*(\d{1,2})日?')
 # 参保数字的人力合理区间：全国最大单一雇主参保约 230 万，上限放到 500 万；区间外一律不认。
 # 防的正是 2026-11-15 实测的事故：去标签后相邻数字粘连（「参保人数 51843」+「2025 年报」
@@ -479,6 +491,9 @@ COMMERCIAL_SITES = {'qcc_web': 'qcc', 'tyc_web': 'tyc', 'aiqicha_web': 'aiqicha'
 # 详情页的参保/司法区块是异步渲染的（2026-11-15 实测：固定等 1.5 秒会读早）：轮询等到
 # 关键字出现或超时，读到的就是已渲染的区块，不会多发任何请求。
 DETAIL_SECTION_WAIT = 6
+# 参保数的年份标注（2026-11-17 实测校准）：「参保人数 11616 (2025年报)」。lookbehind 排除
+# 「分支机构参保人数」行——同一页面上它是分支口径，与主体数同年并存，不是上一期。
+INSURED_YEAR_RE = re.compile(r'(?<!分支机构)参保人数\s*(\d[\d,]*)\s*[（(]\s*(\d{4})\s*年报\s*[）)]')
 
 
 def _commercial_founded(card):
@@ -557,16 +572,26 @@ def _staff_range_value(text):
 
 
 def _commercial_insured(source_id, html, plain):
-    """[最近一期, 上一期]（不足两期就短列表）：天眼查走页面 JSON，其余走标签配对 + 范围闸门。"""
+    """([最近一期, 上一期], 基准)：天眼查走页面 JSON；其余先认「参保人数 N (YYYY年报)」
+    的年份标注（2026-11-17 实测：企查查详情页是主体+分支机构同年两个数，不是两年趋势，
+    旧逻辑会把它们配成假趋势），有年份就按年份归并主体数；页面没有年份标注才退回
+    「排列由新到旧」的旧假设（该假设仍未实测校正，调用方照旧写进口径说明）。"""
     if source_id == 'tyc_web':
         by_year = {}
         for number, year in TYC_INSURED_JSON.findall(str(html or '')):
             value, period = int(number), int(year)
             if INSURED_MIN <= value <= INSURED_MAX and 1990 <= period <= 2035:
                 by_year[period] = value  # 同一年份重复出现时以最后一条为准
-        return [by_year[period] for period in sorted(by_year, reverse=True)[:2]]
+        return [by_year[period] for period in sorted(by_year, reverse=True)[:2]], 'year'
+    by_year = {}
+    for number, year in INSURED_YEAR_RE.findall(str(plain or '')):
+        value, period = int(number.replace(',', '')), int(year)
+        if INSURED_MIN <= value <= INSURED_MAX and 1990 <= period <= 2035:
+            by_year[period] = value
+    if by_year:
+        return [by_year[period] for period in sorted(by_year, reverse=True)[:2]], 'year'
     return [int(item) for item in INSURED_RE.findall(plain)
-            if INSURED_MIN <= int(item) <= INSURED_MAX]
+            if INSURED_MIN <= int(item) <= INSURED_MAX], 'page'
 
 
 # 爱企查年报（2026-11-15 实测校准）：公司页年报表的行有直达链接 /annualreport?pid=..&year=YYYY，
@@ -691,33 +716,51 @@ def _commercial_pass(tab, keyword, source_id, on_status, data_dir, drafts):
         html = _html_of(tab)
     # 2026-11-15 实测：爱企查标签与数值之间隔着大段空白换行（20+ 字符），先归一化空白再配对。
     plain = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', '', html))
-    # 参保趋势按来源取数：tyc 从页面 JSON 取（渲染文本会粘连数字），其余标签配对 + 范围闸门。
-    # 页面排列由新到旧的假设仅适用于非 tyc 来源；tyc 按年份排序，[0] 是最近一期。
-    insured = _commercial_insured(source_id, html, plain)
+    # 参保趋势按来源取数：tyc/qcc 带年份标注（JSON 或页面文字），按年份由新到旧；
+    # 无年份标注的布局退回「标签配对 + 排列假设」，口径说明照旧标注未校正。
+    insured, insured_basis = _commercial_insured(source_id, html, plain)
     # 爱企查年报先读（导航离开详情页，必须在 plain 已提取之后）：公司页参保文本同样会与年份
     # 粘连（2026-11-15 实测 24033+2024），年报页逐年养老参保数才是干净口径——有年报就用它。
     annual = _aqc_read_annual(tab, html, on_status) if source_id == 'aiqicha_web' else []
-    insured_basis = 'page'
     if len(annual) == 2 and annual[0][1]['pension'] and annual[1][1]['pension']:
         insured = [annual[0][1]['pension'], annual[1][1]['pension']]
         insured_basis = 'annual'
     if len(insured) >= 2:
-        insured_text = (f'参保人数取自{spec["name"]}公开公司页（城镇职工口径未必一致，'
-                        f'页面排列由新到旧的假设未实测校正）' if insured_basis == 'page' else
-                        f'参保人数取自爱企查年报序列（{annual[1][0]}→{annual[0][0]} 年度报告的'
-                        f'城镇职工基本养老保险参保数）')
+        insured_text = (f'参保人数取自爱企查年报序列（{annual[1][0]}→{annual[0][0]} 年度报告的'
+                        f'城镇职工基本养老保险参保数）' if insured_basis == 'annual' else
+                        f'参保人数取自{spec["name"]}公开公司页（页面带年报年份标注，按年份由新到旧；'
+                        f'主体口径）' if insured_basis == 'year' else
+                        f'参保人数取自{spec["name"]}公开公司页（城镇职工口径未必一致，'
+                        f'页面排列由新到旧的假设未实测校正）')
         drafts.append(_signal('insured_headcount_trend', {'before': insured[1], 'after': insured[0]},
                               '', str(tab.url or detail_url),
                               insured_text + '；人数变动有多种成因，本条只登记数字。'))
         got.append('参保人数趋势')
-    cases = CASES_RE.search(plain)
+    elif insured:
+        # 单期参保（2026-11-17 实测：企查查免费页只给当年主体+分支两个数）：不出趋势，
+        # 记进采集消息供阅读，并可作为本页涉诉计数的分母（见下方 cases 分支）。
+        got.append(f'参保人数 {insured[0]}（单期，未出趋势）')
+    cases = _judicial_cases(plain)
     if cases is not None:
-        draft = _signal('judicial_case_ratio', {'cases': int(cases[1])}, '', str(tab.url or detail_url),
-                        f'{spec["name"]}公开页口径：司法案件/裁判文书计数 {cases[1]}（公开页可见口径，'
-                        '非全部涉诉）。每万人比率的分母是参保人数，采集时与已存参保信号合并换算。')
-        draft['needs_denominator'] = True
-        drafts.append(draft)
-        got.append('涉诉计数')
+        cases_value = int(cases[1])
+        if len(insured) < 2 and insured:
+            # 单期参保就地作分母：分子分母同页同源，口径一致性优于跨来源合并。
+            ratio = round(cases_value * PER_WAN / insured[0], 2) if insured[0] > 0 else 0
+            drafts.append(_signal('judicial_case_ratio',
+                                  {'ratio': ratio, 'cases': cases_value, 'insured': insured[0]},
+                                  '', str(tab.url or detail_url),
+                                  f'{spec["name"]}公开页口径：司法案件/裁判文书计数 {cases_value}，'
+                                  f'分母取同页参保人数（{insured[0]} 人，主体口径，当期年报）；'
+                                  f'按 件÷人×{PER_WAN} 换算 {ratio} 件/万人；公开页可见口径非全部涉诉，'
+                                  '比率只作量级参考。'))
+            got.append('涉诉计数×同页参保分母')
+        else:
+            draft = _signal('judicial_case_ratio', {'cases': cases_value}, '', str(tab.url or detail_url),
+                            f'{spec["name"]}公开页口径：司法案件/裁判文书计数 {cases_value}（公开页可见口径，'
+                            '非全部涉诉）。每万人比率的分母是参保人数，采集时与已存参保信号合并换算。')
+            draft['needs_denominator'] = True
+            drafts.append(draft)
+            got.append('涉诉计数')
     flag, entity_kind = _soe_flag(card, plain, html)
     if flag is not None:
         nature = '国有性质' if flag else '非国有'

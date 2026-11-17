@@ -959,3 +959,65 @@ def test_a_source_without_a_local_reader_is_still_reported_as_unsupported(tmp_pa
     for source in ('gsxt', 'credit_china', 'qcc'):
         outcome = local.collect(source, identity['name'], repo=repo, identity=identity)
         assert outcome['status'] == 'unsupported' and outcome['signals'] == []
+
+
+# 2026-11-17 企查查真实页回放（海康威视详情页）：参保区是「参保人数 11616 (2025年报)
+# 分支机构参保人数 5510 (2025年报)」——主体+分支机构同年两个数，旧逻辑把它们配成
+# before=5510/after=11616 的假趋势；风险区块首格「司法案件 361」，另有「历史裁判文书 64」
+# 等历史口径行。三条回放钉住修正后的口径。
+QCC_YEAR_HTML = ('<span>纳税人资质 一般纳税人 参保人数 11616 (2025年报) '
+                 '分支机构参保人数 5510 (2025年报)</span>'
+                 '<a>司法案件 361</a><span>失信被执行人 0 被执行人 0 终本案件 0 '
+                 '历史裁判文书 64 历史开庭公告 1</span>' + PAD)
+
+
+def test_qcc_same_year_main_and_branch_counts_are_not_a_trend(monkeypatch, tmp_path):
+    """同年主体+分支两个参保数：不出趋势；涉诉计数就地用同页主体参保作分母落库。"""
+    registry, tab = commercial_replay('qcc_web', [CARD], {CARD_HREF: QCC_YEAR_HTML})
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    repo = Repository(tmp_path)
+    identity = repo.resolve_company(NAME)
+    outcome = collectors.collect('qcc_web', NAME, browser_module=browser, repo=repo, identity=identity,
+                                 data_dir=tmp_path)
+    rules = {item['rule']: item for item in outcome['signals']}
+    assert 'insured_headcount_trend' not in rules  # 同年两个数不构成趋势
+    ratio_signal = rules['judicial_case_ratio']
+    # 361 × 10000 ÷ 11616 ≈ 310.78；分母是同页主体口径，不是分支 5510。
+    assert ratio_signal['value'] == {'ratio': 310.78, 'cases': 361, 'insured': 11616}
+    assert '同页参保人数' in ratio_signal['text']
+    assert '单期' in outcome['message']
+    assert not any(item.get('needs_denominator') for item in outcome['signals'])
+
+
+def test_qcc_year_tagged_insured_builds_trend_by_year(monkeypatch, tmp_path):
+    """两个年份的主体参保：按年份由新到旧出趋势，口径说明写「页面带年报年份标注」。"""
+    html = ('<span>参保人数 12000 (2025年报)</span><span>参保人数 11000 (2024年报)</span>'
+            '<a>司法案件 12</a>' + PAD)
+    registry, tab = commercial_replay('qcc_web', [CARD], {CARD_HREF: html})
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    repo, identity = insured_store(tmp_path)
+    outcome = collectors.collect('qcc_web', NAME, browser_module=browser, repo=repo, identity=identity,
+                                 data_dir=tmp_path)
+    rules = {item['rule']: item['value'] for item in outcome['signals']}
+    assert rules['insured_headcount_trend'] == {'before': 11000, 'after': 12000}
+    trend = next(item for item in outcome['signals'] if item['rule'] == 'insured_headcount_trend')
+    assert '页面带年报年份标注' in trend['text']
+
+
+def test_historical_case_rows_never_pass_for_current_counts(monkeypatch, tmp_path):
+    """「历史裁判文书 64」不进现行计数：优先「司法案件 N」，其次非历史的裁判文书/开庭公告。"""
+    assert collectors._judicial_cases('司法案件 361 裁判文书 285')[1] == '361'
+    assert collectors._judicial_cases('失信被执行人 0 裁判文书 285 立案信息 205')[1] == '285'
+    assert collectors._judicial_cases('历史裁判文书 64 裁判文书 285')[1] == '285'
+    assert collectors._judicial_cases('历史开庭公告 1 历史裁判文书 1') is None
+    html = ('<span>参保人数 11616 (2025年报) 分支机构参保人数 5510 (2025年报)</span>'
+            '<span>失信被执行人 0 历史裁判文书 64 历史开庭公告 1</span>' + PAD)
+    registry, tab = commercial_replay('qcc_web', [CARD], {CARD_HREF: html})
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    outcome = collectors.collect('qcc_web', NAME, browser_module=browser, data_dir=tmp_path)
+    # 页面只有历史口径的涉诉行：不落任何涉诉信号，参保单期只进消息。
+    assert all(item['rule'] != 'judicial_case_ratio' for item in outcome['signals'])
+    assert '单期' in outcome['message']
