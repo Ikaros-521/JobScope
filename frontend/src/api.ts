@@ -74,6 +74,7 @@ export type ConversationSummary = { id: string; title: string; mode: ChatMode; m
 export type ConversationConditions = { location: string; threshold: number | null; operator: string; threshold_basis: string; exclude_outsourcing: boolean; clarification: string }
 export type ConversationDetail = { conditions?: ConversationConditions; id: string; scope: { kind: string; company?: string; job_id?: string }; title: string; mode: ChatMode; model: string; llm_channel: string; permission_mode: PermissionMode; created_at: string; updated_at: string; messages: StoredMessage[]; active_run: ChatRunStatus | null; scope_expansions?: ScopeExpansion[]; lineage?: { source_conversation_id: string; action_id: string } | null }
 export type ChatRunStart = { run_id: string; conversation_id: string; user_message_id: string; title: string | null }
+export type AnalyzeRunStart = { run_id: string; reused: boolean; report?: Analysis }
 export type ModelProvider = { mode: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model: string; key_set: boolean; source: string; context_tokens?: number | null; saved_channel_id?: string }
 export type Channel = { id: string; name: string; url: string; protocol: 'openai' | 'anthropic'; models: string[]; embeddings: string[] | null; note?: string }
 export type ModelMetadata = { context_tokens: number; source: string; checked_at: string }
@@ -271,16 +272,29 @@ export function saveBinding(purpose: ModelPurpose, binding: ModelBinding | { kin
 // 上下文用量估算：中文为主的文本约 3.2 字符/token，叠加 system 提示与工具声明的固定基数。
 export function estimateTokens(text: string) { return Math.ceil((text || '').length / 3.2) }
 
-const STREAM_EVENTS = ['start', 'resumed', 'step', 'delta', 'reasoning_delta', 'approval_required', 'done', 'error', 'cancelled', 'end'] as const
-export function openRunStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
-  const source = new EventSource(`/api/chat/runs/${encodeURIComponent(runId)}/stream`)
-  for (const name of STREAM_EVENTS) {
+// SSE 订阅：URL + 事件名集合 → 每帧回调 (事件名, JSON 数据)；无法解析的帧静默跳过。
+export function openStream(url: string, events: readonly string[], onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
+  const source = new EventSource(url)
+  for (const name of events) {
     source.addEventListener(name, event => {
       try { onEvent(name, JSON.parse((event as MessageEvent).data)) } catch { /* 跳过无法解析的帧 */ }
     })
   }
   return source
 }
+
+const STREAM_EVENTS = ['start', 'resumed', 'step', 'delta', 'reasoning_delta', 'approval_required', 'done', 'error', 'cancelled', 'end'] as const
+export function openRunStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
+  return openStream(`/api/chat/runs/${encodeURIComponent(runId)}/stream`, STREAM_EVENTS, onEvent)
+}
+
+// 评估适配流式运行：stage 阶段进展、group 已校验的映射条目、done 携带完整报告。
+const ANALYZE_STREAM_EVENTS = ['start', 'stage', 'group', 'done', 'error', 'cancelled', 'end'] as const
+export function openAnalyzeStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
+  return openStream(`/api/analyze/runs/${encodeURIComponent(runId)}/stream`, ANALYZE_STREAM_EVENTS, onEvent)
+}
+export function startAnalyzeRun(jobId: string) { return post<AnalyzeRunStart>('/analyze/runs', { job_id: jobId }) }
+export function cancelAnalyzeRun(runId: string) { return post<ChatRunStatus>(`/analyze/runs/${encodeURIComponent(runId)}/cancel`) }
 
 export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...options?.headers } })
@@ -374,6 +388,11 @@ export function patchProfileEntry(id: string, patch: Partial<{ category: Profile
 }
 export function deleteProfileEntry(id: string) {
   return api<{ deleted: string }>(`/profile-entries/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+// Obsidian 库导入：只读用户指定目录下的 .md，frontmatter/目录名映射类别，幂等重导原位更新。
+export type ObsidianImportResult = { total: number; imported?: number; updated?: number; errors: string[]; preview?: { category: ProfileCategory; title: string; org: string; period: string; tags: string[]; source: string }[] }
+export function importObsidianVault(path: string, dryRun = false) {
+  return post<ObsidianImportResult>('/profile-entries/import-obsidian', { path, dry_run: dryRun })
 }
 export function exportResumeVersion(id: number, format: 'pdf' | 'docx' | 'html' | 'md', filename: string) {
   return download(`/resume-versions/${id}/export?format=${format}`, filename)

@@ -18,6 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
 from .analysis import analyze, parse_resume
+from .analyze_runs import AnalyzeManager
 from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
 from . import collect_service
@@ -26,7 +27,7 @@ from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalSourceInput, SplitInput
+from .models import AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, ObsidianImportInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalSourceInput, SplitInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, SystemSettingsInput, SystemSettingsStore, ConnectionInput, _active, get_model_config, purpose_configured, use_config
@@ -96,11 +97,13 @@ def create_app(data_dir=None):
     system_settings = SystemSettingsStore(repo)
     bindings.migrate_legacy_activation(settings)
     runs = RunManager(repo)
+    analyze_runs = AnalyzeManager(repo)
     scope_expansions = ScopeExpansionStore(repo)
     knowledge = KnowledgeStore(repo)
     knowledge_imports = KnowledgeImportManager(knowledge, repo)
     app.state.knowledge_imports = knowledge_imports  # exposed for tests: 并发上传要走同一个锁
     app.state.runs = runs  # exposed for tests: join worker threads to avoid cross-test leaks
+    app.state.analyze_runs = analyze_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
 
@@ -1023,9 +1026,9 @@ def create_app(data_dir=None):
             raise HTTPException(404, '知识条目不存在')
         return dict(deleted=True)
 
-    @app.post("/api/analyze")
-    def analysis(data: AnalyzeInput):
-        job = get_job(data.job_id)
+    def analyze_preconditions(job_id):
+        """评估适配共用闸门：完整JD、已有简历；返回 (job, resume, company_evidence)。"""
+        job = get_job(job_id)
         # 早期保存的 BOSS 岗位还没有正文标记，一律按列表摘要处理，避免用半截职责评估适配。
         status = job.get('description_status')
         if status == 'listing' or (job['source'] == 'boss' and status != 'complete'):
@@ -1034,6 +1037,11 @@ def create_app(data_dir=None):
         if not resume["text"].strip():
             raise HTTPException(400, "请先保存简历或 facts.yaml")
         company_evidence = repo.evidence(company=job["company"], include_job_postings=False)
+        return job, resume, company_evidence
+
+    @app.post("/api/analyze")
+    def analysis(data: AnalyzeInput):
+        job, resume, company_evidence = analyze_preconditions(data.job_id)
         try:
             if purpose_configured('analysis'):
                 semantic = importlib.import_module(".semantic", __package__)
@@ -1045,6 +1053,42 @@ def create_app(data_dir=None):
             raise HTTPException(502, str(exc)) from exc
         repo.save_report(report)
         return report
+
+    # ---- 评估适配流式运行：拆解/分组匹配/计分三阶段进度经 SSE 推送 ----
+
+    @app.post("/api/analyze/runs")
+    def start_analyze_run(data: AnalyzeInput):
+        job, resume, company_evidence = analyze_preconditions(data.job_id)
+        if not purpose_configured('analysis'):
+            # 未绑定分析模型：与同步端点一致回退纯规则分析，立即返回（无需流式）。
+            report = analyze(job, resume, company_evidence)
+            repo.save_report(report)
+            return dict(run_id=None, reused=False, report=report)
+        handle, reused = analyze_runs.start(job, resume, company_evidence)
+        return dict(run_id=handle.id, reused=reused)
+
+    @app.get("/api/analyze/runs/{run_id}")
+    def analyze_run_status(run_id: str = PathParam(max_length=100)):
+        handle = analyze_runs.get(run_id)
+        if handle is None:
+            raise HTTPException(404, '运行不存在或已结束')
+        return handle.snapshot()
+
+    @app.get("/api/analyze/runs/{run_id}/stream")
+    def analyze_run_stream(run_id: str = PathParam(max_length=100)):
+        try:
+            generator = analyze_runs.stream(run_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return StreamingResponse(generator(), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+    @app.post("/api/analyze/runs/{run_id}/cancel")
+    def cancel_analyze_run(run_id: str = PathParam(max_length=100)):
+        try:
+            return analyze_runs.cancel(run_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
 
     # ---- 简历工坊：模板预览、JD 定向优化、版本二次编辑与多格式导出 ----
 
@@ -1144,6 +1188,34 @@ def create_app(data_dir=None):
         if not repo.delete_profile_entry(entry_id):
             raise HTTPException(404, '资料条目不存在')
         return {'deleted': entry_id}
+
+    @app.post('/api/profile-entries/import-obsidian')
+    def import_obsidian_vault(data: ObsidianImportInput):
+        """Obsidian 库导入：只读用户指定目录下的 .md，提炼进个人资料库。
+
+        幂等锚点是库内相对路径（存条目 source）：同一文件重导原位更新不重复；用户在本系统
+        手改过的条目，重导会以库文件为准覆盖——要保留手改就别重导该文件，或先在库里改文件。
+        另一条路：Agent 扩展接入 Obsidian 的 MCP 服务后，全局对话 Agent 可直接读库（不落库）。"""
+        from .obsidian_import import parse_vault
+        root = Path(data.path.strip().strip('"'))
+        if not root.is_dir():
+            raise HTTPException(400, '目录不存在或不可访问：请填本机 Obsidian 库（或任意 markdown 目录）的完整路径')
+        entries, errors = parse_vault(root)
+        if data.dry_run:
+            return {'total': len(entries), 'errors': errors,
+                    'preview': [{key: item[key] for key in ('category', 'title', 'org', 'period', 'tags', 'source')}
+                                for item in entries[:30]]}
+        imported = updated = 0
+        # 幂等锚点带库根路径：不同库的同名相对路径不互撞，同一库重导原位更新。
+        anchor_prefix = f'{root}::'
+        for item in entries:
+            anchor = anchor_prefix + item['source']
+            existing = repo.profile_entry_by_source(anchor)
+            repo.save_profile_entry({**item, 'source': anchor, 'id': existing['id'] if existing else None})
+            imported += 0 if existing else 1
+            updated += 1 if existing else 0
+        logger.info('Obsidian 导入完成：新建 %s、更新 %s、跳过 %s', imported, updated, len(errors))
+        return {'imported': imported, 'updated': updated, 'total': len(entries), 'errors': errors}
 
     @app.post("/api/resume-versions/optimize")
     def optimize_resume_version(data: OptimizeResumeInput):

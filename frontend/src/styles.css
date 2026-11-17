@@ -2166,3 +2166,21 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
   .log-stream { height: calc(100dvh - 300px); }
   .log-logger { max-width: 120px; }
 }
+
+/* 评估适配流式进度面板：阶段清单 + 已到达条目（复用 requirements-table 样式）。 */
+.analyze-progress .analyze-elapsed { margin-left: 10px; font-size: 13px; font-weight: 400; color: var(--muted); }
+.analyze-stages { list-style: none; margin: 12px 0; padding: 0; display: grid; gap: 8px; font-size: 14px; }
+.analyze-stages li { display: flex; align-items: center; gap: 8px; color: var(--muted); }
+.analyze-stages li.running, .analyze-stages li.done { color: var(--ink, inherit); }
+.analyze-stages li.done .stage-marker { color: #3a7d44; font-weight: 600; }
+.analyze-stages .stage-marker { width: 18px; display: inline-flex; justify-content: center; align-items: center; }
+.analyze-stages .stage-marker .spinner { width: 12px; height: 12px; border-width: 2px; }
+.analyze-stages .stage-detail { color: var(--muted); font-size: 12px; margin-left: 6px; }
+/* Obsidian 导入面板（个人资料库）：路径输入 + 预览/导入 + 结果清单。 */
+.profile-toolbar-actions { display: flex; gap: 8px; align-items: center; }
+.obsidian-import { display: grid; gap: 10px; margin-bottom: 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.obsidian-import-row { display: flex; gap: 8px; align-items: center; }
+.obsidian-import-row input { flex: 1; min-width: 0; font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
+.obsidian-result { display: grid; gap: 6px; }
+.obsidian-result ul { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.8; }
+.obsidian-errors { color: var(--muted); }

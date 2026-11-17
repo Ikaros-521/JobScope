@@ -137,8 +137,11 @@ def test_anthropic_fit_uses_messages_and_keeps_fact_validation(monkeypatch):
         body = kwargs['json']
         assert body['system'] and len(body['messages']) == 1
         data = json.loads(body['messages'][0]['content'])
-        assert data['facts'][0]['id'] == 'F-1'
-        text = json.dumps(dict(requirements=[dict(requirement='Python', jd_quote='Python', status='met', fact_ids=['F-1'], dimension='skill', hard=False, rationale='已提供Python事实')], suggestions=[]))
+        if 'facts' in data:  # 匹配调用：确认事实照发，映射引用仍受校验
+            assert data['facts'][0]['id'] == 'F-1'
+            text = json.dumps(dict(matches=[dict(index=0, status='met', fact_ids=['F-1'], rationale='已提供Python事实')]))
+        else:  # 拆解调用：JD 进、要求条目出
+            text = json.dumps(dict(requirements=[dict(requirement='Python', jd_quote='Python', dimension='skill', hard=False)], suggestions=[]))
         return httpx.Response(200, json={'content': [{'type': 'text', 'text': text}]}, request=httpx.Request('POST', url))
     intercept(monkeypatch, 'post', reply)
     token = _active.set(config)

@@ -109,7 +109,7 @@ def stream_complete(config, system, user, *, max_tokens=1800, temperature=None, 
     return text, usage
 
 
-def complete(config, system, user, *, max_tokens=1800, temperature=None, timeout=45):
+def complete(config, system, user, *, max_tokens=1800, temperature=None, timeout=600):
     from .chat import validate_model_url
     _log_call(config, 'complete', max_tokens)
     protocol = config.get('protocol', 'openai')
