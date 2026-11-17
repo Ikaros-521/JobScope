@@ -10,7 +10,7 @@ import { navigateTabs } from './tabNavigation'
 import { addCompareCompany, useCompareSelection } from './compareSelectionStore'
 import { MAX_COMPANIES } from './compareSelectionStore'
 
-export function EvidenceWorkspace({ refreshMetadata, modelConfigured, active, navigation, onNavigateConversation, onOpened, onManageExtensions, onOpenCompare, onOpenKnowledge, onConfigureModel }: {
+export function EvidenceWorkspace({ refreshMetadata, modelConfigured, active, navigation, onNavigateConversation, onOpened, onManageExtensions, onOpenCompare, onOpenKnowledge, onConfigureModel, openCompanyChat }: {
   refreshMetadata: () => Promise<void>; modelConfigured: boolean; active: boolean
   navigation?: ConversationNavigation | null
   onNavigateConversation?: (request: ConversationNavigation) => void
@@ -19,6 +19,9 @@ export function EvidenceWorkspace({ refreshMetadata, modelConfigured, active, na
   onConfigureModel?: () => void
   onOpenCompare?: () => void
   onOpenKnowledge?: () => void
+  // 岗位详情「公司对话」入口前移（2026-11-17）：外层带一个 {company, token} 进来，
+  // token 变化即锁定该主体并切到对话页——与手动「确认公司」走同一段状态，不另开一条路径。
+  openCompanyChat?: { company: string; token: number } | null
 }) {
   const [items, setItems] = useState<Evidence[]>([])
   const [info, setInfo] = useState<PageInfo>(emptyPage)
@@ -28,6 +31,17 @@ export function EvidenceWorkspace({ refreshMetadata, modelConfigured, active, na
   const [chatCompany, setChatCompany] = useState('')
   const [companies, setCompanies] = useState<{ company: string; evidence_count: number }[]>([])
   const [tab, setTab] = useState<'records' | 'chat' | 'merge'>('records')
+  // 岗位详情前移入口：token 变化即锁定主体并切到对话页（与手动确认公司同一段状态）。
+  const chatRequestToken = useRef(0)
+  useEffect(() => {
+    if (!openCompanyChat || openCompanyChat.token === chatRequestToken.current) return
+    chatRequestToken.current = openCompanyChat.token
+    const name = openCompanyChat.company.trim()
+    if (!name) return
+    setCompany(name)
+    setChatCompany(name)
+    setTab('chat')
+  }, [openCompanyChat])
   // 主体归并总览放父层：tab 徽标要常驻显示待审数，CompanyMerge 面板只消费/回写这一份。
   const [mergeData, setMergeData] = useState<MergeOverview | null>(null)
   const mergePending = mergeData?.proposals.filter(item => item.status === 'pending').length ?? 0

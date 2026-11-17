@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, date, patchJobs, post, startDetailBatch } from './api'
-import type { Job, PageInfo, Task } from './api'
+import { api, date, getPipelineReview, patchJobs, post, startDetailBatch } from './api'
+import type { Job, PageInfo, PipelineReview, Task } from './api'
 import { emptyPage, Pagination } from './Pagination'
 import { toast } from './toast'
 import { addCompareCompany } from './compareSelectionStore'
@@ -13,6 +13,19 @@ const taskStatusNames: Record<string, string> = {
   needs_login: '需要登录', needs_verification: '需要验证', backoff: '退避等待',
 }
 
+// 机会管线（2026-11-17）：收藏篮子上的投递跟进状态，顺序即推进方向。
+// 与收藏共用一个篮子：给未收藏岗位设状态会自动收藏；取消收藏即移出管线（后端语义）。
+const PIPELINE_ORDER = ['interested', 'applied', 'interviewing', 'offer', 'archived'] as const
+const PIPELINE_NAMES: Record<string, string> = {
+  interested: '意向', applied: '已投递', interviewing: '面试中', offer: 'Offer', archived: '归档',
+}
+type PipelineFilter = '' | 'tracked' | (typeof PIPELINE_ORDER)[number]
+const PIPELINE_FILTERS: { id: PipelineFilter; label: string }[] = [
+  { id: '', label: '全部收藏' },
+  { id: 'tracked', label: '管线中' },
+  ...PIPELINE_ORDER.map(status => ({ id: status as PipelineFilter, label: PIPELINE_NAMES[status] })),
+]
+
 // 收藏夹：标星岗位的集中视图。只做轻列表（筛选/勾选/批量反查/横评/取消收藏），
 // 点卡片跳回岗位研究看完整详情——详情工作台（求职参考、评估适配）不在这里重复。
 // 反查走既有详情采集管道：单条同步接口，多条走批量任务+轮询；未登录/需验证原样透出。
@@ -24,8 +37,8 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
   const [jobs, setJobs] = useState<Job[]>([])
   const [info, setInfo] = useState<PageInfo>(emptyPage)
   const [loading, setLoading] = useState(true)
-  const [draft, setDraft] = useState({ q: '', source: '' })
-  const filters = useRef({ q: '', source: '' })
+  const [draft, setDraft] = useState({ q: '', source: '', pipeline: '' })
+  const filters = useRef({ q: '', source: '', pipeline: '' })
   const requestToken = useRef(0)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   // 保存已见岗位的公司快照：分页不会丢失选中岗位所属公司。
@@ -34,13 +47,14 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
   const [busy, setBusy] = useState('')
   const [recheckTask, setRecheckTask] = useState<Task | null>(null)
   const recheckTimer = useRef(0)
+  const [review, setReview] = useState<PipelineReview | null>(null)
 
   const load = useCallback(async (next = filters.current, page = 1) => {
-    if (next.q !== filters.current.q || next.source !== filters.current.source) {
+    if (next.q !== filters.current.q || next.source !== filters.current.source || next.pipeline !== filters.current.pipeline) {
       setSelectedIds(new Set()); selectedCompanies.current.clear(); setSelectionNotice('筛选已变更，已清空此前跨页选择。')
     }
     filters.current = next
-    const params = new URLSearchParams({ starred: 'true', q: next.q, source: next.source, page_size: '100' })
+    const params = new URLSearchParams({ starred: 'true', q: next.q, source: next.source, pipeline_status: next.pipeline, page_size: '100' })
     params.set('page', String(page))
     const token = ++requestToken.current
     const data = await api<PageInfo & { jobs: Job[] }>(`/jobs?${params.toString()}`)
@@ -51,7 +65,15 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
     return data.jobs
   }, [])
 
-  useEffect(() => { void load().finally(() => setLoading(false)); return () => window.clearInterval(recheckTimer.current) }, [load])
+  const loadReview = useCallback(async () => {
+    try { setReview(await getPipelineReview()) } catch { /* 回顾是辅助信息，失败不打断收藏夹主列表 */ }
+  }, [])
+
+  useEffect(() => {
+    void load().finally(() => setLoading(false))
+    void loadReview()
+    return () => window.clearInterval(recheckTimer.current)
+  }, [load, loadReview])
 
   function run(key: string, action: () => Promise<void>) {
     setBusy(key)
@@ -142,7 +164,25 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
   return <section className="favorites-view" aria-label="收藏夹">
     <section className="page-intro"><div><h1>收藏夹</h1><p>标过星的岗位集中在这里：反查最新情况、直接横评公司、直达源帖</p></div><span className="revision-label">收藏随岗位档案保存在本机</span></section>
     <section className="paper-panel favorites-panel">
+      {/* 机会管线回顾：纯本地统计，指路不施压——待跟进只是「看一眼进展」的提醒，不评分不排名。 */}
+      {review && Object.keys(review.totals).length ? <div className="pipeline-review">
+        <div className="pipeline-review-totals">
+          {PIPELINE_ORDER.map(status => <span key={status} className="pipeline-chip-stat"><b>{review.totals[status] || 0}</b>{PIPELINE_NAMES[status]}</span>)}
+        </div>
+        {review.follow_ups.length > 0 ? <div className="pipeline-followups">
+          <strong>超 {review.stale_days} 天未跟进</strong>
+          <ul>{review.follow_ups.map(item => <li key={item.id}>
+            <button type="button" className="text-button" onClick={() => onOpenJob(item.id)}>{item.title} · {item.company}</button>
+            <span className="tiny-label">「{PIPELINE_NAMES[item.status]}」自 {date(item.changed_at)}</span>
+          </li>)}</ul>
+        </div> : null}
+      </div> : null}
       <div className="favorites-toolbar">
+        <div className="pipeline-filter" role="group" aria-label="管线筛选">
+          {PIPELINE_FILTERS.map(item => <button key={item.id} type="button"
+            className={`pipeline-filter-chip${draft.pipeline === item.id ? ' active' : ''}`}
+            onClick={() => run('pipeline', async () => { setDraft({ ...draft, pipeline: item.id }); await load({ ...filters.current, q: draft.q, source: draft.source, pipeline: item.id }, 1) })}>{item.label}</button>)}
+        </div>
         <form className="favorites-filters" onSubmit={event => { event.preventDefault(); run('filter', async () => { await load({ ...draft }, 1) }) }}>
           <label className="search-input"><Icon name="search" size={16} /><span className="sr-only">收藏内搜索</span><input value={draft.q} onChange={event => setDraft({ ...draft, q: event.target.value })} placeholder="在收藏的岗位中搜索" maxLength={300} /></label>
           <button className="button secondary small" type="submit" disabled={busy === 'filter'}>筛选</button>
@@ -166,6 +206,18 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
           busy={busy.startsWith(`star-${item.id}`) || busy.startsWith(`recheck-${item.id}`)}
           onToggleSelection={id => { if (!busy) toggleSelection(id) }} onOpen={onOpenJob} onToggleStar={toggleStar}
           actions={<span className="job-card-actions">
+            {/* 管线状态下拉：给未收藏岗位设状态会自动收藏（后端语义），换状态即盖新时间戳。 */}
+            <select className="pipeline-select" value={item.pipeline_status || ''} disabled={Boolean(busy)}
+              title="机会管线状态：标记投递进展；给未收藏的岗位设状态会自动收藏"
+              onChange={event => run(`pipe-${item.id}`, async () => {
+                const value = event.target.value as 'interested' | 'applied' | 'interviewing' | 'offer' | 'archived' | ''
+                await patchJobs([item.id], { pipeline_status: value })
+                toast(value ? `已标记为「${PIPELINE_NAMES[value]}」` : '已移出管线')
+                await load(); await loadReview(); onChange()
+              })}>
+              <option value="">未跟踪</option>
+              {PIPELINE_ORDER.map(status => <option key={status} value={status}>{PIPELINE_NAMES[status]}</option>)}
+            </select>
             <button className="text-button" disabled={Boolean(busy)} title="重读源站原帖，刷新薪资与完整JD" onClick={() => void recheckOne(item)}>反查</button>
             <button className="text-button" onClick={() => joinCompare(item)}>加入横评</button>
           </span>}

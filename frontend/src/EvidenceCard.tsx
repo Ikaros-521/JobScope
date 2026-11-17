@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { ReactNode } from 'react'
-import { api, date, plain, safeUrl } from './api'
+import { api, date, isStale, plain, safeUrl } from './api'
 import type { Evidence } from './api'
 
 export const kindNames: Record<string, string> = { job_posting: '岗位原文', disclosure_metadata: '公告索引', disclosure: '披露正文', company_statement: '企业自述', employee_statement: '员工自述', user_material: '用户材料', media_report: '媒体报道', announcement: '公告', web_company_profile: '企业信息快照' }
@@ -43,5 +43,5 @@ export function EvidenceCard({ evidence, query = '' }: { evidence: Evidence; que
     } catch { /* 取全文失败：展开区保留已裁剪的正文 */ }
     finally { setFetching(false) }
   }
-  return <details className="evidence-card" onToggle={ensureFull}><summary><div><strong>{highlight(evidence.title, words)}</strong><span>{evidence.source} · {date(evidence.published_at || evidence.collected_at)} · {kindNames[evidence.kind] || evidence.kind}</span>{hit && <span className="evidence-hit">{highlight(hit, words)}</span>}</div><span className="expand-sign" aria-hidden="true">+</span></summary><div className="evidence-body">{evidence.text_truncated && fullText === null && fetching ? <p className="muted">正在读取全文…</p> : <p>{highlight(content, words)}</p>}<div className="evidence-meta"><span>证据 {evidence.id}</span>{url ? <a className="external-link" href={url} target="_blank" rel="noreferrer">出处</a> : <span>未提供原始链接</span>}</div><div className="tiny-label">采集于 {date(evidence.collected_at)}{!evidence.published_at && ' · 原文发布时间未知'}</div></div></details>
+  return <details className="evidence-card" onToggle={ensureFull}><summary><div><strong>{highlight(evidence.title, words)}</strong><span>{evidence.source} · {date(evidence.published_at || evidence.collected_at)} · {kindNames[evidence.kind] || evidence.kind}</span>{hit && <span className="evidence-hit">{highlight(hit, words)}</span>}</div><span className="expand-sign" aria-hidden="true">+</span></summary><div className="evidence-body">{evidence.text_truncated && fullText === null && fetching ? <p className="muted">正在读取全文…</p> : <p>{highlight(content, words)}</p>}<div className="evidence-meta"><span>证据 {evidence.id}</span>{url ? <a className="external-link" href={url} target="_blank" rel="noreferrer">出处</a> : <span>未提供原始链接</span>}</div><div className="tiny-label">采集于 {date(evidence.collected_at)}{!evidence.published_at && ' · 原文发布时间未知'}{isStale(evidence.collected_at, 90) && ' · 采集已超过 90 天，公司情况可能已变化，建议重采或核对原文'}</div></div></details>
 }

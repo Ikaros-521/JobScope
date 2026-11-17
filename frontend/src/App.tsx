@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { api, post, readable, plain, date, safeUrl, computeReliability, collectCompanySignals, extractCompanySignals, getReliability, getReliabilityHistory, patchJobs, startCompanyResearch } from './api'
-import type { ConversationNavigation } from './api'
+import { api, post, readable, plain, date, isStale, safeUrl, computeReliability, collectCompanySignals, extractCompanySignals, getReliability, getReliabilityHistory, getSourceHealth, patchJobs, startCompanyResearch } from './api'
+import type { ConversationNavigation, SourceHealth } from './api'
 import { SignalSourceSettings } from './SignalSourceSettings'
 import { signalTaskNames } from './SignalSources'
 import { toast, dismissToast, failedTaskToast, taskSucceeded } from './toast'
@@ -52,7 +52,8 @@ function Empty({ title, children, icon = 'book' }: { title: string; children: Re
 function Badge({ value }: { value: string }) { return <span className={`badge ${['completed', 'success', 'available', 'ready'].includes(value) ? 'good' : ['failed', 'blocked'].includes(value) ? 'bad' : ''}`}><span />{statusNames[value] || value}</span> }
 function External({ url, children }: { url: string; children: ReactNode }) { const href = safeUrl(url); return href ? <a className="external-link" href={href} target="_blank" rel="noreferrer">{children}<Icon name="external" size={13} /></a> : <span className="muted">无来源链接</span> }
 
-type ViewId = 'jobs' | 'favorites' | 'resume' | 'workshop' | 'sources' | 'evidence' | 'compare' | 'global' | 'knowledge' | 'settings' | 'extensions' | 'system'
+type ViewId = 'jobs' | 'favorites' | 'resume' | 'workshop' | 'sources' | 'evidence' | 'compare' | 'global' | 'knowledge' | 'settings'
+type SettingsTab = 'model' | 'system' | 'extensions'
 // 导航二级菜单：按工作流分四组；组可折叠，展开状态持久化，切换视图自动展开所在组。
 const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon: string; label: string }[] }[] = [
   { id: 'research', label: '岗位研究', items: [
@@ -71,9 +72,7 @@ const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon: string
   ] },
   { id: 'manage', label: '系统管理', items: [
     { id: 'sources', icon: 'source', label: '数据与采集' },
-    { id: 'extensions', icon: 'settings', label: 'Agent 扩展' },
-    { id: 'settings', icon: 'settings', label: '模型设置' },
-    { id: 'system', icon: 'settings', label: '系统设置' },
+    { id: 'settings', icon: 'settings', label: '设置中心' },
   ] },
 ]
 const NAV_STORAGE_KEY = 'jobscope-nav-expanded'
@@ -129,7 +128,19 @@ export default function App() {
     setChatNavigation(current => current?.requestId === requestId ? null : current)
     toast('范围已扩大，可继续提问')
   }, [])
-  const [sourcesTab, setSourcesTab] = useState<'collect' | 'lookup' | 'catalog' | 'history'>('collect')
+  const [sourcesTab, setSourcesTab] = useState<'collect' | 'lookup' | 'catalog' | 'history' | 'health'>('collect')
+  // 来源健康度面板：首次切到该页时拉一次，之后手动刷新（不自动轮询，与「任务记录」同一节奏）。
+  const [sourceHealth, setSourceHealth] = useState<SourceHealth[] | null>(null)
+  useEffect(() => {
+    if (view !== 'sources' || sourcesTab !== 'health' || sourceHealth !== null) return
+    void getSourceHealth().then(data => setSourceHealth(data.sources)).catch(err => toast((err as Error).message, 'error'))
+  }, [view, sourcesTab, sourceHealth])
+  // 公司对话入口前移（2026-11-17）：岗位详情直接跳公司对话；token 变化驱动 EvidenceWorkspace 锁主体。
+  const [companyChatRequest, setCompanyChatRequest] = useState<{ company: string; token: number } | null>(null)
+  function openCompanyChat(company: string) {
+    setCompanyChatRequest({ company, token: Date.now() })
+    setView('evidence')
+  }
   const [jobs, setJobs] = useState<Job[]>([])
   const [jobsInfo, setJobsInfo] = useState<PageInfo>(emptyPage)
   const [jobsTotal, setJobsTotal] = useState(0)
@@ -177,7 +188,11 @@ export default function App() {
   const [browserCollecting, setBrowserCollecting] = useState(false)
   const jobScroll = useRef({ window: 0, detail: 0, list: 0 })
   const [settingsReturn, setSettingsReturn] = useState<typeof view>('jobs')
-  function configureModel() { setSettingsReturn(view); setView('settings') }
+  // 设置中心（2026-11-17）：模型/系统/Agent 扩展三页合一，视图内分标签。原独立视图的跳转点
+  // 统一改走 openSettings(tab)，深链行为不变（记录来源工作区，返回键原路回跳）。
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>('model')
+  function openSettings(tab: SettingsTab) { setSettingsReturn(view); setSettingsTab(tab); setView('settings') }
+  function configureModel() { openSettings('model') }
   function openJobChat() { jobScroll.current = { window: window.scrollY, detail: document.querySelector('.detail-panel')?.scrollTop || 0, list: document.querySelector('.job-list-panel')?.scrollTop || 0 }; setPaneFocus('chat') }
   function returnToJob() { setPaneFocus('info'); requestAnimationFrame(() => { window.scrollTo({ top: jobScroll.current.window, behavior: 'instant' }); const detailPane = document.querySelector('.detail-panel'); const listPane = document.querySelector('.job-list-panel'); if (detailPane) detailPane.scrollTop = jobScroll.current.detail; if (listPane) listPane.scrollTop = jobScroll.current.list }) }
   const [resumeText, setResumeText] = useState('')
@@ -429,16 +444,20 @@ export default function App() {
     const company = job.company
     await perform('company', async () => {
       const started = await startCompanyResearch(company)
-      const progress = toast(`已启动 ${started.tasks.length} 个渠道的多平台检索，完成后逐渠道提示`, 'notice', true)
+      // 一键完备的进度聚合到一条常驻提示：每完成一步更新计数，失败的步骤单独弹出原因。
+      let done = 0
+      let progress = toast(`一键完备「${company}」：0/${started.tasks.length} 步完成`, 'notice', true)
       try {
         await Promise.all(started.tasks.map(async initial => {
           for (let poll = 0; poll < 300; poll++) {
             await new Promise(resolve => setTimeout(resolve, 2000))
             const { task } = await api<{ task: Task }>(`/tasks/${encodeURIComponent(initial.id)}`)
             if (task.status !== 'running' && task.status !== 'pending') {
+              done += 1
+              dismissToast(progress)
+              progress = toast(`一键完备「${company}」：${done}/${started.tasks.length} 步完成`, 'notice', true)
               const name = sourceNames[task.source] || task.source
-              if (taskSucceeded(task)) toast(`${name}：${task.message || '完成'}`)
-              else failedTaskToast(task, name)
+              if (!taskSucceeded(task) && task.status !== 'skipped') failedTaskToast(task, name)
               return
             }
           }
@@ -446,6 +465,7 @@ export default function App() {
         }))
       } finally {
         dismissToast(progress)
+        if (done >= started.tasks.length) toast(`一键完备完成，求职参考已按最新材料重算。`, 'notice', false)
         await Promise.all([job.id === activeJobId.current ? loadDetail(job.id) : Promise.resolve(), refreshMetadata()])
       }
     })
@@ -605,13 +625,13 @@ export default function App() {
       <div className="sidebar-bottom"><span className={`connection-dot ${online ? 'connected' : ''}`} />{online ? '本地工作区已连接' : '等待本地服务'}<span className="version">v0.1</span></div>
     </aside>
 
-    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'extensions' || view === 'settings' || view === 'compare' || view === 'system' || view === 'favorites' || view === 'knowledge' ? 'main main-compact' : 'main'}>
-      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'resume' ? '我的简历' : view === 'workshop' ? '简历工坊' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'knowledge' ? '知识库' : view === 'extensions' ? 'Agent 扩展' : view === 'settings' ? '模型设置' : view === 'system' ? '系统设置' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata(), refreshFavCount()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
-      <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} onConfigureModel={configureModel} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} onOpenCompare={() => setView('compare')} onOpenKnowledge={() => setView('knowledge')} /></div>
+    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'settings' || view === 'compare' || view === 'favorites' || view === 'knowledge' ? 'main main-compact' : 'main'}>
+      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'resume' ? '我的简历' : view === 'workshop' ? '简历工坊' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'knowledge' ? '知识库' : view === 'settings' ? '设置中心' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata(), refreshFavCount()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
+      <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} onConfigureModel={configureModel} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => openSettings('extensions')} onOpenCompare={() => setView('compare')} onOpenKnowledge={() => setView('knowledge')} openCompanyChat={companyChatRequest} /></div>
 
       {view === 'knowledge' && <KnowledgeView onCountChange={setKnowledgeTotal} />}
 
-      {view === 'global' && <><section className="page-intro chat-intro"><div><h1>全局对话</h1><p>跨岗位、跨公司检索项目资料与知识库，回答标注公司与出处</p></div><span className="revision-label">会话保存在本机</span></section><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onManageExtensions={() => setView('extensions')} onOpenKnowledge={() => setView('knowledge')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} prefill={chatPrompt} /></>}
+      {view === 'global' && <><section className="page-intro chat-intro"><div><h1>全局对话</h1><p>跨岗位、跨公司检索项目资料与知识库，回答标注公司与出处</p></div><span className="revision-label">会话保存在本机</span></section><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onManageExtensions={() => openSettings('extensions')} onOpenKnowledge={() => setView('knowledge')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} prefill={chatPrompt} /></>}
 
       {view === 'compare' && <CompanyCompare />}
 
@@ -664,16 +684,16 @@ export default function App() {
           <section className="detail-panel" aria-label="岗位详情" tabIndex={-1}>
             {selectedId && <button className="mobile-back text-button" onClick={() => { document.querySelector('.job-list-panel')?.scrollIntoView({ block: 'start' }); document.querySelector<HTMLElement>('.job-card-body[aria-pressed="true"]')?.focus({ preventScroll: true }) }}><Icon name="arrow" size={16} />返回岗位列表</button>}
             {detailLoading ? <div className="loading-state"><span className="spinner" />正在读取岗位档案…</div> : !job ? <div className="welcome-panel"><div className="welcome-heading"><Icon name="book" /><span>岗位调查档案</span></div><h2>先选一份岗位，再逐项核对</h2><p>检索岗位或导入已有 JD。选择左侧档案，查看要求、公司资料与简历依据。</p><div className="welcome-checklist"><div><span>01</span><section><h3>岗位要求</h3><p>职责、技能、地点和薪酬口径</p></section></div><div><span>02</span><section><h3>公司证据</h3><p>资料原文、披露主体和发布时间</p></section></div><div><span>03</span><section><h3>个人适配</h3><p>已有依据、硬性条件与待核实项</p></section></div></div><div className="welcome-source-note">每份资料都保留出处，缺少证据时保持未知</div></div> : <>
-              <div className="detail-heading"><div className="detail-kicker"><span>{sourceNames[job.source] || job.source}</span><External url={job.url}>查看原始岗位</External></div><h2>{job.title}</h2><div className="detail-company">{job.company}<span>·</span><Icon name="pin" size={14} />{job.location || '地点待确认'}</div><div className="detail-heading-bottom"><strong>{job.salary || '薪资未披露'}</strong><Button className="button secondary small" disabled={Boolean(busy)} title={job.starred ? '取消收藏；收藏不会因重新采集而丢失' : '收藏岗位，可在收藏夹反查与横评'} onClick={() => job && void toggleStar(job)}><Icon name="star" size={15} />{job.starred ? '已收藏' : '收藏'}</Button><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => openBatchEdit([job])}>编辑档案</Button><Button className="button secondary small" busy={busy === 'analyze'} disabled={Boolean(busy) || needsFullJd(job)} onClick={() => void analyze()}><Icon name="check" size={16} />评估适配</Button><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => { setWorkshopPrefill({ jobId: job.id, company: job.company, jobTitle: job.title }); setView('workshop') }}><Icon name="wand" size={16} />优化简历</Button></div></div>
+              <div className="detail-heading"><div className="detail-kicker"><span>{sourceNames[job.source] || job.source}</span><External url={job.url}>查看原始岗位</External></div><h2>{job.title}</h2><div className="detail-company">{job.company}<span>·</span><Icon name="pin" size={14} />{job.location || '地点待确认'}</div><div className="detail-heading-bottom"><strong>{job.salary || '薪资未披露'}</strong>{isStale(job.updated_at, 30) && <span className="stale-hint" title="这份档案已超过 30 天未更新，薪资与职责可能已变化；可在收藏夹「反查」重读源站，或按原条件重新采集。">数据较旧 · 建议反查</span>}<Button className="button secondary small" disabled={Boolean(busy)} title={job.starred ? '取消收藏；收藏不会因重新采集而丢失' : '收藏岗位，可在收藏夹反查与横评'} onClick={() => job && void toggleStar(job)}><Icon name="star" size={15} />{job.starred ? '已收藏' : '收藏'}</Button><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => openBatchEdit([job])}>编辑档案</Button><Button className="button secondary small" busy={busy === 'analyze'} disabled={Boolean(busy) || needsFullJd(job)} onClick={() => void analyze()}><Icon name="check" size={16} />评估适配</Button><Button className="button secondary small" disabled={Boolean(busy)} onClick={() => { setWorkshopPrefill({ jobId: job.id, company: job.company, jobTitle: job.title }); setView('workshop') }}><Icon name="wand" size={16} />优化简历</Button></div></div>
               <ManualJobDescription key={job.id} job={job} onSaved={async saved => { if (activeJobId.current === saved.id) { await loadDetail(saved.id); setAnalysis(null) }; await loadJobs() }} /><div className="jd-state"><div><strong>{job.description_status === 'complete' ? '完整JD已保存' : needsFullJd(job) ? '仅列表摘要 · 待补全' : '岗位材料已保存'}</strong><p>{job.detail_collected_at ? `正文读取于 ${date(job.detail_collected_at)}` : needsFullJd(job) ? ((job.source === 'boss' || job.source === 'zhaopin') ? '需要完整职责与任职要求，才能评估是否适合投递' : '该平台列表未给出完整职责，可在岗位档案补充后再评估') : '请核对岗位材料完整性及原始出处'}</p></div>{(job.source === 'boss' || job.source === 'zhaopin') && <Button className="button secondary small" busy={busy === 'job-detail'} disabled={Boolean(busy)} onClick={() => void perform('job-detail', async () => { const id = job.id, generation = jobGeneration.current; const result = await post<{ task: Task; job: Job }>(`/jobs/${encodeURIComponent(id)}/detail`); if (taskSucceeded(result.task)) toast(result.task.message); else failedTaskToast(result.task, '完整职责读取'); await Promise.all([generation === jobGeneration.current ? loadDetail(id) : Promise.resolve(), loadJobs(), refreshMetadata()]); if (generation === jobGeneration.current) setAnalysis(null) })}>{job.description_status === 'complete' ? '更新完整职责' : '读取完整职责'}</Button>}</div><div className="detail-tabs" role="tablist" aria-label="岗位档案内容" onKeyDown={navigateTabs}>{(['overview', 'analysis', 'evidence'] as const).map(item => <button key={item} id={`job-${item}-tab`} role="tab" aria-controls="job-detail-panel" tabIndex={tab === item ? 0 : -1} aria-selected={tab === item} className={tab === item ? 'active' : ''} onClick={() => setTab(item)}>{item === 'overview' ? '岗位与公司' : item === 'analysis' ? '适配分析' : '证据资料'}{item === 'evidence' && <span>{evidenceTotal}</span>}</button>)}</div>
               <div id="job-detail-panel" className="detail-content" role="tabpanel" aria-labelledby={`job-${tab}-tab`}>
-                {tab === 'overview' && <><div className="section-label"><span className="label-line" />岗位描述</div><div className={`description-text${descExpanded ? '' : ' collapsed'}`}>{plain(job.description) || '尚无岗位描述，请补充原始岗位资料。'}</div>{job.description.length > 600 && <button className="text-button" onClick={() => setDescExpanded(value => !value)}>{descExpanded ? '收起描述' : '展开全文'}</button>}<div className="company-section"><div className="section-heading"><div><span className="section-label">公司情报</span><h3>了解 {job.company}</h3></div><Button className="button secondary small" busy={busy === 'company'} disabled={Boolean(busy)} onClick={() => void collectCompany()}>多平台检索<Icon name="arrow" size={14} /></Button></div><p className="muted body-small">多平台检索岗位、公告与公开网页，收尾刷新已启用的本地信号并重算；官方页面和付费 API 可在下方「按来源补数据」中选择。</p>{detail.company_evidence?.length ? <>{detail.company_evidence.length > 4 && <div className="company-pager"><button className="text-button" disabled={companyPage === 0} onClick={() => setCompanyPage(page => page - 1)}>上一页</button><span className="tiny-label">{companyPage + 1} / {Math.ceil(detail.company_evidence.length / 4)} 页 · 共 {detail.company_evidence.length} 条</span><button className="text-button" disabled={companyPage >= Math.ceil(detail.company_evidence.length / 4) - 1} onClick={() => setCompanyPage(page => page + 1)}>下一页</button></div>}<div className="company-evidence-list">{detail.company_evidence.slice(companyPage * 4, companyPage * 4 + 4).map(e => <EvidenceCard key={e.id} evidence={e} />)}</div></> : <div className="inline-empty">尚未收集到该公司的资料。你可以多平台检索公开岗位与公告，或补充已有材料。</div>}<button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充公司资料</button><CompanyReference key={job.id} onSignalBusy={value => setBusy(value ? 'reliability' : '')} onSignalCollected={(report, history) => { if (job.id !== activeJobId.current) return; setReliability(report); setReliabilityHistory(history); setReliabilityAction(null); void refreshMetadata() }} onConfigureSources={() => { setView('sources'); setSourcesTab('catalog') }} onAgentCollect={openGlobalAgent} report={reliability} history={reliabilityHistory} busy={Boolean(busy)} loading={reliabilityLoading} action={reliabilityAction} company={job.company} onOpenCompare={() => setView('compare')} onCompute={() => void recomputeReference()} onCoverage={() => void runReferenceAction('coverage')} onExtract={() => void runReferenceAction('extract')} onOpenEvidence={openReferenceEvidence} onOpenEvidenceModal={() => openModal('evidence')} /></div></>}
+                {tab === 'overview' && <><div className="section-label"><span className="label-line" />岗位描述</div><div className={`description-text${descExpanded ? '' : ' collapsed'}`}>{plain(job.description) || '尚无岗位描述，请补充原始岗位资料。'}</div>{job.description.length > 600 && <button className="text-button" onClick={() => setDescExpanded(value => !value)}>{descExpanded ? '收起描述' : '展开全文'}</button>}<div className="company-section"><div className="section-heading"><div><span className="section-label">公司情报</span><h3>了解 {job.company}</h3></div><span className="purpose-heading-actions"><Button className="button secondary small" title="围绕这家公司已保存的全部岗位与资料发起对话（在公司资料库的「公司对话」页打开）" onClick={() => openCompanyChat(job.company)}>公司对话<Icon name="chat" size={14} /></Button><Button className="button secondary small" busy={busy === 'company'} disabled={Boolean(busy)} onClick={() => void collectCompany()}>一键完备<Icon name="arrow" size={14} /></Button></span></div><p className="muted body-small">一键串完单岗完整参考路径：多平台检索岗位与公告 → 快查公开页 → 补读完整职责 → 采集已启用信号源 → 抽取材料数字 → AI 行业判断 → 重算报告。官方页面和付费 API 可在下方「按来源补数据」中选择；遇登录/验证会停下来等你处理。</p>{detail.company_evidence?.length ? <>{detail.company_evidence.length > 4 && <div className="company-pager"><button className="text-button" disabled={companyPage === 0} onClick={() => setCompanyPage(page => page - 1)}>上一页</button><span className="tiny-label">{companyPage + 1} / {Math.ceil(detail.company_evidence.length / 4)} 页 · 共 {detail.company_evidence.length} 条</span><button className="text-button" disabled={companyPage >= Math.ceil(detail.company_evidence.length / 4) - 1} onClick={() => setCompanyPage(page => page + 1)}>下一页</button></div>}<div className="company-evidence-list">{detail.company_evidence.slice(companyPage * 4, companyPage * 4 + 4).map(e => <EvidenceCard key={e.id} evidence={e} />)}</div></> : <div className="inline-empty">尚未收集到该公司的资料。你可以多平台检索公开岗位与公告，或补充已有材料。</div>}<button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充公司资料</button><CompanyReference key={job.id} onSignalBusy={value => setBusy(value ? 'reliability' : '')} onSignalCollected={(report, history) => { if (job.id !== activeJobId.current) return; setReliability(report); setReliabilityHistory(history); setReliabilityAction(null); void refreshMetadata() }} onConfigureSources={() => { setView('sources'); setSourcesTab('catalog') }} onAgentCollect={openGlobalAgent} report={reliability} history={reliabilityHistory} busy={Boolean(busy)} loading={reliabilityLoading} action={reliabilityAction} company={job.company} onOpenCompare={() => setView('compare')} onCompute={() => void recomputeReference()} onCoverage={() => void runReferenceAction('coverage')} onExtract={() => void runReferenceAction('extract')} onOpenEvidence={openReferenceEvidence} onOpenEvidenceModal={() => openModal('evidence')} /></div></>}
                 {tab === 'analysis' && (!analysis ? <Empty title={busy === 'analyze' ? '正在对应岗位要求…' : '让经历与要求逐项对照'} icon="resume">{busy === 'analyze' ? '分析完成后，将展示匹配依据、未知项与面试核实问题。' : <>{resumeSaved ? '点击“评估适配”，查看有依据的匹配与缺口。' : <>先在<button className="inline-button" onClick={() => setView('resume')}>我的简历</button>保存个人经历，再生成适配分析。</>}分数仅供辅助比较，不代表录用概率。</>}</Empty> : <AnalysisView analysis={analysis} />)}
                 {tab === 'evidence' && <><div className="section-heading"><div><h3>证据与出处</h3></div><button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充资料</button></div>{evidenceTotal ? <JobEvidence key={job.id} jobId={job.id} focus={evidenceFocus} /> : <Empty title="尚无证据资料">采集岗位或补充公司材料后，原文与来源会保存在这里。</Empty>}</>}
               </div>
             </>}
           </section>
-          {job && <section className="chat-section job-chat"><button className="button secondary small job-return" onClick={returnToJob}>返回岗位</button><ChatWorkspace key={job.id} scope={{ kind: 'job', jobId: job.id, company: job.company, title: job.title }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => setView('extensions')} onOpenKnowledge={() => setView('knowledge')} /></section>}
+          {job && <section className="chat-section job-chat"><button className="button secondary small job-return" onClick={returnToJob}>返回岗位</button><ChatWorkspace key={job.id} scope={{ kind: 'job', jobId: job.id, company: job.company, title: job.title }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => openSettings('extensions')} onOpenKnowledge={() => setView('knowledge')} /></section>}
         </div>}
       </>}
 
@@ -688,7 +708,7 @@ export default function App() {
           <div><span className="overview-icon"><Icon name="globe" /></span><div><span>专用浏览器</span><strong>{browser ? browser.running ? '运行中' : '未启动' : '状态未知'}<small>登录后采集</small></strong></div></div>
           <div><span className="overview-icon"><Icon name="book" /></span><div><span>采集记录</span><strong>{tasksInfo.total.toLocaleString()}<small>次任务</small></strong></div></div>
         </div>
-        <div className="management-tabs" role="tablist" aria-label="数据管理分区" onKeyDown={navigateTabs}>{([{ id: 'collect', label: '采集工作台' }, { id: 'lookup', label: '公司快查' }, { id: 'catalog', label: '数据源' }, { id: 'history', label: '任务记录' }] as const).map(item => <button key={item.id} id={`sources-${item.id}-tab`} role="tab" aria-controls={`sources-${item.id}-panel`} aria-selected={sourcesTab === item.id} tabIndex={sourcesTab === item.id ? 0 : -1} onClick={() => setSourcesTab(item.id)}>{item.label}{item.id === 'catalog' && <span>{sources.length}</span>}</button>)}</div>
+        <div className="management-tabs" role="tablist" aria-label="数据管理分区" onKeyDown={navigateTabs}>{([{ id: 'collect', label: '采集工作台' }, { id: 'lookup', label: '公司快查' }, { id: 'catalog', label: '数据源' }, { id: 'health', label: '来源健康' }, { id: 'history', label: '任务记录' }] as const).map(item => <button key={item.id} id={`sources-${item.id}-tab`} role="tab" aria-controls={`sources-${item.id}-panel`} aria-selected={sourcesTab === item.id} tabIndex={sourcesTab === item.id ? 0 : -1} onClick={() => setSourcesTab(item.id)}>{item.label}{item.id === 'catalog' && <span>{sources.length}</span>}</button>)}</div>
         <div id="sources-collect-panel" role="tabpanel" aria-labelledby="sources-collect-tab" hidden={sourcesTab !== 'collect'}>
           <section className="browser-panel paper-panel">
             <div className="browser-guide"><span className="section-label">浏览器采集</span><h2>从已登录的平台<br />带回真实岗位</h2><p>使用项目专属 Chrome，登录状态与日常浏览器分开保存。</p><ol className="collection-steps"><li><span>1</span><div><strong>选择平台</strong><p>在右侧填写关键词与城市</p></div></li><li><span>2</span><div><strong>打开浏览器并登录</strong><p>遇到验证时，请在浏览器内手动完成</p></div></li><li><span>3</span><div><strong>开始采集</strong><p>结果自动存档，任务记录保留真实状态</p></div></li></ol><div className="browser-status"><span className={`connection-dot ${browser?.running ? 'connected' : ''}`} />{browser?.message || '浏览器状态未知'}</div></div>
@@ -712,14 +732,47 @@ export default function App() {
           <div className="sources-grid">{loading ? <div className="paper-panel"><div className="loading-state"><span className="spinner" />正在读取数据源状态…</div></div> : sources.length ? sources.map(item => <article className="source-card paper-panel" key={item.id}><div className="source-card-heading"><span className="source-icon"><Icon name={item.id === 'cninfo' ? 'book' : 'globe'} /></span><h3>{item.name}</h3><Badge value={item.status} /></div><p>{item.description}</p><div className="source-card-footer"><span>{{ http_api: 'HTTP 接口', browser_page: '浏览器会话', company_web: '网页快查', manual: '用户材料' }[item.transport_mode] || item.transport_mode}</span><span>{item.id}</span></div></article>) : <div className="paper-panel"><Empty title="等待数据源状态">请确认本地后端服务已启动，然后刷新状态。</Empty></div>}</div>
           <SignalSourceSettings />
         </div>
+        <div id="sources-health-panel" role="tabpanel" aria-labelledby="sources-health-tab" hidden={sourcesTab !== 'health'}>
+          {/* 来源健康度：成败分布只是任务记录的聚合视图，消息引用任务原文，不做任何新的诊断结论。 */}
+          <section className="paper-panel tasks-panel">
+            <div className="section-heading">
+              <div><h2>来源健康度</h2><p className="body-small muted">按最近 100 次任务统计每个来源的成功 / 未完成 / 失败分布。某来源连续失败通常是站点改版或登录态失效——先去「采集工作台」处理，不要把零条结果当作采集成功。</p></div>
+              <Button className="button secondary small" busy={busy === 'health'} disabled={Boolean(busy)} onClick={() => void perform('health', async () => {
+                const data = await getSourceHealth()
+                setSourceHealth(data.sources)
+              })}>刷新</Button>
+            </div>
+            {sourceHealth === null
+              ? <div className="loading-state"><span className="spinner" />正在读取来源健康度…</div>
+              : sourceHealth.length
+                ? <div className="task-table-wrap"><table>
+                  <thead><tr><th scope="col">来源</th><th scope="col">成功</th><th scope="col">未完成</th><th scope="col">失败</th><th scope="col">最近成功</th><th scope="col">最近结果</th></tr></thead>
+                  <tbody>{sourceHealth.map(item => <tr key={item.source}>
+                    <td data-label="来源"><strong>{sourceNames[item.source] || item.source}</strong><small>{item.source}</small></td>
+                    <td data-label="成功" className="nowrap">{item.ok}</td>
+                    <td data-label="未完成" className="nowrap">{item.attention}</td>
+                    <td data-label="失败" className="nowrap">{item.failed}</td>
+                    <td data-label="最近成功" className="nowrap">{item.last_ok_at ? date(item.last_ok_at) : '从未成功'}</td>
+                    <td data-label="最近结果"><Badge value={item.last_status} /><span className="task-message">{item.last_message || '—'}</span></td>
+                  </tr>)}</tbody>
+                </table></div>
+                : <Empty title="还没有可统计的任务">发起一次岗位或公司采集后，各来源的健康度会出现在这里。</Empty>}
+            <p className="tiny-label">「未完成」指需要登录/人工验证、浏览器正忙、部分成功或被跳过的任务；判断口径与采集记录的状态完全一致。没有任何任务的来源不会出现在表里。</p>
+          </section>
+        </div>
         <div id="sources-history-panel" role="tabpanel" aria-labelledby="sources-history-tab" hidden={sourcesTab !== 'history'}>
           <section className="paper-panel tasks-panel"><div className="section-heading"><div><h2>采集记录</h2><p className="body-small muted">成功、失败与验证请求都留有记录。</p></div><span className="muted body-small">{tasksInfo.total} 次任务</span></div>{loading ? <div className="loading-state"><span className="spinner" />正在读取采集记录…</div> : tasks.length ? <div className="task-table-wrap"><table><thead><tr><th scope="col">查询 / 来源</th><th scope="col">状态</th><th scope="col">资料数</th><th scope="col">时间</th><th scope="col">说明</th></tr></thead><tbody>{tasks.map(task => <tr key={task.id}><td data-label="查询 / 来源"><strong>{task.query || '未指定'}</strong><small>{sourceNames[task.source] || task.source}</small></td><td data-label="状态"><Badge value={task.status} /></td><td data-label="资料数">{task.count ?? '—'}</td><td data-label="时间" className="nowrap">{date(task.created_at)}</td><td data-label="说明" className="task-message">{task.message || '—'}</td></tr>)}</tbody></table></div> : <Empty title="还没有采集记录">发起一次岗位或公司检索，结果与失败原因都会记录在这里。</Empty>}<Pagination info={tasksInfo} label="采集记录" busy={Boolean(busy)} onPage={page => void perform('page-tasks', () => loadTasks(page))} /></section>
         </div>
       </div>}
 
-      <div hidden={view !== 'extensions'} className="extensions-view"><AgentExtensions /></div>
-      {view === 'settings' && <><button className="button secondary settings-return" onClick={() => setView(settingsReturn)}>返回原工作区</button><ModelSettings onSaved={refreshMetadata} /></>}
-      {view === 'system' && <SystemSettings />}
+      {view === 'settings' && <>
+        <button className="button secondary settings-return" onClick={() => setView(settingsReturn)}>返回原工作区</button>
+        {/* 设置中心：模型 / 系统 / Agent 扩展三页合一。标签沿用 management-tabs 的键盘导航。 */}
+        <div className="management-tabs" role="tablist" aria-label="设置分区" onKeyDown={navigateTabs}>{([['model', '模型设置'], ['system', '系统设置'], ['extensions', 'Agent 扩展']] as const).map(([id, label]) => <button key={id} id={`settings-${id}-tab`} role="tab" aria-controls={`settings-${id}-panel`} aria-selected={settingsTab === id} tabIndex={settingsTab === id ? 0 : -1} onClick={() => setSettingsTab(id)}>{label}</button>)}</div>
+        <div id="settings-model-panel" role="tabpanel" aria-labelledby="settings-model-tab" hidden={settingsTab !== 'model'}><ModelSettings onSaved={refreshMetadata} /></div>
+        <div id="settings-system-panel" role="tabpanel" aria-labelledby="settings-system-tab" hidden={settingsTab !== 'system'}><SystemSettings /></div>
+        <div id="settings-extensions-panel" role="tabpanel" aria-labelledby="settings-extensions-tab" hidden={settingsTab !== 'extensions'} className="extensions-view"><AgentExtensions /></div>
+      </>}
       <footer className="page-footer"><span>知根 JobScope</span><span>资料保留原始出处，未知信息待核实</span></footer>
     </main>
     {modal && <div className="modal-backdrop" onMouseDown={event => { if (event.target === event.currentTarget && !busy) setModal(null) }}><section className="modal paper-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title" onKeyDown={event => {

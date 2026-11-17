@@ -459,7 +459,27 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 /* 每条缺口自带行动入口：按钮保持文字链观感，不给「缺数据」任何警示色。 */
 .reliability-gap { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; margin-bottom: 8px; }
 .reliability-gap .text-button { font-size: 12px; min-height: 24px; padding: 0; }
+/* 三态标签（没采过/闸门不够/无免费来源）：只说明「卡在哪一步」，不给警示色——没采过是好事（一键可得）。 */
+.reliability-gap-state { flex: none; font-size: 11px; line-height: 1.6; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; align-self: center; }
+.reliability-gap-state.fresh { color: var(--green); border-color: var(--green); }
 .reliability-gap-title { margin-bottom: 4px; }
+/* 机会管线（收藏夹）：筛选 chips、回顾统计与卡片状态下拉。纯本地跟进管理，不给任何评分含义。 */
+.pipeline-filter { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pipeline-filter-chip { font-size: 12px; line-height: 1; padding: 6px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--paper); color: var(--muted); cursor: pointer; }
+.pipeline-filter-chip.active { border-color: var(--green); color: var(--green); background: var(--selected); }
+.pipeline-review { display: flex; flex-wrap: wrap; gap: 10px 24px; align-items: baseline; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.pipeline-review-totals { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.pipeline-chip-stat { font-size: 12px; color: var(--muted); display: inline-flex; gap: 6px; align-items: baseline; }
+.pipeline-chip-stat b { font-size: 15px; color: var(--green); font-variant-numeric: tabular-nums; }
+.pipeline-followups { display: flex; flex-wrap: wrap; gap: 4px 16px; align-items: baseline; font-size: 12px; }
+.pipeline-followups strong { color: var(--green); }
+.pipeline-followups ul { display: flex; flex-wrap: wrap; gap: 2px 16px; margin: 0; padding: 0; list-style: none; }
+.pipeline-followups li { display: inline-flex; gap: 8px; align-items: baseline; }
+.pipeline-followups .text-button { font-size: 12px; min-height: 22px; padding: 0; }
+.pipeline-select { font-size: 12px; min-height: 26px; padding: 0 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--muted); max-width: 88px; }
+.pipeline-select:focus { outline: 2px solid var(--green); outline-offset: 1px; }
+/* 数据新鲜度：只陈述「较旧」这一事实与补法（悬浮可见），不给警示色、不拦截任何操作。 */
+.stale-hint { display: inline-flex; align-items: center; font-size: 11px; line-height: 1.6; padding: 0 6px; border-radius: 999px; border: 1px dashed var(--line); color: var(--muted); white-space: nowrap; cursor: help; }
 .reliability-actions { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 14px; }
 .reliability-legal { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.8; }
 .reliability-legal ul { margin: 6px 0; padding-left: 18px; overflow-wrap: anywhere; }

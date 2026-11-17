@@ -1,5 +1,6 @@
-import { date } from './api'
-import type { ReliabilityDiff, ReliabilityFinding, ReliabilityHistory, ReliabilityReport } from './api'
+import { useEffect, useMemo, useState } from 'react'
+import { date, listSignalSources } from './api'
+import type { ReliabilityDiff, ReliabilityFinding, ReliabilityHistory, ReliabilityReport, SignalSource } from './api'
 import { toast } from './toast'
 import { addCompareCompany } from './compareSelectionStore'
 import { SignalCollector, signalStatusNames } from './SignalSources'
@@ -54,6 +55,30 @@ function gapAction(line: string): 'local' | 'extract' | 'material' {
 
 const gapActionNames: Record<'local' | 'extract' | 'material', string> = {
   local: ACTION_INFO.local.name, extract: ACTION_INFO.extract.name, material: ACTION_INFO.material.name,
+}
+
+// 暂不出分的三态（2026-11-17）：缺口行是「没采过」还是「闸门不够」决定下一步动作完全不同。
+// 只做导航提示，不改后端口径——数字怎么算仍只由 rubric 说了算。判定依据：
+// - 后端缺口文案带「尚无来源」= 该规则当前没有任何信号；
+//   此时若至少一个喂这条规则的来源可用（ready）→ 没采过（一键可得），
+//   全部不可用（未启用/暂停/未配置模型）→ 无免费来源。
+// - 其他文案（闸门说明 / 已过期 / 数值不完整 / 仅自述）→ 已采到信号但没过闸。
+const GAP_STATES: Record<'fresh' | 'gate' | 'blocked', string> = {
+  fresh: '没采过', gate: '闸门不够', blocked: '无免费来源',
+}
+const GAP_STATE_TIPS: Record<'fresh' | 'gate' | 'blocked', string> = {
+  fresh: '有可用的采集来源，但这条规则还没有任何信号：点右侧动作采集一轮即可。',
+  gate: '已经采到信号，但样本量或口径没过出分闸门：按缺口文案补齐对应材料。',
+  blocked: '喂这条规则的来源当前全部不可用（已关闭、暂停或未配置模型）：先到设置里启用来源。',
+}
+function gapRule(line: string): string {
+  const index = line.indexOf('（')
+  return index > 0 ? line.slice(0, index) : ''
+}
+type GapState = 'fresh' | 'gate' | 'blocked'
+function gapState(line: string, collectable: Record<string, boolean>): GapState {
+  if (!line.includes('（尚无来源）')) return 'gate'
+  return collectable[gapRule(line)] ? 'fresh' : 'blocked'
 }
 
 // 单一强调色的连续色阶：只有同一色相的深浅，分数低不等于变红，也不出现警示标签。
@@ -168,9 +193,10 @@ function Finding({ finding, onOpenEvidence }: { finding: ReliabilityFinding; onO
   </li>
 }
 
-function Gap({ line, busy, onAction }: { line: string; busy: boolean; onAction: (action: 'local' | 'extract' | 'material') => void }) {
+function Gap({ line, state, busy, onAction }: { line: string; state: GapState; busy: boolean; onAction: (action: 'local' | 'extract' | 'material') => void }) {
   const action = gapAction(line)
   return <li className="reliability-gap">
+    <span className={`reliability-gap-state ${state}`} title={GAP_STATE_TIPS[state]}>{GAP_STATES[state]}</span>
     <span>{line}</span>
     <button type="button" className="text-button" disabled={Boolean(busy)} title={ACTION_INFO[action].tip} onClick={() => onAction(action)}>
       {gapActionNames[action]}
@@ -231,6 +257,15 @@ export function CompanyReference({ report, history, busy, loading, action, compa
   onAgentCollect?: (prompt: string) => void
 }) {
   const score = report?.score ?? null
+  // 三态判定需要知道「哪些来源当前可用」：来源清单与 SignalCollector 同一份接口，失败静默降级
+  // （标签回退为「闸门不够」不成立时也只会把「没采过」误标成「无免费来源」，缺口文案仍在）。
+  const [sources, setSources] = useState<Record<string, SignalSource> | null>(null)
+  useEffect(() => { void listSignalSources().then(data => setSources(data.sources)).catch(() => setSources(null)) }, [])
+  const collectable = useMemo(() => {
+    const map: Record<string, boolean> = {}
+    for (const item of Object.values(sources ?? {})) for (const rule of item.rules ?? []) map[rule] = Boolean(map[rule]) || item.ready
+    return map
+  }, [sources])
   // 暂不出分的维度清单 + 给 Agent 的预填指令：缺口文案取各维度第一条 missing（去掉规则名前缀）。
   const unscored = (report?.dimensions ?? []).filter(item => item.score === null)
   const agentPrompt = unscored.length ? [
@@ -285,7 +320,10 @@ export function CompanyReference({ report, history, busy, loading, action, compa
     {unscored.length > 0 && report ? <div className="reliability-coach">
       <div>
         <strong>{unscored.length} 个维度暂不出分</strong>
-        <ul>{unscored.map(item => <li key={item.dimension}><b>{item.label}</b>：{DIMENSION_CHANNELS[item.dimension] || '缺口与口径见卡片内说明'}</li>)}</ul>
+        <ul>{unscored.map(item => {
+          const state = gapState(item.missing[0] || '', collectable)
+          return <li key={item.dimension}><span className={`reliability-gap-state ${state}`} title={GAP_STATE_TIPS[state]}>{GAP_STATES[state]}</span><b>{item.label}</b>：{DIMENSION_CHANNELS[item.dimension] || '缺口与口径见卡片内说明'}</li>
+        })}</ul>
       </div>
       {onAgentCollect ? <button type="button" className="button secondary small" disabled={Boolean(busy)}
         onClick={() => onAgentCollect(agentPrompt)}>让 Agent 协同补齐</button> : null}
@@ -304,8 +342,8 @@ export function CompanyReference({ report, history, busy, loading, action, compa
           ? <ul>{item.findings.map(finding => <Finding key={`${finding.rule}-${finding.evidence_id}`} finding={finding} onOpenEvidence={onOpenEvidence} />)}</ul>
           : <p className="tiny-label">该维度暂无可展示的依据。</p>}
         {item.missing.length ? <ul className="reliability-gaps">
-          <li className="reliability-gap-title"><span className="tiny-label">缺口（每条都可以直接行动）</span></li>
-          {item.missing.map(line => <Gap key={line} line={line} busy={Boolean(busy)} onAction={gapActionHandler} />)}
+          <li className="reliability-gap-title"><span className="tiny-label">缺口（每条都可以直接行动；标签说明卡在哪一步）</span></li>
+          {item.missing.map(line => <Gap key={line} line={line} state={gapState(line, collectable)} busy={Boolean(busy)} onAction={gapActionHandler} />)}
         </ul> : null}
       </details>
     ))}</div>

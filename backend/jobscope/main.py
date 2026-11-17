@@ -476,6 +476,12 @@ def create_app(data_dir=None):
                 validate_source(store, source)
         except SourceUnavailable as exc:
             raise HTTPException(exc.status_code, str(exc)) from None
+        # 一键完备（2026-11-17）：默认研究自动追加 AI 行业判断（manual_only 的额度成本由用户
+        # 显式关闭 with_industry_llm 或在设置里禁用来源来豁免）。显式 signal_sources 是用户的
+        # 指名选择（含空列表），完全尊重、绝不追加。只在来源当前可用时排队；执行时
+        # collect_source 会再校验一次，禁用/未配置模型的任务收尾为 skipped，不阻塞全链。
+        if data.signal_sources is None and data.with_industry_llm and store.ready('llm_industry'):
+            selected = (*selected, 'llm_industry')
         selected = tuple(sorted(selected, key=lambda source: SIGNAL_SOURCES[source]['transport'] == 'local'))
         # Keep existing detail supplementation before signals and local statistics.
         detail_ids = [job['id'] for job in collect_service.company_pending_details(repo, company)]
@@ -487,6 +493,11 @@ def create_app(data_dir=None):
             tasks.append(detail_task)
         signal_tasks = [(source, repo.create_task('signal_' + source, company)) for source in selected]
         tasks.extend(task for _, task in signal_tasks)
+        # 材料抽取排在信号采集之后、重算之前：本轮快查卡片与公告要喂给抽取器出 team_size 等
+        # 信号，抽取完再重算，报告一次到位（单岗完整路径不再要用户手动点「提取资料数字」）。
+        extract_task = repo.create_task('reliability_extract', company) if data.with_extract else None
+        if extract_task is not None:
+            tasks.append(extract_task)
         compute_task = repo.create_task('reliability_compute', company)
         tasks.append(compute_task)
 
@@ -520,6 +531,14 @@ def create_app(data_dir=None):
                     except Exception:
                         logger.exception('信号来源采集失败：%s「%s」', source, company)
                         fail(task, '该信号来源采集失败，已跳过；不影响其他来源')
+                if extract_task is not None:
+                    try:
+                        from .reliability.service import run_signal_extract
+                        # run_signal_extract reuses this queued task; skipped（无可抽材料）属正常终态。
+                        run_signal_extract(repo, company, task=extract_task)
+                    except Exception:
+                        logger.exception('材料抽取失败：「%s」', company)
+                        fail(extract_task, '材料抽取失败，可单独重试；不影响已采集的信号')
                 try:
                     from .reliability.service import ReliabilityService
                     ReliabilityService(repo).recompute(company, refresh_local=False)
@@ -584,6 +603,39 @@ def create_app(data_dir=None):
                  browser_collectable=source in collectable)
             for source, item in connectors.SOURCES.items()]}
 
+    # 来源健康度（2026-11-17）：任务状态分三桶，口径与页面 Badge 一致——completed/success 算成功；
+    # needs_login / needs_verification / backoff / partial / skipped / degraded / unsupported 是
+    # 「未完成」（要用户动手或来源整体不可用）；其余（failed）算失败。消息原样引用任务记录，
+    # 这里不产出任何新的诊断结论，也不猜失败原因。
+    HEALTH_OK = {'completed', 'success'}
+    HEALTH_ATTENTION = {'needs_login', 'needs_verification', 'backoff', 'partial', 'skipped', 'degraded', 'unsupported'}
+
+    @app.get('/api/sources/health')
+    def sources_health():
+        """按最近 100 次任务聚合各来源的成功/未完成/失败分布与最近结果。
+
+        没有任务记录的来源不出现（没跑过就不装作健康或异常）；stats 按「最近一次任务时间」倒序，
+        最近成功时间取窗口内最后一次成功任务。"""
+        stats: dict[str, dict] = {}
+        for task in reversed(repo.tasks()):
+            item = stats.setdefault(task['source'], dict(source=task['source'], total=0, ok=0, attention=0,
+                                                         failed=0, last_run_at='', last_ok_at='',
+                                                         last_status='', last_message=''))
+            item['total'] += 1
+            item['last_run_at'] = task.get('created_at', '')
+            item['last_status'] = task.get('status', '')
+            item['last_message'] = task.get('message', '')
+            status = task.get('status', '')
+            if status in HEALTH_OK:
+                item['ok'] += 1
+                item['last_ok_at'] = task.get('created_at', '')
+            elif status in HEALTH_ATTENTION:
+                item['attention'] += 1
+            else:
+                item['failed'] += 1
+        result = sorted(stats.values(), key=lambda item: item['last_run_at'], reverse=True)
+        return {'window': '最近 100 次任务', 'sources': result}
+
     @app.get('/api/cities')
     def cities():
         # 拼音是城市名的属性，不是来源的属性，所以整表共用一份。
@@ -619,15 +671,66 @@ def create_app(data_dir=None):
     @app.get("/api/jobs")
     def jobs(q: str = Query(default="", max_length=300), location: str = Query(default="", max_length=300), source: str = Query(default="", max_length=100),
              salary_min: float | None = Query(default=None, ge=0), salary_max: float | None = Query(default=None, ge=0),
-             starred: bool = Query(default=False), page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
+             starred: bool = Query(default=False), pipeline_status: str = Query(default="", max_length=20),
+             page: int = Query(1, ge=1), page_size: int = Query(20, ge=1, le=100)):
         # 列表卡片只渲染摘要：description 裁剪后整页响应从 MB 级降到几十 KB，全文走 /jobs/{id}。
-        return repo.page('jobs', page, page_size, q=q, location=location, source=source, salary_min=salary_min, salary_max=salary_max, starred=starred, trim_description=600)
+        return repo.page('jobs', page, page_size, q=q, location=location, source=source, salary_min=salary_min,
+                         salary_max=salary_max, starred=starred, pipeline_status=pipeline_status, trim_description=600)
+
+    # 机会管线回顾：纯本地统计。路径含两段（/jobs/pipeline/review），不会撞上单段的 /jobs/{job_id}。
+    PIPELINE_ACTIVE = {'interested', 'applied', 'interviewing'}
+    PIPELINE_REVIEW_NEW_DAYS = 7
+    PIPELINE_REVIEW_STALE_DAYS = 14
+    PIPELINE_REVIEW_CAP = 8
+
+    @app.get('/api/jobs/pipeline/review')
+    def pipeline_review():
+        """收藏篮子的回顾摘要：状态计数、本周新增收藏、本周状态变化、超期未跟进。
+
+        跟进口径只看本项目已存数据：活跃状态（意向/已投递/面试中）距最近一次状态变化超过
+        14 天就提醒看一眼进展；offer 与归档不算待跟进。列表各截前 8 条，按时间排序。"""
+        from datetime import datetime, timezone
+        reference = datetime.now(timezone.utc)
+        items = []
+        for job in repo.jobs():
+            status = job.get('pipeline_status')
+            if not status:
+                continue
+            changed = job.get('pipeline_status_changed_at') or ''
+            starred_at = job.get('starred_at') or ''
+            def age(value):
+                try:
+                    return (reference - datetime.fromisoformat(str(value))).total_seconds()
+                except (TypeError, ValueError):
+                    return None
+            items.append(dict(id=job['id'], title=job.get('title', ''), company=job.get('company', ''),
+                              status=status, changed_at=changed, starred_at=starred_at,
+                              changed_age=age(changed), starred_age=age(starred_at)))
+        totals: dict[str, int] = {}
+        for item in items:
+            totals[item['status']] = totals.get(item['status'], 0) + 1
+        week = PIPELINE_REVIEW_NEW_DAYS * 86400
+        stale_after = PIPELINE_REVIEW_STALE_DAYS * 86400
+        new_favorites = sorted([item for item in items if item['starred_age'] is not None and item['starred_age'] <= week],
+                               key=lambda item: item['starred_age'])[:PIPELINE_REVIEW_CAP]
+        recent_changes = sorted([item for item in items if item['changed_age'] is not None and item['changed_age'] <= week],
+                                key=lambda item: item['changed_age'])[:PIPELINE_REVIEW_CAP]
+        follow_ups = sorted([item for item in items if item['status'] in PIPELINE_ACTIVE
+                             and item['changed_age'] is not None and item['changed_age'] > stale_after],
+                            key=lambda item: -item['changed_age'])[:PIPELINE_REVIEW_CAP]
+        def strip(item):
+            return {key: value for key, value in item.items() if key not in ('changed_age', 'starred_age')}
+        return {'totals': totals, 'stale_days': PIPELINE_REVIEW_STALE_DAYS,
+                'new_favorites': [strip(item) for item in new_favorites],
+                'recent_changes': [strip(item) for item in recent_changes],
+                'follow_ups': [strip(item) for item in follow_ups]}
 
     @app.get("/api/jobs/ids")
     def job_ids(q: str = Query(default="", max_length=300), location: str = Query(default="", max_length=300), source: str = Query(default="", max_length=100),
                 salary_min: float | None = Query(default=None, ge=0), salary_max: float | None = Query(default=None, ge=0),
-                starred: bool = Query(default=False)):
-        ids, total = repo.job_ids(q=q, location=location, source=source, salary_min=salary_min, salary_max=salary_max, starred=starred)
+                starred: bool = Query(default=False), pipeline_status: str = Query(default="", max_length=20)):
+        ids, total = repo.job_ids(q=q, location=location, source=source, salary_min=salary_min, salary_max=salary_max,
+                                  starred=starred, pipeline_status=pipeline_status)
         return {"ids": ids, "total": total}
 
     @app.patch("/api/jobs")

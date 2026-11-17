@@ -27,6 +27,9 @@ def stub_channels(monkeypatch):
     connectors.BROWSER_SOURCES = {'boss', 'zhaopin', '51job'}
     # 真身 job_details 在 company-research 收尾步会被 import（from .connectors import plain），stub 也得供得上。
     connectors.plain = lambda value='': str(value or '').strip()
+    # 信号采集（collect_source）会 import reliability.local → job_stats（from ..connectors import
+    # CITY_CODES），一键完备起信号源在本文件独立运行时也会真的被 import，stub 同样供得上。
+    connectors.CITY_CODES = {}
 
     def fake_collect(source, query, location='', limit=20, cache_dir=None):
         limits.setdefault(source, []).append(limit)
@@ -71,8 +74,11 @@ def test_company_research_runs_all_channels_and_isolates_failures(client, stub_c
     started = client.post('/api/company-research', json={'company': '海宁辰曦科技有限公司'})
     assert started.status_code == 200
     tasks = started.json()['tasks']
+    # 一键完备（2026-11-17）：默认研究含 AI 行业判断（llm 信号源先于本地统计）与材料抽取，
+    # 两者排在重算之前——抽取出的信号要进同一次报告。
     assert [t['source'] for t in tasks] == ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin',
-                                               'signal_jobscope_jobs', 'reliability_compute']
+                                               'signal_llm_industry', 'signal_jobscope_jobs',
+                                               'reliability_extract', 'reliability_compute']
     # 端点异步返回：后台线程执行渠道，stub 渠道瞬时完成属正常，只验证渠道规划与隔离。
 
     finals = {t['source']: wait_task(client, t['id']) for t in tasks}
@@ -86,6 +92,10 @@ def test_company_research_runs_all_channels_and_isolates_failures(client, stub_c
     assert finals['liepin']['status'] == 'completed'
     for source in ('boss', 'zhaopin', '51job'):
         assert finals[source]['status'] == 'needs_login'
+    # 未配置模型时 AI 行业判断与材料抽取如实收尾为 skipped，不阻塞重算。
+    assert finals['signal_llm_industry']['status'] == 'skipped'
+    assert finals['reliability_extract']['status'] == 'skipped'
+    assert finals['reliability_compute']['status'] == 'completed'
     evidence = client.get('/api/evidence?company=海宁辰曦科技有限公司&q=张三&page_size=5').json()
     assert evidence['total'] >= 1
 
@@ -143,7 +153,8 @@ def test_company_research_appends_job_details_finale(client, stub_channels, monk
     started = client.post('/api/company-research', json={'company': '海宁辰曦科技有限公司'})
     tasks = started.json()['tasks']
     assert [t['source'] for t in tasks] == ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin',
-                                               'job_details', 'signal_jobscope_jobs', 'reliability_compute']
+                                               'job_details', 'signal_llm_industry', 'signal_jobscope_jobs',
+                                               'reliability_extract', 'reliability_compute']
     final = wait_task(client, next(task['id'] for task in tasks if task['source'] == 'job_details'))
     assert wait_task(client, tasks[-1]['id'])['status'] == 'completed'
     assert final['status'] == 'completed'
@@ -155,7 +166,8 @@ def test_company_research_appends_job_details_finale(client, stub_channels, monk
     # 无待补岗位时不追加详情任务，信号与报告任务仍需执行。
     bare = client.post('/api/company-research', json={'company': '无岗位公司'}).json()['tasks']
     assert [t['source'] for t in bare] == ['cninfo', 'qcc', 'tyc', 'boss', 'zhaopin', '51job', 'liepin',
-                                               'signal_jobscope_jobs', 'reliability_compute']
+                                               'signal_llm_industry', 'signal_jobscope_jobs',
+                                               'reliability_extract', 'reliability_compute']
     assert wait_task(client, bare[-1]['id'])['status'] == 'completed'
 
 
@@ -168,7 +180,8 @@ def test_research_defaults_only_ready_available_free_and_never_paid(client, stub
     assert client.put('/api/reliability/sources/qcc', json=dict(mode='enabled', key='vendor-key',
                       url='http://127.0.0.1:9999/company')).status_code == 200
     tasks = client.post('/api/company-research', json={'company': '甲公司'}).json()['tasks']
-    assert [task['source'] for task in tasks if task['source'].startswith('signal_')] == ['signal_jobscope_jobs']
+    # 一键完备默认追加 AI 行业判断（免费、模型判断），本地统计仍垫底。
+    assert [task['source'] for task in tasks if task['source'].startswith('signal_')] == ['signal_llm_industry', 'signal_jobscope_jobs']
     assert wait_task(client, tasks[-1]['id'])['status'] == 'completed'
     local = wait_task(client, next(task['id'] for task in tasks if task['source'] == 'signal_jobscope_jobs'))
     assert local['status'] == 'completed' and local['count'] == 3
@@ -223,7 +236,9 @@ def test_research_empty_selection_and_disabled_default_do_not_collect(client, st
     monkeypatch.setattr(local, 'collect', lambda *args, **kwargs: pytest.fail('signals not selected'))
     for selection in ([], None):
         if selection is None:
+            # 默认选择路径下把两个免费信号源都关掉：一键完备的默认追加尊重设置状态，不再排队。
             assert client.put('/api/reliability/sources/jobscope_jobs', json={'mode': 'disabled'}).status_code == 200
+            assert client.put('/api/reliability/sources/llm_industry', json={'mode': 'disabled'}).status_code == 200
         tasks = client.post('/api/company-research', json=dict(company='甲公司', signal_sources=selection)).json()['tasks']
         assert not any(task['source'].startswith('signal_') for task in tasks)
         assert wait_task(client, tasks[-1]['id'])['status'] == 'completed'
@@ -290,6 +305,27 @@ def test_queued_source_is_rechecked_after_disable_without_calling_paid(client, s
     signal = wait_task(client, next(task['id'] for task in tasks if task['source'] == 'signal_qcc'))
     assert signal['status'] == 'skipped' and signal['count'] == 0
     assert '未启用' in signal['message']
+
+
+def test_sources_health_buckets_and_empty_window(client, stub_channels):
+    """来源健康度：空库返回空表；跑完一轮一键调研后，成败分桶与任务记录口径一致——
+    单渠道失败只计入自己，needs_login 类状态计「未完成」而非失败。"""
+    assert client.get('/api/sources/health').json()['sources'] == []
+    started = client.post('/api/company-research', json={'company': '海宁辰曦科技有限公司'})
+    for item in started.json()['tasks']:
+        wait_task(client, item['id'])
+    data = client.get('/api/sources/health').json()
+    assert data['window'] == '最近 100 次任务'
+    by_source = {item['source']: item for item in data['sources']}
+    assert by_source['cninfo']['failed'] >= 1 and by_source['cninfo']['ok'] == 0
+    assert by_source['tyc']['failed'] >= 1
+    assert by_source['qcc']['ok'] >= 1 and by_source['liepin']['ok'] >= 1
+    for source in ('boss', 'zhaopin', '51job'):
+        assert by_source[source]['attention'] >= 1 and by_source[source]['failed'] == 0
+    # 最近成功时间与消息都引用任务记录；排序按最近一次任务时间倒序（同秒任务并列不破坏单调性）。
+    runs = [item['last_run_at'] for item in data['sources']]
+    assert runs == sorted(runs, reverse=True)
+    assert all(item['last_message'] for item in data['sources'])
 
 
 def test_worker_signal_and_compute_failures_finalize_all_tasks(client, stub_channels, monkeypatch):

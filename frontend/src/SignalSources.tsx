@@ -9,7 +9,8 @@ export const signalTaskNames: Record<string, string> = {
   signal_qcc: '企查查付费 API', signal_tyc: '天眼查付费 API',
   signal_qcc_web: '企查查公开页', signal_tyc_web: '天眼查公开页', signal_aiqicha_web: '爱企查公开页',
   signal_llm_industry: 'AI 行业判断',
-  reliability_compute: '重算求职参考', qcc: '企查查公开网页', tyc: '天眼查公开网页',
+  reliability_compute: '重算求职参考', reliability_extract: '提取资料数字',
+  job_details: '完整岗位职责', qcc: '企查查公开网页', tyc: '天眼查公开网页',
 }
 export const signalStatusNames: Record<string, string> = {
   completed: '已完成', success: '已完成', partial: '部分完成', failed: '失败',

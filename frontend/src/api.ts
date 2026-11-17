@@ -5,7 +5,17 @@ export type Job = {
   description_status?: string; detail_collected_at?: string; detail_source_url?: string
   description_truncated?: boolean // 列表端点裁剪过正文；全文走 /jobs/{id}
   starred?: boolean; starred_at?: string // 收藏标记：重采集幸存，见 repository.save_job
+  pipeline_status?: 'interested' | 'applied' | 'interviewing' | 'offer' | 'archived' // 机会管线：与收藏同篮，重采集幸存
+  pipeline_status_changed_at?: string
 }
+// 机会管线回顾（收藏夹顶部）：纯本地统计，各列表截前 8 条。
+export type PipelineReview = {
+  totals: Record<string, number>; stale_days: number
+  new_favorites: { id: string; title: string; company: string; status: string; changed_at: string; starred_at: string }[]
+  recent_changes: { id: string; title: string; company: string; status: string; changed_at: string; starred_at: string }[]
+  follow_ups: { id: string; title: string; company: string; status: string; changed_at: string; starred_at: string }[]
+}
+export function getPipelineReview() { return api<PipelineReview>('/jobs/pipeline/review') }
 // 列表端点的 text 可能被裁剪（text_truncated），text_hit 是搜索命中处的全文摘要窗口。
 export type Evidence = { id: string; title: string; url: string; source: string; kind: string; company: string; text: string; collected_at: string; published_at: string | null; content_hash: string; text_truncated?: boolean; text_hit?: string }
 export type Source = { id: string; name: string; kind: string; transport_mode: string; status: string; description: string; login?: string; cities: string[]; hot: string[]; browser_collectable?: boolean }
@@ -135,7 +145,7 @@ export function getCompanyLayers(companies: string[], gate?: { own_min: number; 
   return api<{ companies: (CompareLayers & { company: string })[] }>(`/reliability/compare?companies=${encodeURIComponent(companies.join('|'))}${suffix}`)
 }
 // 岗位收藏与反查：PATCH 支持部分字段（starred 显式 false = 取消收藏）；批量反查 ids 与完整JD补采共用一条任务管道。
-export function patchJobs(ids: string[], patch: { starred?: boolean; location?: string; salary?: string; tags?: string[] }) { return api<{ updated: number }>('/jobs', { method: 'PATCH', body: JSON.stringify({ ids, ...patch }) }) }
+export function patchJobs(ids: string[], patch: { starred?: boolean; location?: string; salary?: string; tags?: string[]; pipeline_status?: 'interested' | 'applied' | 'interviewing' | 'offer' | 'archived' | '' }) { return api<{ updated: number }>('/jobs', { method: 'PATCH', body: JSON.stringify({ ids, ...patch }) }) }
 export function startDetailBatch(ids?: string[]) { return post<{ task: Task }>('/browser/details', ids ? { ids } : {}) }
 // ---- Boss 捕获篮导入（docs/design/boss-import.md）：当前页捕获 + 链接粘贴 → 篮子 → 确认入库 ----
 export type BossTab = { id: string; url: string; title: string }
@@ -190,6 +200,12 @@ export function listSignalSources() { return api<{ sources: Record<string, Signa
 export function saveSignalSource(id: string, body: SignalSourceDraft) {
   return api<SignalSource>(`/reliability/sources/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) })
 }
+// 来源健康度（数据与采集 → 来源健康）：后端按最近 100 次任务聚合，不产出诊断结论。
+export type SourceHealth = {
+  source: string; total: number; ok: number; attention: number; failed: number;
+  last_run_at: string; last_ok_at: string; last_status: string; last_message: string
+}
+export function getSourceHealth() { return api<{ window: string; sources: SourceHealth[] }>('/sources/health') }
 
 export function listConversations(scope: ChatScope = { kind: 'global' }) {
   const params = new URLSearchParams({ scope: scope.kind })
@@ -296,6 +312,13 @@ export function date(value: string | null) {
   if (!value) return '时间未知'
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+// 数据新鲜度（2026-11-17）：岗位/证据的采集时间超过阈值时，卡片给出「数据较旧」提示。
+// 求职数据半衰期短：岗位 30 天、公司证据 90 天；只提示不拦截，时间解析失败不判旧。
+export function isStale(value: string | null | undefined, days: number) {
+  if (!value) return false
+  const parsed = new Date(value)
+  return !Number.isNaN(parsed.getTime()) && Date.now() - parsed.getTime() > days * 86400000
 }
 export function safeUrl(url: string) { try { const parsed = new URL(url); return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : undefined } catch { return undefined } }
 // ---- 简历工坊：JD 定向优化、版本管理、模板预览与多格式导出 ----

@@ -148,8 +148,9 @@ class Repository:
                         item[field] = previous[field]
             # 收藏标记是用户意图不是采集数据：重采集整包覆盖 payload 时必须幸存，
             # 否则一次日常刷新就把用户标过的岗位全部静默取消收藏。
+            # 机会管线状态（2026-11-17）同为用户意图，随收藏一起幸存。
             if previous:
-                for field in ('starred', 'starred_at'):
+                for field in ('starred', 'starred_at', 'pipeline_status', 'pipeline_status_changed_at'):
                     if field in previous:
                         item[field] = previous[field]
             item['platform_tags'] = list(dict.fromkeys(data.get('platform_tags', data.get('tags', []))))
@@ -320,7 +321,7 @@ class Repository:
             return [json.loads(row[0]) for row in conn.execute("SELECT payload FROM tasks ORDER BY rowid DESC LIMIT 100")]
 
     @staticmethod
-    def _job_filters(q='', location='', source='', salary_min=None, salary_max=None, starred=False):
+    def _job_filters(q='', location='', source='', salary_min=None, salary_max=None, starred=False, pipeline_status=''):
         """薪资区间按重叠判定：只要岗位月薪范围与给定区间有交集就算命中，面议/年薪等无法解析的岗位自然落选。"""
         where, params = [], []
         if q:
@@ -341,11 +342,17 @@ class Repository:
         if starred:
             # JSON true 经 json_extract 折算成 1：只认显式收藏，旧行（字段缺失=NULL）与已取消（false=0）都不算。
             where.append("json_extract(payload,'$.starred')=1")
+        # 机会管线（2026-11-17）：'tracked' 是全部在管岗位，其余按状态精确匹配；空串不过滤。
+        if pipeline_status == 'tracked':
+            where.append("json_extract(payload,'$.pipeline_status') IS NOT NULL")
+        elif pipeline_status:
+            where.append("json_extract(payload,'$.pipeline_status')=?")
+            params.append(pipeline_status)
         return where, params
 
-    def job_ids(self, q='', location='', source='', salary_min=None, salary_max=None, starred=False, limit=20000):
+    def job_ids(self, q='', location='', source='', salary_min=None, salary_max=None, starred=False, limit=20000, pipeline_status=''):
         """供“选择筛选结果全部”：同一套筛选条件返回全部命中 id。"""
-        where, params = self._job_filters(q, location, source, salary_min, salary_max, starred)
+        where, params = self._job_filters(q, location, source, salary_min, salary_max, starred, pipeline_status)
         clause = ' WHERE ' + ' AND '.join(where) if where else ''
         with self.connection() as conn:
             total = conn.execute('SELECT count(*) FROM jobs' + clause, params).fetchone()[0]
@@ -353,8 +360,11 @@ class Repository:
         return [row['id'] for row in rows], total
 
     def update_jobs(self, ids, patch):
-        """批量规范化字段（地点/薪资/标签/收藏）。原位改 payload：id 不重排、不新增证据快照。"""
-        fields = {key: patch[key] for key in ('location', 'salary', 'tags', 'starred') if key in patch}
+        """批量规范化字段（地点/薪资/标签/收藏/管线状态）。原位改 payload：id 不重排、不新增证据快照。
+
+        管线状态（2026-11-17）与收藏共用一个篮子：给未收藏岗位设状态会自动收藏（进入管理视图）；
+        取消收藏时管线状态一并清掉（离开篮子即离开管线）。'' 表示显式移出管线。"""
+        fields = {key: patch[key] for key in ('location', 'salary', 'tags', 'starred', 'pipeline_status') if key in patch}
         if not fields:
             return 0
         updated = 0
@@ -375,6 +385,18 @@ class Repository:
                     item['starred_at'] = now()
                 elif 'starred' in fields:
                     item.pop('starred_at', None)
+                    # 取消收藏即移出管线：状态与变化时间跟着清掉，避免留下不可见的幽灵跟踪。
+                    item.pop('pipeline_status', None)
+                    item.pop('pipeline_status_changed_at', None)
+                if fields.get('pipeline_status') == '':
+                    item.pop('pipeline_status', None)
+                    item.pop('pipeline_status_changed_at', None)
+                elif fields.get('pipeline_status'):
+                    item['pipeline_status'] = fields['pipeline_status']
+                    item['pipeline_status_changed_at'] = now()
+                    if not item.get('starred'):
+                        item['starred'] = True
+                        item['starred_at'] = now()
                 if 'salary' in fields:
                     item.update(self._salary_numbers(item['salary']))
                 item['evidence_ids'] = []
@@ -448,7 +470,7 @@ class Repository:
 
     def page(self, resource, page=1, page_size=20, q='', location='', source='', salary_min=None, salary_max=None,
              company=None, job_id=None, linked_job_id=None, include_job_postings=True,
-             trim_description=None, trim_text=None, starred=False):
+             trim_description=None, trim_text=None, starred=False, pipeline_status=''):
         """Bounded SQL queries; filters run before count and pagination.
 
         trim_description / trim_text 仅供列表 HTTP 端点裁剪大字段（前端列表只渲染摘要，
@@ -457,7 +479,7 @@ class Repository:
         where, params = [], []
         if resource == 'jobs':
             table, order = 'jobs', 'updated_at DESC, id DESC'
-            where, params = self._job_filters(q, location, source, salary_min, salary_max, starred)
+            where, params = self._job_filters(q, location, source, salary_min, salary_max, starred, pipeline_status)
         elif resource == 'evidence':
             table, order = 'evidence', 'rowid DESC'
             if not include_job_postings:

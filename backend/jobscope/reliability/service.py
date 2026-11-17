@@ -60,12 +60,13 @@ def company_jd_materials(repo, identity):
             if item['kind'] == 'job_posting' and item['id'] in wanted and item['text'].strip()]
 
 
-def run_signal_extract(repo, company, credit_code='', *, limit=12, max_tokens=1200):
+def run_signal_extract(repo, company, credit_code='', *, limit=12, max_tokens=1200, task=None):
     """把已存材料喂给抽取器：手动导入的公告与材料不会自己变成信号。
 
-    页面端点 /signals/extract 与 Agent 的 signal_extract 工具共用这一条管线：材料口径、
-    team_size_statement 的多条自述聚合、任务记录只写一处。公司不存在/名称为空时抛出的
-    ValueError 是写给用户看的中文说明，HTTP 层与 Agent 工具各自转述。
+    页面端点 /signals/extract、Agent 的 signal_extract 工具与一键完备编排共用这一条管线：
+    材料口径、team_size_statement 的多条自述聚合、任务记录只写一处。调用方可以传入已排队
+    的任务（一键完备在响应前建任务，前端才能轮询到这一步），不传则自建，两种入口语义一致。
+    公司不存在/名称为空时抛出的 ValueError 是写给用户看的中文说明，HTTP 层与 Agent 工具各自转述。
     """
     from . import extract
     from .extract import aggregate_team_size
@@ -78,7 +79,7 @@ def run_signal_extract(repo, company, credit_code='', *, limit=12, max_tokens=12
     materials = list(materials.values())[:limit]
     outcome = extract.extract(identity['name'], materials, max_tokens=max_tokens) if materials \
         else dict(status='skipped', message='该公司还没有可抽取的非岗位材料。', signals=[], raw='')
-    task = repo.create_task('reliability_extract', identity['name'])
+    task = task or repo.create_task('reliability_extract', identity['name'])
     kinds = {item['id']: item['kind'] for item in materials}
     # team_size_statement 的多条原始自述在这里聚合成一条信号：中位数与相容数由代码算，
     # 模型只交原始数字；repository.signals() 每条规则只留最新一条，聚合必须发生在落库前。

@@ -91,6 +91,10 @@ class CompanyResearchInput(RequestModel):
     limit: int = Field(default=10, ge=1, le=200)
     # None selects callable, verified free sources; [] opts out of signal collection.
     signal_sources: list[Annotated[str, Field(min_length=2, max_length=40)]] | None = Field(default=None, max_length=6)
+    # 一键完备的两个收尾步骤（2026-11-17）：材料抽取把公告/完整JD里可抽的数字变成信号，
+    # AI 行业判断补行业前景维度。两者默认执行；来源被禁用时任务照常收尾为 skipped，不静默。
+    with_extract: bool = Field(default=True)
+    with_industry_llm: bool = Field(default=True)
 
 
 class MergeInput(RequestModel):
@@ -149,6 +153,8 @@ class JobBatchUpdate(RequestModel):
     salary: str | None = Field(default=None, max_length=300)
     tags: list[Annotated[str, Field(max_length=100)]] | None = Field(default=None, max_length=50)
     starred: bool | None = Field(default=None)
+    # 机会管线状态（2026-11-17）：与收藏共用一个篮子。'' 显式移出管线；None 表示不改。
+    pipeline_status: Literal['interested', 'applied', 'interviewing', 'offer', 'archived', ''] | None = Field(default=None)
 
 
 class JobBatchDelete(RequestModel):

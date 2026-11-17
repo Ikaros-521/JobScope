@@ -132,3 +132,92 @@ def test_detail_batch_endpoint_validates_ids(client):
 def repo_pending(repo):
     from jobscope.job_details import pending_jobs
     return pending_jobs(repo)
+
+
+def test_pipeline_status_auto_stars_and_filters(client):
+    """机会管线：给未收藏岗位设状态自动收藏；'' 显式移出管线但保留收藏；筛选参数可用。"""
+    repo = client.app.state.repo
+    job = repo.save_job(make_job(external_id='pipe-1'), 'boss')
+
+    # 设状态即入篮：自动收藏，状态与变化时间落库。
+    client.patch('/api/jobs', json={'ids': [job['id']], 'pipeline_status': 'applied'})
+    item = repo.job(job['id'])
+    assert item['pipeline_status'] == 'applied' and item['pipeline_status_changed_at']
+    assert item['starred'] is True and item['starred_at']
+
+    # 收藏筛选 + 管线筛选（单状态与 tracked）。
+    assert client.get('/api/jobs', params={'starred': 'true'}).json()['total'] == 1
+    assert client.get('/api/jobs', params={'pipeline_status': 'applied'}).json()['total'] == 1
+    assert client.get('/api/jobs', params={'pipeline_status': 'tracked'}).json()['total'] == 1
+    assert client.get('/api/jobs', params={'pipeline_status': 'offer'}).json()['total'] == 0
+
+    # 状态迁移盖新时间戳；'' 移出管线但收藏保留。
+    client.patch('/api/jobs', json={'ids': [job['id']], 'pipeline_status': 'interviewing'})
+    moved = repo.job(job['id'])
+    assert moved['pipeline_status'] == 'interviewing'
+    client.patch('/api/jobs', json={'ids': [job['id']], 'pipeline_status': ''})
+    cleared = repo.job(job['id'])
+    assert 'pipeline_status' not in cleared and 'pipeline_status_changed_at' not in cleared
+    assert cleared['starred'] is True
+
+    # 非法状态名 422。
+    assert client.patch('/api/jobs', json={'ids': [job['id']], 'pipeline_status': 'hired'}).status_code == 422
+
+
+def test_unstarring_clears_pipeline_state(client):
+    """取消收藏即移出管线：状态与变化时间一并清掉，不留下不可见的幽灵跟踪。"""
+    repo = client.app.state.repo
+    job = repo.save_job(make_job(external_id='pipe-2'), 'boss')
+    client.patch('/api/jobs', json={'ids': [job['id']], 'starred': True, 'pipeline_status': 'interested'})
+    assert repo.job(job['id'])['pipeline_status'] == 'interested'
+
+    client.patch('/api/jobs', json={'ids': [job['id']], 'starred': False})
+    item = repo.job(job['id'])
+    assert item['starred'] is False
+    assert 'pipeline_status' not in item and 'pipeline_status_changed_at' not in item
+
+
+def test_pipeline_recollection_preserves_state(client):
+    """重采集整包覆盖 payload：管线状态是用户意图，与收藏一样必须幸存。"""
+    repo = client.app.state.repo
+    job = repo.save_job(make_job(external_id='pipe-3'), 'boss')
+    client.patch('/api/jobs', json={'ids': [job['id']], 'pipeline_status': 'applied'})
+    recollected = repo.save_job(make_job(external_id='pipe-3', salary='25-35K'), 'boss')
+    assert recollected['pipeline_status'] == 'applied'
+    assert recollected['pipeline_status_changed_at'] == repo.job(job['id'])['pipeline_status_changed_at']
+
+
+def test_pipeline_review_counts_and_follow_ups(client, monkeypatch):
+    """回顾端点：状态计数、本周新增/变化、活跃状态超 14 天进待跟进。时间偏移用可变的 now 间接控制——
+    这里直接改 payload 里的时间戳更直白：早于阈值的 changed_at 由 datetime 解析得到。"""
+    from datetime import datetime, timedelta, timezone
+    repo = client.app.state.repo
+    old = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    fresh = datetime.now(timezone.utc).isoformat()
+
+    stale = repo.save_job(make_job(title='旧投递', external_id='rev-1'), 'boss')
+    repo.update_jobs([stale['id']], {'pipeline_status': 'applied'})
+    with repo.connection() as conn:
+        row = conn.execute('SELECT payload FROM jobs WHERE id=?', (stale['id'],)).fetchone()
+        # 状态变化与收藏都按 30 天前算：这岗位是「早就进了篮子、一直没动静」的典型待跟进样本。
+        item = {**__import__('json').loads(row['payload']), 'pipeline_status_changed_at': old, 'starred_at': old}
+        conn.execute('UPDATE jobs SET payload=? WHERE id=?', (__import__('json').dumps(item, ensure_ascii=False), stale['id']))
+
+    recent = repo.save_job(make_job(title='新收藏', external_id='rev-2'), 'boss')
+    repo.update_jobs([recent['id']], {'pipeline_status': 'interested'})
+
+    archived = repo.save_job(make_job(title='已归档', external_id='rev-3'), 'boss')
+    repo.update_jobs([archived['id']], {'pipeline_status': 'archived'})
+    with repo.connection() as conn:
+        row = conn.execute('SELECT payload FROM jobs WHERE id=?', (archived['id'],)).fetchone()
+        item = {**__import__('json').loads(row['payload']), 'pipeline_status_changed_at': old}
+        conn.execute('UPDATE jobs SET payload=? WHERE id=?', (__import__('json').dumps(item, ensure_ascii=False), archived['id']))
+
+    data = client.get('/api/jobs/pipeline/review').json()
+    assert data['stale_days'] == 14
+    assert data['totals'] == {'applied': 1, 'interested': 1, 'archived': 1}
+    ids = lambda group: [item['id'] for item in data[group]]
+    assert stale['id'] in ids('follow_ups')
+    assert archived['id'] not in ids('follow_ups')  # 归档不算待跟进
+    assert recent['id'] in ids('recent_changes') and recent['id'] in ids('new_favorites')
+    assert stale['id'] not in ids('new_favorites')
