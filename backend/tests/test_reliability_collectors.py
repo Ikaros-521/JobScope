@@ -1021,3 +1021,63 @@ def test_historical_case_rows_never_pass_for_current_counts(monkeypatch, tmp_pat
     # 页面只有历史口径的涉诉行：不落任何涉诉信号，参保单期只进消息。
     assert all(item['rule'] != 'judicial_case_ratio' for item in outcome['signals'])
     assert '单期' in outcome['message']
+
+
+# rubric-9 字段扩展回放（qcc 2026-11-17 实测）：登记状态行 + 风险区格四行 + 行政处罚行。
+QCC_FULL_HTML = ('<span>登记状态 存续 成立日期 2001-11-30</span>\n'
+                 '<span>参保人数 11616 (2025年报) 分支机构参保人数 5510 (2025年报)</span>\n'
+                 '<a>司法案件 361</a><span>失信被执行人 0 被执行人 0 限制高消费 0 终本案件 0 '
+                 '裁判文书 285 立案信息 205 开庭公告 307 法院公告 45 送达公告 8 '
+                 '强制清算与破产案件 0 股权冻结 0 司法拍卖 1 '
+                 '行政处罚 0 经营异常 0 严重违法 0 环保处罚 0 税务非正常户 0 欠税公告 0 '
+                 '历史裁判文书 64 历史行政处罚 3 历史经营异常 1 历史被执行人 7</span>' + PAD)
+
+
+def test_qcc_credit_risk_registration_and_penalty_from_risk_grid(monkeypatch, tmp_path):
+    """登记状态/信用风险/行政处罚三条新信号：正常状态 flag=1，四行全零 flag=0，
+    历史行（历史行政处罚 3 等）不参与任何现行计数。"""
+    registry, tab = commercial_replay('qcc_web', [CARD], {CARD_HREF: QCC_FULL_HTML})
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    outcome = collectors.collect('qcc_web', NAME, browser_module=browser, data_dir=tmp_path)
+    rules = {item['rule']: item['value'] for item in outcome['signals']}
+    assert rules['registration_status'] == {'flag': 1}
+    assert rules['credit_risk'] == {'flag': 0}
+    assert rules['admin_penalty'] == {'count': 0}
+    assert 'insured_headcount_trend' not in rules  # 单期参保不出趋势（既有口径）
+    assert '登记状态' in outcome['message'] and '信用风险名单' in outcome['message']
+
+
+def test_qcc_credit_risk_requires_all_four_rows_visible(monkeypatch, tmp_path):
+    """四行缺任何一行＝覆盖不全：不出 credit_risk，其余照常。"""
+    partial = ('<span>登记状态 存续</span>\n'
+               '<span>参保人数 11616 (2025年报) 分支机构参保人数 5510 (2025年报)</span>\n'
+               '<span>失信被执行人 0 被执行人 0 经营异常 0</span>' + PAD)  # 严重违法行缺失
+    registry, tab = commercial_replay('qcc_web', [CARD], {CARD_HREF: partial})
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    outcome = collectors.collect('qcc_web', NAME, browser_module=browser, data_dir=tmp_path)
+    assert all(item['rule'] != 'credit_risk' for item in outcome['signals'])
+    assert any(item['rule'] == 'registration_status' for item in outcome['signals'])
+
+
+def test_qcc_credit_risk_flags_on_any_hit_and_closed_status_scores_low(monkeypatch, tmp_path):
+    """任一名单命中 → flag=1；登记状态为吊销 → registration_status flag=0（终止经营）。"""
+    html = ('<span>登记状态 吊销</span>\n'
+            '<span>参保人数 500 (2024年报) 分支机构参保人数 120 (2024年报)</span>\n'
+            '<span>失信被执行人 2 被执行人 9 经营异常 1 严重违法 0 '
+            '行政处罚 5 历史行政处罚 9</span>' + PAD)
+    registry, tab = commercial_replay('qcc_web', [CARD], {CARD_HREF: html})
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    outcome = collectors.collect('qcc_web', NAME, browser_module=browser, data_dir=tmp_path)
+    rules = {item['rule']: item['value'] for item in outcome['signals']}
+    assert rules['registration_status'] == {'flag': 0}
+    assert rules['credit_risk'] == {'flag': 1}
+    assert rules['admin_penalty'] == {'count': 5}  # 历史行政处罚 9 不参与
+    from jobscope.reliability import rubric
+    assert rubric.RULES['credit_risk'].scorer({'flag': 1}) == 0.1
+    assert rubric.RULES['credit_risk'].scorer({'flag': 0}) == 0.85
+    assert rubric.RULES['admin_penalty'].scorer({'count': 0}) == 0.8
+    assert rubric.RULES['admin_penalty'].scorer({'count': 12}) == 0.25
+    assert rubric.RULES['registration_status'].scorer({'flag': 0}) == 0.1

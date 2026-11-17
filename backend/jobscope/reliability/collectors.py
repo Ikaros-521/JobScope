@@ -478,6 +478,28 @@ def _judicial_cases(plain):
     return JUDICIAL_PRIMARY_RE.search(str(plain or '')) or CASES_RE.search(str(plain or ''))
 
 
+# ── qcc 官方信用风险区格与登记状态（2026-11-17 实测校准，rubric-9 配套）──────────
+# 仅企查查详情页启用（tyc/aiqicha 的风险区行标签未逐站实测）。诚实闸门：四行**全部显式
+# 可见**才出 credit_risk（任一缺失＝覆盖不全，宁缺勿猜）；「历史X」行一律排除。
+REG_STATUS_RE = re.compile(r'登记状态\s*([\u4e00-\u9fa5A-Za-z]{1,10})')
+ACTIVE_STATES = ('存续', '续存', '在业', '在营', '开业', '迁入', '正常')
+CLOSED_STATES = ('注销', '吊销', '清算', '停业', '迁出', '关闭', '破产')
+RISK_ROWS = ('失信被执行人', '被执行人', '经营异常', '严重违法')
+COUNT_MAX = 1_000_000
+
+
+def _qcc_risk_rows(plain):
+    """官方风险行计数 (counts, complete)：只认显式「标签 N」且排除历史/失信前缀误配。"""
+    counts = {}
+    for label in RISK_ROWS:
+        lookbehind = '(?<!历史)(?<!失信)' if label == '被执行人' else '(?<!历史)'
+        match = re.search(lookbehind + label + r'[^0-9<]{0,6}(\d+)', plain)
+        if match is None or not 0 <= int(match[1]) <= COUNT_MAX:
+            return counts, False
+        counts[label] = int(match[1])
+    return counts, True
+
+
 DATE_RE = re.compile(r'(\d{4})[-/年]\s*(\d{1,2})[-/月]\s*(\d{1,2})日?')
 # 参保数字的人力合理区间：全国最大单一雇主参保约 230 万，上限放到 500 万；区间外一律不认。
 # 防的正是 2026-11-15 实测的事故：去标签后相邻数字粘连（「参保人数 51843」+「2025 年报」
@@ -768,6 +790,37 @@ def _commercial_pass(tab, keyword, source_id, on_status, data_dir, drafts):
                               f'登记的企业类型为「{entity_kind}」（取自{spec["name"]}公开页），'
                               f'按关键词确定性判定为{nature}；性质只是稳定性的一个侧面，不推断经营好坏。'))
         got.append('国企性质')
+    if source_id == 'qcc_web':
+        # 登记状态 + 官方信用风险区格（2026-11-17 qcc 实测校准）：确定性登记口径，行显式可见才产出。
+        reg = REG_STATUS_RE.search(plain)
+        if reg:
+            word = reg[1]
+            # 去标签可能把相邻字段粘进捕获值（「存续参保人数」）：截掉后续字段标签再判定。
+            for marker in ('成立日期', '注册资本', '法定代表人', '核准日期', '统一社会', '工商注册', '登记机关', '纳税人'):
+                if marker in word:
+                    word = word[:word.index(marker)]
+            word = word.strip()
+            state_flag = 1 if word in ACTIVE_STATES else (0 if word and any(item in word for item in CLOSED_STATES) else None)
+            if state_flag is not None:
+                drafts.append(_signal('registration_status', {'flag': state_flag}, '', str(tab.url or detail_url),
+                                      f'企查查公开页登记状态为「{word}」，按固定词表判定为'
+                                      f'{"正常存续" if state_flag else "已终止经营"}；'
+                                      '确定性登记口径，不推断经营好坏。'))
+                got.append('登记状态')
+        risk_counts, risk_complete = _qcc_risk_rows(plain)
+        if risk_complete:
+            risk_flag = 1 if any(risk_counts.values()) else 0
+            rows_text = '、'.join(f'{label} {count}' for label, count in risk_counts.items())
+            drafts.append(_signal('credit_risk', {'flag': risk_flag}, '', str(tab.url or detail_url),
+                                  f'企查查公开页风险区格四行显式可见（{rows_text}）；'
+                                  '官方名单在该来源的登记口径，不推断经营好坏。'))
+            got.append('信用风险名单')
+        penalty = re.search(r'(?<!历史)行政处罚[^0-9<]{0,6}(\d+)', plain)
+        if penalty and 0 <= int(penalty[1]) <= COUNT_MAX:
+            drafts.append(_signal('admin_penalty', {'count': int(penalty[1])}, '', str(tab.url or detail_url),
+                                  f'企查查公开页风险区格行政处罚计数 {penalty[1]} 条（历史口径行不参与）；'
+                                  '处罚成因与严重程度差异很大，计数只作登记，不推断经营好坏。'))
+            got.append('行政处罚计数')
     # 人员规模（工商照面登记口径）：一条「公司口径自述」，与 JD 团队自述一起进
     # team_size_statement 聚合（聚合发生在提取端点，会把这条已存原始形态纳入）。
     staff = _staff_range_value(plain)

@@ -91,10 +91,12 @@ SIGNAL_SOURCES = {
     'qcc_web': dict(name='企查查公开页', tier='free', transport='browser_page', implemented=True,
                     status='needs_verification',
                     rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio', 'soe_status',
-                           'team_size_statement'],
+                           'team_size_statement', 'credit_risk', 'admin_penalty', 'registration_status'],
                     description='无需接口密钥：用项目浏览器读企查查公开搜索卡片与公司页可见字段'
-                                '（成立日期、参保人数、司法案件数）。未登录可见字段有限，'
-                                '遇到登录/验证页面会停在前台等你处理；解析正则待实测校正。'),
+                                '（成立日期、参保人数、司法案件数、登记状态、官方信用风险名单、行政处罚）。'
+                                '2026-11-17 实测校准：免登录可读；参保区是主体+分支机构同年口径，'
+                                '单期不出趋势；风险区四行显式可见才判定信用风险。'
+                                '遇到登录/验证页面会停在前台等你处理。'),
     'tyc_web': dict(name='天眼查公开页', tier='free', transport='browser_page', implemented=True,
                     status='needs_verification',
                     rules=['company_age', 'insured_headcount_trend', 'judicial_case_ratio', 'soe_status',

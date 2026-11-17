@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from .limits import MIN_CITY_JOBS, MIN_COMPANY_JOBS
 from .models import Dimension, RuleFinding, SignalInput, can_stand_alone
 
-RUBRIC_VERSION = 'rubric-8'
+RUBRIC_VERSION = 'rubric-9'
 
 # assessment 才允许产生维度分。material 衡量的只是本项目手上有多少材料：
 # 把「9/10 条岗位能解析出月薪」算成薪资待遇 90 分，用户读到的是「薪资给得好」，这是静默的谎言。
@@ -132,6 +132,21 @@ RULES: dict[str, RuleSpec] = {
                            extract_hint='材料明确写明企业类型为国有独资/国有控股/全民所有制/国家出资等时 value 填 {"flag": 1}；'
                                         '明确为自然人投资/私营/外商投资等非国有类型填 {"flag": 0}；材料没写或拿不准就不要输出',
                            scorer=lambda v: 0.85 if v.get('flag') else 0.55),
+    # 2026-11-17 新增（qcc 实测校准配套，rubric-9）：官方信用风险名单。flag 由采集端从企查查
+    # 风险区格确定性判定——失信被执行人/被执行人/经营异常/严重违法四行**全部显式可见**才产出
+    # （任一 >0 → 1，全部为 0 → 0；行缺失＝覆盖不全，不出信号）。命中名单是重度负面；
+    # 全零是「该来源未列记录」的中性偏正，与 soe_status 的良性档一致。
+    'credit_risk': RuleSpec('stability', '条', 180, 'credit_risk', weight=0.8,
+                            gate_note='需要企查查公开页风险区格里失信被执行人/被执行人/经营异常/严重违法四行全部显式可见才能判定',
+                            scorer=lambda v: 0.1 if v.get('flag') else 0.85),
+    # 行政处罚计数（历史口径行不参与）：处罚成因与严重程度差异很大，计数分档刻意保守、权重最低。
+    'admin_penalty': RuleSpec('stability', '条', 365, 'admin_penalty', weight=0.5,
+                              gate_note='需要企查查公开页风险区格里显式的「行政处罚」行（历史口径行不参与）',
+                              scorer=lambda v: band(v.get('count') or 0, [(10, 0.25), (4, 0.45), (1, 0.6)], 0.8)),
+    # 登记状态（存续/在业 vs 注销/吊销/清算）：确定性词表判定，终止状态是重度负面。
+    'registration_status': RuleSpec('stability', '类', 180, 'registration_status', weight=0.5,
+                                    gate_note='需要企查查公开页「登记状态」字段（存续/在业等为正常，注销/吊销/清算等为终止）',
+                                    scorer=lambda v: 0.9 if v.get('flag') else 0.1),
     'salary_quote_coverage': RuleSpec('pay', '%', 120, 'salary_quote_coverage', kind=MATERIAL,
                                       scorer=lambda v: (v.get('known') or 0) / max(v.get('total') or 1, 1)),
     # R1：同城同层（职类/经验档/学历档一致）的报价中位数分层比值。样本闸门分两层：统计层

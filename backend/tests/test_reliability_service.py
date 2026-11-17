@@ -52,7 +52,7 @@ def test_a_company_without_signals_gets_no_number_but_still_lists_gaps(tmp_path)
     # 每个维度都必须自己说清楚为什么没有分数：有评价规则的列「尚无来源」，一条评价规则都没有的说明还没接入来源。
     gaps = {item['dimension']: item['missing'] for item in report['dimensions']}
     assert all(gaps[name] for name in gaps)
-    assert [line.split('（')[0] for line in gaps['stability']] == sorted(
+    assert sorted(line.split('（')[0] for line in gaps['stability']) == sorted(
         rule for rule, spec in RULES.items() if spec.dimension == 'stability' and spec.kind == 'assessment')
     assert all('尚无来源' in line for line in gaps['stability'])
     # 2026-11-15 起六个维度都有评价规则：缺口一律是「尚无来源」（industry 的评估规则是 AI 行业判断）。
