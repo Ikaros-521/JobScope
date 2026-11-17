@@ -75,6 +75,8 @@ export type ConversationConditions = { location: string; threshold: number | nul
 export type ConversationDetail = { conditions?: ConversationConditions; id: string; scope: { kind: string; company?: string; job_id?: string }; title: string; mode: ChatMode; model: string; llm_channel: string; permission_mode: PermissionMode; created_at: string; updated_at: string; messages: StoredMessage[]; active_run: ChatRunStatus | null; scope_expansions?: ScopeExpansion[]; lineage?: { source_conversation_id: string; action_id: string } | null }
 export type ChatRunStart = { run_id: string; conversation_id: string; user_message_id: string; title: string | null }
 export type AnalyzeRunStart = { run_id: string; reused: boolean; report?: Analysis }
+export type ReportSummary = { id: string; created_at: string; method: string; score: number | null }
+export type JobReports = { reports: ReportSummary[]; latest: Analysis | null }
 export type ModelProvider = { mode: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model: string; key_set: boolean; source: string; context_tokens?: number | null; saved_channel_id?: string }
 export type Channel = { id: string; name: string; url: string; protocol: 'openai' | 'anthropic'; models: string[]; embeddings: string[] | null; note?: string }
 export type ModelMetadata = { context_tokens: number; source: string; checked_at: string }
@@ -295,6 +297,9 @@ export function openAnalyzeStream(runId: string, onEvent: (event: string, data: 
 }
 export function startAnalyzeRun(jobId: string) { return post<AnalyzeRunStart>('/analyze/runs', { job_id: jobId }) }
 export function cancelAnalyzeRun(runId: string) { return post<ChatRunStatus>(`/analyze/runs/${encodeURIComponent(runId)}/cancel`) }
+// 评估报告回读：历史摘要（新→旧）+ 最近一份完整报告；详情按 id 取任意一份。
+export function listJobReports(jobId: string) { return api<JobReports>(`/jobs/${encodeURIComponent(jobId)}/reports`) }
+export function getJobReport(jobId: string, reportId: string) { return api<Analysis>(`/jobs/${encodeURIComponent(jobId)}/reports/${encodeURIComponent(reportId)}`) }
 
 export async function api<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`/api${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...options?.headers } })

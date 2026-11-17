@@ -377,6 +377,21 @@ class Repository:
         with self.connection() as conn:
             conn.execute("INSERT INTO reports VALUES (?,?,?,?)", (str(uuid.uuid4()), report["job_id"], now(), json.dumps(report, ensure_ascii=False)))
 
+    def list_reports(self, job_id):
+        """评估报告摘要（新→旧，created_at 同秒按写入序）+ 最近一份完整报告；查无则 ([], None)。"""
+        with self.connection() as conn:
+            rows = conn.execute('SELECT id, created_at, payload FROM reports WHERE job_id = ? ORDER BY created_at DESC, rowid DESC', (job_id,)).fetchall()
+        summaries = []
+        for row in rows:
+            payload = json.loads(row['payload'])
+            summaries.append(dict(id=row['id'], created_at=row['created_at'], method=payload.get('method'), score=payload.get('score')))
+        return summaries, (json.loads(rows[0]['payload']) if rows else None)
+
+    def get_report(self, job_id, report_id):
+        with self.connection() as conn:
+            row = conn.execute('SELECT payload FROM reports WHERE job_id = ? AND id = ?', (job_id, report_id)).fetchone()
+        return json.loads(row['payload']) if row else None
+
     def task(self, task_id):
         with self.connection() as conn:
             row = conn.execute("SELECT payload FROM tasks WHERE id=?", (task_id,)).fetchone()

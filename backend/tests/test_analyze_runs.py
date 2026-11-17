@@ -190,3 +190,22 @@ def test_unbound_analysis_purpose_falls_back_to_rule_report(rule_client):
     with repo.connection() as conn:
         count = conn.execute('SELECT COUNT(*) FROM reports WHERE job_id = ?', (job['id'],)).fetchone()[0]
     assert count == 1
+
+
+def test_reports_readback_list_detail_and_404(rule_client):
+    # 回读：打开岗位即可看到历史评估（含本轮之前落库的报告），最新在前，详情可按 id 取。
+    repo = rule_client.app.state.repo
+    job = save_job(repo)
+    assert rule_client.put('/api/resume', json=dict(text='使用 Python 开发服务', format='text')).status_code == 200
+    rule_client.post('/api/analyze/runs', json=dict(job_id=job['id']))
+    rule_client.post('/api/analyze/runs', json=dict(job_id=job['id']))
+    listing = rule_client.get(f"/api/jobs/{job['id']}/reports")
+    assert listing.status_code == 200
+    payload = listing.json()
+    assert len(payload['reports']) == 2
+    assert payload['reports'][0]['method'] == 'rule_assisted'  # 最新在前
+    assert payload['latest']['job_id'] == job['id']
+    detail = rule_client.get(f"/api/jobs/{job['id']}/reports/{payload['reports'][1]['id']}")
+    assert detail.status_code == 200 and detail.json()['job_id'] == job['id']
+    assert rule_client.get(f"/api/jobs/{job['id']}/reports/nope").status_code == 404
+    assert rule_client.get('/api/jobs/J-not-exist/reports').status_code == 404

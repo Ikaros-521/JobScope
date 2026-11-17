@@ -1090,6 +1090,19 @@ def create_app(data_dir=None):
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
 
+    @app.get('/api/jobs/{job_id}/reports')
+    def job_reports(job_id: str = PathParam(max_length=100)):
+        get_job(job_id)  # 未知岗位 404
+        reports, latest = repo.list_reports(job_id)
+        return dict(reports=reports, latest=latest)
+
+    @app.get('/api/jobs/{job_id}/reports/{report_id}')
+    def job_report_detail(job_id: str = PathParam(max_length=100), report_id: str = PathParam(max_length=64)):
+        report = repo.get_report(job_id, report_id)
+        if report is None:
+            raise HTTPException(404, '评估报告不存在')
+        return report
+
     # ---- 简历工坊：模板预览、JD 定向优化、版本二次编辑与多格式导出 ----
 
     @app.get("/api/resume-templates")

@@ -2184,3 +2184,11 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .obsidian-result { display: grid; gap: 6px; }
 .obsidian-result ul { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.8; }
 .obsidian-errors { color: var(--muted); }
+
+/* 历史评估切换条：同一岗位多次评估的时间线快切。 */
+.analysis-history { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+.analysis-history-label { font-size: 12px; color: var(--muted); flex: none; }
+.analysis-history-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.analysis-history-list button { font-size: 12px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--muted); cursor: pointer; }
+.analysis-history-list button:hover { border-color: var(--muted); color: inherit; }
+.analysis-history-list button.active { border-color: #3a7d44; color: #3a7d44; font-weight: 600; }
