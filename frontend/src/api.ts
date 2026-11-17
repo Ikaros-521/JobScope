@@ -206,6 +206,10 @@ export type SourceHealth = {
   last_run_at: string; last_ok_at: string; last_status: string; last_message: string
 }
 export function getSourceHealth() { return api<{ window: string; sources: SourceHealth[] }>('/sources/health') }
+// 运行日志页：后端进程内环形缓冲（最多 2000 条），服务重启清空、不落盘；对 /api/logs 自身的轮询访问行已被后端滤掉。
+export type LogEntry = { seq: number; ts: string; level: string; logger: string; message: string }
+export type LogPage = { entries: LogEntry[]; latest: number }
+export function getLogs(after = 0, limit = 1000) { return api<LogPage>(`/logs?after=${after}&limit=${limit}`) }
 // 工资基线（数据与采集 → 数据源）：人社局指导价位手动导入，pay 维度同城对照的兜底。
 export type WageBaseline = { id: string; city: string; role: string; education: string; year: string; monthly_median: number; note: string; created_at: string }
 export function listWageBaselines() { return api<{ baselines: WageBaseline[] }>('/wage-baselines') }

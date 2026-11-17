@@ -21,6 +21,7 @@ import { ResumeImport } from './ResumeImport'
 import { ResumeWorkshop } from './ResumeWorkshop'
 import type { WorkshopPrefill } from './ResumeWorkshop'
 import { KnowledgeView } from './KnowledgeView'
+import { LogView } from './LogView'
 import { navigateTabs } from './tabNavigation'
 import { useCompareSelection } from './compareSelectionStore'
 import { ChatWorkspace } from './chat/ChatWorkspace'
@@ -45,7 +46,7 @@ function jobQuery(filters: { q: string; location: string; source: string; salary
   if (filters.starred) params.set('starred', 'true')
   return params
 }
-type ViewId = 'jobs' | 'favorites' | 'resume' | 'workshop' | 'sources' | 'evidence' | 'compare' | 'global' | 'knowledge' | 'settings'
+type ViewId = 'jobs' | 'favorites' | 'resume' | 'workshop' | 'sources' | 'evidence' | 'compare' | 'global' | 'knowledge' | 'logs' | 'settings'
 type SettingsTab = 'model' | 'system' | 'extensions'
 const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon: string; label: string }[] }[] = [
   { id: 'research', label: '岗位研究', items: [
@@ -64,6 +65,7 @@ const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon: string
   ] },
   { id: 'manage', label: '系统管理', items: [
     { id: 'sources', icon: 'source', label: '数据与采集' },
+    { id: 'logs', icon: 'menu', label: '运行日志' },
     { id: 'settings', icon: 'settings', label: '设置中心' },
   ] },
 ]
@@ -575,8 +577,8 @@ export default function App() {
       <div className="sidebar-bottom"><span className={`connection-dot ${online ? 'connected' : ''}`} />{online ? '本地工作区已连接' : '等待本地服务'}<span className="version">v0.1</span></div>
     </aside>
 
-    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'settings' || view === 'compare' || view === 'favorites' || view === 'knowledge' ? 'main main-compact' : 'main'}>
-      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'resume' ? '我的简历' : view === 'workshop' ? '简历工坊' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'knowledge' ? '知识库' : view === 'settings' ? '设置中心' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata(), refreshFavCount()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
+    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'settings' || view === 'compare' || view === 'favorites' || view === 'knowledge' || view === 'logs' ? 'main main-compact' : 'main'}>
+      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'resume' ? '我的简历' : view === 'workshop' ? '简历工坊' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'knowledge' ? '知识库' : view === 'logs' ? '运行日志' : view === 'settings' ? '设置中心' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata(), refreshFavCount()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
       <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} onConfigureModel={configureModel} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => openSettings('extensions')} onOpenCompare={() => setView('compare')} onOpenKnowledge={() => setView('knowledge')} openCompanyChat={companyChatRequest} /></div>
 
       {view === 'knowledge' && <KnowledgeView onCountChange={setKnowledgeTotal} />}
@@ -659,6 +661,8 @@ export default function App() {
         browserSource={browserSource} onBrowserSourceChange={setBrowserSource}
         browserLimit={browserLimit} onBrowserLimitChange={setBrowserLimit}
         cityPinyin={cityPinyin} locations={locations} sourceNames={sourceNames} />}
+
+      {view === 'logs' && <LogView />}
 
       {view === 'settings' && <>
         <button className="button secondary settings-return" onClick={() => setView(settingsReturn)}>返回原工作区</button>

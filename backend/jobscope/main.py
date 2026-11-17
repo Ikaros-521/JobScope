@@ -499,6 +499,17 @@ def create_app(data_dir=None):
 
     # 来源健康度已在 api_reliability.register 挂载（8252698 拆分）；这里不再重复注册同一路径，
     # FastAPI 按注册顺序取第一个，残留的旧副本会把 api_reliability 里的改动整个架空。
+    @app.get('/api/logs')
+    def read_logs(level: str = Query('', pattern='^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$'),
+                  q: str = Query('', max_length=200),
+                  after: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=2000)):
+        """运行日志环形缓冲：前端「运行日志」页按 after 轮询增量。
+
+        只读进程内存（logs._RING），重启即清空、不落盘；uvicorn 访问行里对 /api/logs
+        自身的轮询已在 handler 里滤掉，这里不会再收到自己的请求记录。
+        """
+        from .logs import recent_logs
+        return recent_logs(after=after, level=level, q=q, limit=limit)
 
     @app.get('/api/cities')
     def cities():

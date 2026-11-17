@@ -2109,3 +2109,37 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .boss-import-browse { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; flex-wrap: wrap; }
 .boss-import-browse .tiny-label { margin: 0; min-width: 0; }
 .boss-import-heading-buttons { display: flex; align-items: center; gap: 10px; }
+
+/* ---- 运行日志页：进程内环形缓冲的实时视图，深色终端面板 + 等级分色 ---- */
+.log-view { display: flex; flex-direction: column; gap: 10px; position: relative; }
+.log-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.log-toolbar .search-input { flex: 1 1 240px; border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; background: var(--surface); }
+.log-level-field select { border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; background: var(--paper); font-size: 13px; }
+.log-count { color: var(--muted); font-size: 12.5px; white-space: nowrap; }
+.log-error-count { color: var(--color-status-error); font-style: normal; font-weight: 600; margin-left: 8px; }
+.log-toolbar-actions { display: flex; align-items: center; gap: 14px; margin-left: auto; }
+.log-stream { background: #12241f; color: #d7e5de; border-radius: 12px; padding: 10px 0; overflow: auto;
+  height: calc(100dvh - 252px); min-height: 320px;
+  font-family: Consolas, "Courier New", "Microsoft YaHei", monospace; font-size: 12.5px; line-height: 1.6; }
+.log-row { display: flex; gap: 10px; padding: 2px 14px; align-items: baseline; }
+.log-row:hover { background: rgba(255, 255, 255, .05); }
+.log-time { color: #7fa39a; flex: none; }
+.log-level { flex: none; width: 64px; font-weight: 600; letter-spacing: .3px; color: #b9cec7; }
+.log-logger { color: #6cc4b8; flex: none; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.log-message { white-space: pre-wrap; word-break: break-word; min-width: 0; flex: 1; }
+.log-row.level-debug .log-level { color: #6da4d8; }
+.log-row.level-debug .log-message { color: #9fb6c9; }
+.log-row.level-warning .log-level { color: #e0a34a; }
+.log-row.level-warning .log-message { color: #ecd9ae; }
+.log-row.level-error .log-level, .log-row.level-critical .log-level { color: #ef7b76; font-weight: 700; }
+.log-row.level-error .log-message, .log-row.level-critical .log-message { color: #f0b3b0; }
+.log-empty { padding: 48px 16px; text-align: center; color: #7fa39a; }
+.log-error-banner { background: #fbeeee; color: #8c2f2f; border: 1px solid #e5c4c4; border-radius: 8px; padding: 8px 12px; font-size: 13px; }
+.log-follow-chip { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+  border: none; background: var(--green); color: #fff; border-radius: 999px; padding: 7px 16px;
+  cursor: pointer; font-size: 12.5px; box-shadow: var(--shadow-panel); }
+.log-follow-chip:hover { filter: brightness(1.15); }
+@media (max-width: 720px) {
+  .log-stream { height: calc(100dvh - 300px); }
+  .log-logger { max-width: 120px; }
+}
