@@ -9,6 +9,7 @@ timeout-bounded. Once cancelled the handle is closed: late pushes are dropped an
 persists, so no answer can appear after a stop.
 """
 import json
+import logging
 import threading
 import time
 import uuid
@@ -19,6 +20,8 @@ from .extensions import ExtensionStore
 from .general_agent import GeneralAgent, RunHooks
 from .research.agent import RunCancelled
 from .settings import LlmChannelStore, ModelSettings, use_config
+
+logger = logging.getLogger(__name__)
 
 GLOBAL_SCOPE = dict(kind='global')
 
@@ -209,6 +212,7 @@ class RunManager:
                 self.repo.ensure_title(conversation_id, scope, title)
             self._register(handle)
             handle.push('start', dict(run_id=handle.id, conversation_id=conversation_id, user_message_id=user_message['id'], mode=mode))
+            logger.info('对话运行开始 run=%s conv=%s mode=%s 权限=%s', handle.id, conversation_id, mode, effective_permission)
             if background:
                 handle.thread = threading.Thread(target=self._execute, args=(handle, message, history, mode, effective_permission), daemon=True)
                 handle.thread.start()
@@ -260,6 +264,7 @@ class RunManager:
             if handle.done and not handle.pending_approval:
                 return handle.snapshot()
             handle.cancel.set()
+            logger.info('对话运行取消 run=%s conv=%s（等待审批=%s）', run_id, handle.conversation_id, handle.pending_approval)
             aborters, handle.aborters = handle.aborters, []
             if aborters:
                 # 关连接可能在网络栈里稍作等待；放到旁路线程执行，cancel 应答保持即时。
@@ -332,12 +337,14 @@ class RunManager:
             if handle.cancel.is_set():
                 # 取消线程关闭模型流/MCP 会话引发的断流：停止已被确认，不广播错误。
                 return
+            logger.warning('对话生成失败 run=%s：%s', handle.id, exc)
             handle.error = str(exc)
             handle.push('error', dict(message=handle.error))
             handle.finish()
         except Exception:
             if handle.cancel.is_set():
                 return
+            logger.exception('对话生成失败 run=%s', handle.id)
             handle.error = '生成失败，请稍后重试'
             handle.push('error', dict(message=handle.error))
             handle.finish()
@@ -350,12 +357,14 @@ class RunManager:
         except ValueError as exc:
             if handle.cancel.is_set():
                 return
+            logger.warning('工具确认后续跑失败 run=%s：%s', handle.id, exc)
             handle.error = str(exc)
             handle.push('error', dict(message=handle.error))
             handle.finish()
         except Exception:
             if handle.cancel.is_set():
                 return
+            logger.exception('工具确认后续跑失败 run=%s', handle.id)
             handle.error = '生成失败，请稍后重试'
             handle.push('error', dict(message=handle.error))
             handle.finish()
@@ -380,6 +389,10 @@ class RunManager:
             handle.push('done', dict(message_id=stored['id'], answer=result['answer'], mode=result.get('mode', 'agent'),
                                      interrupted=result.get('interrupted', False)))
             handle.finish()
+            trace = result.get('trace') or {}
+            logger.info('对话运行完成 run=%s mode=%s 时长=%sms 引用=%s',
+                        handle.id, result.get('mode', 'agent'), trace.get('duration_ms', '?'),
+                        len(result.get('citations') or []))
 
     def _persist(self, handle, result):
         entry = dict(role='assistant', content=result['answer'], mode=result.get('mode', 'agent'))

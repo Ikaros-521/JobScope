@@ -3,11 +3,14 @@
 精选目录为本项目原创内容，不打包第三方 Skill；在线目录仅按用户手动刷新拉取公开
 API，带缓存与显式失败回退，全部请求不带任何凭证。
 """
+import logging
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from .extensions import parse_skill_markdown, skill_entry
 
@@ -229,6 +232,7 @@ def refresh_online(source: str = 'official'):
             paths = [item['path'] for item in tree.get('tree', []) if item.get('type') == 'blob' and item['path'].endswith('/SKILL.md')]
             star = client.get(f'https://api.github.com/repos/{repo}').json().get('stargazers_count')
         except Exception:
+            logger.warning('市场目录刷新：技能仓库不可达 %s', repo)
             return repo, [], None
 
         def fetch(path):
@@ -241,6 +245,7 @@ def refresh_online(source: str = 'official'):
                             icon='≡', category='在线', repo=repo, path=path, official=repo == 'anthropics/skills',
                             stars=star)
             except Exception:
+                logger.debug('市场目录刷新：技能文件拉取失败 %s/%s', repo, path)
                 return None
 
         with ThreadPoolExecutor(max_workers=8) as inner:
@@ -264,7 +269,7 @@ def refresh_online(source: str = 'official'):
                                        transport='stdio', command='npx', args=['-y', name],
                                        repo=(info.get('links') or {}).get('repository', '')))
         except Exception:
-            pass
+            logger.warning('市场目录刷新：npm MCP 检索失败，本轮目录没有 npm 条目')
     if not online_skills and not online_mcp:
         raise ValueError('在线目录刷新失败：推荐技能仓库与 npm 检索都不可达。请稍后重试，精选目录不受影响。')
     return dict(skills=online_skills, mcp=online_mcp, fetched_at=time.time())

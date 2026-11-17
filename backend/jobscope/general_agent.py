@@ -1,5 +1,6 @@
 """Bounded tool loop with server-owned global, company and job retrieval scopes."""
 import json
+import logging
 import re
 import time
 import uuid
@@ -19,6 +20,8 @@ from .research.providers import EmbeddingProvider
 from .research.query import plan_query, conversation_conditions, condition_context
 from .research.retrieval import retrieve
 from .research.tools import salary_query
+
+logger = logging.getLogger(__name__)
 
 # 多步浏览器等有状态 MCP 任务动辄几十次调用；轮数/时长/上下文与调用上限同比例放宽，
 # 否则只会换个上限提前中断。每条工具结果仍截 12000 字符，上下文上限按 128k 窗口预留。
@@ -211,6 +214,7 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
         state = dict(run=run, scope=dict(scope), scope_binding=fingerprint(scope), actions=[], messages=messages, tools=tools, registry=registry, evidence={}, metrics=None, calls=0, turns=0, context_chars=0, conversation_id=conversation_id, question=message, resume_loaded=self.extensions.is_private(conversation_id), config_binding=self._model_binding(), started=time.time(), partial='', permission_mode=permission_mode, timeline=[], limits=dict(limits))
         state['condition_history'] = condition_history
         self._save(run)
+        logger.info('Agent 开始 run=%s conv=%s 权限=%s 工具=%s', run['id'], conversation_id, permission_mode, len(tools))
         return self._loop(state, hooks)
 
     @staticmethod
@@ -612,6 +616,7 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
         self._scope(state)
         name = call['function']['name']
         args = json.loads(call['function']['arguments'])
+        logger.debug('Agent 工具调用 tool=%s args=%.600s', name, json.dumps(args, ensure_ascii=False))
         spec = next((tool for tool in state['tools'] if tool['name'] == name), None)
         if not spec:
             raise ValueError('工具不存在或未被启用')
@@ -684,6 +689,8 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
         status = 'awaiting_approval' if pending else 'interrupted' if interrupted else 'completed'
         run.update(status=status, duration_ms=round((time.time() - state['started']) * 1000), context_characters=state['context_chars'], citation_ids=ids)
         self._save(run)
+        logger.info('Agent 结束 run=%s 状态=%s 轮数=%s 工具调用=%s 时长=%sms', run['id'], status,
+                    state.get('turns', '?'), state.get('calls', '?'), run['duration_ms'])
         if not pending:
             self.extensions.finish_pending(run['id'])
         result = dict(answer=answer, mode='agent', citations=[citation(state['evidence'][eid]) for eid in ids], trace=run, metrics=state['metrics'], conversation_id=state['conversation_id'], pending_approval=run.get('pending') if pending else None, actions=list(state['actions']))
@@ -751,6 +758,8 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                 state['turns'] += 1
                 state['messages'].append(assistant)
                 self._event(state, 'agent_model', started, hooks=hooks, usage=usage, calls=len(assistant.get('tool_calls', [])))
+                logger.debug('Agent 模型轮次完成 run=%s turn=%s tool_calls=%s usage=%s', state['run']['id'],
+                             state['turns'], len(assistant.get('tool_calls', [])), usage)
                 calls = assistant.get('tool_calls', [])
                 if not calls:
                     return self._result(state, assistant['content'], reasoning=reasoning)
@@ -770,15 +779,23 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                             return self._expansion_result(state)
                     except Exception as exc:
                         # Tool exceptions may contain credentials; never echo their text.
+                        if isinstance(exc, ValueError):
+                            logger.warning('Agent 工具调用失败 run=%s tool=%s：%s', state['run']['id'], call['function']['name'], exc)
+                        else:
+                            logger.warning('Agent 工具调用失败 run=%s tool=%s type=%s（详情不落日志，可能含凭证）',
+                                           state['run']['id'], call['function']['name'], type(exc).__name__)
                         state['run']['degraded'].append('一次工具调用失败，模型可根据错误继续调整')
                         self._append_result(state, call, dict(error=str(exc) if isinstance(exc, ValueError) else '工具执行失败，未自动重试'))
                         self._event(state, 'tool_error', time.perf_counter(), hooks=hooks, label=call['function']['name'], status='error')
             state['run']['degraded'].append('达到轮数、工具次数、上下文或时间上限')
+            logger.info('Agent 达到执行上限 run=%s turns=%s calls=%s 时长=%.0fs', state['run']['id'],
+                        state['turns'], state['calls'], time.time() - state['started'])
             return self._result(state, '本轮已达到执行上限，已停止继续调用工具。请缩小问题范围或分步继续；已完成的调用可在执行过程查看。')
         except ValueError as exc:
             if hooks and hooks.should_stop and hooks.should_stop():
                 # 取消线程关闭了模型流/MCP 会话，把断流异常按中断收尾而不是失败落库。
                 return self._interrupt(state)
+            logger.warning('Agent 运行失败 run=%s：%s', state['run']['id'], exc)
             state['run']['status'] = 'failed'
             self._save(state['run'])
             self.extensions.finish_pending(state['run']['id'])
@@ -811,7 +828,9 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             if approved:
                 try:
                     self._execute(state, call, approved=True, hooks=hooks)
-                except Exception:
+                except Exception as exc:
+                    logger.warning('已确认工具执行失败 run=%s tool=%s：%s', run_id, call['function']['name'],
+                                   exc if isinstance(exc, ValueError) else type(exc).__name__)
                     self._append_result(state, call, dict(error='已确认的工具执行失败或权限改变；未自动重试，可根据已有结果继续'))
                     self._event(state, 'tool_error', time.perf_counter(), hooks=hooks, label=call['function']['name'], status='error')
                     state['run']['degraded'].append('已确认工具执行失败，未自动重试')
@@ -831,7 +850,9 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                             return self._result(state, '下一项工具调用需要确认，请检查参数后继续。', pending=True)
                         if state['actions']:
                             return self._expansion_result(state)
-                    except Exception:
+                    except Exception as exc:
+                        logger.warning('队列工具调用失败 run=%s tool=%s：%s', run_id, next_call['function']['name'],
+                                       exc if isinstance(exc, ValueError) else type(exc).__name__)
                         self._append_result(state, next_call, dict(error='工具调用失败或权限改变，未自动重试'))
                         self._event(state, 'tool_error', time.perf_counter(), hooks=hooks, label=next_call['function']['name'], status='error')
             return self._loop(state, hooks)

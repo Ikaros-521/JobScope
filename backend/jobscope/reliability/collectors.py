@@ -19,6 +19,7 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 import time
 from datetime import datetime, timezone
@@ -27,6 +28,8 @@ from urllib.parse import urlencode
 
 from .rubric import RULES
 from .sources import SIGNAL_SOURCES
+
+logger = logging.getLogger(__name__)
 
 # 单次任务的硬上限：页面上限与页间等待都写死在这里，调用方不接受更激进的值。
 MAX_PAGES = 5
@@ -829,6 +832,7 @@ def collect(source_id, company, *, browser_module, data_dir=None, on_status=None
     keyword = str(company or '').strip()[:120]
     if not keyword:
         return _outcome('failed', '请先确定要查询的公司名称。')
+    logger.info('信号采集开始：%s「%s」', source_id, keyword)
     state = browser_module.status(data_dir)
     if not state.get('installed'):
         return _outcome('unsupported', state.get('message', ''))
@@ -847,6 +851,7 @@ def collect(source_id, company, *, browser_module, data_dir=None, on_status=None
         try:
             tab = _open_tab(browser_module, data_dir)
         except Exception:
+            logger.exception('信号采集接入项目浏览器失败：%s「%s」', source_id, keyword)
             return _outcome('failed', '无法接入项目浏览器会话；请确认它仍在运行后重试。')
         if tab is None:
             # 自动拉起之后仍拿不到会话，只剩「拉起成功到开标签页之间浏览器退出」的窄窗口：
@@ -869,6 +874,7 @@ def collect(source_id, company, *, browser_module, data_dir=None, on_status=None
                 f'{source_id} {str(exc) or "页面读取未完成"}，本轮未采集到信号。'
                 f'若项目浏览器里该站持续白屏，多为防护限流，请稍后重试。{note}'), False
         except Exception:
+            logger.exception('信号采集页面读取失败：%s「%s」（快照见 data_dir/debug）', source_id, keyword)
             snapshot = _capture(data_dir, source_id, tab)
             note = f'页面快照已存 {snapshot}。' if snapshot else ''
             drafts, status, message, keep_open = [], 'partial', f'{source_id} 页面读取未完成，本轮未采集到信号。{note}', False
@@ -880,4 +886,5 @@ def collect(source_id, company, *, browser_module, data_dir=None, on_status=None
             status = 'partial'
             message += (f'有 {dropped} 条涉诉计数因缺少参保人数分母未落库；'
                         '可先采集公示系统参保数（或配置付费接口）后重试本来源。')
+        logger.info('信号采集结束：%s「%s」状态=%s 信号=%s', source_id, keyword, status, len(drafts))
         return _outcome(status, message, drafts)

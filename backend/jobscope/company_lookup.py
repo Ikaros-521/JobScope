@@ -13,9 +13,12 @@ partial/needs_verification，绝不从卡片文本里「挑一个像注册资本
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from urllib.parse import urlencode
+
+logger = logging.getLogger(__name__)
 
 # 单次快查的硬上限：卡片数与页面等待都写死在这里，调用方不接受更激进的值。
 MAX_CARDS = 5
@@ -209,12 +212,14 @@ def collect(channel, company, *, browser_module, data_dir=None):
         try:
             tab = _open_tab(browser_module, data_dir)
         except Exception:
+            logger.exception('接入项目浏览器失败：%s「%s」', channel, keyword)
             return _outcome('failed', '无法接入项目浏览器会话；请确认它仍在运行后重试。')
         if tab is None:
             return _outcome('needs_login', f'请先启动项目浏览器并打开{spec["name"]}完成登录或验证。')
         try:
             cards, markers = _read_cards(tab, spec, keyword)
         except Exception:
+            logger.exception('%s页面读取失败：「%s」', spec['name'], keyword)
             _close(tab)
             return _outcome('failed', f'{spec["name"]}页面读取失败；请确认会话仍在运行后重试。')
         if not cards and markers:

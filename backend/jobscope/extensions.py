@@ -5,11 +5,13 @@ import io
 import json
 import os
 import re
+import logging
 import threading
 import time
 import uuid
 import zipfile
 from datetime import timedelta
+from urllib.parse import urlsplit
 
 import anyio
 import httpx
@@ -18,6 +20,15 @@ from jsonschema import Draft202012Validator
 from referencing import Registry
 from pydantic import BaseModel, ConfigDict, Field
 from typing import Literal
+
+logger = logging.getLogger(__name__)
+
+
+def _endpoint_hint(config):
+    """日志用的连接标识：传输方式 + 主机名/命令名。token/headers/args 永不进日志。"""
+    if config.get('transport') == 'stdio':
+        return 'stdio:' + str(config.get('command', ''))
+    return f"{config.get('transport')}:{urlsplit(str(config.get('url', ''))).hostname}"
 
 from .chat import validate_model_url
 
@@ -242,6 +253,7 @@ class MCPClient:
             with anyio.fail_after(35):
                 return await MCPClient._request(config, 'list')
         except Exception:
+                logger.exception('MCP 连接或工具发现失败：%s', _endpoint_hint(config))
                 raise ValueError('MCP 连接或工具发现失败。请检查服务是否启动、传输方式（Streamable HTTP / SSE / stdio）、命令/地址和认证。') from None
 
     @staticmethod
@@ -251,6 +263,7 @@ class MCPClient:
             result = SESSION_POOL.execute(config, lambda session: session.call_tool(name, args, read_timeout_seconds=timedelta(seconds=25)),
                                           should_stop=should_stop)
         except Exception:
+            logger.exception('MCP 工具执行失败：%s %s', _endpoint_hint(config), name)
             raise ValueError('MCP 工具执行失败或超时；未自动重试，请检查服务状态。') from None
         text = '\n'.join(block.text for block in result.content if getattr(block, 'type', '') == 'text')
         if result.structuredContent:
@@ -305,6 +318,7 @@ class _MCPSession:
             await session.initialize()
             self.stack, self.session = stack, session
         except Exception:
+            logger.exception('MCP 会话建立失败：%s', _endpoint_hint(self.config))
             try:
                 await stack.aclose()
             except Exception:

@@ -10,5 +10,7 @@ python-docx>=1.2,<2
 defusedxml>=0.7,<1
 mcp>=1.26,<2
 jsonschema>=4.20,<5
+# 后台/采集日志按等级着色（loguru 风格配色）；colorama 供 Windows 控制台转义。
+colorlog>=6.8,<7
 # 真实 Chrome 持久会话及响应监听（采集/公司资料核心依赖）。
 DrissionPage==4.1.1.4

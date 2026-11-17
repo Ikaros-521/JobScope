@@ -1,9 +1,22 @@
 """Shared OpenAI Chat Completions / Anthropic Messages transport."""
-import sys
-import traceback
+import logging
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
+
+logger = logging.getLogger(__name__)
+
+
+def _log_call(config, purpose, max_tokens):
+    """DEBUG 明细：模型/协议/端点/参数。凭证（key）永不进日志。"""
+    logger.debug('模型调用[%s] model=%s protocol=%s endpoint=%s max_tokens=%s timeout=%s',
+                 purpose, config.get('model'), config.get('protocol', 'openai'),
+                 endpoint(config['url'], config.get('protocol', 'openai')), max_tokens)
+
+
+def _log_usage(purpose, usage):
+    if usage:
+        logger.debug('模型调用[%s] 完成 usage=%s', purpose, usage)
 
 
 class OutputLimitError(ValueError):
@@ -55,6 +68,7 @@ def stream_complete(config, system, user, *, max_tokens=1800, temperature=None, 
         body['temperature'] = temperature
     text, usage = '', {}
     finish_reason = ''
+    _log_call(config, 'complete', max_tokens)
     try:
         with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
             with client.stream('POST', validate_model_url(endpoint(config['url'], protocol)), headers=headers(config), json=body) as response:
@@ -84,18 +98,20 @@ def stream_complete(config, system, user, *, max_tokens=1800, temperature=None, 
                             if on_delta:
                                 on_delta(delta['content'])
     except (httpx.HTTPError, json.JSONDecodeError, ValueError, KeyError, TypeError, IndexError):
-        traceback.print_exc(file=sys.stderr)
+        logger.exception('模型调用失败[complete] model=%s', config.get('model'))
         raise ValueError('模型请求失败，请检查服务配置后重试') from None
     if not isinstance(text, str) or not text.strip():
         truncated = finish_reason in ('max_tokens', 'length')
         if truncated:
             raise OutputLimitError('模型输出触达单次上限（max_tokens），未生成完整回答；与账户余额无关，可重试一次。')
         raise ValueError('模型返回格式无效')
+    _log_usage('complete', usage)
     return text, usage
 
 
 def complete(config, system, user, *, max_tokens=1800, temperature=None, timeout=45):
     from .chat import validate_model_url
+    _log_call(config, 'complete', max_tokens)
     protocol = config.get('protocol', 'openai')
     body = dict(model=config['model'], messages=[dict(role='user', content=user)], max_tokens=max_tokens)
     if protocol == 'anthropic':
@@ -125,12 +141,14 @@ def complete(config, system, user, *, max_tokens=1800, temperature=None, timeout
         if truncated:
             raise OutputLimitError('模型输出触达单次上限（max_tokens），未生成完整回答；与账户余额无关，可重试一次。')
         raise ValueError('模型返回格式无效')
+    _log_usage('complete', data.get('usage') or {})
     return content, data.get('usage', {})
 
 
 def tool_turn(config, messages, tools, *, timeout=60):
     """Canonical OpenAI messages in/out; convert native Anthropic tool blocks."""
     from .chat import validate_model_url
+    _log_call(config, 'agent_turn', 4096)
     import json
     protocol = config.get('protocol', 'openai')
     body = dict(model=config['model'], max_tokens=4096)
@@ -183,8 +201,10 @@ def tool_turn(config, messages, tools, *, timeout=60):
                 raise ValueError('工具参数无效或过大')
         if len({c['id'] for c in calls}) != len(calls) or (not calls and not text.strip()):
             raise ValueError('模型没有返回有效回答或工具调用')
+        _log_usage('agent_turn', data.get('usage') or {})
         return dict(role='assistant', content=text[:20000] or None, **({'tool_calls': calls} if calls else {})), data.get('usage', {})
     except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError):
+        logger.exception('模型调用失败[agent_turn] model=%s', config.get('model'))
         raise ValueError('Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。') from None
 
 
@@ -262,6 +282,7 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, sh
     import json
     protocol = config.get('protocol', 'openai')
     body = _turn_body(config, messages, tools, stream=True)
+    _log_call(config, 'agent_stream', 4096)
     text, reasoning, usage = '', '', {}
     calls, openai_calls = [], {}
     anthropic_tools = {}
@@ -328,7 +349,7 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, sh
                     if unregister:
                         unregister()
     except (httpx.HTTPError, json.JSONDecodeError, ValueError, KeyError, TypeError, IndexError):
-        traceback.print_exc(file=sys.stderr)
+        logger.exception('模型调用失败[agent_stream] model=%s', config.get('model'))
         raise ValueError('Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。') from None
     if protocol == 'anthropic':
         for slot in anthropic_tools.values():
@@ -336,4 +357,5 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, sh
     else:
         calls = [openai_calls[index] for index in sorted(openai_calls)]
     assistant, usage = _validate_turn(calls, text, usage)
+    _log_usage('agent_stream', usage)
     return assistant, usage, reasoning

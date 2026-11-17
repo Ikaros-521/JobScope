@@ -1,11 +1,14 @@
 """Collect -> normalise -> score -> word -> persist. The model never touches the number."""
 import json
+import logging
 
 from ..repository import Repository, digest, now
 from . import wording
 from .models import (DISCLAIMER, DISCLAIMER_VERSION, DimensionScore, ReliabilityReport, ReportFinding,
                      SignalInput)
 from .rubric import ASSESSMENT, RULES, RUBRIC_VERSION, score
+
+logger = logging.getLogger(__name__)
 
 # 重新计算时默认连带刷新的本地来源。零联网、零成本、幂等（证据身份含内容哈希、信号 INSERT OR
 # IGNORE），但仍然尊重设置里的关闭状态——用户关掉就是不想要，哪怕它免费。
@@ -113,6 +116,8 @@ def run_signal_extract(repo, company, credit_code='', *, limit=12, max_tokens=12
     task.update(kind='reliability_extract', status=outcome['status'], message=message,
                 count=len(saved), raw=str(outcome['raw'])[:4000])
     repo.update_task(task)
+    logger.info('信号抽取完成：「%s」状态=%s 接受=%s 材料=%s', identity['name'],
+                outcome['status'], len(saved), len(materials))
     return dict(status=outcome['status'], message=message, accepted=len(saved),
                 signals=saved, evidence=len(materials), task=task, identity=identity)
 
@@ -171,6 +176,8 @@ class ReliabilityService:
         payload = {**report.model_dump(), 'summary': wording.overall_text(report.score, report.confidence),
                    'disclaimer': DISCLAIMER, 'collection': collection}
         self.repo.save_reliability(payload)
+        logger.info('参考分重算完成：「%s」总分=%s 置信=%s 维度=%s', company['name'],
+                    report.score, report.confidence, len(dimensions))
         return payload
 
     def latest(self, name, credit_code=''):

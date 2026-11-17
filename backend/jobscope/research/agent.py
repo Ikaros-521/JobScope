@@ -1,5 +1,6 @@
 """Bounded plan → tools → coverage → synthesis. Events are actions, not reasoning."""
 import json
+import logging
 import time
 import uuid
 
@@ -10,6 +11,8 @@ from .providers import EmbeddingProvider, model_plan
 from .query import plan_query, condition_context
 from .retrieval import retrieve
 from .tools import salary_query, salary_text
+
+logger = logging.getLogger(__name__)
 
 
 class RunCancelled(Exception):
@@ -36,6 +39,7 @@ class ResearchAgent:
         run = dict(id='R-' + uuid.uuid4().hex, status='running', scope=scope, question=message,
                    created_at=now(), events=[], limits=dict(max_retrieval_calls=2, max_salary_calls=1, max_model_calls=2, context_characters=24000))
         self._save(run)
+        logger.info('研究运行开始 run=%s scope=%s', run['id'], scope.get('kind'))
 
         def stop_requested():
             return bool(should_stop and should_stop())
@@ -157,12 +161,16 @@ class ResearchAgent:
                        degraded=degraded, citation_ids=[c['id'] for c in result['citations']],
                        context_characters=24000 - remaining, metrics=metrics)
             self._save(run)
+            logger.info('研究运行完成 run=%s 时长=%.0fms 引用=%s 覆盖=%s', run['id'], run['duration_ms'],
+                        len(run['citation_ids']), coverage['status'])
             return dict(**result, run_id=run['id'], trace=run, metrics=metrics, coverage=coverage)
         except RunCancelled:
             run.update(status='cancelled', duration_ms=round((time.perf_counter() - start) * 1000, 2))
             self._save(run)
+            logger.info('研究运行取消 run=%s', run['id'])
             raise
         except Exception:
+            logger.exception('研究运行失败 run=%s', run['id'])
             run.update(status='failed', error='研究执行失败，未展示未经校验的答案', duration_ms=round((time.perf_counter() - start) * 1000, 2))
             self._save(run)
             raise

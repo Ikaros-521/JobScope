@@ -1,5 +1,6 @@
 """Read attributable full job descriptions from the user's project Chrome."""
 
+import logging
 import re
 import threading
 import time
@@ -8,6 +9,8 @@ from urllib.parse import urlsplit
 from . import browser
 from .connectors import plain
 from .repository import now
+
+logger = logging.getLogger(__name__)
 
 batch_lock = threading.Lock()
 
@@ -169,6 +172,7 @@ def collect_detail(job, data_dir):
                     time.sleep(1)
             return output
     except Exception:
+        logger.exception('岗位详情读取失败 job=%s「%s」', job.get('id'), job.get('title'))
         output = dict(status='failed', message='岗位详情读取失败，原摘要和已保存正文未修改')
         return output
     finally:
@@ -221,6 +225,7 @@ def run_batch(repo, task, limit=500, ids=None, collector=None, pause=time.sleep,
     task.update(kind='job_details', total=len(pending), processed=0, count=0, failed=0,
                 status='running', message=message)
     repo.update_task(task)
+    logger.info('完整JD批量补采开始：目标=%s 条', len(pending))
     consecutive_errors = 0
     try:
         for index, job in enumerate(pending):
@@ -228,6 +233,8 @@ def run_batch(repo, task, limit=500, ids=None, collector=None, pause=time.sleep,
             repo.update_task(task)
             output = collector(job, data_dir=repo.data_dir)
             task['processed'] += 1
+            logger.debug('完整JD补采 %s/%s job=%s「%s」状态=%s', index + 1, len(pending),
+                         job['id'], job['title'], output['status'])
             if output['status'] == 'completed':
                 save_detail(repo, output)
                 task['count'] += 1
@@ -247,6 +254,8 @@ def run_batch(repo, task, limit=500, ids=None, collector=None, pause=time.sleep,
             if index < len(pending) - 1:
                 pause(2)
         task.update(status='completed', message=f"本批完成：保存{task['count']}份完整JD，{task['failed']}份未读取；再次执行会跳过已完成岗位")
+        logger.info('完整JD批量补采完成：保存=%s 未读取=%s', task['count'], task['failed'])
     except Exception:
+        logger.exception('完整JD批量补采中断')
         task.update(status='failed', message=f"补采中断，已保存{task['count']}份完整JD，可继续未完成岗位")
     repo.update_task(task)

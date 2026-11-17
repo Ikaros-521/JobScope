@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import logging
 import os
 import socket
 import threading
@@ -13,6 +14,8 @@ from urllib.parse import urlencode
 
 from .connectors import (DEFAULT_DATA, SOURCES, city_hint, loads_payload, map_boss, map_job51,
                          map_zhaopin, result)
+
+logger = logging.getLogger(__name__)
 
 _lock = threading.Lock()
 
@@ -388,6 +391,7 @@ def collect(source='boss', query='', location='', limit=20, data_dir=None, progr
         size = max(1, min(int(limit), spec['size'] * int(spec.get('pages', 1))))
     except (TypeError, ValueError):
         return result('failed', '采集数量必须是整数。')
+    logger.info('浏览器采集开始：%s「%s」城市=%s 上限=%s', source, query, city, size)
     if not _has_driver() or not _chrome():
         return result('unsupported', status(data_dir)['message'])
     port = _connection(data_dir)
@@ -425,8 +429,10 @@ def collect(source='boss', query='', location='', limit=20, data_dir=None, progr
             base = output['message'].rstrip('。')
             suffix = '；' + '；'.join(extras) + '。' if extras else '。'
             output['message'] = f'{spec["name"]}浏览器采集：' + base + suffix
+            logger.info('浏览器采集结束：%s「%s」状态=%s', source, query, output.get('status'))
             return output
     except Exception:
+        logger.exception('浏览器采集失败：%s「%s」', source, query)
         return result('failed', '浏览器采集失败；请确认项目会话仍在运行并已完成登录。')
     finally:
         if tab is not None:

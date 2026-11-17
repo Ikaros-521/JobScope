@@ -1,8 +1,11 @@
 """Shared signal collection and task persistence, independent of HTTP endpoints."""
 import importlib
+import logging
 
 from ..repository import now
 from .sources import SIGNAL_SOURCES, SignalSourceStore, contains_key
+
+logger = logging.getLogger(__name__)
 
 
 class SourceUnavailable(ValueError):
@@ -80,6 +83,7 @@ def collect_source(repo, data_dir, company, source_id, credit_code='', *, task=N
     except ModuleNotFoundError:
         status, message = 'unsupported', '采集模块或可选依赖尚未安装，本轮未完成信号采集。'
     except Exception:
+        logger.exception('信号采集失败：%s「%s」', source_id, company)
         status = 'partial' if saved else 'failed'
         message = ('部分信号已保存，其余信号采集或保存失败，请检查来源后重试。' if saved
                    else '信号采集失败，请检查来源配置与本地依赖后重试。')

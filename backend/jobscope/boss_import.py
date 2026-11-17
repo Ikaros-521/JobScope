@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import random
 import re
 import threading
@@ -16,6 +17,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from . import browser
+
+logger = logging.getLogger(__name__)
 from .connectors import CITY_CODES, DEFAULT_DATA, loads_payload, map_boss, plain
 from .repository import digest, now
 
@@ -305,6 +308,7 @@ def confirm(repo, ids=None, auto_star=False):
         for key in selected:
             store.pop(key, None)
     _save_basket(repo.data_dir)
+    logger.info('捕获篮确认入库：%s 条（加星=%s）', len(saved), bool(auto_star))
     return {'status': 'ok', 'imported': len(saved), 'jobs': saved,
             'message': f'已导入 {len(saved)} 条 Boss 岗位；重复岗位自动归并，可继续「补全详情」。'}
 
@@ -366,10 +370,12 @@ def capture_page(data_dir=None, tab_id=''):
                 return {'status': 'failed', 'added': 0,
                         'message': '解析到链接但没有可用的岗位字段；页面结构可能已变化，可用「粘贴链接」兜底。'}
             outcome = basket_add(items, data_dir)
+            logger.info('捕获当前页完成：卡片=%s 有效=%s 新增=%s 合并=%s', len(cards), len(items), outcome['added'], outcome['updated'])
             note = '；存在链接但未解析出有效卡片，可能混入非岗位链接' if len(items) < len(cards) else ''
             return {'status': 'ok', 'added': outcome['added'], 'updated': outcome['updated'],
                     'message': f'本页捕获 {len(items)} 条岗位：新增 {outcome["added"]}、合并 {outcome["updated"]}{note}。'}
     except Exception:
+        logger.exception('捕获当前页失败 tab=%s', tab_id)
         return {'status': 'failed', 'added': 0, 'message': '读取页面失败；请确认项目浏览器仍在运行。'}
     finally:
         browser._lock.release()
@@ -621,6 +627,7 @@ def import_favorites(repo, task, data_dir=None, max_pages=10):
                 seen.update(item['external_id'] for item in fresh)
                 basket_add(fresh, data_dir=data_dir)
                 pages += 1
+                logger.info('收藏导入进度：第 %s 页 新捕获=%s 累计=%s', pages, len(fresh), len(seen))
                 task.update(count=len(seen), message=f'收藏导入进行中：已捕获 {len(seen)} 条（第 {pages} 页）')
                 repo.update_task(task)
                 if fresh and pages < max_pages and not _login_wall(tab):
@@ -645,6 +652,7 @@ def import_favorites(repo, task, data_dir=None, max_pages=10):
                            'message': '没有解析到收藏岗位：收藏夹可能是空的，或页面结构已变化；可在收藏页手动用「捕获当前页」验证。'}
             return outcome
     except Exception:
+        logger.exception('收藏导入中断')
         outcome = {'status': 'failed', 'message': '收藏导入中断；已捕获的条目保留在捕获篮。'}
         return outcome
     finally:

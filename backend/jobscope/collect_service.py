@@ -6,6 +6,10 @@ main.py 的 /api/collect、/api/company/lookup、/api/company-research、/api/br
 测试替身依旧有效）；这里不感知 HTTP，缺依赖抛 ModuleNotFoundError 由调用方翻译。
 """
 import importlib
+import logging
+
+
+logger = logging.getLogger(__name__)
 
 
 def _module(name):
@@ -20,6 +24,7 @@ def execute_lookup(repo, data_dir, channel, company, task=None):
     """
     if task is None:
         task = repo.create_task(channel, company)
+    logger.info('公司快查开始：%s「%s」', channel, company)
     outcome = _module('company_lookup').collect(channel, company, browser_module=_module('browser'), data_dir=data_dir)
     saved = []
     for card in outcome.get('cards', []):
@@ -28,6 +33,7 @@ def execute_lookup(repo, data_dir, channel, company, task=None):
     task.update(status=outcome.get('status', 'failed'), message=outcome.get('message', '快查未完成'),
                 count=len(saved))
     repo.update_task(task)
+    logger.info('公司快查结束：%s「%s」状态=%s 卡片=%s', channel, company, outcome.get('status'), len(saved))
     return outcome, saved
 
 
@@ -43,11 +49,14 @@ def persist_collection(repo, task, result):
                 repo.link_evidence(job["id"], evidence["id"])
     task.update(status=result.get("status", "failed"), message=result.get("message", "采集完成"), count=len(jobs) + evidence_count)
     repo.update_task(task)
+    logger.info('采集落库完成：%s「%s」状态=%s 岗位=%s 证据=%s', task['source'], task['query'],
+                task['status'], len(jobs), evidence_count)
     return {"task": task, "jobs": [repo.job(job["id"]) for job in jobs]}
 
 
 def execute_collection(repo, data_dir, source, query, task, location='', limit=10, use_browser=False):
     connectors = _module("connectors")
+    logger.info('采集开始：%s「%s」城市=%s 上限=%s', source, query, location, limit)
     if use_browser or source in connectors.BROWSER_SOURCES:
         result = _module("browser").collect(source, query, location=location, limit=limit, data_dir=data_dir)
         return persist_collection(repo, task, result)
@@ -55,6 +64,7 @@ def execute_collection(repo, data_dir, source, query, task, location='', limit=1
     if result.get('status') in ('needs_verification', 'needs_login') and source in _module("browser").PAGES:
         # 直连被风控/要求登录（BOSS 直连每次必触发验证）：自动降级走项目浏览器通道。浏览器没开会
         # 拉起窗口，需人工登录/验证时页面顶到前台——用户完成后重试即可，不该只收到一句提示。
+        logger.info('直连被拦（%s），自动降级项目浏览器通道：%s「%s」', result.get('status'), source, query)
         result = _module("browser").collect(source, query, location=location, limit=limit, data_dir=data_dir)
     return persist_collection(repo, task, result)
 
@@ -64,6 +74,7 @@ def run_collection(repo, data_dir, source, query, location, limit, use_browser=F
     try:
         return execute_collection(repo, data_dir, source, query, task, location, limit, use_browser)
     except Exception:
+        logger.exception('采集失败：%s「%s」', source, query)
         task.update(status="failed", message="采集未完成，请检查来源状态及本地依赖后重试")
         repo.update_task(task)
         return {"task": task, "jobs": []}

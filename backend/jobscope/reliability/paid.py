@@ -18,10 +18,13 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 from datetime import datetime, timezone
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 from ..repository import now
 from .collectors import PER_WAN, years_since
@@ -271,6 +274,9 @@ def collect(source_id, company, *, client=None):
         payload = client.fetch(keyword)
     except Exception as exc:
         # Never persist exception text: SDK/HTTP errors can contain request headers or signed URLs.
+        # 控制台日志同口径：只记类型与 HTTP 状态码，异常原文（可能含凭证）不进日志。
+        logger.warning('付费接口 %s 请求失败：%s', source_id,
+                       f'HTTP {exc.response.status_code}' if isinstance(exc, httpx.HTTPStatusError) else type(exc).__name__)
         if isinstance(exc, httpx.HTTPStatusError):
             detail = f'HTTP {exc.response.status_code}，请核对服务地址、认证方式与授权额度'
         elif isinstance(exc, ValueError) and str(exc) in {'付费来源未填写接口地址', '来源响应超过上限'}:
