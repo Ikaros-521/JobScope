@@ -39,6 +39,7 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS company_reliability (company_id TEXT REFERENCES companies(id), input_hash TEXT NOT NULL, created_at TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(company_id, input_hash));
                 CREATE TABLE IF NOT EXISTS company_merge_proposals (id TEXT PRIMARY KEY, company_a TEXT NOT NULL, company_b TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, resolved_at TEXT NOT NULL DEFAULT '');
                 CREATE TABLE IF NOT EXISTS resume_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, job_id TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', job_title TEXT NOT NULL DEFAULT '', jd_digest TEXT NOT NULL DEFAULT '', base_text TEXT NOT NULL DEFAULT '', markdown TEXT NOT NULL, template_id TEXT NOT NULL DEFAULT 'classic', notes TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS wage_baselines (id TEXT PRIMARY KEY, city TEXT NOT NULL, role TEXT NOT NULL, education TEXT NOT NULL, year TEXT NOT NULL, monthly_median REAL NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
             """)
             self._migrate_conversations(conn)
             # 读路径高频查询的二级索引（放在 _migrate_conversations 之后：conversations 的
@@ -825,6 +826,34 @@ class Repository:
         # 那会让同一批输入算出不同的 input_hash。
         with self.connection() as conn:
             return [dict(row) for row in conn.execute('SELECT id,payload FROM company_signals WHERE company_id=? ORDER BY rule,id', (company_id,)).fetchall()]
+
+    # ── 工资基线（2026-11-17，人社局工资指导价位的手动导入）──────────────────
+    # 身份 = 城市×职类×学历×年份：重复导入同一行是更新而不是新增（官方一年发一版，重导最新版
+    # 是日常动作）。基线只作 pay_analysis 的同城对照兜底，出处始终写「官方指导价位导入」，
+    # 与招聘报价中位数严格区分口径。
+
+    def save_wage_baselines(self, rows):
+        saved = 0
+        with self.connection() as conn:
+            for row in rows:
+                identity = digest(json.dumps([row['city'], row['role'], row['education'], row['year']], ensure_ascii=False))
+                conn.execute('INSERT INTO wage_baselines VALUES (?,?,?,?,?,?,?,?) '
+                             'ON CONFLICT(id) DO UPDATE SET monthly_median=excluded.monthly_median, note=excluded.note, created_at=excluded.created_at',
+                             ('W-' + identity[:24], row['city'], row['role'], row['education'], row['year'],
+                              row['monthly_median'], row.get('note', ''), now()))
+                saved += 1
+        return saved
+
+    def wage_baselines(self):
+        """全量基线，同键多年份按年份倒序（取数方拿第一行即最新版）。"""
+        with self.connection() as conn:
+            rows = conn.execute('SELECT id, city, role, education, year, monthly_median, note, created_at '
+                                'FROM wage_baselines ORDER BY city, role, education, year DESC').fetchall()
+        return [dict(row) for row in rows]
+
+    def delete_wage_baseline(self, baseline_id):
+        with self.connection() as conn:
+            return conn.execute('DELETE FROM wage_baselines WHERE id=?', (baseline_id,)).rowcount
 
     def save_reliability(self, report):
         with self.connection() as conn:

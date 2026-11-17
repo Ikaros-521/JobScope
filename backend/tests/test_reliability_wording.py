@@ -90,8 +90,12 @@ def test_unsupported_rule_names_raise_instead_of_inventing_a_sentence():
 
 
 def test_rule_templates_and_registry_stay_one_to_one():
+    from jobscope.reliability.rubric import TEMPLATE_VARIANTS
     from jobscope.reliability.wording import TEMPLATES
-    assert set(TEMPLATES) == {spec.template for spec in RULES.values()}
+    expected = {spec.template for spec in RULES.values()}
+    # 措辞变体（如 pay 的官方基线兜底句法）也必须登记在案且被 TEMPLATES 全量收录。
+    expected |= {variant for variants in TEMPLATE_VARIANTS.values() for variant in variants}
+    assert set(TEMPLATES) == expected
 
 
 def test_mid_range_score_does_not_claim_problems():

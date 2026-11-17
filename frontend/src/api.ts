@@ -206,6 +206,11 @@ export type SourceHealth = {
   last_run_at: string; last_ok_at: string; last_status: string; last_message: string
 }
 export function getSourceHealth() { return api<{ window: string; sources: SourceHealth[] }>('/sources/health') }
+// 工资基线（数据与采集 → 数据源）：人社局指导价位手动导入，pay 维度同城对照的兜底。
+export type WageBaseline = { id: string; city: string; role: string; education: string; year: string; monthly_median: number; note: string; created_at: string }
+export function listWageBaselines() { return api<{ baselines: WageBaseline[] }>('/wage-baselines') }
+export function importWageBaselines(csv: string) { return post<{ saved: number; errors: string[] }>('/wage-baselines/import', { csv }) }
+export function deleteWageBaseline(id: string) { return api<{ deleted: string }>(`/wage-baselines/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
 
 export function listConversations(scope: ChatScope = { kind: 'global' }) {
   const params = new URLSearchParams({ scope: scope.kind })

@@ -4,6 +4,7 @@ import { api, post, readable, plain, date, isStale, safeUrl, computeReliability,
 import type { ConversationNavigation, SourceHealth } from './api'
 import { SignalSourceSettings } from './SignalSourceSettings'
 import { signalTaskNames } from './SignalSources'
+import { WageBaselines } from './WageBaselines'
 import { toast, dismissToast, failedTaskToast, taskSucceeded } from './toast'
 import { Pagination, emptyPage } from './Pagination'
 import { EvidenceWorkspace } from './EvidenceWorkspace'
@@ -731,6 +732,7 @@ export default function App() {
           <div className="management-section-heading"><div><h2>岗位与公司数据源</h2><p>接口优先，浏览器补充；可用状态不代表已登录。</p></div></div>
           <div className="sources-grid">{loading ? <div className="paper-panel"><div className="loading-state"><span className="spinner" />正在读取数据源状态…</div></div> : sources.length ? sources.map(item => <article className="source-card paper-panel" key={item.id}><div className="source-card-heading"><span className="source-icon"><Icon name={item.id === 'cninfo' ? 'book' : 'globe'} /></span><h3>{item.name}</h3><Badge value={item.status} /></div><p>{item.description}</p><div className="source-card-footer"><span>{{ http_api: 'HTTP 接口', browser_page: '浏览器会话', company_web: '网页快查', manual: '用户材料' }[item.transport_mode] || item.transport_mode}</span><span>{item.id}</span></div></article>) : <div className="paper-panel"><Empty title="等待数据源状态">请确认本地后端服务已启动，然后刷新状态。</Empty></div>}</div>
           <SignalSourceSettings />
+          <WageBaselines refreshMetadata={refreshMetadata} />
         </div>
         <div id="sources-health-panel" role="tabpanel" aria-labelledby="sources-health-tab" hidden={sourcesTab !== 'health'}>
           {/* 来源健康度：成败分布只是任务记录的聚合视图，消息引用任务原文，不做任何新的诊断结论。 */}

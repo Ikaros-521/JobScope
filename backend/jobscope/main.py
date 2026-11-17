@@ -26,7 +26,7 @@ from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, RemoteBasketInput, ReliabilityInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput, SplitInput
+from .models import AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, CompanyResearchInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, RemoteBasketInput, ReliabilityInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalCollectInput, SignalExtractInput, SignalSourceInput, SplitInput, WageBaselineImportInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, SystemSettingsInput, SystemSettingsStore, ConnectionInput, _active, get_model_config, purpose_configured, use_config
@@ -811,6 +811,25 @@ def create_app(data_dir=None):
     def reliability_sources():
         from .reliability.sources import SignalSourceStore
         return {'sources': SignalSourceStore(repo).public()}
+
+    # ── 工资基线（2026-11-17）：人社局工资指导价位的手动导入，pay 维度的同城对照兜底 ──
+
+    @app.get('/api/wage-baselines')
+    def list_wage_baselines():
+        return {'baselines': repo.wage_baselines()}
+
+    @app.post('/api/wage-baselines/import')
+    def import_wage_baselines(data: WageBaselineImportInput):
+        from .reliability.wage_baseline import parse
+        rows, errors = parse(data.csv)
+        saved = repo.save_wage_baselines(rows) if rows else 0
+        return {'saved': saved, 'errors': errors}
+
+    @app.delete('/api/wage-baselines/{baseline_id}')
+    def delete_wage_baseline(baseline_id: str = PathParam(min_length=1, max_length=40)):
+        if not repo.delete_wage_baseline(baseline_id):
+            raise HTTPException(404, '工资基线不存在或已删除')
+        return {'deleted': baseline_id}
 
     @app.get('/api/reliability/compare')
     def reliability_compare(q: str = Query('', max_length=300), page_size: int = Query(50, ge=1, le=100),

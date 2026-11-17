@@ -97,6 +97,11 @@ class CompanyResearchInput(RequestModel):
     with_industry_llm: bool = Field(default=True)
 
 
+class WageBaselineImportInput(RequestModel):
+    """人社局工资指导价位 CSV 导入（2026-11-17）：文本粘贴或文件读取后的正文，逗号/制表符分隔。"""
+    csv: str = Field(min_length=1, max_length=300000)
+
+
 class MergeInput(RequestModel):
     """手动合并两个公司主体：company_a 为主名（吸收对方），primary 可反转方向。"""
     company_a: str = Field(min_length=1, max_length=300)

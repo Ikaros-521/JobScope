@@ -480,6 +480,14 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .pipeline-select:focus { outline: 2px solid var(--green); outline-offset: 1px; }
 /* 数据新鲜度：只陈述「较旧」这一事实与补法（悬浮可见），不给警示色、不拦截任何操作。 */
 .stale-hint { display: inline-flex; align-items: center; font-size: 11px; line-height: 1.6; padding: 0 6px; border-radius: 999px; border: 1px dashed var(--line); color: var(--muted); white-space: nowrap; cursor: help; }
+/* 工资基线导入面板（数据与采集 → 数据源）：手动导入官方指导价位，作 pay 维度兜底基线。 */
+.wage-baseline-panel { margin-top: 18px; }
+.wage-import { display: grid; gap: 10px; margin-bottom: 14px; }
+.wage-import textarea { width: 100%; font-family: Consolas, monospace; font-size: 12px; line-height: 1.6; padding: 8px; border: 1px solid var(--line); border-radius: 6px; resize: vertical; }
+.wage-import-steps { margin: 0; padding-left: 18px; font-size: 12px; color: var(--muted); line-height: 1.8; }
+.wage-import-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.wage-import-errors { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 8px 12px; font-size: 12px; color: var(--muted); line-height: 1.8; }
+.wage-import-errors ul { margin: 4px 0; padding-left: 18px; }
 .reliability-actions { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 14px; }
 .reliability-legal { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.8; }
 .reliability-legal ul { margin: 6px 0; padding-left: 18px; overflow-wrap: anywhere; }

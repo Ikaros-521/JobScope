@@ -24,7 +24,7 @@ const EXTRACT_RULES = ['team_size_statement', 'disclosure_revenue_trend', 'discl
 // 口径与后端 rubric 的闸门一致（limits.py：公司侧 1 条、同层基线 5 条），只讲「差什么、去哪补」。
 const DIMENSION_CHANNELS: Record<string, string> = {
   stability: '补法：企查查/天眼查/爱企查公开页采司龄·参保·企业类型',
-  pay: '补法：该公司 1 条报价即可比，需同城同层对照 ≥5 条（库里其他公司岗位自动充当，一次多平台检索就够）',
+  pay: '补法：该公司 1 条报价即可比，需同城同层对照 ≥5 条（库里其他公司岗位自动充当，一次多平台检索就够）；样本凑不齐可在「数据与采集 → 数据源」导入人社局工资基线兜底',
   operations: '补法：采集「爱企查公开页」自动读最近两期年报的人数/营收同比；或手动导入年报材料跑「提取资料数字」',
   people: '补法：采「天眼查公开页」或读完整 JD（BOSS 公司自述带规模）得规模自述，1 条即按中性出分，多条比一致',
   professional: '补法：补全该岗位完整描述（有 1 条评 1 条，样本量随句子展示）',

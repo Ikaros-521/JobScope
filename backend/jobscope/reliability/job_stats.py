@@ -130,15 +130,34 @@ def _midpoints(jobs):
     return mids
 
 
-def pay_analysis(jobs, names):
+def _baseline_lookup(baselines, city):
+    """(职类, 学历档) → (年份, 月薪中位数)。只取该城市的基线；同键多年份取最新年份，
+    同年多行（导入来源不同批次）取中位数，不猜谁对谁错。"""
+    lookup = {}
+    for row in baselines or ():
+        if row.get('city') != city:
+            continue
+        key = (row.get('role'), row.get('education'))
+        lookup.setdefault(key, []).append((str(row.get('year', '')), float(row.get('monthly_median') or 0)))
+    result = {}
+    for key, items in lookup.items():
+        latest = max(year for year, _ in items)
+        result[key] = (latest, round(median([value for year, value in items if year == latest]), 2))
+    return result
+
+
+def pay_analysis(jobs, names, baselines=()):
     """R1 `pay_vs_city_median` 的统计量：同城 + 同职类 + 同经验档 + 同学历档的分层报价中位数对比。
 
     与旧口径（公司全体岗位 vs 同城全库）的差别是分层：混层中位数会让审核员对标技术岗基线。
     - 城市取该公司岗位里出现次数最多的可归一城市；本公司只取该市的岗位（苏州的审核员不进
       杭州的对比），同城对照也只取同层岗位。
-    - 每层闸门：本公司 ≥3 条、同城同层 ≥10 条、两个中位数都大于 0；过闸的层按本公司样本数
-      加权出总比值。出不出分仍归 rubric（合计 ≥3/≥20 与分档在 scorer）。
-    - 缺城市/职类/要求标注的岗位与样本不足的层不参与评分，逐条写进 note 让缺口可行动。
+    - 每层闸门：本公司 ≥1 条、同城同层 ≥5 条、两个中位数都大于 0；过闸的层按本公司样本数
+      加权出总比值。出不出分仍归 rubric（合计口径与分档在 scorer）。
+    - 同城同层样本不足但导入过官方工资基线（wage_baselines，人社局指导价位手动导入）时，
+      该层改用基线中位数作对照：口径不同（官方指导价 vs 招聘报价），明细与口径正文逐层写明，
+      绝不把两者混成一个池子。公司侧闸门不放宽：自家 0 条报价依然无物可比。
+    - 缺城市/职类/要求标注的岗位与样本不足又无基线的层不参与评分，逐条写进 note 让缺口可行动。
     返回 None 只在「该公司没有任何已存岗位或归一不出城市」时；分不出可比层时返回全零统计量。
     """
     company = [item for item in jobs if Repository.normalise_name(item['company']) in names]
@@ -160,12 +179,15 @@ def pay_analysis(jobs, names):
         key = job_stratum(item)
         if key:
             groups.setdefault(key, []).append(item)
+    baseline_by_key = _baseline_lookup(baselines, city)
     ratios, detail, covered_own, covered_same = [], [], [], []
+    baseline_layers = []  # (own 条数, 比值, 基线中位数)——口径与报价池分层分开记账
     for key in sorted(groups):
         own, same = _midpoints(groups[key]), _midpoints(pool.get(key, []))
         label = '·'.join(key)
+        company_median = round(median(own), 2) if own else 0
         if len(own) >= MIN_COMPANY_JOBS and len(same) >= MIN_CITY_JOBS:
-            company_median, city_median = round(median(own), 2), round(median(same), 2)
+            city_median = round(median(same), 2)
             if company_median > 0 and city_median > 0:
                 ratio = round(company_median / city_median, 3)
                 ratios.append((len(own), ratio))
@@ -173,11 +195,26 @@ def pay_analysis(jobs, names):
                 covered_same.extend(same)
                 # 单条报价时不写「中位」：那就是报价本身，措辞不冒充统计量。
                 own_label = '报价' if len(own) == 1 else '中位'
-                detail.append(f'{label}：本公司 {len(own)} 条{own_label} {company_median} 元 / 同城同层 {len(same)} 条中位 '
-                              f'{city_median} 元，比值 {ratio}')
+                detail.append(f'{label}：本公司 {len(own)} 条{own_label} {company_median:g} 元 / 同城同层 {len(same)} 条中位 '
+                              f'{city_median:g} 元，比值 {ratio}')
+                continue
+        # 基线按（职类，学历档）两维组织，不含经验档：官方指导价位没有经验分层，
+        # 同职类同学历的任何经验档共用一条基线，口径差异已写进明细。
+        baseline_pair = (key[0], key[2])
+        if len(own) >= MIN_COMPANY_JOBS and company_median > 0 and baseline_pair in baseline_by_key:
+            baseline_year, baseline_median = baseline_by_key[baseline_pair]
+            if baseline_median > 0:
+                ratio = round(company_median / baseline_median, 3)
+                ratios.append((len(own), ratio))
+                covered_own.extend(own)
+                baseline_layers.append((len(own), ratio, baseline_median))
+                own_label = '报价' if len(own) == 1 else '中位'
+                detail.append(f'{label}：本公司 {len(own)} 条{own_label} {company_median:g} 元 / 官方工资基线 {baseline_median:g} 元'
+                              f'（{baseline_year} 年·人社局指导价位导入），比值 {ratio}'
+                              f'（同城同层样本 {len(same)} 条不足 {MIN_CITY_JOBS} 条，对照改用基线）')
                 continue
         detail.append(f'{label}：本公司 {len(own)} 条、同城同层 {len(same)} 条，样本不够（本公司需 ≥{MIN_COMPANY_JOBS} 条、'
-                      f'同层 ≥{MIN_CITY_JOBS} 条），不比')
+                      f'同层 ≥{MIN_CITY_JOBS} 条，或导入官方工资基线），不比')
     excluded_city = len(company) - len(local_company)
     excluded_unstratified = len(local_company) - sum(len(group) for group in groups.values())
     excluded = []
@@ -188,10 +225,17 @@ def pay_analysis(jobs, names):
     if ratios:
         weighted = round(sum(count * ratio for count, ratio in ratios) / sum(count for count, _ in ratios), 3)
         value = dict(ratio=weighted, company_jobs=len(covered_own), city_jobs=len(covered_same))
+        # 基线兜底的层数是 scorer 的第二把闸钥匙：报价池不足但基线在，出分口径照样成立。
+        if baseline_layers:
+            value['city_baseline_layers'] = len(baseline_layers)
         # 中位数只在单层覆盖时给出：多层合并的中位数会把不同层混在一起，正是这次分层要除掉的误导。
         # 前端事实小图拿不到这两个键就不画，句子与口径正文照常说明。
         if len(ratios) == 1:
-            value.update(company_median=round(median(covered_own), 2), city_median=round(median(covered_same), 2))
+            if baseline_layers:
+                value.update(company_median=round(median(covered_own), 2),
+                             city_median=baseline_layers[0][2])
+            else:
+                value.update(company_median=round(median(covered_own), 2), city_median=round(median(covered_same), 2))
     else:
         # 分不出可比层：全零统计量，让闸门缺口说清「分层凑不齐」，而不是无声无息。
         value = dict(ratio=0, company_jobs=0, city_jobs=0)
@@ -202,6 +246,9 @@ def pay_analysis(jobs, names):
         lines.append('另有' + '、'.join(excluded) + '，未参与对比。')
     if ratios:
         lines.append(f'{len(ratios)} 个可比分层按本公司样本数加权得总比值 {value["ratio"]}。')
+    if baseline_layers:
+        lines.append(f'其中 {len(baseline_layers)} 层的对照来自导入的官方工资基线：官方指导价位与招聘平台报价'
+                     '口径不同（前者是调查分位值、后者是在招岗位报价），比值只作方向性参考。')
     lines.append('只对比标注相当（同职类、同经验要求、同学历要求）的样本；这是招聘平台报价对比，'
                  '不是实际到手薪资，不含奖金与股票，要求相当也不等于职级完全一致。' + LOCAL_NOTE + '。')
     return dict(value=value, city=city, note='\n'.join(lines))

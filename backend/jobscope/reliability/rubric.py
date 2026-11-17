@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from .limits import MIN_CITY_JOBS, MIN_COMPANY_JOBS
 from .models import Dimension, RuleFinding, SignalInput, can_stand_alone
 
-RUBRIC_VERSION = 'rubric-7'
+RUBRIC_VERSION = 'rubric-8'
 
 # assessment 才允许产生维度分。material 衡量的只是本项目手上有多少材料：
 # 把「9/10 条岗位能解析出月薪」算成薪资待遇 90 分，用户读到的是「薪资给得好」，这是静默的谎言。
@@ -56,14 +56,19 @@ def band(value, table, fallback):
 def _pay_points(value):
     """报价中位数分层比值。比值由统计层按「同城+同职类+同经验档+同学历档」分层加权得出；
     付费接口只给聚合中位数时退回未分层比值（口径不同，出处说明里写明来源）。
-    闸门不满足就返回 None，靠 gate_note 说清缺什么，绝不硬算。"""
+    同城对照两个来源都认：报价池 ≥5 条，或该层用了官方工资基线兜底（city_baseline_layers>0，
+    口径差异由统计层在口径正文写明）。公司侧 1 条报价的闸门不变。闸门不满足就返回 None，
+    靠 gate_note 说清缺什么，绝不硬算。"""
     ratio = value.get('ratio')
     if not ratio:
         company_median, city_median = value.get('company_median'), value.get('city_median')
         ratio = company_median / city_median if company_median and city_median and city_median > 0 else None
     if not ratio or ratio <= 0:
         return None
-    if (value.get('company_jobs') or 0) < MIN_COMPANY_JOBS or (value.get('city_jobs') or 0) < MIN_CITY_JOBS:
+    if (value.get('company_jobs') or 0) < MIN_COMPANY_JOBS:
+        return None
+    baseline_ok = (value.get('city_baseline_layers') or 0) > 0
+    if not baseline_ok and (value.get('city_jobs') or 0) < MIN_CITY_JOBS:
         return None
     return band(ratio, [(1.2, 0.95), (1.0, 0.8), (0.85, 0.6), (0.7, 0.45)], 0.3)
 
@@ -133,7 +138,7 @@ RULES: dict[str, RuleSpec] = {
     # 每层本公司 ≥3 条、同层 ≥10 条，scorer 合计 ≥3/≥20；分层凑不齐就不出分——混层中位数
     # 是拿低层级岗位对标高层级基线，比不出分更误导。
     'pay_vs_city_median': RuleSpec('pay', '元', 90, 'pay_vs_city_median',
-                                   gate_note=f'出分需要可比分层：同城、同职类、同经验与学历要求下本公司 ≥{MIN_COMPANY_JOBS} 条、同层 ≥{MIN_CITY_JOBS} 条（合计口径相同）；分层凑不齐就不比，缺口会写明缺哪一层',
+                                   gate_note=f'出分需要可比分层：同城、同职类、同经验与学历要求下本公司 ≥{MIN_COMPANY_JOBS} 条、同层 ≥{MIN_CITY_JOBS} 条；同层样本不足时可导入人社局工资基线兜底（数据与采集 → 工资基线），分层凑不齐就不比，缺口会写明缺哪一层',
                                    scorer=_pay_points),
     # R2：只统计完整 JD（description_status=complete），列表摘要不参与——半截描述评不了「讲清楚没有」。
     'jd_specificity': RuleSpec('professional', '条', 180, 'jd_specificity',
@@ -170,6 +175,11 @@ RULES: dict[str, RuleSpec] = {
 }
 
 ASSESSING_BY_DIMENSION = {name: [rule for rule, spec in RULES.items() if spec.dimension == name and spec.kind == ASSESSMENT] for name in DIMENSIONS}
+
+# 措辞变体表：键是规则模板名，值是该规则在特定数据形态下切换到的变体模板（wording.TEMPLATES
+# 必须全量收录两套，test_reliability_wording 的一致性测试按 RULES + 本表双侧校验）。
+# pay_vs_city_median 在对照来自官方工资基线时必须换句法，不许让「对照岗位」冒充招聘报价样本。
+TEMPLATE_VARIANTS = {'pay_vs_city_median': ('pay_vs_city_median_baseline',)}
 
 
 @dataclass(frozen=True)
@@ -212,8 +222,12 @@ def _for_signal(signal: SignalInput, spec: RuleSpec):
     if spec.template == 'team_size_statement' and 'median_size' not in value and 'size' in value:
         data = {'median_size': value['size'], 'statements': 1, 'compatible': 1,
                 **{key: number for key, number in value.items() if key != 'size'}}
+    # pay 维度的基线兜底必须换句法：对照是官方指导价位而不是同城报价池，模板不换就是口径说谎。
+    template = spec.template
+    if data.get('city_baseline_layers') and template in TEMPLATE_VARIANTS:
+        template = TEMPLATE_VARIANTS[template][0]
     return RuleFinding(rule=signal.rule, dimension=spec.dimension, score=round(100 * max(0.0, min(1.0, points)), 1),
-                       template=spec.template, data=data, evidence_id=signal.evidence_id,
+                       template=template, data=data, evidence_id=signal.evidence_id,
                        source_class=signal.source_class, weight=spec.weight,
                        collected_at=signal.collected_at), ''
 
