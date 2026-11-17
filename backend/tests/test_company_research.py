@@ -345,3 +345,16 @@ def test_worker_signal_and_compute_failures_finalize_all_tasks(client, stub_chan
     assert not any(task['status'] in ('pending', 'running') for task in finals.values())
     assert secret not in str(finals)
 
+
+
+def test_sources_health_counts_running_and_cancelled_as_attention(client):
+    """回归：running（进行中）与 cancelled（用户取消）进「未完成」桶——落失败桶会让
+    一次日常采集或手动停止就把来源显示成挂了。"""
+    repo = client.app.state.repo
+    task = repo.create_task('demo_channel', '某公司')
+    item = next(s for s in client.get('/api/sources/health').json()['sources'] if s['source'] == 'demo_channel')
+    assert item['attention'] == 1 and item['failed'] == 0 and item['ok'] == 0
+    task.update(status='cancelled', message='手动停止')
+    repo.update_task(task)
+    item = next(s for s in client.get('/api/sources/health').json()['sources'] if s['source'] == 'demo_channel')
+    assert item['attention'] == 1 and item['failed'] == 0

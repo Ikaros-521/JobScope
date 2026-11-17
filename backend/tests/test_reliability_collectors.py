@@ -1081,3 +1081,20 @@ def test_qcc_credit_risk_flags_on_any_hit_and_closed_status_scores_low(monkeypat
     assert rubric.RULES['admin_penalty'].scorer({'count': 0}) == 0.8
     assert rubric.RULES['admin_penalty'].scorer({'count': 12}) == 0.25
     assert rubric.RULES['registration_status'].scorer({'flag': 0}) == 0.1
+
+
+def test_qcc_registration_status_survives_glued_insured_field(monkeypatch, tmp_path):
+    """回归：登记状态与参保字段去标签后粘连（「存续参保人数11616」）时，截断词表必须
+    含「参保人数」，否则捕获值判定失败、登记状态信号静默丢失（修复前注释举的例子没被覆盖）。"""
+    glued = QCC_FULL_HTML.replace('<span>登记状态 存续 成立日期 2001-11-30</span>',
+                                  '<span>登记状态存续参保人数11616</span>')
+    assert glued != QCC_FULL_HTML  # 防替换串失效导致假通过
+    registry, tab = commercial_replay('qcc_web', [CARD], {CARD_HREF: glued})
+    tab, browser, slept = drive(monkeypatch, tab)
+    quiet_lookup(monkeypatch)
+    outcome = collectors.collect('qcc_web', NAME, browser_module=browser, data_dir=tmp_path)
+    rules = {item['rule']: item['value'] for item in outcome['signals']}
+    assert rules['registration_status'] == {'flag': 1}
+    assert '登记状态' in outcome['message']
+    # 粘连修复不波及同页其余信号
+    assert rules['credit_risk'] == {'flag': 0} and rules['admin_penalty'] == {'count': 0}

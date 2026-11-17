@@ -99,6 +99,7 @@ def create_app(data_dir=None):
     scope_expansions = ScopeExpansionStore(repo)
     knowledge = KnowledgeStore(repo)
     knowledge_imports = KnowledgeImportManager(knowledge, repo)
+    app.state.knowledge_imports = knowledge_imports  # exposed for tests: 并发上传要走同一个锁
     app.state.runs = runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
@@ -496,38 +497,8 @@ def create_app(data_dir=None):
                  browser_collectable=source in collectable)
             for source, item in connectors.SOURCES.items()]}
 
-    # 来源健康度（2026-11-17）：任务状态分三桶，口径与页面 Badge 一致——completed/success 算成功；
-    # needs_login / needs_verification / backoff / partial / skipped / degraded / unsupported 是
-    # 「未完成」（要用户动手或来源整体不可用）；其余（failed）算失败。消息原样引用任务记录，
-    # 这里不产出任何新的诊断结论，也不猜失败原因。
-    HEALTH_OK = {'completed', 'success'}
-    HEALTH_ATTENTION = {'needs_login', 'needs_verification', 'backoff', 'partial', 'skipped', 'degraded', 'unsupported'}
-
-    @app.get('/api/sources/health')
-    def sources_health():
-        """按最近 100 次任务聚合各来源的成功/未完成/失败分布与最近结果。
-
-        没有任务记录的来源不出现（没跑过就不装作健康或异常）；stats 按「最近一次任务时间」倒序，
-        最近成功时间取窗口内最后一次成功任务。"""
-        stats: dict[str, dict] = {}
-        for task in reversed(repo.tasks()):
-            item = stats.setdefault(task['source'], dict(source=task['source'], total=0, ok=0, attention=0,
-                                                         failed=0, last_run_at='', last_ok_at='',
-                                                         last_status='', last_message=''))
-            item['total'] += 1
-            item['last_run_at'] = task.get('created_at', '')
-            item['last_status'] = task.get('status', '')
-            item['last_message'] = task.get('message', '')
-            status = task.get('status', '')
-            if status in HEALTH_OK:
-                item['ok'] += 1
-                item['last_ok_at'] = task.get('created_at', '')
-            elif status in HEALTH_ATTENTION:
-                item['attention'] += 1
-            else:
-                item['failed'] += 1
-        result = sorted(stats.values(), key=lambda item: item['last_run_at'], reverse=True)
-        return {'window': '最近 100 次任务', 'sources': result}
+    # 来源健康度已在 api_reliability.register 挂载（8252698 拆分）；这里不再重复注册同一路径，
+    # FastAPI 按注册顺序取第一个，残留的旧副本会把 api_reliability 里的改动整个架空。
 
     @app.get('/api/cities')
     def cities():
@@ -972,7 +943,7 @@ def create_app(data_dir=None):
 
     @app.post('/api/knowledge/imports/{task_id}/files')
     async def stage_knowledge_import_file(request: Request, task_id: str = PathParam(min_length=1, max_length=100),
-                                          index: int = Query(ge=0, le=19), filename: str = Query(min_length=1, max_length=255)):
+                                          index: int = Query(ge=0, le=KnowledgeImportManager.MAX_FILES - 1), filename: str = Query(min_length=1, max_length=255)):
         from .kb_import import KB_MAX_FILE_BYTES
         content = bytearray()
         async for chunk in request.stream():

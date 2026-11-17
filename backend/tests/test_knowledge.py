@@ -385,3 +385,82 @@ def test_latest_import_task_endpoint(client):
     latest = client.get('/api/knowledge/imports/latest').json()
     assert latest['id'] == created['id'] and latest['kind'] == 'knowledge_import'
     client.post(f"/api/knowledge/imports/{created['id']}/cancel")
+
+
+def test_import_filename_sanitised_and_matched_from_original(client):
+    """危险文件名（Windows 非法字符/保留名/目录成分）登记时安全化；前端拿原始名上传，
+    stage 侧用同一安全化函数对名，照样能对上并正常入库。"""
+    nasty = ['报告:最终<b>.md', 'con.md', 'folder/嵌套.md']
+    task = client.post('/api/knowledge/imports', json=dict(names=nasty)).json()
+    assert [f['name'] for f in task['files']] == ['报告_最终_b_.md', '_con.md', 'folder_嵌套.md']
+    for index, name in enumerate(nasty):
+        assert stage_import_file(client, task['id'], index, name, f'安全化内容{index}，用于导入验证。'.encode('utf-8')).status_code == 200
+    client.post(f"/api/knowledge/imports/{task['id']}/start")
+    final = wait_import_terminal(client, task['id'])
+    assert final['status'] == 'completed' and final['count'] == 3 and final['failed'] == 0
+
+
+def test_import_cancel_in_start_window_never_revives_completed(client, monkeypatch):
+    """回归：旧版 start 在「落库 running→注册取消事件」之间留窗口，cancel 走 pending 分支
+    把任务标取消后 worker 照常跑完，最终把已取消任务改写成 completed。现在 start 全程持锁，
+    cancel 只置位事件；同步驱动 worker（事件已置位）必须以 cancelled 收尾，且无文档入库。"""
+    import threading
+    import types
+
+    from jobscope import knowledge as kb_module
+
+    captured = []
+
+    class _NoStartThread:
+        def __init__(self, target=None, args=(), daemon=False, **kwargs):
+            self.target, self.args = target, args
+            captured.append(self)
+
+        def start(self):
+            pass  # 不真的起线程：由测试在 cancel 之后同步驱动 worker
+
+    shim = types.SimpleNamespace(Event=threading.Event, Thread=_NoStartThread)
+    monkeypatch.setattr(kb_module, 'threading', shim)
+
+    task = client.post('/api/knowledge/imports', json=dict(names=['窗口.md'])).json()
+    assert stage_import_file(client, task['id'], 0, '窗口.md', '取消窗口回归测试内容。'.encode('utf-8')).status_code == 200
+    assert client.post(f"/api/knowledge/imports/{task['id']}/start").status_code == 200
+    cancelled = client.post(f"/api/knowledge/imports/{task['id']}/cancel")
+    assert cancelled.status_code == 200  # running 分支：置位事件，不写 payload
+    # cancel 不应改动 running 任务的 payload（worker 独占写入）
+    untouched = client.get(f"/api/knowledge/imports/{task['id']}").json()
+    assert untouched['status'] == 'running'
+    worker = captured[0]
+    worker.target(*worker.args)
+    final = client.get(f"/api/knowledge/imports/{task['id']}").json()
+    assert final['status'] == 'cancelled' and '已停止' in final['message']
+    assert final['count'] == 0
+    from jobscope.knowledge import KnowledgeStore
+    assert KnowledgeStore(client.app.state.repo).list()['entries'] == []
+
+
+def test_import_stage_concurrent_uploads_serialize(client):
+    """stage 是 payload 整包读改写：并发上传必须串行在管理器锁后，全部落盘且状态一致。"""
+    import threading
+
+    names = ['并发一.md', '并发二.md', '并发三.md']
+    task = client.post('/api/knowledge/imports', json=dict(names=names)).json()
+    manager = client.app.state.knowledge_imports
+    failures = []
+
+    def upload(index, name):
+        try:
+            manager.stage(task['id'], index, name, f'并发上传内容{index}，验证锁。'.encode('utf-8'))
+        except Exception as exc:  # noqa: BLE001 — 失败要显式断言为空，不能让线程异常静默
+            failures.append(exc)
+
+    threads = [threading.Thread(target=upload, args=(index, name)) for index, name in enumerate(names)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert failures == []
+    state = client.get(f"/api/knowledge/imports/{task['id']}").json()
+    assert all(item['state'] == 'staged' for item in state['files'])
+    assert state['message'] == f'已上传 {len(names)}/{len(names)} 个文件'
+    client.post(f"/api/knowledge/imports/{task['id']}/cancel")

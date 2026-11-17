@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import csv
 import io
+import math
 import re
 
 from ..connectors import CITY_CODES
@@ -76,8 +77,10 @@ def parse(text):
         except ValueError:
             errors.append(f'第 {index} 行：月薪中位数「{median_text}」不是数字。')
             continue
-        if not monthly_median > 0:
-            errors.append(f'第 {index} 行：月薪中位数必须大于 0。')
+        # float('inf')/'Infinity' 能通过 >0 校验：入库后 JSON 序列化输出裸 Infinity，
+        # 前端 JSON.parse 直接失败，所以有限性要在这里闸住（NaN 已被 >0 挡住，inf 不会）。
+        if not math.isfinite(monthly_median) or not monthly_median > 0:
+            errors.append(f'第 {index} 行：月薪中位数「{median_text}」需要是大于 0 的有限数字。')
             continue
         if not YEAR_TEXT.match(year):
             errors.append(f'第 {index} 行：年份「{year}」需要是 4 位数字（如 2025）。')

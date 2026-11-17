@@ -6,6 +6,7 @@
 """
 
 import json
+import re
 import shutil
 import threading
 import uuid
@@ -410,6 +411,10 @@ class KnowledgeImportManager:
     · 取消只阻止「未来」文件，已导入文件是完整提交的文档，非半成品；
     · 向量补齐批间检查取消标志，中断只留下 pending 向量，词法检索不受影响；
     · 进程重启后：Repository 启动即把 running 任务标失败，本管理器初始化时清理孤儿暂存目录。
+    并发纪律：create/stage/start/cancel 是任务 payload 的整包读改写，全部串行在 self._lock
+    之后（FastAPI 同步端点跑在线程池，缺锁会互相覆盖状态）；running 期间 worker 独占任务
+    写入，cancel 只置位取消事件、不写 payload。worker 收尾先落终态再摘取消事件，保证 cancel
+    读到的任务状态与事件注册情况不会错位（否则会把已完成的任务改写成 cancelled）。
     """
 
     KIND = 'knowledge_import'
@@ -417,11 +422,29 @@ class KnowledgeImportManager:
     MAX_FILES = 20
     _STAGING = 'knowledge_imports'
 
+    # Windows 非法字符与保留设备名：文件名只用于暂存路径拼接，坏名不能携带目录成分、
+    # 不能写出任务目录，也不能让 write_bytes 在非法字符上抛 OSError 变成 500。
+    _UNSAFE_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+    _RESERVED_NAMES = {'CON', 'PRN', 'AUX', 'NUL',
+                       *(f'COM{n}' for n in range(1, 10)), *(f'LPT{n}' for n in range(1, 10))}
+
     def __init__(self, store, repo):
         self.store = store
         self.repo = repo
+        self._lock = threading.Lock()
         self._cancel_events = {}
         self._cleanup_staging()
+
+    @classmethod
+    def _safe_name(cls, name):
+        """非法字符换成下划线、去结尾点空格、保留名加前缀；扩展名保留供格式判定。
+        create 与 stage 两侧同用本函数，登记名与上传名才能对得上。"""
+        cleaned = cls._UNSAFE_NAME.sub('_', str(name).strip()).rstrip('. ')
+        if not cleaned:
+            cleaned = '未命名'
+        if Path(cleaned).stem.upper() in cls._RESERVED_NAMES:
+            cleaned = '_' + cleaned
+        return cleaned[:200]
 
     # ---------- staging paths ----------
 
@@ -462,81 +485,88 @@ class KnowledgeImportManager:
     # ---------- lifecycle ----------
 
     def create(self, names):
-        names = [str(name).strip() for name in names if str(name).strip()]
-        if not names:
-            raise ValueError('请先选择要导入的文件')
-        if len(names) > self.MAX_FILES:
-            raise ValueError(f'单批最多 {self.MAX_FILES} 个文件，请分批导入')
-        latest = self.latest()
-        if latest and latest['status'] in self.ACTIVE:
-            raise ValueError('已有导入任务在进行中，请等待完成或先停止')
-        files = [dict(index=index, name=name, size=None, state='pending', entry_id=None,
-                      chunks=None, error=None, warnings=[]) for index, name in enumerate(names)]
-        task = dict(id='T-' + uuid.uuid4().hex, source=self.KIND, kind=self.KIND,
-                    query=f'{len(files)} 个文件', status='pending', message='等待文件上传',
-                    created_at=now(), count=0, total=len(files), processed=0, failed=0, files=files)
-        self._save(task)
-        self._staging_dir(task['id']).mkdir(parents=True, exist_ok=True)
-        return task
+        with self._lock:
+            names = [str(name).strip() for name in names if str(name).strip()]
+            if not names:
+                raise ValueError('请先选择要导入的文件')
+            if len(names) > self.MAX_FILES:
+                raise ValueError(f'单批最多 {self.MAX_FILES} 个文件，请分批导入')
+            names = [self._safe_name(name) for name in names]
+            latest = self.latest()
+            if latest and latest['status'] in self.ACTIVE:
+                raise ValueError('已有导入任务在进行中，请等待完成或先停止')
+            files = [dict(index=index, name=name, size=None, state='pending', entry_id=None,
+                          chunks=None, error=None, warnings=[]) for index, name in enumerate(names)]
+            task = dict(id='T-' + uuid.uuid4().hex, source=self.KIND, kind=self.KIND,
+                        query=f'{len(files)} 个文件', status='pending', message='等待文件上传',
+                        created_at=now(), count=0, total=len(files), processed=0, failed=0, files=files)
+            self._save(task)
+            self._staging_dir(task['id']).mkdir(parents=True, exist_ok=True)
+            return task
 
     def stage(self, task_id, index, filename, content):
-        task = self._require_active(task_id)
-        if task['status'] != 'pending':
-            raise ValueError('导入已开始，不能再上传文件')
-        if not 0 <= index < len(task['files']):
-            raise ValueError('文件序号超出任务范围')
-        declared = task['files'][index]
-        if declared['name'] != str(filename):
-            raise ValueError(f'文件名与任务登记不一致：{declared["name"]}')
-        from .kb_import import KB_MAX_FILE_BYTES
-        if len(content) > KB_MAX_FILE_BYTES:
-            raise ValueError(f'文件超过 {KB_MAX_FILE_BYTES // (1024 * 1024)} MB，请压缩或拆分后导入')
-        if declared['state'] != 'pending':
-            raise ValueError('该文件已上传过，请重新创建导入任务')
-        target = self._staging_dir(task_id) / f'{index:04d}-{declared["name"]}'
-        target.write_bytes(content)
-        declared.update(size=len(content), state='staged')
-        staged = sum(1 for f in task['files'] if f['state'] == 'staged')
-        task['message'] = f'已上传 {staged}/{len(task["files"])} 个文件'
-        self._save(task)
-        return task
+        with self._lock:
+            task = self._require_active(task_id)
+            if task['status'] != 'pending':
+                raise ValueError('导入已开始，不能再上传文件')
+            if not 0 <= index < len(task['files']):
+                raise ValueError('文件序号超出任务范围')
+            declared = task['files'][index]
+            if declared['name'] != self._safe_name(filename):
+                raise ValueError(f'文件名与任务登记不一致：{declared["name"]}')
+            from .kb_import import KB_MAX_FILE_BYTES
+            if len(content) > KB_MAX_FILE_BYTES:
+                raise ValueError(f'文件超过 {KB_MAX_FILE_BYTES // (1024 * 1024)} MB，请压缩或拆分后导入')
+            if declared['state'] != 'pending':
+                raise ValueError('该文件已上传过，请重新创建导入任务')
+            target = self._staging_dir(task_id) / f'{index:04d}-{declared["name"]}'
+            target.write_bytes(content)
+            declared.update(size=len(content), state='staged')
+            staged = sum(1 for f in task['files'] if f['state'] == 'staged')
+            task['message'] = f'已上传 {staged}/{len(task["files"])} 个文件'
+            self._save(task)
+            return task
 
     def start(self, task_id):
-        task = self._require_active(task_id)
-        if task['status'] != 'pending':
-            raise ValueError('导入任务已开始')
-        pending = [f['name'] for f in task['files'] if f['state'] != 'staged']
-        if pending:
-            raise ValueError('仍有未上传完成的文件：' + '、'.join(pending[:3]))
-        task.update(status='running', message='正在导入…')
-        self._save(task)
-        event = threading.Event()
-        self._cancel_events[task_id] = event
-        settings = self.store.settings()
-        thread = threading.Thread(target=self._run, args=(task_id, event, settings), daemon=True)
-        thread.start()
-        return task
+        # 落库 running、注册取消事件、起线程三步必须在锁内一次完成：否则 cancel 会在
+        # 「状态已 running 但事件未注册」的窗口里走 pending 分支，把任务误标取消。
+        with self._lock:
+            task = self._require_active(task_id)
+            if task['status'] != 'pending':
+                raise ValueError('导入任务已开始')
+            pending = [f['name'] for f in task['files'] if f['state'] != 'staged']
+            if pending:
+                raise ValueError('仍有未上传完成的文件：' + '、'.join(pending[:3]))
+            task.update(status='running', message='正在导入…')
+            self._save(task)
+            event = threading.Event()
+            self._cancel_events[task_id] = event
+            settings = self.store.settings()
+            thread = threading.Thread(target=self._run, args=(task_id, event, settings), daemon=True)
+            thread.start()
+            return task
 
     def cancel(self, task_id):
-        task = self._load(task_id)
-        if task is None:
-            raise ValueError('导入任务不存在')
-        if task['status'] not in self.ACTIVE:
-            raise ValueError('任务已结束，无法停止')
-        event = self._cancel_events.get(task_id)
-        if event is not None:
-            # running：只设置取消标志，不写任务载荷——running 期间 worker 独占任务写入，
-            # 双写会互相覆盖文件状态；worker 在当前文件后停止并把余下文件标记取消。
-            event.set()
+        with self._lock:
+            task = self._load(task_id)
+            if task is None:
+                raise ValueError('导入任务不存在')
+            if task['status'] not in self.ACTIVE:
+                raise ValueError('任务已结束，无法停止')
+            event = self._cancel_events.get(task_id)
+            if event is not None:
+                # running：只设置取消标志，不写任务载荷——running 期间 worker 独占任务写入，
+                # 双写会互相覆盖文件状态；worker 在当前文件后停止并把余下文件标记取消。
+                event.set()
+                return task
+            # pending（还在收文件）：直接取消并清理暂存。锁保证此刻不会有并发的 stage/start。
+            task.update(status='cancelled', message='已取消，未导入任何文件')
+            for file_state in task['files']:
+                if file_state['state'] in ('pending', 'staged'):
+                    file_state['state'] = 'cancelled'
+            self._save(task)
+            shutil.rmtree(self._staging_dir(task_id), ignore_errors=True)
             return task
-        # pending（还在收文件）：直接取消并清理暂存
-        task.update(status='cancelled', message='已取消，未导入任何文件')
-        for file_state in task['files']:
-            if file_state['state'] in ('pending', 'staged'):
-                file_state['state'] = 'cancelled'
-        self._save(task)
-        shutil.rmtree(self._staging_dir(task_id), ignore_errors=True)
-        return task
 
     def _require_active(self, task_id):
         task = self._load(task_id)
@@ -548,15 +578,21 @@ class KnowledgeImportManager:
 
     def _run(self, task_id, event, settings):
         task = self._load(task_id)
-        imported = failed = skipped = 0
         try:
             self._process_files(task, event, settings)
         except Exception as exc:  # noqa: BLE001 — 后台线程异常必须落库可见，静默死亡会让任务永远停在 running
+            # 中途死掉的文件不能留在 processing：那是不可见的中间态，重启清理只看任务状态。
+            for file_state in task.get('files', []):
+                if file_state['state'] == 'processing':
+                    file_state.update(state='failed', error=f'任务异常终止：{exc}'[:200])
             task.update(status='failed', message=f'导入任务异常终止：{exc}'[:500])
         finally:
-            self._cancel_events.pop(task_id, None)
-            shutil.rmtree(self._staging_dir(task_id), ignore_errors=True)
+            # 先落终态再摘取消事件：cancel 在锁内按「状态 + 事件」决定走哪个分支，顺序反了会
+            # 出现「事件已摘、状态还是 running」的窗口，cancel 走 pending 分支覆盖掉 completed。
             self._save(task)
+            with self._lock:
+                self._cancel_events.pop(task_id, None)
+            shutil.rmtree(self._staging_dir(task_id), ignore_errors=True)
 
     def _process_files(self, task, event, settings):
         task_id = task['id']

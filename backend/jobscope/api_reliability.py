@@ -142,11 +142,13 @@ def register(app, repo, data_dir):
         return {"tasks": tasks}
 
     # 来源健康度（2026-11-17）：任务状态分三桶，口径与页面 Badge 一致——completed/success 算成功；
-    # needs_login / needs_verification / backoff / partial / skipped / degraded / unsupported 是
-    # 「未完成」（要用户动手或来源整体不可用）；其余（failed）算失败。消息原样引用任务记录，
-    # 这里不产出任何新的诊断结论，也不猜失败原因。
+    # needs_login / needs_verification / backoff / partial / skipped / degraded / unsupported，以及
+    # running（采集进行中）与 cancelled（用户取消）都是「未完成」（要用户动手、来源整体不可用、
+    # 进行中或中途停下）——落失败桶会让一次日常采集就把来源显示成挂了；其余（failed）算失败。
+    # 消息原样引用任务记录，这里不产出任何新的诊断结论，也不猜失败原因。
     HEALTH_OK = {'completed', 'success'}
-    HEALTH_ATTENTION = {'needs_login', 'needs_verification', 'backoff', 'partial', 'skipped', 'degraded', 'unsupported'}
+    HEALTH_ATTENTION = {'needs_login', 'needs_verification', 'backoff', 'partial', 'skipped', 'degraded',
+                        'unsupported', 'running', 'cancelled'}
 
     @app.get('/api/sources/health')
     def sources_health():

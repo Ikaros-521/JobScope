@@ -17,10 +17,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from . import browser
-
-logger = logging.getLogger(__name__)
 from .connectors import CITY_CODES, DEFAULT_DATA, loads_payload, map_boss, plain
 from .repository import digest, now
+
+logger = logging.getLogger(__name__)
 
 # 岗位在 Boss 站内的唯一标识；与 connectors.map_boss 同一口径校验。
 ID_PATTERN = re.compile(r'[A-Za-z0-9_-]{4,60}')

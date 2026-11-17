@@ -327,3 +327,23 @@ def test_approved_tool_failure_recovers_and_denial_does_not_execute(client, monk
         assert result.status_code == 200 and not result.json()['pending_approval']
         assert 'fixture-secret-error' not in result.text
     assert len(calls) == 1
+
+
+def test_redact_args_masks_credential_keys_and_truncates_long_strings():
+    """DEBUG 工具参数日志保留排障价值，但凭证词族键的值不落日志（与凭证异常只记 type 同口径）。"""
+    from jobscope.general_agent import _redact_args
+    args = {'url': 'https://mcp.example.com/mcp',
+            'headers': {'Authorization': 'Bearer sk-live-abc', 'X-Trace': 't1'},
+            'api_key': 'sk-xxx',
+            'token': 'must-not-appear',
+            'note': '长' * 300}
+    red = _redact_args(args)
+    assert red['headers']['Authorization'] == '[脱敏]'
+    assert red['headers']['X-Trace'] == 't1'
+    assert red['api_key'] == '[脱敏]' and red['token'] == '[脱敏]'
+    assert red['url'].startswith('https://')
+    assert red['note'].startswith('长') and red['note'].endswith('…(+100 字符)')
+    # 脱敏后序列化不携带任何凭证原文
+    import json
+    assert 'sk-live-abc' not in json.dumps(red, ensure_ascii=False)
+    assert 'must-not-appear' not in json.dumps(red, ensure_ascii=False)

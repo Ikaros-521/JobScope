@@ -65,6 +65,24 @@ def _job_scope_refusal(policy):
                 note=policy.boundary_message() + ' 岗位范围无法补采公司级数据；如需补分请先调用request_scope_expansion申请company或global范围。')
 
 
+# DEBUG 工具参数日志的脱敏：键名命中凭证词族的值不落日志（与「凭证异常只记 type 不记原文」
+# 同一口径——MCP/Skill 工具参数里可能带用户 token）。其余参数照常输出，DEBUG 排障价值保留。
+_SENSITIVE_ARG_KEY = re.compile(r'(token|secret|password|passwd|api[-_]?key|authorization|auth|credential|cookie)', re.I)
+
+
+def _redact_args(args, depth=0):
+    if depth > 4:
+        return '…'
+    if isinstance(args, dict):
+        return {key: ('[脱敏]' if _SENSITIVE_ARG_KEY.search(str(key)) else _redact_args(value, depth + 1))
+                for key, value in args.items()}
+    if isinstance(args, (list, tuple)):
+        return [_redact_args(item, depth + 1) for item in args]
+    if isinstance(args, str) and len(args) > 200:
+        return args[:200] + f'…(+{len(args) - 200} 字符)'
+    return args
+
+
 BUILTINS = [
     dict(name='project_search', description='检索当前会话范围内的公司与岗位证据，返回可引用证据 ID 与正文。用于项目相关事实和比较；需要澄清时不执行。', parameters=schema({'query': QUERY}, ['query'])),
     dict(name='project_read', description='读取已保存证据的正文窗口；超过6000字符时用offset翻页。仅用于检索结果或用户给出的证据ID。', parameters=schema({'evidence_id': dict(type='string', maxLength=100), 'offset': dict(type='integer', minimum=0, maximum=150000)}, ['evidence_id'])),
@@ -616,7 +634,7 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
         self._scope(state)
         name = call['function']['name']
         args = json.loads(call['function']['arguments'])
-        logger.debug('Agent 工具调用 tool=%s args=%.600s', name, json.dumps(args, ensure_ascii=False))
+        logger.debug('Agent 工具调用 tool=%s args=%.600s', name, json.dumps(_redact_args(args), ensure_ascii=False, default=str))
         spec = next((tool for tool in state['tools'] if tool['name'] == name), None)
         if not spec:
             raise ValueError('工具不存在或未被启用')

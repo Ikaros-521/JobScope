@@ -133,3 +133,14 @@ def test_api_import_list_delete_and_report_fallback(client):
     pay = next(item for item in report['dimensions'] if item['dimension'] == 'pay')
     assert pay['score'] is None
     assert any('工资基线' in line for line in pay['missing'])
+
+
+def test_parse_rejects_nonfinite_numbers():
+    """float('inf')/'Infinity' 能过 >0 校验但入库后 JSON 序列化会打挂前端：必须在解析层闸住。"""
+    bad = ('城市,职类,学历,月薪中位数,年份,备注\n'
+           '杭州,技术研发,本科,inf,2025,\n'
+           '杭州,技术研发,本科,Infinity,2025,\n'
+           '杭州,技术研发,本科,nan,2025,\n')
+    rows, errors = wage_baseline.parse(bad)
+    assert rows == [] and len(errors) == 3
+    assert all('有限数字' in item for item in errors)

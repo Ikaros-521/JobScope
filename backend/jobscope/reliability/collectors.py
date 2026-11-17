@@ -796,7 +796,8 @@ def _commercial_pass(tab, keyword, source_id, on_status, data_dir, drafts):
         if reg:
             word = reg[1]
             # 去标签可能把相邻字段粘进捕获值（「存续参保人数」）：截掉后续字段标签再判定。
-            for marker in ('成立日期', '注册资本', '法定代表人', '核准日期', '统一社会', '工商注册', '登记机关', '纳税人'):
+            for marker in ('成立日期', '注册资本', '法定代表人', '核准日期', '统一社会', '工商注册',
+                           '登记机关', '纳税人', '参保人数', '参保'):
                 if marker in word:
                     word = word[:word.index(marker)]
             word = word.strip()
