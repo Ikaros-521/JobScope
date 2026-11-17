@@ -62,17 +62,28 @@ class DeadTab(FakeTab):
 
 
 class FakeBrowser:
-    """只提供 company_lookup 用到的 status / session_lock / _connection，不碰真浏览器。"""
+    """只提供 company_lookup 用到的 status / start / session_lock / _connection，不碰真浏览器。"""
 
     def __init__(self, installed=True, running=True, session_free=True):
         self.installed = installed
         self.running = running
         self.session_free = session_free
         self.locks = 0
+        self.starts = []
+        self.start_fails = False
 
     def status(self, data_dir=None):
         return {'installed': self.installed, 'running': self.running,
                 'message': '会话可连接。' if self.running else '尚未启动项目 Chrome。'}
+
+    def start(self, data_dir=None, source='boss'):
+        """自动拉起回放：成功则转 running 并记录落点；start_fails 模拟启动失败。"""
+        self.starts.append(source)
+        if self.installed and not self.start_fails:
+            self.running = True
+            return {'installed': True, 'running': True, 'message': f'项目 Chrome 已启动，当前打开 {source}。'}
+        return {'installed': self.installed, 'running': False,
+                'message': '项目 Chrome 启动失败；请关闭占用同一配置目录的浏览器后重试。'}
 
     @contextmanager
     def session_lock(self, data_dir=None):
@@ -174,16 +185,28 @@ def test_dead_session_is_failed_not_crashed(monkeypatch):
     assert outcome['cards'] == []
 
 
-def test_without_a_running_session_it_asks_for_login_first(monkeypatch):
-    _, browser, _ = drive(monkeypatch, running=False, tabbed=False)
+def test_without_a_running_session_it_auto_starts_the_browser(monkeypatch):
+    """浏览器没开自动拉起并落在所选站点首页（2026-11-17）：快查/一键完备不再让用户先去找启动按钮。"""
+    tab, browser, _ = drive(monkeypatch, running=False)
+    outcome = company_lookup.collect('qcc', '甲科技', browser_module=browser)
+    assert browser.starts == ['qcc']  # 落点跟着渠道走（LOOKUP_PAGES）
+    assert outcome['status'] == 'completed'
+    assert tab.closed is True
+
+
+def test_when_auto_start_fails_it_reports_the_launch_message(monkeypatch):
+    tab, browser, _ = drive(monkeypatch, running=False, tabbed=False)
+    browser.start_fails = True
     outcome = company_lookup.collect('tyc', '甲科技', browser_module=browser)
     assert outcome['status'] == 'needs_login'
+    assert '启动失败' in outcome['message']
 
 
 def test_without_an_installed_driver_it_is_unsupported(monkeypatch):
     _, browser, _ = drive(monkeypatch, installed=False)
     outcome = company_lookup.collect('tyc', '甲科技', browser_module=browser)
     assert outcome['status'] == 'unsupported'
+    assert browser.starts == []  # 未安装驱动时连自动拉起都不该尝试
 
 
 def test_a_busy_session_backs_off_without_queueing(monkeypatch):

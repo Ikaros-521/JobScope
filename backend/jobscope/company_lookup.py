@@ -205,6 +205,16 @@ def collect(channel, company, *, browser_module, data_dir=None):
     state = browser_module.status(data_dir)
     if not state.get('installed'):
         return _outcome('unsupported', state.get('message', ''))
+    # 浏览器没开会自动拉起并落在所选站点首页（2026-11-17，与信号采集/岗位采集同一行为）：
+    # 点「公司快查 / 一键完备」的预期就是看到浏览器窗口——登录、验证都在窗口里完成后重试，
+    # 不再让用户先去别处点「打开专用浏览器」。start() 自带锁与连接探测，必须在进会话锁之前调用。
+    launched = ''
+    if not browser_module._connection(data_dir):
+        started = browser_module.start(data_dir, channel)
+        launched = str(started.get('message') or '')
+        if not browser_module._connection(data_dir):
+            return _outcome('needs_login', launched or
+                            f'项目浏览器未能启动；请确认本机已安装项目浏览器依赖后重试。')
     with browser_module.session_lock(data_dir) as acquired:
         if not acquired:
             # 会话被占用就退让，不排队、不抢占——同一时刻只允许一个浏览器任务。
@@ -215,7 +225,8 @@ def collect(channel, company, *, browser_module, data_dir=None):
             logger.exception('接入项目浏览器失败：%s「%s」', channel, keyword)
             return _outcome('failed', '无法接入项目浏览器会话；请确认它仍在运行后重试。')
         if tab is None:
-            return _outcome('needs_login', f'请先启动项目浏览器并打开{spec["name"]}完成登录或验证。')
+            return _outcome('needs_login', f'项目浏览器会话已中断，请重新发起本次查询。'
+                            + (f'（{launched}）' if launched else ''))
         try:
             cards, markers = _read_cards(tab, spec, keyword)
         except Exception:
