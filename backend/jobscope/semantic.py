@@ -46,7 +46,11 @@ def analyze_semantically(job, resume, company_evidence):
         content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content.strip())
         assessment = Assessment.model_validate(json.loads(content))
     except (httpx.HTTPError, KeyError, IndexError, TypeError, ValueError) as exc:
-        raise ValueError('适配模型请求失败或返回结构无效，未生成分数') from exc
+        # 底层原因（401/超时/响应结构）要随 502 detail 带到前端，否则排查只能盲猜；
+        # httpx 部分超时异常 str 为空，此时退回类名。堆栈细节由 /api/analyze 的 exception 日志兜底。
+        raw = str(exc).strip()
+        detail = re.sub(r'\s+', ' ', raw)[:300] if raw else type(exc).__name__
+        raise ValueError(f'适配模型请求失败或返回结构无效，未生成分数：{detail}') from exc
     allowed = {fact['id'] for fact in facts}
     jd = '\n'.join(str(job.get(key, '')) for key in ('title', 'description', 'location', 'salary'))
     seen = set()

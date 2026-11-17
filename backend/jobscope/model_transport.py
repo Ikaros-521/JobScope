@@ -120,12 +120,16 @@ def complete(config, system, user, *, max_tokens=1800, temperature=None, timeout
         body['messages'].insert(0, dict(role='system', content=system))
     if temperature is not None:
         body['temperature'] = temperature
-    with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
-        response = client.post(validate_model_url(endpoint(config['url'], protocol)), headers=headers(config), json=body)
-        response.raise_for_status()
-        if len(response.content) > 2000000:
-            raise ValueError('模型响应超过上限')
-        data = response.json()
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
+            response = client.post(validate_model_url(endpoint(config['url'], protocol)), headers=headers(config), json=body)
+            response.raise_for_status()
+            if len(response.content) > 2000000:
+                raise ValueError('模型响应超过上限')
+            data = response.json()
+    except (httpx.HTTPError, ValueError):
+        logger.exception('模型调用失败[complete] model=%s', config.get('model'))
+        raise
     try:
         if protocol == 'anthropic':
             blocks = data['content']

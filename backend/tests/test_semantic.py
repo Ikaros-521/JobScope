@@ -87,6 +87,24 @@ def test_null_model_content_has_clear_error(context, monkeypatch):
         semantic().analyze_semantically(*context, [])
 
 
+def test_model_http_error_detail_reaches_failure_message(context, monkeypatch):
+    # 502 detail 必须带底层原因（渠道 401 之类），否则前端与日志都只剩一句固定话术。
+    def post(self, url, **kwargs):
+        return httpx.Response(401, request=httpx.Request('POST', url))
+    monkeypatch.setattr(httpx.Client, 'post', post)
+    with pytest.raises(ValueError, match=r'适配模型请求失败或返回结构无效，未生成分数：.*401 Unauthorized'):
+        semantic().analyze_semantically(*context, [])
+
+
+def test_silent_transport_error_falls_back_to_exception_class(context, monkeypatch):
+    # httpx 部分超时异常 str 为空：detail 退回类名，不能出现空冒号尾巴。
+    def post(self, url, **kwargs):
+        raise httpx.ReadTimeout('')
+    monkeypatch.setattr(httpx.Client, 'post', post)
+    with pytest.raises(ValueError, match='未生成分数：ReadTimeout'):
+        semantic().analyze_semantically(*context, [])
+
+
 def test_long_unmapped_jd_paragraph_cannot_be_silently_excluded(context, monkeypatch):
     job, resume = context
     job['description'] = 'Python\n' + '负责系统开发与维护，' * 180 + '必须博士学历，必须10年经验'
