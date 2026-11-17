@@ -346,8 +346,34 @@ export function updateResumeVersion(id: number, patch: Partial<Pick<ResumeVersio
   return api<ResumeVersion>(`/resume-versions/${id}`, { method: 'PUT', body: JSON.stringify(patch) })
 }
 export function deleteResumeVersion(id: number) { return api<{ ok: boolean }>(`/resume-versions/${id}`, { method: 'DELETE' }) }
-export function optimizeResume(payload: { resume_text?: string; job_id?: string; jd_text?: string; company?: string; job_title?: string; instructions?: string }) {
+export function optimizeResume(payload: { resume_text?: string; job_id?: string; jd_text?: string; company?: string; job_title?: string; instructions?: string; profile_entry_ids?: string[] }) {
   return post<ResumeVersion>('/resume-versions/optimize', payload)
+}
+// 个人资料库（2026-11-17）：完整版个人材料，与「我的简历」（可为篇幅而删减）分离；
+// 简历工坊优化时勾选条目取材，扩写充实阉割版内容。
+export type ProfileCategory = 'project' | 'work' | 'education' | 'skill' | 'cert' | 'award' | 'other'
+export const PROFILE_CATEGORY_NAMES: Record<ProfileCategory, string> = {
+  project: '项目经历', work: '工作经历', education: '教育背景', skill: '专业技能',
+  cert: '证书', award: '奖项荣誉', other: '其他材料',
+}
+export type ProfileEntry = {
+  id: string; category: ProfileCategory; title: string; org: string; period: string;
+  content: string; tags: string[]; enabled: boolean; created_at: string; updated_at: string
+}
+export function listProfileEntries(enabledOnly = false) {
+  return api<{ entries: ProfileEntry[] }>(`/profile-entries${enabledOnly ? '?enabled_only=true' : ''}`)
+}
+export function createProfileEntry(body: { category: ProfileCategory; title: string; org?: string; period?: string; content: string; tags?: string[]; enabled?: boolean }) {
+  return post<ProfileEntry>('/profile-entries', body)
+}
+export function replaceProfileEntry(id: string, body: { category: ProfileCategory; title: string; org?: string; period?: string; content: string; tags?: string[]; enabled?: boolean }) {
+  return api<ProfileEntry>(`/profile-entries/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(body) })
+}
+export function patchProfileEntry(id: string, patch: Partial<{ category: ProfileCategory; title: string; org: string; period: string; content: string; tags: string[]; enabled: boolean }>) {
+  return api<ProfileEntry>(`/profile-entries/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) })
+}
+export function deleteProfileEntry(id: string) {
+  return api<{ deleted: string }>(`/profile-entries/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
 export function exportResumeVersion(id: number, format: 'pdf' | 'docx' | 'html' | 'md', filename: string) {
   return download(`/resume-versions/${id}/export?format=${format}`, filename)

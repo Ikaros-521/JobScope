@@ -19,6 +19,7 @@ import { SystemSettings } from './SystemSettings'
 import { CompanyReference } from './CompanyReference'
 import { ResumeImport } from './ResumeImport'
 import { ResumeWorkshop } from './ResumeWorkshop'
+import { ProfileView } from './ProfileView'
 import type { WorkshopPrefill } from './ResumeWorkshop'
 import { KnowledgeView } from './KnowledgeView'
 import { LogView } from './LogView'
@@ -46,7 +47,7 @@ function jobQuery(filters: { q: string; location: string; source: string; salary
   if (filters.starred) params.set('starred', 'true')
   return params
 }
-type ViewId = 'jobs' | 'favorites' | 'resume' | 'workshop' | 'sources' | 'evidence' | 'compare' | 'global' | 'knowledge' | 'logs' | 'settings'
+type ViewId = 'jobs' | 'favorites' | 'resume' | 'profile' | 'workshop' | 'sources' | 'evidence' | 'compare' | 'global' | 'knowledge' | 'logs' | 'settings'
 type SettingsTab = 'model' | 'system' | 'extensions'
 const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon: string; label: string }[] }[] = [
   { id: 'research', label: '岗位研究', items: [
@@ -61,6 +62,7 @@ const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon: string
   ] },
   { id: 'profile', label: '个人材料', items: [
     { id: 'resume', icon: 'resume', label: '我的简历' },
+    { id: 'profile', icon: 'book', label: '个人资料库' },
     { id: 'workshop', icon: 'wand', label: '简历工坊' },
   ] },
   { id: 'manage', label: '系统管理', items: [
@@ -577,8 +579,8 @@ export default function App() {
       <div className="sidebar-bottom"><span className={`connection-dot ${online ? 'connected' : ''}`} />{online ? '本地工作区已连接' : '等待本地服务'}<span className="version">v0.1</span></div>
     </aside>
 
-    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'settings' || view === 'compare' || view === 'favorites' || view === 'knowledge' || view === 'logs' ? 'main main-compact' : 'main'}>
-      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'resume' ? '我的简历' : view === 'workshop' ? '简历工坊' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'knowledge' ? '知识库' : view === 'logs' ? '运行日志' : view === 'settings' ? '设置中心' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata(), refreshFavCount()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
+    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'settings' || view === 'compare' || view === 'favorites' || view === 'knowledge' || view === 'logs' || view === 'profile' ? 'main main-compact' : 'main'}>
+      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'resume' ? '我的简历' : view === 'profile' ? '个人资料库' : view === 'workshop' ? '简历工坊' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'knowledge' ? '知识库' : view === 'logs' ? '运行日志' : view === 'settings' ? '设置中心' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" onClick={() => void perform('refresh', async () => { await Promise.all([loadJobs(), refreshMetadata(), refreshFavCount()]); if (selectedId) await loadDetail(selectedId) })}><Icon name="source" size={17} /></button></div></header>
       <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} onConfigureModel={configureModel} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => openSettings('extensions')} onOpenCompare={() => setView('compare')} onOpenKnowledge={() => setView('knowledge')} openCompanyChat={companyChatRequest} /></div>
 
       {view === 'knowledge' && <KnowledgeView onCountChange={setKnowledgeTotal} />}
@@ -651,6 +653,7 @@ export default function App() {
 
       {view === 'resume' && <><section className="page-intro"><div><h1>我的简历</h1><p>你的简历是适配分析的依据，保存在当前本地工作区。</p></div>{resumeRevision != null && <span className="revision-label">版本 {resumeRevision}</span>}</section><div className="resume-layout"><form className="paper-panel resume-editor" onSubmit={saveResume}><div className="section-heading"><h2>简历与事实档案</h2><label className="format-select"><span className="sr-only">简历格式</span><select value={resumeFormat} onChange={event => { setResumeFormat(event.target.value); setResumeSaved(false) }}><option value="text">简历纯文本 / Markdown</option><option value="facts_yaml">ResumeLoom facts.yaml</option></select></label></div><ResumeImport disabled={Boolean(busy) || loading} hasText={Boolean(resumeText.trim())} onApply={(text, format) => { setResumeText(text); setResumeFormat(format); setResumeSaved(false); toast('已提取并填入编辑区，请核对内容后保存。') }} /><label htmlFor="resume-text" className="field-label">简历正文 · 可直接编辑或粘贴</label><textarea className="resume-textarea" id="resume-text" value={resumeText} onChange={event => { setResumeText(event.target.value); setResumeSaved(false) }} required maxLength={100000} spellCheck={false} placeholder={resumeFormat === 'facts_yaml' ? 'schema_version: 1\nfacts:\n  ...' : '填写技能、工作经历、项目经验，以及地点和薪资等求职偏好。\n\n建议保留具体职责、项目背景和经过确认的成果。'} /><div className="editor-footer"><span className={resumeSaved ? '' : 'editor-unsaved'}>{resumeText.length.toLocaleString()} 字符 · {resumeSaved ? '已保存' : '未保存的修改'}</span><Button className="button primary" busy={busy === 'resume'} disabled={Boolean(busy)} type="submit">保存到本地<Icon name="check" size={17} /></Button></div></form><aside className="paper-panel resume-guide"><span className="section-label">整理建议</span><h2>整理可核对的经历</h2><div className="guide-item"><b>01</b><div><h3>保留具体经历</h3><p>技能、职责和项目事实，比笼统的自我评价更有帮助。</p></div></div><div className="guide-item"><b>02</b><div><h3>未知就留作未知</h3><p>未提到的技能不能自动认定为不会，也不能当作已经掌握。</p></div></div><div className="guide-item"><b>03</b><div><h3>复用 ResumeLoom</h3><p>可导入 PDF、Word .docx 和文本文件，也可使用 facts.yaml。扫描件需先 OCR；旧版 .doc 请另存为 .docx。</p></div></div><div className="privacy-note"><Icon name="book" size={18} /><p>文件在本机提取文字，确认保存后仅保留文本。启用外部模型分析时，相关资料可能发送至你配置的模型服务。</p></div></aside></div></>}
 
+      {view === 'profile' && <ProfileView />}
       {view === 'workshop' && <ResumeWorkshop prefill={workshopPrefill} onPrefillConsumed={() => setWorkshopPrefill(null)} onOpenResume={() => setView('resume')} />}
 
       {view === 'sources' && <SourcesView active={view === 'sources'} tab={sourcesTab} onTabChange={setSourcesTab}

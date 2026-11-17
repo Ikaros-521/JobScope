@@ -488,6 +488,29 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .wage-import-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
 .wage-import-errors { border: 1px solid var(--line); border-radius: 8px; background: var(--surface); padding: 8px 12px; font-size: 12px; color: var(--muted); line-height: 1.8; }
 .wage-import-errors ul { margin: 4px 0; padding-left: 18px; }
+/* 个人资料库（2026-11-17）：完整版个人材料的手写条目管理与工坊取材器。 */
+.profile-toolbar { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+.profile-editor { display: grid; gap: 10px; margin-bottom: 16px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.profile-editor label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.profile-editor input, .profile-editor select, .profile-editor textarea { font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
+.profile-editor textarea { line-height: 1.7; resize: vertical; }
+.profile-group { margin-bottom: 16px; }
+.profile-group-title { font-size: 13px; color: var(--green); margin: 0 0 8px; display: flex; gap: 8px; align-items: baseline; }
+.profile-group-title span { font-size: 11px; color: var(--muted); }
+.profile-entry { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); padding: 10px 12px; margin-bottom: 8px; }
+.profile-entry.disabled { opacity: .55; }
+.profile-entry-head { display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: space-between; align-items: baseline; }
+.profile-entry-head strong { font-size: 14px; }
+.profile-entry-head .tiny-label { margin-left: 8px; }
+.profile-entry-actions { display: flex; gap: 12px; align-items: center; }
+.profile-entry-content { font-size: 13px; line-height: 1.8; margin: 8px 0 4px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.workshop-profile-picker { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.workshop-profile-head { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; }
+.workshop-profile-head strong { font-size: 13px; }
+.workshop-profile-list { display: grid; gap: 6px; }
+.workshop-profile-item { display: flex; gap: 8px; align-items: baseline; font-size: 13px; }
+.workshop-profile-item span { display: grid; }
+.workshop-profile-item small { color: var(--muted); font-size: 11px; }
 .reliability-actions { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 14px; }
 .reliability-legal { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.8; }
 .reliability-legal ul { margin: 6px 0; padding-left: 18px; overflow-wrap: anywhere; }

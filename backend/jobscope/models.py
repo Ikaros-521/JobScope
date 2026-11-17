@@ -261,13 +261,37 @@ class ResumePreviewInput(RequestModel):
 
 
 class OptimizeResumeInput(RequestModel):
-    """JD 定向优化：基础简历缺省取「我的简历」，JD 来自岗位档案或手动粘贴。"""
+    """JD 定向优化：基础简历缺省取「我的简历」，JD 来自岗位档案或手动粘贴。
+    profile_entry_ids 指定本次取材的「个人资料库」条目（完整版材料）；空列表＝不取材。"""
     resume_text: str = Field(default='', max_length=100000)
     job_id: str = Field(default='', max_length=100)
     jd_text: str = Field(default='', max_length=20000)
     company: str = Field(default='', max_length=300)
     job_title: str = Field(default='', max_length=300)
     instructions: str = Field(default='', max_length=2000)
+    profile_entry_ids: list[Annotated[str, Field(min_length=1, max_length=40)]] | None = Field(default=None, max_length=30)
+
+
+class ProfileEntryInput(RequestModel):
+    """个人资料库条目：完整版个人材料（项目经历等工作事实的第一手记录）。"""
+    category: Literal['project', 'work', 'education', 'skill', 'cert', 'award', 'other'] = 'project'
+    title: str = Field(min_length=1, max_length=200)
+    org: str = Field(default='', max_length=200)
+    period: str = Field(default='', max_length=100)
+    content: str = Field(min_length=1, max_length=20000)
+    tags: list[Annotated[str, Field(min_length=1, max_length=50)]] | None = Field(default=None, max_length=20)
+    enabled: bool = True
+
+
+class ProfileEntryPatch(RequestModel):
+    """部分更新：启停开关、内容微调；缺省字段保持不变。"""
+    category: Literal['project', 'work', 'education', 'skill', 'cert', 'award', 'other'] | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    org: str | None = Field(default=None, max_length=200)
+    period: str | None = Field(default=None, max_length=100)
+    content: str | None = Field(default=None, min_length=1, max_length=20000)
+    tags: list[Annotated[str, Field(min_length=1, max_length=50)]] | None = Field(default=None, max_length=20)
+    enabled: bool | None = None
 
 
 class ManualDescriptionInput(RequestModel):

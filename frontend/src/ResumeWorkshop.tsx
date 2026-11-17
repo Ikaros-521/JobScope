@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import {
   api, date, listResumeTemplates, previewResumeDocument, listResumeVersions, getResumeVersion,
   createResumeVersion, updateResumeVersion, deleteResumeVersion, optimizeResume, exportResumeVersion,
+  listProfileEntries, PROFILE_CATEGORY_NAMES,
 } from './api'
-import type { Job, PageInfo, ResumeTemplate, ResumeVersion, ResumeVersionSummary } from './api'
+import type { Job, PageInfo, ProfileEntry, ResumeTemplate, ResumeVersion, ResumeVersionSummary } from './api'
 import { toast } from './toast'
 
 // 岗位详情页「优化简历」跳转预填：带上岗位定位，进入后自动选中该岗位。
@@ -47,6 +48,9 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
   const [pasteCompany, setPasteCompany] = useState('')
   const [pasteJobTitle, setPasteJobTitle] = useState('')
   const [instructions, setInstructions] = useState('')
+  // 个人资料库取材（2026-11-17）：完整版材料（项目经历等），勾选后优化会从中扩写阉割版内容。
+  const [profileEntries, setProfileEntries] = useState<ProfileEntry[]>([])
+  const [profileSelected, setProfileSelected] = useState<Set<string>>(new Set())
   const jobSearchToken = useRef(0)
   const previewToken = useRef(0)
 
@@ -54,6 +58,8 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
     listResumeTemplates().then(data => setTemplates(data.templates)).catch(() => setTemplates([]))
     void refreshVersions()
     api<{ text: string }>('/resume').then(data => setResumeCharacters(data.text.trim().length)).catch(() => setResumeCharacters(null))
+    // 只取启用条目；加载失败静默——选材是可选增强，不该挡住优化主流程。
+    listProfileEntries(true).then(data => setProfileEntries(data.entries)).catch(() => setProfileEntries([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -139,6 +145,7 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
         company: targetMode === 'paste' ? pasteCompany : '',
         job_title: targetMode === 'paste' ? pasteJobTitle : '',
         instructions,
+        profile_entry_ids: [...profileSelected],
       })
       loadVersion(version)
       await refreshVersions()
@@ -260,6 +267,28 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
             <label className="workshop-instructions">补充指示（可选）
               <input value={instructions} onChange={event => setInstructions(event.target.value)} maxLength={2000} disabled={optimizing} placeholder="如：更突出带团队经验；控制在 1 页；保留英文技能名" />
             </label>
+            {/* 个人资料库取材：完整版材料（项目经历等）——勾选后优化从中扩写简历里的阉割版内容。 */}
+            <div className="workshop-profile-picker">
+              <div className="workshop-profile-head">
+                <strong>个人资料库取材（可选）</strong>
+                <span className="tiny-label">完整版材料：勾选与岗位相关的条目，优化会从中扩写简历里的删减版内容；只使用已写下的事实，不虚构。</span>
+              </div>
+              {profileEntries.length === 0
+                ? <p className="tiny-label">资料库还没有启用的条目；可在「个人材料 → 个人资料库」里补充完整的项目经历等工作材料。</p>
+                : <div className="workshop-profile-list">
+                  {profileEntries.map(item => <label key={item.id} className="agent-checkbox workshop-profile-item">
+                    <input type="checkbox" checked={profileSelected.has(item.id)} disabled={optimizing}
+                      onChange={() => setProfileSelected(previous => {
+                        const next = new Set(previous)
+                        if (next.has(item.id)) next.delete(item.id); else next.add(item.id)
+                        return next
+                      })} />
+                    <span><strong>{PROFILE_CATEGORY_NAMES[item.category]} · {item.title}</strong><small>{[item.org, item.period].filter(Boolean).join(' · ')} · {item.content.length} 字</small></span>
+                  </label>)}
+                  <button type="button" className="text-button" disabled={optimizing} onClick={() => setProfileSelected(new Set(profileEntries.map(item => item.id)))}>全选</button>
+                  <button type="button" className="text-button" disabled={optimizing} onClick={() => setProfileSelected(new Set())}>清空</button>
+                </div>}
+            </div>
             {formError && <p className="resume-import-error" role="alert">{formError}</p>}
             <div className="workshop-config-actions">
               <button type="button" className="button primary" disabled={Boolean(busy)} onClick={() => void startOptimize()}>{optimizing && <span className="spinner" />}{optimizing ? '正在优化（约 30–90 秒）…' : '开始优化'}</button>

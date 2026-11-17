@@ -40,6 +40,7 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS company_merge_proposals (id TEXT PRIMARY KEY, company_a TEXT NOT NULL, company_b TEXT NOT NULL, reason TEXT NOT NULL, status TEXT NOT NULL, created_at TEXT NOT NULL, resolved_at TEXT NOT NULL DEFAULT '');
                 CREATE TABLE IF NOT EXISTS resume_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, job_id TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', job_title TEXT NOT NULL DEFAULT '', jd_digest TEXT NOT NULL DEFAULT '', base_text TEXT NOT NULL DEFAULT '', markdown TEXT NOT NULL, template_id TEXT NOT NULL DEFAULT 'classic', notes TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS wage_baselines (id TEXT PRIMARY KEY, city TEXT NOT NULL, role TEXT NOT NULL, education TEXT NOT NULL, year TEXT NOT NULL, monthly_median REAL NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS profile_entries (id TEXT PRIMARY KEY, category TEXT NOT NULL, title TEXT NOT NULL, org TEXT NOT NULL DEFAULT '', period TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
             """)
             self._migrate_conversations(conn)
             # 读路径高频查询的二级索引（放在 _migrate_conversations 之后：conversations 的
@@ -298,6 +299,66 @@ class Repository:
         with self.connection() as conn:
             cursor = conn.execute("DELETE FROM resume_versions WHERE id=?", (version_id,))
             return cursor.rowcount > 0
+
+    # ── 个人资料库（2026-11-17）：完整版个人材料，与「我的简历」分离 ──
+    # 简历因匹配度与篇幅常是阉割版；这里存完整的项目经历等工作材料，简历工坊优化时按需取材。
+    # 条目是用户手写的第一手事实，不属于任何外部来源体系。
+
+    @staticmethod
+    def _profile_row(row):
+        item = dict(row)
+        try:
+            item['tags'] = json.loads(item.get('tags') or '[]')
+        except ValueError:
+            item['tags'] = []
+        item['enabled'] = bool(item.get('enabled'))
+        return item
+
+    def profile_entry(self, entry_id):
+        with self.connection() as conn:
+            row = conn.execute('SELECT * FROM profile_entries WHERE id=?', (entry_id,)).fetchone()
+        return None if row is None else self._profile_row(row)
+
+    def profile_entries(self, enabled_only=False):
+        """全量条目：按类别名内分组顺序（category, created_at）排列，前端按类别分组展示。"""
+        clause = ' WHERE enabled=1' if enabled_only else ''
+        with self.connection() as conn:
+            rows = conn.execute(f'SELECT * FROM profile_entries{clause} ORDER BY category, created_at').fetchall()
+        return [self._profile_row(row) for row in rows]
+
+    def save_profile_entry(self, data):
+        """带 id 更新既有条目，否则新建；更新时保留创建时间，enabled 恒为 0/1 整数。"""
+        timestamp = now()
+        item = {**dict(category='project', title='', org='', period='', content='', tags=[], enabled=True), **data}
+        if item.get('tags') is None:
+            item['tags'] = []  # PATCH 未携带 tags 时保持空集，不让 None 进 json.dumps
+        item['tags'] = json.dumps(list(dict.fromkeys(item['tags'])), ensure_ascii=False)
+        item['enabled'] = 1 if item['enabled'] else 0
+        with self.connection() as conn:
+            if item.get('id') and self.profile_entry(item['id']):
+                fields = {key: item[key] for key in ('category', 'title', 'org', 'period', 'content', 'tags', 'enabled')}
+                fields['updated_at'] = timestamp
+                conn.execute(f'UPDATE profile_entries SET {",".join(key + "=?" for key in fields)} WHERE id=?',
+                             (*fields.values(), item['id']))
+            else:
+                item['id'] = 'P-' + uuid.uuid4().hex[:20]
+                item['created_at'] = timestamp
+                conn.execute('INSERT INTO profile_entries VALUES (?,?,?,?,?,?,?,?,?,?)',
+                             (item['id'], item['category'], item['title'], item['org'], item['period'],
+                              item['content'], item['tags'], item['enabled'], item['created_at'], timestamp))
+        return self.profile_entry(item['id'])
+
+    def patch_profile_entry(self, entry_id, patch):
+        """部分更新（启停开关等）：在已存条目上合并，缺省字段保持原值；条目不存在返回 None。"""
+        existing = self.profile_entry(entry_id)
+        if existing is None:
+            return None
+        base = {key: existing[key] for key in ('category', 'title', 'org', 'period', 'content', 'tags', 'enabled')}
+        return self.save_profile_entry({**base, **patch, 'id': entry_id})
+
+    def delete_profile_entry(self, entry_id):
+        with self.connection() as conn:
+            return conn.execute('DELETE FROM profile_entries WHERE id=?', (entry_id,)).rowcount > 0
 
     def save_report(self, report):
         with self.connection() as conn:

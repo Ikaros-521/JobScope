@@ -26,7 +26,7 @@ from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalSourceInput, SplitInput
+from .models import AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ScopeExpansionInput, SignalSourceInput, SplitInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, SystemSettingsInput, SystemSettingsStore, ConnectionInput, _active, get_model_config, purpose_configured, use_config
@@ -1041,6 +1041,7 @@ def create_app(data_dir=None):
             else:
                 report = analyze(job, resume, company_evidence)
         except ValueError as exc:
+            logger.exception('评估适配失败 job=%s「%s」：%s', job['id'], job['title'], exc)
             raise HTTPException(502, str(exc)) from exc
         repo.save_report(report)
         return report
@@ -1089,6 +1090,61 @@ def create_app(data_dir=None):
             raise HTTPException(404, "简历版本不存在")
         return {"ok": True}
 
+    # ── 个人资料库（2026-11-17）：完整版个人材料，简历工坊优化时按需取材 ──
+    # 条目是用户手写的第一手事实；「我的简历」保持可为适配篇幅而删减的版本，两者分离。
+
+    PROFILE_CATEGORIES = ('project', 'work', 'education', 'skill', 'cert', 'award', 'other')
+    PROFILE_CATEGORIES_HEADER = {'project': '项目经历', 'work': '工作经历', 'education': '教育背景',
+                                 'skill': '专业技能', 'cert': '证书', 'award': '奖项荣誉', 'other': '其他材料'}
+
+    def profile_block(entry_ids):
+        """按选中条目拼「个人资料库摘录」文本块；未选中/已停用/不存在的条目静默跳过。"""
+        wanted = list(dict.fromkeys(entry_ids or []))
+        entries = {item['id']: item for item in repo.profile_entries()}
+        blocks = []
+        for entry_id in wanted:
+            item = entries.get(entry_id)
+            if item is None or not item['enabled']:
+                continue
+            header = '｜'.join(filter(None, (item['title'], item['org'], item['period'])))
+            blocks.append(f"【{PROFILE_CATEGORIES_HEADER.get(item['category'], '其他')}】{header}\n{item['content']}")
+        return '\n\n'.join(blocks)
+
+    @app.get('/api/profile-entries')
+    def list_profile_entries(enabled_only: bool = Query(default=False)):
+        return {'entries': repo.profile_entries(enabled_only=enabled_only)}
+
+    @app.get('/api/profile-entries/{entry_id}')
+    def read_profile_entry(entry_id: str = PathParam(min_length=1, max_length=40)):
+        item = repo.profile_entry(entry_id)
+        if item is None:
+            raise HTTPException(404, '资料条目不存在')
+        return item
+
+    @app.post('/api/profile-entries')
+    def create_profile_entry(data: ProfileEntryInput):
+        return repo.save_profile_entry(data.model_dump())
+
+    @app.put('/api/profile-entries/{entry_id}')
+    def replace_profile_entry(data: ProfileEntryInput, entry_id: str = PathParam(min_length=1, max_length=40)):
+        if repo.profile_entry(entry_id) is None:
+            raise HTTPException(404, '资料条目不存在')
+        return repo.save_profile_entry({**data.model_dump(), 'id': entry_id})
+
+    @app.patch('/api/profile-entries/{entry_id}')
+    def patch_profile_entry(data: ProfileEntryPatch, entry_id: str = PathParam(min_length=1, max_length=40)):
+        patch = {key: value for key, value in data.model_dump(exclude_none=True).items()}
+        item = repo.patch_profile_entry(entry_id, patch)
+        if item is None:
+            raise HTTPException(404, '资料条目不存在')
+        return item
+
+    @app.delete('/api/profile-entries/{entry_id}')
+    def delete_profile_entry(entry_id: str = PathParam(min_length=1, max_length=40)):
+        if not repo.delete_profile_entry(entry_id):
+            raise HTTPException(404, '资料条目不存在')
+        return {'deleted': entry_id}
+
     @app.post("/api/resume-versions/optimize")
     def optimize_resume_version(data: OptimizeResumeInput):
         base_text = data.resume_text.strip() or repo.resume()["text"]
@@ -1105,8 +1161,11 @@ def create_app(data_dir=None):
             raise HTTPException(400, "请选择目标岗位或粘贴岗位要求（JD）后再优化")
         if not purpose_configured('analysis'):
             raise HTTPException(400, "尚未配置分析模型，请先在「模型设置 → 功能绑定」为「分析」用途绑定模型渠道，再进行简历优化")
+        # 个人资料库摘录：完整版材料（项目经历等），供模型把基础简历里的阉割版内容扩写充实。
+        profile_materials = profile_block(data.profile_entry_ids or [])
         try:
-            markdown_text, notes = workshop.optimize_resume(base_text, jd_text, company=company, job_title=job_title, instructions=data.instructions)
+            markdown_text, notes = workshop.optimize_resume(base_text, jd_text, company=company, job_title=job_title,
+                                                            instructions=data.instructions, profile_materials=profile_materials)
         except ValueError as exc:
             raise HTTPException(502, str(exc)) from None
         return repo.save_resume_version(dict(
