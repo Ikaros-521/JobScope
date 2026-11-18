@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -8,6 +9,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from jobscope.main import create_app
+from jobscope.repository import Repository
 
 
 @pytest.fixture
@@ -117,3 +119,63 @@ def test_optimize_without_profile_ids_keeps_single_source_payload(client, monkey
     assert result.status_code == 200
     payload = json.loads(captured['user'])
     assert payload['profile_materials'] == ''
+
+
+PREFERENCE_CONTENT = '接受做六休一，周日固定休息'
+
+
+def test_preference_entries_feed_pipeline_not_workshop_material(client, monkeypatch):
+    """求职偏好（category='preference'，原独立页并入）：启用即进评估事实池；工坊取材不作素材。"""
+    monkeypatch.setenv('JOBSCOPE_LLM_URL', 'https://example.com/v1/chat/completions')
+    monkeypatch.setenv('JOBSCOPE_LLM_MODEL', 'test')
+    captured = mock_optimize_model(monkeypatch, MODEL_REPLY)
+    client.put('/api/resume', json=dict(text='# 张三', format='text'))
+    pref = create_entry(client, category='preference', title='求职偏好', content=PREFERENCE_CONTENT).json()
+    repo = client.app.state.repo
+    assert repo.preference_statements() == [{'id': pref['id'], 'statement': PREFERENCE_CONTENT}]
+
+    # 停用即退出事实池；再启用恢复。材料类条目永不进事实池。
+    client.patch(f"/api/profile-entries/{pref['id']}", json={'enabled': False})
+    assert repo.preference_statements() == []
+    client.patch(f"/api/profile-entries/{pref['id']}", json={'enabled': True})
+    create_entry(client, title='真实材料', content='独立设计网关限流方案')
+    assert repo.preference_statements() == [{'id': pref['id'], 'statement': PREFERENCE_CONTENT}]
+
+    # 工坊取材：偏好条目即使被误传 id 也不进摘录块（双保险，前端勾选列表已排除）。
+    result = client.post('/api/resume-versions/optimize', json=dict(
+        jd_text='后端开发', profile_entry_ids=[pref['id']]))
+    assert result.status_code == 200
+    assert '做六休一' not in json.loads(captured['user'])['profile_materials']
+    # 原 /api/job-preferences 端点随旧表退役。
+    assert client.get('/api/job-preferences').status_code == 404
+
+
+def test_legacy_job_preferences_migrate_into_profile_entries(tmp_path):
+    """升级迁移：旧 job_preferences 表并入 profile_entries（preference 类），旧表退役删除。"""
+    repo_path = tmp_path / 'jobscope.sqlite3'
+    conn = sqlite3.connect(repo_path)
+    conn.execute('CREATE TABLE job_preferences (id TEXT PRIMARY KEY, dimension TEXT NOT NULL, '
+                 'statement TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, '
+                 'created_at TEXT NOT NULL, updated_at TEXT NOT NULL)')
+    conn.execute("INSERT INTO job_preferences (id, dimension, statement, enabled, created_at, updated_at) "
+                 "VALUES ('PREF-old', 'skill', '五年 Go 经验', 1, '2026-01-01', '2026-01-02')")
+    conn.execute("INSERT INTO job_preferences (id, dimension, statement, enabled, created_at, updated_at) "
+                 "VALUES ('PREF-off', 'preference', '接受出差', 0, '2026-01-01', '2026-01-02')")
+    conn.commit()
+    conn.close()
+
+    repo = Repository(tmp_path)
+    entries = {item['id']: item for item in repo.profile_entries()}
+    migrated = entries['PREF-old']
+    assert migrated['category'] == 'preference' and migrated['title'] == '技能'
+    assert migrated['content'] == '五年 Go 经验' and migrated['tags'] == ['skill']
+    assert migrated['enabled'] is True
+    assert entries['PREF-off']['enabled'] is False and entries['PREF-off']['title'] == '求职偏好'
+    # 注入口径沿用：仅启用偏好进事实池，id 原样保留（已存报告 fact_ids 引用不失效）。
+    assert repo.preference_statements() == [{'id': 'PREF-old', 'statement': '五年 Go 经验'}]
+
+    with sqlite3.connect(repo_path) as verify:
+        names = {row[0] for row in verify.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert 'job_preferences' not in names
+    # 再次打开不重复迁移（旧表已不存在）。
+    assert len(Repository(tmp_path).profile_entries()) == 2

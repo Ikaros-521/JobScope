@@ -61,8 +61,9 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
     listResumeTemplates().then(data => setTemplates(data.templates)).catch(() => setTemplates([]))
     void refreshVersions()
     api<{ text: string }>('/resume').then(data => setResumeCharacters(data.text.trim().length)).catch(() => setResumeCharacters(null))
-    // 只取启用条目；加载失败静默——选材是可选增强，不该挡住优化主流程。
-    listProfileEntries(true).then(data => setProfileEntries(data.entries)).catch(() => setProfileEntries([]))
+    // 只取启用条目，求职偏好类除外（那类启用即进评估事实池，不作扩写素材）；
+    // 加载失败静默——选材是可选增强，不该挡住优化主流程。
+    listProfileEntries(true).then(data => setProfileEntries(data.entries.filter(entry => entry.category !== 'preference'))).catch(() => setProfileEntries([]))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 

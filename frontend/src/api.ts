@@ -210,9 +210,12 @@ export type SourceHealth = {
 }
 export function getSourceHealth() { return api<{ window: string; sources: SourceHealth[] }>('/sources/health') }
 // 运行日志页：后端进程内环形缓冲（最多 2000 条），服务重启清空、不落盘；对 /api/logs 自身的轮询访问行已被后端滤掉。
-export type LogEntry = { seq: number; ts: string; level: string; logger: string; message: string }
+// source：'app'=业务日志（默认，滤掉请求噪声），'access'=请求日志（uvicorn 访问行 + httpx 出站请求行），''=全部。
+export type LogEntry = { seq: number; ts: string; level: string; logger: string; source: string; message: string }
 export type LogPage = { entries: LogEntry[]; latest: number }
-export function getLogs(after = 0, limit = 1000) { return api<LogPage>(`/logs?after=${after}&limit=${limit}`) }
+export function getLogs(after = 0, limit = 1000, source = 'app') {
+  return api<LogPage>(`/logs?after=${after}&limit=${limit}${source ? `&source=${source}` : ''}`)
+}
 // 工资基线（数据与采集 → 数据源）：人社局指导价位手动导入，pay 维度同城对照的兜底。
 export type WageBaseline = { id: string; city: string; role: string; education: string; year: string; monthly_median: number; note: string; created_at: string }
 export function listWageBaselines() { return api<{ baselines: WageBaseline[] }>('/wage-baselines') }
@@ -297,6 +300,7 @@ export function openAnalyzeStream(runId: string, onEvent: (event: string, data: 
 }
 export function startAnalyzeRun(jobId: string) { return post<AnalyzeRunStart>('/analyze/runs', { job_id: jobId }) }
 export function cancelAnalyzeRun(runId: string) { return post<ChatRunStatus>(`/analyze/runs/${encodeURIComponent(runId)}/cancel`) }
+export function getAnalyzeRun(runId: string) { return api<ChatRunStatus>(`/analyze/runs/${encodeURIComponent(runId)}`) }
 // 评估报告回读：历史摘要（新→旧）+ 最近一份完整报告；详情按 id 取任意一份。
 export function listJobReports(jobId: string) { return api<JobReports>(`/jobs/${encodeURIComponent(jobId)}/reports`) }
 export function getJobReport(jobId: string, reportId: string) { return api<Analysis>(`/jobs/${encodeURIComponent(jobId)}/reports/${encodeURIComponent(reportId)}`) }
@@ -372,10 +376,12 @@ export function optimizeResume(payload: { resume_text?: string; job_id?: string;
 }
 // 个人资料库（2026-11-17）：完整版个人材料，与「我的简历」（可为篇幅而删减）分离；
 // 简历工坊优化时勾选条目取材，扩写充实阉割版内容。
-export type ProfileCategory = 'project' | 'work' | 'education' | 'skill' | 'cert' | 'award' | 'other'
+// preference 类（2026-11-18 并入，原求职偏好独立页退役）：硬性条件提前申报，
+// 启用条目评估适配时自动注入事实池；不进工坊取材。
+export type ProfileCategory = 'project' | 'work' | 'education' | 'skill' | 'cert' | 'award' | 'preference' | 'other'
 export const PROFILE_CATEGORY_NAMES: Record<ProfileCategory, string> = {
   project: '项目经历', work: '工作经历', education: '教育背景', skill: '专业技能',
-  cert: '证书', award: '奖项荣誉', other: '其他材料',
+  cert: '证书', award: '奖项荣誉', preference: '求职偏好', other: '其他材料',
 }
 export type ProfileEntry = {
   id: string; category: ProfileCategory; title: string; org: string; period: string;
@@ -452,12 +458,6 @@ export function updateKnowledgeSettings(patch: Partial<Pick<KnowledgeSettings, '
 export type KnowledgeReembedResult = KnowledgeStatus & { model: string }
 export function reembedKnowledge() { return post<KnowledgeReembedResult>('/knowledge/reembed') }
 
-// 求职偏好：硬性条件提前申报（到岗方式/排班/薪资期望等），评估时作为已确认事实注入管线。
-export type JobPreference = { id: string; dimension: string; statement: string; enabled: boolean }
-export function listJobPreferences(enabledOnly = false) { return api<{ preferences: JobPreference[] }>(`/job-preferences${enabledOnly ? '?enabled_only=true' : ''}`) }
-export function createJobPreference(data: { dimension: string; statement: string; enabled: boolean }) { return post<JobPreference>('/job-preferences', data) }
-export function updateJobPreference(id: string, patch: Partial<{ dimension: string; statement: string; enabled: boolean }>) { return api<JobPreference>(`/job-preferences/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(patch) }) }
-export function deleteJobPreference(id: string) { return api<{ deleted: boolean }>(`/job-preferences/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
 // 需求行手动改判：改判记忆按岗位保存（重评沿用），并同步重算所有已存报告；返回最新报告。
 export type AnalysisStatusResult = { report: Analysis | null; message: string | null }
-export function updateAnalysisStatus(jobId: string, jdQuote: string, status: string) { return post<AnalysisStatusResult>(`/jobs/${encodeURIComponent(jobId)}/analysis/status`, { jd_quote: jdQuote, status }) }
+export function updateAnalysisStatus(jobId: string, jdQuote: string, status: string) { return api<AnalysisStatusResult>(`/jobs/${encodeURIComponent(jobId)}/analysis/status`, { method: 'PUT', body: JSON.stringify({ jd_quote: jdQuote, status }) }) }

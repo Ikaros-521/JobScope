@@ -213,16 +213,7 @@ def test_reports_readback_list_detail_and_404(rule_client):
     assert rule_client.get('/api/jobs/J-not-exist/reports').status_code == 404
 
 
-def test_job_preferences_crud(rule_client):
-    created = rule_client.post('/api/job-preferences', json=dict(dimension='preference', statement='接受做六休一，周日固定休息'))
-    assert created.status_code == 200
-    pref = created.json()
-    assert pref['enabled'] is True
-    assert any(item['id'] == pref['id'] for item in rule_client.get('/api/job-preferences?enabled_only=true').json()['preferences'])
-    assert rule_client.put(f"/api/job-preferences/{pref['id']}", json=dict(enabled=False)).json()['enabled'] is False
-    assert rule_client.get('/api/job-preferences?enabled_only=true').json()['preferences'] == []
-    assert rule_client.delete(f"/api/job-preferences/{pref['id']}").json()['deleted'] is True
-    assert rule_client.delete(f"/api/job-preferences/{pref['id']}").status_code == 404
+# 求职偏好 CRUD 已并入个人资料库（category='preference'），用例移至 test_profile_library.py。
 
 
 def test_status_override_on_rule_report_records_memory_only(rule_client):
@@ -317,3 +308,38 @@ def test_optimize_output_auto_pins_to_job(client, monkeypatch):
     assert response.status_code == 200
     assert repo.resume_version(response.json()['id'])['pinned'] is True
     assert not repo.resume_version(old['id'])['pinned']  # 同岗位旧 pin 被新产出接管
+
+
+def test_worker_resolves_db_model_settings_without_env(rule_client, monkeypatch):
+    # 回归：流式 worker 线程收不到请求中间件的线程级配置（contextvar 不跨线程），
+    # 必须显式组装 DB 生效配置——否则回落环境变量（本用例未设）→「地址为空」。
+    import httpx as httpx_mod
+    with rule_client.app.state.repo.connection() as conn:
+        conn.execute("INSERT OR REPLACE INTO model_settings VALUES ('llm', ?)",
+                     (json.dumps(dict(mode='remote', url='https://db-config.example/v1/chat/completions', model='db-model', key='')),))
+
+    from fastapi.testclient import TestClient
+    captured_urls, calls = [], []
+    original_post = httpx_mod.Client.post
+
+    def post(self, url, **kwargs):
+        if isinstance(self, TestClient):  # TestClient 自身基于 httpx：放行平台请求
+            return original_post(self, url, **kwargs)
+        captured_urls.append(str(url))
+        body = kwargs['json']
+        if '拆解员' in body['messages'][0]['content']:
+            content = json.dumps(dict(requirements=[dict(requirement='Java', jd_quote='负责数据平台', dimension='experience', hard=False)], suggestions=[]))
+        else:
+            content = json.dumps(dict(matches=[dict(index=0, status='met', fact_ids=[], rationale='存档简历含该经历')]))
+        calls.append(json.loads(json.dumps(kwargs['json'])))
+        return httpx_mod.Response(200, json={'choices': [{'message': {'content': content}}]}, request=httpx_mod.Request('POST', url))
+    monkeypatch.setattr(httpx_mod.Client, 'post', post)
+
+    repo = rule_client.app.state.repo
+    job = save_job(repo)
+    assert rule_client.put('/api/resume', json=dict(text='负责 Java 微服务', format='text')).status_code == 200
+    run_id = rule_client.post('/api/analyze/runs', json=dict(job_id=job['id'])).json()['run_id']
+    await_done(rule_client, run_id)
+    join_worker(rule_client, run_id)
+    assert captured_urls, 'worker 未发出任何模型调用'
+    assert captured_urls[0].startswith('https://db-config.example/v1/chat/completions')

@@ -41,7 +41,6 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS resume_versions (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, job_id TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', job_title TEXT NOT NULL DEFAULT '', jd_digest TEXT NOT NULL DEFAULT '', base_text TEXT NOT NULL DEFAULT '', markdown TEXT NOT NULL, template_id TEXT NOT NULL DEFAULT 'classic', notes TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS wage_baselines (id TEXT PRIMARY KEY, city TEXT NOT NULL, role TEXT NOT NULL, education TEXT NOT NULL, year TEXT NOT NULL, monthly_median REAL NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS profile_entries (id TEXT PRIMARY KEY, category TEXT NOT NULL, title TEXT NOT NULL, org TEXT NOT NULL DEFAULT '', period TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-                CREATE TABLE IF NOT EXISTS job_preferences (id TEXT PRIMARY KEY, dimension TEXT NOT NULL, statement TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS requirement_overrides (job_id TEXT NOT NULL REFERENCES jobs(id), quote_digest TEXT NOT NULL, status TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY(job_id, quote_digest));
             """)
             self._migrate_conversations(conn)
@@ -53,6 +52,22 @@ class Repository:
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(resume_versions)')}
             if 'pinned' not in columns:
                 conn.execute('ALTER TABLE resume_versions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0')
+            # job_preferences 并入 profile_entries（2026-11-18）：偏好申报本就是个人资料的一种立场
+            # 条目，category='preference' 承载；原 dimension 降为标签（模型注入只取 statement，无损），
+            # title 用维度中文名，id 原样保留（已存报告的 fact_ids 引用不失效）。迁移后旧表退役删除。
+            legacy_tables = {row['name'] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if 'job_preferences' in legacy_tables:
+                dimension_names = {'preference': '求职偏好', 'skill': '技能',
+                                   'experience': '经历与职责', 'industry': '行业与业务'}
+                rows = conn.execute('SELECT id, dimension, statement, enabled, created_at, updated_at FROM job_preferences').fetchall()
+                for row in rows:
+                    # 列名显式：profile_entries 表尾追加过 source 列，物理列序非建表顺序，位置插值会错位。
+                    conn.execute('INSERT INTO profile_entries (id,category,title,org,period,content,tags,enabled,source,created_at,updated_at) '
+                                 'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                                 (row['id'], 'preference', dimension_names.get(row['dimension'], row['dimension']), '', '',
+                                  row['statement'], json.dumps([row['dimension']], ensure_ascii=False),
+                                  int(row['enabled']), '', row['created_at'], row['updated_at']))
+                conn.execute('DROP TABLE job_preferences')
             # 读路径高频查询的二级索引（放在 _migrate_conversations 之后：conversations 的
             # updated_at 等列由迁移补齐）。列表排序、公司过滤、取最新报告与最新会话不再随数据量
             # 增长退化为全表扫描；首次对既有库建索引是一次性开销。
@@ -425,37 +440,12 @@ class Repository:
         with self.connection() as conn:
             conn.execute('UPDATE reports SET payload=? WHERE id=?', (json.dumps(payload, ensure_ascii=False), report_id))
 
-    # ---- 求职偏好：硬性条件提前申报，评估时作为已确认事实注入管线 ----
+    # ---- 求职偏好：category='preference' 的资料条目，启用即注入评估管线作已确认事实 ----
 
-    def save_job_preference(self, data):
-        """有 id 视为更新（不存在返回 None），否则新增；返回偏好 id。"""
-        timestamp = now()
-        with self.connection() as conn:
-            if data.get('id'):
-                if conn.execute('SELECT id FROM job_preferences WHERE id=?', (data['id'],)).fetchone() is None:
-                    return None
-                conn.execute('UPDATE job_preferences SET dimension=?, statement=?, enabled=?, updated_at=? WHERE id=?',
-                             (data['dimension'], data['statement'], int(data.get('enabled', True)), timestamp, data['id']))
-            else:
-                data = {**data, 'id': 'PREF-' + uuid.uuid4().hex[:20]}
-                conn.execute('INSERT INTO job_preferences (id, dimension, statement, enabled, created_at, updated_at) VALUES (?,?,?,?,?,?)',
-                             (data['id'], data['dimension'], data['statement'], int(data.get('enabled', True)), timestamp, timestamp))
-        return data['id']
-
-    def job_preference(self, preference_id):
-        with self.connection() as conn:
-            row = conn.execute('SELECT * FROM job_preferences WHERE id=?', (preference_id,)).fetchone()
-        return dict(row, enabled=bool(row['enabled'])) if row else None
-
-    def job_preferences(self, enabled_only=False):
-        sql = 'SELECT * FROM job_preferences' + (' WHERE enabled=1' if enabled_only else '') + ' ORDER BY dimension, created_at'
-        with self.connection() as conn:
-            rows = conn.execute(sql).fetchall()
-        return [dict(row, enabled=bool(row['enabled'])) for row in rows]
-
-    def delete_job_preference(self, preference_id):
-        with self.connection() as conn:
-            return conn.execute('DELETE FROM job_preferences WHERE id=?', (preference_id,)).rowcount > 0
+    def preference_statements(self):
+        """启用的求职偏好条目 → 评估管线的已确认事实（id+statement 口径，与简历解析事实同形）。"""
+        return [{'id': item['id'], 'statement': item['content']}
+                for item in self.profile_entries(enabled_only=True) if item['category'] == 'preference']
 
     # ---- 需求状态手动改判：按岗位 + jd_quote 摘要记忆，重评自动沿用 ----
 

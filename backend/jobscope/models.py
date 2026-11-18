@@ -273,8 +273,8 @@ class OptimizeResumeInput(RequestModel):
 
 
 class ProfileEntryInput(RequestModel):
-    """个人资料库条目：完整版个人材料（项目经历等工作事实的第一手记录）。"""
-    category: Literal['project', 'work', 'education', 'skill', 'cert', 'award', 'other'] = 'project'
+    """个人资料库条目：完整版个人材料 + 求职偏好申报（preference 类，启用即注入评估事实池）。"""
+    category: Literal['project', 'work', 'education', 'skill', 'cert', 'award', 'preference', 'other'] = 'project'
     title: str = Field(min_length=1, max_length=200)
     org: str = Field(default='', max_length=200)
     period: str = Field(default='', max_length=100)
@@ -285,7 +285,7 @@ class ProfileEntryInput(RequestModel):
 
 class ProfileEntryPatch(RequestModel):
     """部分更新：启停开关、内容微调；缺省字段保持不变。"""
-    category: Literal['project', 'work', 'education', 'skill', 'cert', 'award', 'other'] | None = None
+    category: Literal['project', 'work', 'education', 'skill', 'cert', 'award', 'preference', 'other'] | None = None
     title: str | None = Field(default=None, min_length=1, max_length=200)
     org: str | None = Field(default=None, max_length=200)
     period: str | None = Field(default=None, max_length=100)
@@ -330,20 +330,6 @@ class RemoteBasketInput(RequestModel):
     """油猴脚本推送：卡片字段在服务端清洗重建，page_url 用于来源校验与溯源。"""
     page_url: str = Field(min_length=1, max_length=1000)
     items: list[dict] = Field(min_length=1, max_length=200)
-
-
-class JobPreferenceInput(RequestModel):
-    """求职偏好申报：硬性条件（到岗方式/排班/薪资期望等）的提前答案，评估时作为已确认事实注入。"""
-    dimension: Literal['skill', 'experience', 'industry', 'preference'] = 'preference'
-    statement: str = Field(min_length=2, max_length=1000)
-    enabled: bool = True
-
-
-class JobPreferencePatch(RequestModel):
-    """部分更新：启停开关、内容微调；缺省字段保持不变。"""
-    dimension: Literal['skill', 'experience', 'industry', 'preference'] | None = None
-    statement: str | None = Field(default=None, min_length=2, max_length=1000)
-    enabled: bool | None = None
 
 
 class AnalysisStatusInput(RequestModel):

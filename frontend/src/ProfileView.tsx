@@ -6,6 +6,8 @@ import { Icon } from './Icon'
 
 // 个人资料库（2026-11-17）：完整版个人材料。与「我的简历」分离——简历因匹配度与篇幅
 // 常是阉割版；这里存完整的项目经历等工作事实，简历工坊优化时勾选取材扩写充实。
+// preference 类（2026-11-18 并入，原「求职偏好」独立页退役）注入方向不同：
+// 启用条目评估适配时自动进事实池判上，不进工坊取材。
 // 本视图只做手写材料的增删改查，不抓取、不联网、不打分。
 const CATEGORIES = Object.keys(PROFILE_CATEGORY_NAMES) as ProfileCategory[]
 const EMPTY_DRAFT = { category: 'project' as ProfileCategory, title: '', org: '', period: '', content: '', tags: '' }
@@ -60,7 +62,7 @@ export function ProfileView() {
     run('save', async () => {
       if (editingId) await replaceProfileEntry(editingId, body)
       else await createProfileEntry(body)
-      toast(editingId ? '条目已更新。' : '条目已保存，可在简历工坊勾选取材。')
+      toast(editingId ? '条目已更新。' : draft.category === 'preference' ? '偏好已保存，启用状态下评估适配会自动判上。' : '条目已保存，可在简历工坊勾选取材。')
       setDraft(null); setEditingId(null)
       await load()
     })
@@ -82,7 +84,7 @@ export function ProfileView() {
   const charTotal = (entries ?? []).reduce((sum, item) => sum + item.content.length, 0)
 
   return <section className="profile-view" aria-label="个人资料库">
-    <section className="page-intro"><div><h1>个人资料库</h1><p>存放完整版的个人材料：项目经历、工作细节、技能佐证。简历因匹配度与篇幅常是删减版——优化简历时从这里取材，把阉割版内容扩写充实。</p></div>
+    <section className="page-intro"><div><h1>个人资料库</h1><p>存放完整版的个人材料：项目经历、工作细节、技能佐证，以及求职偏好的硬性条件申报。简历因匹配度与篇幅常是删减版——优化简历时从这里取材，把阉割版内容扩写充实；启用的偏好申报则会在评估适配时自动判上。</p></div>
       <span className="revision-label">{entries?.length ?? '…'} 条材料 · 约 {charTotal.toLocaleString()} 字</span></section>
     <section className="paper-panel profile-panel">
       <div className="profile-toolbar">
@@ -127,7 +129,7 @@ export function ProfileView() {
           <label>组织 / 公司（可选）<input value={draft.org} onChange={event => setDraft({ ...draft, org: event.target.value })} maxLength={200} placeholder="如：甲科技 · 平台架构组" /></label>
           <label>时间段（可选）<input value={draft.period} onChange={event => setDraft({ ...draft, period: event.target.value })} maxLength={100} placeholder="如：2023-2024" /></label>
         </div>
-        <label>完整内容 *（写清背景、你做了什么、怎么做的、结果与数字——工坊优化时会从中取材）<textarea value={draft.content} onChange={event => setDraft({ ...draft, content: event.target.value })} rows={8} maxLength={20000} placeholder={'例：负责网关限流与灰度方案设计；推导容量模型并落地三级限流；大促峰值 4.2 万 QPS 零故障；沉淀为公司级组件，3 个团队复用。'} spellCheck={false} /></label>
+        <label>{draft.category === 'preference' ? '申报内容 *（写清你的硬性答案：到岗方式、排班作息、薪资期望、学历门槛等——启用后评估适配会作为已确认事实自动判上）' : '完整内容 *（写清背景、你做了什么、怎么做的、结果与数字——工坊优化时会从中取材）'}<textarea value={draft.content} onChange={event => setDraft({ ...draft, content: event.target.value })} rows={8} maxLength={20000} placeholder={draft.category === 'preference' ? '例：接受做六休一，周日固定休息；期望薪资 18k×15；可接受短期出差。' : '例：负责网关限流与灰度方案设计；推导容量模型并落地三级限流；大促峰值 4.2 万 QPS 零故障；沉淀为公司级组件，3 个团队复用。'} spellCheck={false} /></label>
         <label>个人标签（逗号分隔，可选）<input value={draft.tags} onChange={event => setDraft({ ...draft, tags: event.target.value })} maxLength={500} placeholder="后端, 高并发, 网关" /></label>
         <div className="modal-actions">
           <button type="button" className="button secondary" onClick={() => { setDraft(null); setEditingId(null) }} disabled={busy === 'save'}>取消</button>
@@ -145,7 +147,7 @@ export function ProfileView() {
               <div className="profile-entry-head">
                 <div><strong>{item.title}</strong><span className="tiny-label">{[item.org, item.period].filter(Boolean).join(' · ')}</span></div>
                 <div className="profile-entry-actions">
-                  <label className="agent-checkbox" title="停用的条目不会出现在简历工坊的取材列表里">
+                  <label className="agent-checkbox" title={item.category === 'preference' ? '停用的偏好不参与评估适配的自动判上' : '停用的条目不会出现在简历工坊的取材列表里'}>
                     <input type="checkbox" checked={item.enabled} disabled={busy === `toggle-${item.id}`} onChange={() => void toggleEnabled(item)} />启用
                   </label>
                   <button type="button" className="text-button" onClick={() => startEdit(item)}>编辑</button>
@@ -156,7 +158,7 @@ export function ProfileView() {
               {item.tags.length > 0 && <div className="job-card-meta">{item.tags.map(tag => <span className="job-tags" key={tag}><span>{tag}</span></span>)}</div>}
             </article>)}
           </div>)}
-      <p className="tiny-label list-bottom">资料库是完整版材料，不受简历篇幅约束；「我的简历」保持投递用的精简版。简历工坊优化时勾选这里的相关条目，AI 会从中取材把对应内容扩写充实——只使用已写下的事实，不虚构。</p>
+      <p className="tiny-label list-bottom">资料库是完整版材料，不受简历篇幅约束；「我的简历」保持投递用的精简版。简历工坊优化时勾选这里的相关条目，AI 会从中取材把对应内容扩写充实——只使用已写下的事实，不虚构。「求职偏好」类条目另有用途：启用的硬性条件申报（到岗方式、排班、薪资期望等）会在评估适配时自动作为已确认事实判上。</p>
     </section>
   </section>
 }

@@ -27,7 +27,7 @@ from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, JobPreferenceInput, JobPreferencePatch, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, ObsidianImportInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput
+from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, ObsidianImportInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -506,14 +506,17 @@ def create_app(data_dir=None):
     @app.get('/api/logs')
     def read_logs(level: str = Query('', pattern='^(DEBUG|INFO|WARNING|ERROR|CRITICAL)$'),
                   q: str = Query('', max_length=200),
-                  after: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=2000)):
+                  after: int = Query(0, ge=0), limit: int = Query(200, ge=1, le=2000),
+                  source: str = Query('', pattern='^(app|access)$')):
         """运行日志环形缓冲：前端「运行日志」页按 after 轮询增量。
 
         只读进程内存（logs._RING），重启即清空、不落盘；uvicorn 访问行里对 /api/logs
-        自身的轮询已在 handler 里滤掉，这里不会再收到自己的请求记录。
+        自身的轮询已在 handler 里滤掉，这里不会再收到自己的请求记录。source 留空=
+        全部，'app'=业务日志（前端默认），'access'=请求日志（uvicorn 访问行 + httpx
+        出站请求行）。
         """
         from .logs import recent_logs
-        return recent_logs(after=after, level=level, q=q, limit=limit)
+        return recent_logs(after=after, level=level, q=q, limit=limit, source=source)
 
     @app.get('/api/cities')
     def cities():
@@ -1050,10 +1053,8 @@ def create_app(data_dir=None):
         return job, resume, company_evidence
 
     def analysis_extras(job_id):
-        """评估管线的本地注入：启用的求职偏好转已确认事实 + 该岗位的手动改判记忆。"""
-        extra_facts = [{'id': pref['id'], 'statement': pref['statement']}
-                       for pref in repo.job_preferences(enabled_only=True)]
-        return extra_facts, repo.list_overrides(job_id)
+        """评估管线的本地注入：启用的求职偏好（category='preference'）转已确认事实 + 该岗位的手动改判记忆。"""
+        return repo.preference_statements(), repo.list_overrides(job_id)
 
     @app.post("/api/analyze")
     def analysis(data: AnalyzeInput):
@@ -1071,30 +1072,8 @@ def create_app(data_dir=None):
         repo.save_report(report)
         return report
 
-    # ---- 求职偏好：硬性条件（到岗方式/排班/薪资期望）提前申报，评估时作为已确认事实注入 ----
-
-    @app.get('/api/job-preferences')
-    def list_job_preferences(enabled_only: bool = Query(False)):
-        return dict(preferences=repo.job_preferences(enabled_only=enabled_only))
-
-    @app.post('/api/job-preferences')
-    def create_job_preference(data: JobPreferenceInput):
-        preference_id = repo.save_job_preference(data.model_dump())
-        return repo.job_preference(preference_id)
-
-    @app.put('/api/job-preferences/{preference_id}')
-    def update_job_preference(data: JobPreferencePatch, preference_id: str = PathParam(max_length=40)):
-        existing = repo.job_preference(preference_id)
-        if existing is None:
-            raise HTTPException(404, '求职偏好不存在')
-        repo.save_job_preference({**existing, **data.model_dump(exclude_none=True), 'id': preference_id})
-        return repo.job_preference(preference_id)
-
-    @app.delete('/api/job-preferences/{preference_id}')
-    def delete_job_preference(preference_id: str = PathParam(max_length=40)):
-        if not repo.delete_job_preference(preference_id):
-            raise HTTPException(404, '求职偏好不存在')
-        return dict(deleted=True)
+    # 求职偏好已并入「个人资料库」category='preference'：CRUD 走 /api/profile-entries，
+    # 评估注入走 repo.preference_statements()（原 /api/job-preferences 端点随表退役删除）。
 
     @app.put('/api/jobs/{job_id}/analysis/status')
     def update_analysis_status(data: AnalysisStatusInput, job_id: str = PathParam(max_length=100)):
@@ -1229,21 +1208,24 @@ def create_app(data_dir=None):
             raise HTTPException(422, "未绑定岗位的存档不能设为评估用；请先在工坊里绑定目标岗位")
         return repo.set_pinned_resume_version(version_id, data.pinned)
 
-    # ── 个人资料库（2026-11-17）：完整版个人材料，简历工坊优化时按需取材 ──
+    # ── 个人资料库（2026-11-17）：完整版个人材料 + 求职偏好申报，简历工坊优化时按需取材 ──
     # 条目是用户手写的第一手事实；「我的简历」保持可为适配篇幅而删减的版本，两者分离。
+    # preference 类（求职偏好）注入方向不同：启用即进评估事实池（见 preference_statements），
+    # 不作工坊扩写素材。
 
-    PROFILE_CATEGORIES = ('project', 'work', 'education', 'skill', 'cert', 'award', 'other')
+    PROFILE_CATEGORIES = ('project', 'work', 'education', 'skill', 'cert', 'award', 'preference', 'other')
     PROFILE_CATEGORIES_HEADER = {'project': '项目经历', 'work': '工作经历', 'education': '教育背景',
-                                 'skill': '专业技能', 'cert': '证书', 'award': '奖项荣誉', 'other': '其他材料'}
+                                 'skill': '专业技能', 'cert': '证书', 'award': '奖项荣誉',
+                                 'preference': '求职偏好', 'other': '其他材料'}
 
     def profile_block(entry_ids):
-        """按选中条目拼「个人资料库摘录」文本块；未选中/已停用/不存在的条目静默跳过。"""
+        """按选中条目拼「个人资料库摘录」文本块；未选中/已停用/不存在/偏好类条目静默跳过。"""
         wanted = list(dict.fromkeys(entry_ids or []))
         entries = {item['id']: item for item in repo.profile_entries()}
         blocks = []
         for entry_id in wanted:
             item = entries.get(entry_id)
-            if item is None or not item['enabled']:
+            if item is None or not item['enabled'] or item['category'] == 'preference':
                 continue
             header = '｜'.join(filter(None, (item['title'], item['org'], item['period'])))
             blocks.append(f"【{PROFILE_CATEGORIES_HEADER.get(item['category'], '其他')}】{header}\n{item['content']}")

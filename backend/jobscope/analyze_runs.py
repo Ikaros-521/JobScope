@@ -13,6 +13,7 @@ import uuid
 
 from .chat_runs import RunHandle, sse_frame
 from .semantic import RunCancelled, analyze_pipeline
+from .settings import ModelSettings, use_config
 
 logger = logging.getLogger(__name__)
 
@@ -62,13 +63,14 @@ class AnalyzeManager:
     def _execute(self, handle, job, resume, company_evidence):
         started = time.time()
         try:
-            # 本地注入与同步端点同一份：启用的求职偏好转已确认事实 + 该岗位的手动改判记忆。
-            extra_facts = [{'id': pref['id'], 'statement': pref['statement']}
-                           for pref in self.repo.job_preferences(enabled_only=True)]
-            report = analyze_pipeline(job, resume, company_evidence,
-                                      on_event=lambda kind, payload: handle.push(kind, payload),
-                                      should_stop=handle.cancel.is_set,
-                                      extra_facts=extra_facts, overrides=self.repo.list_overrides(job['id']))
+            # worker 线程收不到请求中间件设置的线程级模型配置（contextvar 不跨线程），
+            # 必须显式组装生效配置（含「分析」功能绑定），否则回落环境变量 → 地址为空。
+            extra_facts = self.repo.preference_statements()
+            with use_config(ModelSettings(self.repo).effective()):
+                report = analyze_pipeline(job, resume, company_evidence,
+                                          on_event=lambda kind, payload: handle.push(kind, payload),
+                                          should_stop=handle.cancel.is_set,
+                                          extra_facts=extra_facts, overrides=self.repo.list_overrides(job['id']))
             logger.info('评估适配完成 job=%s「%s」用时=%.0fs', job['id'], job['title'], time.time() - started)
             self.repo.save_report(report)
             handle.push('done', report)
