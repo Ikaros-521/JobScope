@@ -178,9 +178,10 @@ class Repository:
                         item[field] = previous[field]
             # 收藏标记是用户意图不是采集数据：重采集整包覆盖 payload 时必须幸存，
             # 否则一次日常刷新就把用户标过的岗位全部静默取消收藏。
-            # 机会管线状态（2026-11-17）同为用户意图，随收藏一起幸存。
+            # 机会管线状态与跟进信息（2026-11-17/18）同为用户意图，随收藏一起幸存。
             if previous:
-                for field in ('starred', 'starred_at', 'pipeline_status', 'pipeline_status_changed_at'):
+                for field in ('starred', 'starred_at', 'pipeline_status', 'pipeline_status_changed_at',
+                              'pipeline_note', 'pipeline_due'):
                     if field in previous:
                         item[field] = previous[field]
             item['platform_tags'] = list(dict.fromkeys(data.get('platform_tags', data.get('tags', []))))
@@ -528,11 +529,14 @@ class Repository:
         return [row['id'] for row in rows], total
 
     def update_jobs(self, ids, patch):
-        """批量规范化字段（地点/薪资/标签/收藏/管线状态）。原位改 payload：id 不重排、不新增证据快照。
+        """批量规范化字段（地点/薪资/标签/收藏/管线状态与跟进信息）。原位改 payload：id 不重排、不新增证据快照。
 
         管线状态（2026-11-17）与收藏共用一个篮子：给未收藏岗位设状态会自动收藏（进入管理视图）；
-        取消收藏时管线状态一并清掉（离开篮子即离开管线）。'' 表示显式移出管线。"""
-        fields = {key: patch[key] for key in ('location', 'salary', 'tags', 'starred', 'pipeline_status') if key in patch}
+        取消收藏时管线状态一并清掉（离开篮子即离开管线）。'' 表示显式移出管线。
+        跟进信息（2026-11-18）：note/due 独立于状态可改（清空状态/取消收藏时连带清掉），
+        '' 显式清空、缺省不动。"""
+        fields = {key: patch[key] for key in ('location', 'salary', 'tags', 'starred', 'pipeline_status',
+                                              'pipeline_note', 'pipeline_due') if key in patch}
         if not fields:
             return 0
         updated = 0
@@ -546,19 +550,27 @@ class Repository:
                 if 'tags' in fields:
                     item.setdefault('platform_tags', [])
                     item['personal_tags'] = list(dict.fromkeys(fields['tags']))
-                item.update({key: value for key, value in fields.items() if key != 'tags'})
+                item.update({key: value for key, value in fields.items()
+                             if key not in ('tags', 'pipeline_note', 'pipeline_due')})
                 if 'tags' in fields:
                     item['tags'] = list(dict.fromkeys(item['platform_tags'] + item['personal_tags']))
+                # 跟进信息：空串显式清空（键整个移除），缺省不动。
+                for key in ('pipeline_note', 'pipeline_due'):
+                    if key in fields:
+                        if fields[key]:
+                            item[key] = fields[key]
+                        else:
+                            item.pop(key, None)
                 if fields.get('starred'):
                     item['starred_at'] = now()
                 elif 'starred' in fields:
                     item.pop('starred_at', None)
-                    # 取消收藏即移出管线：状态与变化时间跟着清掉，避免留下不可见的幽灵跟踪。
-                    item.pop('pipeline_status', None)
-                    item.pop('pipeline_status_changed_at', None)
+                    # 取消收藏即移出管线：状态、变化时间与跟进信息跟着清掉，避免留下不可见的幽灵跟踪。
+                    for key in ('pipeline_status', 'pipeline_status_changed_at', 'pipeline_note', 'pipeline_due'):
+                        item.pop(key, None)
                 if fields.get('pipeline_status') == '':
-                    item.pop('pipeline_status', None)
-                    item.pop('pipeline_status_changed_at', None)
+                    for key in ('pipeline_status', 'pipeline_status_changed_at', 'pipeline_note', 'pipeline_due'):
+                        item.pop(key, None)
                 elif fields.get('pipeline_status'):
                     item['pipeline_status'] = fields['pipeline_status']
                     item['pipeline_status_changed_at'] = now()
@@ -708,6 +720,62 @@ class Repository:
                                    HAVING location NOT NULL AND location != '' AND length(location) <= 40
                                    ORDER BY jobs DESC, location LIMIT ?""", (limit,)).fetchall()
         return [dict(row) for row in rows]
+
+    # ── 今日概览（2026-11-18）：单端点聚合的本地查询，全部只读本库。 ──
+
+    def overview_counts(self):
+        """档案规模一览：岗位/证据（不含岗位快照）/公司主体/收藏/管线中。"""
+        with self.connection() as conn:
+            row = conn.execute("""SELECT
+                (SELECT count(*) FROM jobs) AS jobs,
+                (SELECT count(*) FROM evidence WHERE kind!='job_posting') AS evidence,
+                (SELECT count(*) FROM companies) AS companies,
+                (SELECT count(*) FROM jobs WHERE json_extract(payload,'$.starred')=1) AS favorites,
+                (SELECT count(*) FROM jobs WHERE json_extract(payload,'$.pipeline_status') IS NOT NULL) AS tracked""").fetchone()
+        return dict(row)
+
+    def recent_first_seen(self, days=7, limit=6):
+        """近 N 天首次入库的岗位：首见时间取该岗位关联快照的最早采集时间（重采集会刷新 updated_at，
+        但首见锚在第一次落库，不受影响）。"""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        with self.connection() as conn:
+            rows = conn.execute("""SELECT j.payload, min(json_extract(e.payload,'$.collected_at')) AS first_seen
+                                   FROM jobs j
+                                   JOIN job_evidence je ON je.job_id=j.id
+                                   JOIN evidence e ON e.id=je.evidence_id
+                                   WHERE e.kind='job_posting'
+                                   GROUP BY j.id HAVING first_seen >= ?
+                                   ORDER BY first_seen DESC LIMIT ?""", (cutoff, limit)).fetchall()
+        items = []
+        for row in rows:
+            item = json.loads(row['payload'])
+            items.append({'id': item.get('id'), 'title': item.get('title', ''), 'company': item.get('company', ''),
+                          'source': item.get('source', ''), 'salary': item.get('salary', ''),
+                          'location': item.get('location', ''), 'starred': bool(item.get('starred')),
+                          'first_seen_at': row['first_seen']})
+        return items
+
+    def pipeline_due_items(self, limit=20):
+        """设了截止日且仍在活跃状态（意向/已投/面试中）的管线岗位：今日概览的待办主体。
+
+        逾期排最前，其余按截止日升序；offer/归档是终态，不再算待办。"""
+        today = datetime.now(timezone.utc).date().isoformat()
+        with self.connection() as conn:
+            rows = conn.execute("""SELECT payload FROM jobs
+                                   WHERE json_extract(payload,'$.pipeline_due') IS NOT NULL
+                                   ORDER BY json_extract(payload,'$.pipeline_due') ASC""").fetchall()
+        items = []
+        for row in rows:
+            item = json.loads(row[0])
+            if item.get('pipeline_status') not in ('interested', 'applied', 'interviewing'):
+                continue
+            due = str(item.get('pipeline_due') or '')
+            items.append({'id': item.get('id'), 'title': item.get('title', ''), 'company': item.get('company', ''),
+                          'status': item.get('pipeline_status'), 'due': due, 'overdue': due < today,
+                          'note': item.get('pipeline_note', ''), 'changed_at': item.get('pipeline_status_changed_at', '')})
+            if len(items) >= limit:
+                break
+        return items
 
     def conversation(self, conversation_id, scope):
         encoded = json.dumps(scope, sort_keys=True, ensure_ascii=False)

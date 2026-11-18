@@ -4,6 +4,7 @@ Credential fields are write-only: they are accepted here, stored locally and nev
 echoed back by any read endpoint (see `/api/reliability/sources`).
 """
 
+import re
 from typing import Annotated, Literal
 from urllib.parse import urlsplit
 
@@ -160,6 +161,16 @@ class JobBatchUpdate(RequestModel):
     starred: bool | None = Field(default=None)
     # 机会管线状态（2026-11-17）：与收藏共用一个篮子。'' 显式移出管线；None 表示不改。
     pipeline_status: Literal['interested', 'applied', 'interviewing', 'offer', 'archived', ''] | None = Field(default=None)
+    # 跟进信息（2026-11-18）：下一步行动与截止日，今日概览据此生成待办；'' 显式清空，None 不改。
+    pipeline_note: str | None = Field(default=None, max_length=300)
+    pipeline_due: str | None = Field(default=None, max_length=10)
+
+    @field_validator("pipeline_due")
+    @classmethod
+    def due_date_format(cls, value):
+        if value and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            raise ValueError("截止日须为 YYYY-MM-DD")
+        return value
 
 
 class JobBatchDelete(RequestModel):

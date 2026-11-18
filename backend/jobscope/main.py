@@ -19,6 +19,7 @@ from starlette.concurrency import run_in_threadpool
 
 from .analysis import analyze, parse_resume
 from .analyze_runs import AnalyzeManager
+from .backup import BackupError, BackupStore
 from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
 from . import collect_service
@@ -107,6 +108,8 @@ def create_app(data_dir=None):
     app.state.analyze_runs = analyze_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
+    # 数据备份（2026-11-18）：`.data/` 是生产数据，备份/恢复能力是一等公民而非运维纪律。
+    backups = BackupStore(repo, data_dir)
 
     @app.get('/api/agent/extensions')
     def agent_extensions():
@@ -550,6 +553,47 @@ def create_app(data_dir=None):
             raise HTTPException(404, "任务不存在")
         return {"task": task}
 
+    # ── 数据备份与恢复（2026-11-18）：SQLite 在线快照打 zip 存 .data/backups，恢复先做安全备份 ──
+
+    @app.get('/api/backup')
+    def backup_status():
+        return backups.status()
+
+    @app.post('/api/backup')
+    def create_backup():
+        try:
+            return {'backup': backups.create()}
+        except BackupError as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.get('/api/backup/{backup_id}/download')
+    def download_backup(backup_id: str = PathParam(min_length=6, max_length=80)):
+        try:
+            content = backups.read(backup_id)
+        except BackupError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return Response(content=content, media_type='application/zip',
+                        headers={'Content-Disposition': f'attachment; filename="{backup_id}.zip"'})
+
+    @app.delete('/api/backup/{backup_id}')
+    def delete_backup(backup_id: str = PathParam(min_length=6, max_length=80)):
+        try:
+            backups.delete(backup_id)
+        except BackupError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return {'ok': True}
+
+    @app.post('/api/backup/restore')
+    async def restore_backup(request: Request):
+        raw = await request.body()
+        if not raw:
+            raise HTTPException(422, '请选择要恢复的备份包（.zip）')
+        try:
+            # 恢复会整体替换活库内容；内存里的会话/任务状态仍是旧数据，页面刷新后一致。
+            return await run_in_threadpool(backups.restore, raw)
+        except BackupError as exc:
+            raise HTTPException(422, str(exc)) from None
+
     @app.get("/api/jobs")
     def jobs(q: str = Query(default="", max_length=300), location: str = Query(default="", max_length=300), source: str = Query(default="", max_length=100),
              salary_min: float | None = Query(default=None, ge=0), salary_max: float | None = Query(default=None, ge=0),
@@ -565,8 +609,7 @@ def create_app(data_dir=None):
     PIPELINE_REVIEW_STALE_DAYS = 14
     PIPELINE_REVIEW_CAP = 8
 
-    @app.get('/api/jobs/pipeline/review')
-    def pipeline_review():
+    def _pipeline_review_payload():
         """收藏篮子的回顾摘要：状态计数、本周新增收藏、本周状态变化、超期未跟进。
 
         跟进口径只看本项目已存数据：活跃状态（意向/已投递/面试中）距最近一次状态变化超过
@@ -606,6 +649,27 @@ def create_app(data_dir=None):
                 'new_favorites': [strip(item) for item in new_favorites],
                 'recent_changes': [strip(item) for item in recent_changes],
                 'follow_ups': [strip(item) for item in follow_ups]}
+
+    @app.get('/api/jobs/pipeline/review')
+    def pipeline_review():
+        return _pipeline_review_payload()
+
+    @app.get('/api/dashboard')
+    def dashboard():
+        """今日概览（2026-11-18）：打开工作区的第一屏——待办、近况、数据规模与备份提醒。
+
+        全部只读本库与本地备份目录，不发起联网采集；各区块的详细操作仍落在对应工作区
+        （收藏/管线在收藏夹，采集在数据与采集，备份在设置中心）。"""
+        return {
+            'date': now()[:10],
+            'counts': repo.overview_counts(),
+            'pipeline': _pipeline_review_payload(),
+            'due': repo.pipeline_due_items(),
+            'new_jobs': repo.recent_first_seen(),
+            'backup': backups.status(),
+            'recent_tasks': repo.tasks()[:5],
+            'model_configured': model_configured(),
+        }
 
     @app.get("/api/jobs/ids")
     def job_ids(q: str = Query(default="", max_length=300), location: str = Query(default="", max_length=300), source: str = Query(default="", max_length=100),
