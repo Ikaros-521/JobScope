@@ -44,7 +44,7 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS requirement_overrides (job_id TEXT NOT NULL REFERENCES jobs(id), quote_digest TEXT NOT NULL, status TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY(job_id, quote_digest));
             """)
             self._migrate_conversations(conn)
-            # profile_entries.source 记录条目来源（Obsidian 导入的文件相对路径），幂等重导靠它原位更新。
+            # profile_entries.source 记录条目来源（笔记库导入的「规范化库根::相对路径」锚点），幂等重导靠它原位更新。
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(profile_entries)')}
             if 'source' not in columns:
                 conn.execute("ALTER TABLE profile_entries ADD COLUMN source TEXT NOT NULL DEFAULT ''")
@@ -385,7 +385,7 @@ class Repository:
         return [self._profile_row(row) for row in rows]
 
     def profile_entry_by_source(self, source):
-        """按来源路径取条目（Obsidian 导入的幂等锚点）：没有就是 None。"""
+        """按来源锚点取条目（笔记库 Agent 导入的幂等锚点）：没有就是 None。"""
         with self.connection() as conn:
             row = conn.execute('SELECT * FROM profile_entries WHERE source=?', (source,)).fetchone()
         return None if row is None else self._profile_row(row)

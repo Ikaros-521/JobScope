@@ -27,7 +27,7 @@ from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, ObsidianImportInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput
+from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -1269,34 +1269,6 @@ def create_app(data_dir=None):
         if not repo.delete_profile_entry(entry_id):
             raise HTTPException(404, '资料条目不存在')
         return {'deleted': entry_id}
-
-    @app.post('/api/profile-entries/import-obsidian')
-    def import_obsidian_vault(data: ObsidianImportInput):
-        """Obsidian 库导入：只读用户指定目录下的 .md，提炼进个人资料库。
-
-        幂等锚点是库内相对路径（存条目 source）：同一文件重导原位更新不重复；用户在本系统
-        手改过的条目，重导会以库文件为准覆盖——要保留手改就别重导该文件，或先在库里改文件。
-        另一条路：Agent 扩展接入 Obsidian 的 MCP 服务后，全局对话 Agent 可直接读库（不落库）。"""
-        from .obsidian_import import parse_vault
-        root = Path(data.path.strip().strip('"'))
-        if not root.is_dir():
-            raise HTTPException(400, '目录不存在或不可访问：请填本机 Obsidian 库（或任意 markdown 目录）的完整路径')
-        entries, errors = parse_vault(root)
-        if data.dry_run:
-            return {'total': len(entries), 'errors': errors,
-                    'preview': [{key: item[key] for key in ('category', 'title', 'org', 'period', 'tags', 'source')}
-                                for item in entries[:30]]}
-        imported = updated = 0
-        # 幂等锚点带库根路径：不同库的同名相对路径不互撞，同一库重导原位更新。
-        anchor_prefix = f'{root}::'
-        for item in entries:
-            anchor = anchor_prefix + item['source']
-            existing = repo.profile_entry_by_source(anchor)
-            repo.save_profile_entry({**item, 'source': anchor, 'id': existing['id'] if existing else None})
-            imported += 0 if existing else 1
-            updated += 1 if existing else 0
-        logger.info('Obsidian 导入完成：新建 %s、更新 %s、跳过 %s', imported, updated, len(errors))
-        return {'imported': imported, 'updated': updated, 'total': len(entries), 'errors': errors}
 
     @app.post("/api/resume-versions/optimize")
     def optimize_resume_version(data: OptimizeResumeInput):

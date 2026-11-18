@@ -405,11 +405,6 @@ export function patchProfileEntry(id: string, patch: Partial<{ category: Profile
 export function deleteProfileEntry(id: string) {
   return api<{ deleted: string }>(`/profile-entries/${encodeURIComponent(id)}`, { method: 'DELETE' })
 }
-// Obsidian 库导入：只读用户指定目录下的 .md，frontmatter/目录名映射类别，幂等重导原位更新。
-export type ObsidianImportResult = { total: number; imported?: number; updated?: number; errors: string[]; preview?: { category: ProfileCategory; title: string; org: string; period: string; tags: string[]; source: string }[] }
-export function importObsidianVault(path: string, dryRun = false) {
-  return post<ObsidianImportResult>('/profile-entries/import-obsidian', { path, dry_run: dryRun })
-}
 export function exportResumeVersion(id: number, format: 'pdf' | 'docx' | 'html' | 'md', filename: string) {
   return download(`/resume-versions/${id}/export?format=${format}`, filename)
 }

@@ -1522,7 +1522,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .queue-actions { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; font-size: 13px; color: #525252; }
 .jump-bottom { position: absolute; right: 20px; bottom: 14px; z-index: 5; font-size: 12px; padding: 6px 12px; border-radius: 999px; background: #fff; border: 1px solid #d4d4d4; color: #404040; box-shadow: 0 4px 14px rgba(0,0,0,.12); }
 .jump-bottom:hover { border-color: var(--green); color: var(--green); }
-.context-meter-group { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.context-meter-group { display: inline-flex; align-items: center; gap: 8px; }
 .context-meter { display: inline-flex; align-items: center; gap: 6px; color: #525252; }
 .context-meter-bar { width: 72px; height: 6px; border-radius: 999px; background: #ececec; overflow: hidden; display: inline-block; }
 .context-meter-fill { display: block; height: 100%; border-radius: 999px; background: var(--green); transition: width .2s ease; }
@@ -2218,14 +2218,11 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .analyze-stages .stage-marker { width: 18px; display: inline-flex; justify-content: center; align-items: center; }
 .analyze-stages .stage-marker .spinner { width: 12px; height: 12px; border-width: 2px; }
 .analyze-stages .stage-detail { color: var(--muted); font-size: 12px; margin-left: 6px; }
-/* Obsidian 导入面板（个人资料库）：路径输入 + 预览/导入 + 结果清单。 */
+/* Obsidian 导入面板（个人资料库）：路径输入 + 跳全局对话 Agent 导入。 */
 .profile-toolbar-actions { display: flex; gap: 8px; align-items: center; }
 .obsidian-import { display: grid; gap: 10px; margin-bottom: 16px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .obsidian-import-row { display: flex; gap: 8px; align-items: center; }
 .obsidian-import-row input { flex: 1; min-width: 0; font-size: 13px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
-.obsidian-result { display: grid; gap: 6px; }
-.obsidian-result ul { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.8; }
-.obsidian-errors { color: var(--muted); }
 
 /* 历史评估切换条：同一岗位多次评估的时间线快切。 */
 .analysis-history { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }

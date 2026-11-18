@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
-import { PROFILE_CATEGORY_NAMES, createProfileEntry, deleteProfileEntry, importObsidianVault, listProfileEntries, patchProfileEntry, replaceProfileEntry } from './api'
-import type { ObsidianImportResult, ProfileCategory, ProfileEntry } from './api'
+import { PROFILE_CATEGORY_NAMES, createProfileEntry, deleteProfileEntry, listProfileEntries, patchProfileEntry, replaceProfileEntry } from './api'
+import type { ProfileCategory, ProfileEntry } from './api'
 import { toast } from './toast'
 import { Icon } from './Icon'
 
@@ -8,20 +8,29 @@ import { Icon } from './Icon'
 // 常是阉割版；这里存完整的项目经历等工作事实，简历工坊优化时勾选取材扩写充实。
 // preference 类（2026-11-18 并入，原「求职偏好」独立页退役）注入方向不同：
 // 启用条目评估适配时自动进事实池判上，不进工坊取材。
-// 本视图只做手写材料的增删改查，不抓取、不联网、不打分。
+// 本视图只做手写材料的增删改查，不抓取、不联网、不打分。笔记导入（2026-11-18 改版）走
+// 全局对话 Agent：本页只收路径并跳转（预填指令），由 Agent 的 vault_list/vault_read/
+// profile_import_write 工具完成提炼与幂等写入——无模型的本地规则解析已退役。
 const CATEGORIES = Object.keys(PROFILE_CATEGORY_NAMES) as ProfileCategory[]
 const EMPTY_DRAFT = { category: 'project' as ProfileCategory, title: '', org: '', period: '', content: '', tags: '' }
 
-export function ProfileView() {
+// 跳转全局对话的预填指令：工作法写进指令，Agent 按工具协作流程完成导入（可中途追问确认）。
+function importPrompt(path: string) {
+  return `请把我的笔记库导入个人资料库，目录：${path}。\n` +
+    '工作法：先用 vault_list 列出该目录的 .md 笔记清单；挑与个人经历（项目/工作/教育/技能/证书/奖项）相关的笔记用 vault_read 读取；' +
+    '把每篇提炼为一条资料条目——背景、做了什么、怎么做、结果与数字，忠于笔记原文不虚构，标题/组织/时间段从原文归纳；' +
+    '先向我展示提炼要点，确认后用 profile_import_write 写入（rel_path 用清单里的相对路径，同一笔记重导会原位更新），最后给导入汇总。'
+}
+
+export function ProfileView({ onImportViaChat }: { onImportViaChat?: (prompt: string) => void }) {
   const [entries, setEntries] = useState<ProfileEntry[] | null>(null)
   const [filter, setFilter] = useState<'' | ProfileCategory>('')
   const [draft, setDraft] = useState<typeof EMPTY_DRAFT | null>(null)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [busy, setBusy] = useState('')
-  // Obsidian 导入：路径记在 localStorage（本机库路径，换机器无意义）；预览不落库。
+  // 笔记导入：路径记在 localStorage（本机库路径，换机器无意义）；导入动作发生在全局对话。
   const [obsidianOpen, setObsidianOpen] = useState(false)
   const [vaultPath, setVaultPath] = useState(() => { try { return localStorage.getItem('jobscope-obsidian-path') || '' } catch { return '' } })
-  const [obsidianResult, setObsidianResult] = useState<ObsidianImportResult | null>(null)
 
   const load = useCallback(async () => {
     try { setEntries((await listProfileEntries()).entries) }
@@ -34,17 +43,12 @@ export function ProfileView() {
     void action().catch(err => toast((err as Error).message, 'error')).finally(() => setBusy(''))
   }
 
-  function importVault(dryRun: boolean) {
-    if (!vaultPath.trim()) { toast('请先填写 Obsidian 库（或任意 markdown 目录）路径', 'error'); return }
-    run(dryRun ? 'obsidian-preview' : 'obsidian-import', async () => {
-      const result = await importObsidianVault(vaultPath.trim(), dryRun)
-      setObsidianResult(result)
-      try { localStorage.setItem('jobscope-obsidian-path', vaultPath.trim()) } catch { /* 路径记忆失败无碍 */ }
-      if (!dryRun) {
-        toast(`已导入 ${result.imported ?? 0} 条（更新 ${result.updated ?? 0} 条）${result.errors.length ? `，${result.errors.length} 条跳过` : ''}。`)
-        await load()
-      }
-    })
+  function startAgentImport() {
+    const path = vaultPath.trim()
+    if (!path) { toast('请先填写 Obsidian 库（或任意 markdown 目录）路径', 'error'); return }
+    if (!onImportViaChat) { toast('当前入口未接入全局对话', 'error'); return }
+    try { localStorage.setItem('jobscope-obsidian-path', path) } catch { /* 路径记忆失败无碍 */ }
+    onImportViaChat(importPrompt(path))
   }
 
   function startCreate() { setEditingId(null); setDraft({ ...EMPTY_DRAFT }) }
@@ -93,29 +97,18 @@ export function ProfileView() {
           {CATEGORIES.map(category => <button key={category} type="button" className={`pipeline-filter-chip${filter === category ? ' active' : ''}`} onClick={() => setFilter(category)}>{PROFILE_CATEGORY_NAMES[category]}</button>)}
         </div>
         <div className="profile-toolbar-actions">
-          <button type="button" className="button secondary small" onClick={() => setObsidianOpen(value => !value)}>从 Obsidian 导入</button>
+          <button type="button" className="button secondary small" onClick={() => setObsidianOpen(value => !value)}>从笔记导入</button>
           <button type="button" className="button primary small" onClick={startCreate} disabled={Boolean(draft)}><Icon name="plus" size={14} />新增条目</button>
         </div>
       </div>
 
       {obsidianOpen && <div className="obsidian-import">
-        <p className="tiny-label">填写本机 Obsidian 库（或任意 markdown 目录）的完整路径，只读其中的 .md 提炼入库：<br />
-          frontmatter 的 类别/标题/公司/组织/时间段/标签（中文）或 category/title/org/period/tags 会映射成条目字段；类别也可以由顶层目录名（项目/工作/技能…）识别；正文里的 #内联标签 一并归入标签。同一文件重复导入会在原位更新，不产生重复；在本系统里手改过的条目，重导会以库文件为准。</p>
+        <p className="tiny-label">导入由全局对话的 Agent 用模型完成（需在「设置 → 模型」配置对话模型）：填本机 Obsidian 库（或任意 markdown 目录）的完整路径，点击后跳转全局对话并预填指令——Agent 会先列出笔记清单，挑与个人经历相关的逐篇提炼为条目，展示要点确认后写入。只读目录、不改动笔记；同一笔记路径重导会在原位更新条目。</p>
         <div className="obsidian-import-row">
           <input value={vaultPath} onChange={event => setVaultPath(event.target.value)} maxLength={500}
             placeholder="如 D:\\Notes\\MyVault" aria-label="Obsidian 库路径" spellCheck={false} />
-          <button type="button" className="button secondary small" disabled={busy === 'obsidian-preview'} onClick={() => void importVault(true)}>{busy === 'obsidian-preview' ? <span className="spinner" /> : null}预览</button>
-          <button type="button" className="button primary small" disabled={busy === 'obsidian-import'} onClick={() => void importVault(false)}>{busy === 'obsidian-import' ? <span className="spinner" /> : null}导入</button>
+          <button type="button" className="button primary small" onClick={startAgentImport}>让 Agent 导入</button>
         </div>
-        {obsidianResult && <div className="obsidian-result">
-          <p className="tiny-label">解析到 {obsidianResult.total} 条{obsidianResult.updated !== undefined ? `（新建 ${obsidianResult.imported}、更新 ${obsidianResult.updated}）` : '（预览，未入库）'}{obsidianResult.errors.length ? `；跳过 ${obsidianResult.errors.length} 项` : ''}。</p>
-          {obsidianResult.preview?.length ? <ul>{obsidianResult.preview.map(item => <li key={item.source}>
-            <b>{PROFILE_CATEGORY_NAMES[item.category] || item.category} · {item.title}</b>
-            <span className="tiny-label">{[item.org, item.period].filter(Boolean).join(' · ')}{item.tags.length ? ` · ${item.tags.join('/')}` : ''} — {item.source}</span>
-          </li>)}</ul> : null}
-          {obsidianResult.errors.length > 0 && <ul className="obsidian-errors">{obsidianResult.errors.slice(0, 10).map((line, index) => <li key={index}>{line}</li>)}</ul>}
-        </div>}
-        <p className="tiny-label">另一条路：在「Agent 扩展」里接入 Obsidian 的 MCP 服务（如 filesystem 指向库目录），全局对话的 Agent 可以直接读你的库回答问题——那不落库；要把材料变成工坊可取材的条目，用本导入。</p>
       </div>}
 
       {draft && <div className="profile-editor" role="form" aria-label={editingId ? '编辑条目' : '新增条目'}>

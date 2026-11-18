@@ -347,3 +347,66 @@ def test_redact_args_masks_credential_keys_and_truncates_long_strings():
     import json
     assert 'sk-live-abc' not in json.dumps(red, ensure_ascii=False)
     assert 'must-not-appear' not in json.dumps(red, ensure_ascii=False)
+
+
+def test_note_vault_import_tools_list_read_write_and_idempotent_rerun(client, monkeypatch, tmp_path):
+    """笔记库导入三件套：vault_list → vault_read → profile_import_write 落库且按相对路径幂等。"""
+    configure(client)
+    vault = tmp_path / 'vault'
+    (vault / '工作').mkdir(parents=True)
+    (vault / '工作' / 'alpha.md').write_text('# Alpha 项目\n负责 RAG 检索与评估。', encoding='utf-8')
+    entries_payload = dict(path=str(vault), entries=[
+        dict(rel_path='工作/alpha.md', category='project', title='Alpha 项目', org='甲公司', period='2023',
+             content='负责 RAG 检索与评估。', tags=['RAG'])])
+    calls = scripted(monkeypatch, [tool('vault_list', {'path': str(vault)}),
+                                   tool('vault_read', {'path': str(vault), 'rel_path': '工作/alpha.md'}),
+                                   tool('profile_import_write', entries_payload),
+                                   final('已导入 1 条资料条目。')])
+    result = client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'message': '导入我的笔记'}).json()
+    assert result['mode'] == 'agent' and {e['tool'] for e in result['trace']['events']} >= {'vault_list', 'vault_read', 'profile_import_write'}
+    listing = json.loads(calls[1]['messages'][-1]['content'])
+    assert listing['total'] == 1 and listing['files'][0]['rel_path'] == '工作/alpha.md'
+    assert 'RAG' in json.loads(calls[2]['messages'][-1]['content'])['text']
+    written = json.loads(calls[3]['messages'][-1]['content'])
+    assert (written['imported'], written['updated'], written['total']) == (1, 0, 1)
+    saved = client.get('/api/profile-entries').json()['entries']
+    assert len(saved) == 1 and saved[0]['title'] == 'Alpha 项目' and saved[0]['source'].endswith('::工作/alpha.md')
+    # 同一笔记重导：锚点命中原位更新，不产生新条目。
+    scripted(monkeypatch, [tool('profile_import_write', entries_payload), final('已原位更新。')])
+    rerun = client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'message': '重新导入'}).json()
+    assert rerun['trace']['status'] == 'completed'
+    again = client.get('/api/profile-entries').json()['entries']
+    assert len(again) == 1 and again[0]['id'] == saved[0]['id']
+
+
+def test_note_vault_import_takes_over_legacy_anchor_entries(client, monkeypatch, tmp_path):
+    """旧规则版导入写入的未规范化锚点：Agent 重导同一路径时接管原条目并改挂规范化锚点。"""
+    from jobscope.note_vault import clean_root, legacy_anchor, vault_anchor
+    configure(client)
+    vault = tmp_path / 'vault'
+    vault.mkdir()
+    (vault / 'note.md').write_text('# 笔记', encoding='utf-8')
+    given = clean_root(str(vault) + '/')
+    repo = client.app.state.repo
+    existing = repo.save_profile_entry(dict(category='work', title='旧条目', content='旧内容',
+                                            source=legacy_anchor(given, 'note.md')))
+    payload = dict(path=str(given), entries=[dict(rel_path='note.md', category='work', title='新条目', content='新内容')])
+    scripted(monkeypatch, [tool('profile_import_write', payload), final('已更新。')])
+    client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'message': '重导'}).json()
+    entries = client.get('/api/profile-entries').json()['entries']
+    assert len(entries) == 1 and entries[0]['id'] == existing['id'] and entries[0]['title'] == '新条目'
+    assert entries[0]['source'] == vault_anchor(Path(str(vault)), 'note.md')
+
+
+def test_note_vault_import_rejects_bad_category_and_missing_dir(client, monkeypatch, tmp_path):
+    """坏 category 过不了工具结构校验（错误回给模型）；目录不存在直接报可读错误。"""
+    configure(client)
+    calls = scripted(monkeypatch, [tool('profile_import_write', {'path': str(tmp_path), 'entries': [
+        dict(rel_path='x.md', category='bogus', title='T', content='C')]}), final('参数有误。')])
+    client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'message': '导入'}).json()
+    assert 'error' in json.loads(calls[1]['messages'][-1]['content'])
+    assert client.get('/api/profile-entries').json()['entries'] == []
+    calls_missing = scripted(monkeypatch, [tool('vault_list', {'path': str(tmp_path / '不存在')}), final('目录不存在。')])
+    missing = client.post('/api/chat', json={'scope': 'global', 'agent_mode': 'general', 'message': '导入'}).json()
+    assert '不存在或不可访问' in json.loads(calls_missing[1]['messages'][-1]['content'])['error']
+    assert missing['trace']['status'] == 'completed'
