@@ -2220,3 +2220,20 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .workshop-version-export > div button:hover { background: var(--surface); }
 .eval-resume-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .eval-resume-bar select { font-size: 13px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
+
+/* 使用教程遮罩指引：首次访问自动弹出，可跳过；侧栏底部「使用教程」可重看。 */
+.tutorial-overlay { position: fixed; inset: 0; z-index: 150; }
+.tutorial-dim { position: absolute; inset: 0; background: rgba(15, 30, 24, .58); }
+.tutorial-highlight { position: absolute; border-radius: 14px; box-shadow: 0 0 0 3px var(--green), 0 0 0 9999px rgba(15, 30, 24, .58); pointer-events: none; transition: top 180ms ease, left 180ms ease, width 180ms ease, height 180ms ease; }
+.tutorial-card { position: absolute; width: min(380px, calc(100vw - 32px)); background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px 14px; box-shadow: 0 18px 44px rgba(10, 30, 24, .35); }
+.tutorial-card.centered { left: 50%; top: 50%; transform: translate(-50%, -50%); }
+.tutorial-card h2 { font-size: 17px; margin-bottom: 8px; }
+.tutorial-card p { font-size: 13px; line-height: 1.8; color: var(--muted); }
+.tutorial-card ul { margin: 10px 0 0; padding-left: 18px; display: grid; gap: 6px; }
+.tutorial-card ul li { font-size: 12.5px; line-height: 1.7; color: var(--muted); }
+.tutorial-card ul li::marker { color: var(--green); }
+.tutorial-footer { display: flex; align-items: center; gap: 12px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
+.tutorial-progress { font-size: 12px; color: var(--muted); }
+.tutorial-actions { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+.sidebar-bottom .sidebar-tutorial-button { min-height: 26px; padding: 2px 8px; font-size: 12px; color: var(--sidebar-muted); }
+.sidebar-bottom .sidebar-tutorial-button:hover { color: var(--sidebar-text); }

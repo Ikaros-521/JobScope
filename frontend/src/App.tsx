@@ -24,6 +24,7 @@ import type { WorkshopPrefill } from './ResumeWorkshop'
 import { KnowledgeView } from './KnowledgeView'
 import { LogView } from './LogView'
 import { navigateTabs } from './tabNavigation'
+import Tutorial, { tutorialSeenVersion, TUTORIAL_VERSION } from './Tutorial'
 import { useCompareSelection } from './compareSelectionStore'
 import { ChatWorkspace } from './chat/ChatWorkspace'
 import { Icon } from './Icon'
@@ -155,6 +156,22 @@ export default function App() {
   const [online, setOnline] = useState(false)
   const [modelConfigured, setModelConfigured] = useState(false)
   const [loading, setLoading] = useState(true)
+  // 使用教程（遮罩指引）：首次访问（以及教程改版后第一次）自动弹出，看完或跳过即按版本
+  // 记住，不再自动出现；侧栏底部「使用教程」可随时重看。播放期间展开全部分组，保证步骤
+  // 指向的导航元素可见。
+  const [tutorialOpen, setTutorialOpen] = useState(false)
+  useEffect(() => {
+    if (!loading && tutorialSeenVersion() < TUTORIAL_VERSION) setTutorialOpen(true)
+  }, [loading])
+  useEffect(() => {
+    if (!tutorialOpen) return
+    setExpandedGroups(previous => {
+      const all = new Set(NAV_GROUPS.map(group => group.id))
+      if (NAV_GROUPS.every(group => previous.has(group.id))) return previous
+      try { localStorage.setItem(NAV_STORAGE_KEY, JSON.stringify([...all])) } catch { /* 存储不可用时仅本次会话生效 */ }
+      return all
+    })
+  }, [tutorialOpen])
   const [query, setQuery] = useState('')
   const [location, setLocation] = useState('')
   const [source, setSource] = useState('remotive')
@@ -702,7 +719,7 @@ export default function App() {
         })}
       </nav>
 
-      <div className="sidebar-bottom"><span className={`connection-dot ${online ? 'connected' : ''}`} />{online ? '本地工作区已连接' : '等待本地服务'}<span className="version">v0.1</span></div>
+      <div className="sidebar-bottom"><span className={`connection-dot ${online ? 'connected' : ''}`} />{online ? '本地工作区已连接' : '等待本地服务'}<button className="text-button sidebar-tutorial-button" onClick={() => setTutorialOpen(true)}>使用教程</button><span className="version">v0.1</span></div>
     </aside>
 
     <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'settings' || view === 'compare' || view === 'favorites' || view === 'knowledge' || view === 'logs' || view === 'profile' ? 'main main-compact' : 'main'}>
@@ -823,6 +840,7 @@ export default function App() {
               {modal === 'batch-edit' && batchEdit && <form onSubmit={submitBatchEdit}><label className="field-label" htmlFor="batch-location">工作地点</label><input id="batch-location" value={batchDraft.location} onChange={event => setBatchDraft({ ...batchDraft, location: event.target.value })} maxLength={300} autoFocus /><label className="field-label" htmlFor="batch-salary">薪资描述</label><input id="batch-salary" value={batchDraft.salary} onChange={event => setBatchDraft({ ...batchDraft, salary: event.target.value })} maxLength={300} placeholder="15–25K·13薪" /><label className="field-label" htmlFor="batch-tags">个人标签（逗号分隔，可清空；平台标签保留）</label><input id="batch-tags" value={batchDraft.tags} onChange={event => { setTagsChanged(true); setBatchDraft({ ...batchDraft, tags: event.target.value }) }} maxLength={500} placeholder="已核实, 优先投递" /><div className="modal-actions"><button type="button" className="button secondary" onClick={() => setModal(null)} disabled={Boolean(busy)}>取消</button><Button className="button primary" type="submit" busy={busy === 'batch-edit'} disabled={Boolean(busy)}>保存修改<Icon name="check" size={16} /></Button></div></form>}
               {modal === 'confirm-delete' && confirmDelete && <div className="modal-actions"><button type="button" className="button secondary" onClick={() => setModal(null)} disabled={Boolean(busy)}>取消</button><Button className="button danger" busy={busy === 'batch-delete'} disabled={Boolean(busy)} onClick={() => void perform('batch-delete', submitBatchDelete)}>确认删除</Button></div>}
             </section></div>}
+    <Tutorial open={tutorialOpen} onClose={() => setTutorialOpen(false)} />
   </div>
 }
 
