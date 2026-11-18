@@ -882,6 +882,15 @@ function AnalysisView({ analysis, onStatusChange }: { analysis: Analysis; onStat
   const [hardOnly, setHardOnly] = useState(false)
   const [sortMode, setSortMode] = useState<'default' | 'status' | 'dimension'>('default')
   const editable = analysis.method === 'model_assisted'
+  // 报告拆成子页签：单页不再被右侧栏拉长，条目少时也不留大片空白。
+  const [analysisTab, setAnalysisTab] = useState<'mapping' | 'hard' | 'basis' | 'interview' | 'facts'>('mapping')
+  const subTabs: { id: typeof analysisTab; label: string; count?: number }[] = [
+    { id: 'mapping', label: '要求映射', count: analysis.requirements.length },
+    ...(analysis.hard_conditions?.length ? [{ id: 'hard' as const, label: '硬性条件', count: analysis.hard_conditions.length }] : []),
+    { id: 'basis', label: '依据与缺口' },
+    { id: 'interview', label: '面试核实', count: analysis.questions.length },
+    { id: 'facts', label: '薪酬与公司' },
+  ]
   const rows = analysis.requirements
     .map((item, index) => ({ item, index }))
     .filter(({ item }) => (!statusFilter || item.status === statusFilter) && (!dimensionFilter || item.dimension === dimensionFilter) && (!hardOnly || item.hard))
@@ -889,17 +898,19 @@ function AnalysisView({ analysis, onStatusChange }: { analysis: Analysis; onStat
       : sortMode === 'dimension' ? (dimensionNames[a.item.dimension] || a.item.dimension).localeCompare(dimensionNames[b.item.dimension] || b.item.dimension)
       : a.index - b.index)
   return <>
-    <div className="analysis-summary">
-      <div className="analysis-summary-main"><h3>经历与要求，逐项对照</h3><div className="coverage-meta"><span>{editable ? '语义证据覆盖' : '词项核实覆盖'} {Math.round(coverage)}%</span><span>{judged} / {analysis.requirements.length} 项有对应依据</span></div><progress className="coverage-progress" value={coverage} max="100" aria-label="要求证据覆盖率" /></div>
-      <div className="analysis-score"><span>综合适配参考</span><strong>{score == null ? '暂不生成总分' : `${Math.round(score)} / 100`}</strong><span>{score == null ? '能力深度与硬性条件仍需核实' : '仅供辅助比较，不代表录用概率'}</span></div>
+    <div className="analysis-topline">
+      <div className="analysis-score"><strong>{score == null ? '—' : Math.round(score)}</strong><span>{score == null ? '暂不生成总分' : '/ 100 综合适配参考'}</span></div>
+      <div className="analysis-coverage"><span>{editable ? '语义证据覆盖' : '词项核实覆盖'} {Math.round(coverage)}%</span><span>{judged} / {analysis.requirements.length} 项有对应依据</span><progress className="coverage-progress" value={coverage} max="100" aria-label="要求证据覆盖率" /></div>
+      <div className="analysis-tags"><span>{editable ? '模型辅助分析' : '规则辅助 · 词项核实'}</span><span>简历：{analysis.resume_label || '我的简历'}</span></div>
     </div>
-    <div className="analysis-meta"><span>{editable ? '模型辅助分析' : '规则辅助 · 词项核实'}</span><span>简历：{analysis.resume_label || '我的简历'}</span></div>
-    <p className="analysis-disclaimer">未知项可在「判断」列手动改判（按你的确认重算并跨重评保留）；硬性条件也可在「个人资料库 → 求职偏好」提前申报，评估时自动判上</p>
+    <p className="analysis-disclaimer">未知项可在「判断」列手动改判（按你的确认重算并跨重评保留）；硬性条件也可在「个人资料库 → 求职偏好」提前申报，评估时自动判上；分数仅供辅助比较，不代表录用概率</p>
     {analysis.limitations && <details className="analysis-limitations"><summary>分析范围与限制</summary><p>{readable(analysis.limitations)}</p></details>}
-    <div className="analysis-grid">
-      <div className="analysis-main">
+    <div className="analysis-subtabs" role="tablist" aria-label="适配报告分区" onKeyDown={navigateTabs}>
+      {subTabs.map(item => <button key={item.id} id={`analysis-${item.id}-tab`} role="tab" aria-controls="analysis-subtab-panel" aria-selected={analysisTab === item.id} tabIndex={analysisTab === item.id ? 0 : -1} className={analysisTab === item.id ? 'active' : ''} onClick={() => setAnalysisTab(item.id)}>{item.label}{item.count != null && <span>{item.count}</span>}</button>)}
+    </div>
+    <div id="analysis-subtab-panel" className="analysis-subtab-panel" role="tabpanel" aria-labelledby={`analysis-${analysisTab}-tab`}>
+      {analysisTab === 'mapping' && <>
         <div className="analysis-toolbar">
-          <h4 className="requirement-heading">岗位要求映射</h4>
           <select value={statusFilter} aria-label="按状态筛选" onChange={event => setStatusFilter(event.target.value)}>
             <option value="">全部状态</option>
             {(['met', 'partial', 'unmet', 'unknown'] as const).map(status => <option key={status} value={status}>{requirementNames[status]}</option>)}
@@ -927,13 +938,11 @@ function AnalysisView({ analysis, onStatusChange }: { analysis: Analysis; onStat
           </select>{item.overridden && <span className="overridden-badge" title="按你的手动确认计分，重新评估时自动沿用">已确认</span>}</span>
         : <span className={`requirement-status ${item.status}`}><i />{requirementNames[item.status] || item.status}</span>}</td>
     </tr>)}</tbody></table></div> : <div className="inline-empty">当前筛选下没有条目</div>) : <div className="inline-empty">尚未提取到可分析的要求</div>}
-      </div>
-      <aside className="analysis-side">
-        {Boolean(analysis.hard_conditions?.length) && <div className="hard-conditions"><h4>硬性条件 · 单独核实</h4>{analysis.hard_conditions?.map((item, index) => <HardCondition key={index} value={item} />)}</div>}
-        <div className="analysis-columns"><AnalysisList title="已有依据" items={analysis.strengths} /><AnalysisList title="缺口与未知" items={analysis.gaps} /></div>
-        <AnalysisList title="面试时建议核实" items={analysis.questions} />
-        <div className="analysis-facts-grid"><SalaryView value={analysis.salary} /><div className="analysis-note company-summary"><h4>公司证据</h4><p>{readable(analysis.company_summary)}</p><span className="source-annotation">出处见「证据资料」 · {analysis.evidence_ids.length} 条关联证据</span></div></div>
-      </aside>
+      </>}
+      {analysisTab === 'hard' && Boolean(analysis.hard_conditions?.length) && <div className="hard-conditions in-subtab"><h4>硬性条件 · 单独核实</h4>{analysis.hard_conditions?.map((item, index) => <HardCondition key={index} value={item} />)}</div>}
+      {analysisTab === 'basis' && <div className="analysis-columns"><AnalysisList title="已有依据" items={analysis.strengths} /><AnalysisList title="缺口与未知" items={analysis.gaps} /></div>}
+      {analysisTab === 'interview' && <AnalysisList title="面试时建议核实" items={analysis.questions} />}
+      {analysisTab === 'facts' && <div className="analysis-facts-grid"><SalaryView value={analysis.salary} /><div className="analysis-note company-summary"><h4>公司证据</h4><p>{readable(analysis.company_summary)}</p><span className="source-annotation">出处见「证据资料」 · {analysis.evidence_ids.length} 条关联证据</span></div></div>}
     </div>
   </>
 }
