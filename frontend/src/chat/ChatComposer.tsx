@@ -117,7 +117,7 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
       </div>
       {onOpenKnowledge && <button type="button" className="composer-knowledge" title="录入或维护你的知识条目，Agent 对话可检索引用" onClick={onOpenKnowledge}>知识库</button>}
       {onConfigureModel && <button type="button" className="composer-configure" onClick={onConfigureModel}>{modelConfigured ? '模型设置' : '配置模型后发送（草稿已保存）'}</button>}
-      <details className="composer-options"><summary>模型与工具选项</summary><div className="composer-options-body">
+      <div className="composer-options-body">
       <label className="composer-model">
         <span>模型</span>
         <select value={selectValue(model, llmChannel)} onChange={event => pickModel(event.target.value)} disabled={running || awaiting}>
@@ -163,7 +163,7 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
           {compressing ? '压缩中…' : '压缩上下文'}
         </button>
       </div>}
-      </div></details>
+      </div>
       {queueCount > 0 && <span className="composer-queue-count" title="生成完成后按顺序自动发送">已排队 {queueCount} 条</span>}
       <span className="composer-hint">Enter 发送 · Shift + Enter 换行 · {MODE_HINTS[permissionMode]}</span>
     </div>
