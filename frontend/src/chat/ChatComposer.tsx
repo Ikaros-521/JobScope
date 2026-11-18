@@ -117,10 +117,8 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
       </div>
       {onOpenKnowledge && <button type="button" className="composer-knowledge" title="录入或维护你的知识条目，Agent 对话可检索引用" onClick={onOpenKnowledge}>知识库</button>}
       {onConfigureModel && <button type="button" className="composer-configure" onClick={onConfigureModel}>{modelConfigured ? '模型设置' : '配置模型后发送（草稿已保存）'}</button>}
-      <div className="composer-options-body">
-      <label className="composer-model">
-        <span>模型</span>
-        <select value={selectValue(model, llmChannel)} onChange={event => pickModel(event.target.value)} disabled={running || awaiting}>
+      <label className="composer-model" title="本次对话使用的模型（默认跟随全局设置）">
+        <select aria-label="模型" value={selectValue(model, llmChannel)} onChange={event => pickModel(event.target.value)} disabled={running || awaiting}>
           <option value="">跟随全局设置</option>
           <optgroup label="全局默认渠道">
             {globalModels.map(item => <option key={`global-${item}`} value={`|${item}`}>{item}</option>)}
@@ -134,8 +132,7 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
           {llmChannel && !modelChannels.some(channel => channel.id === llmChannel) && <option value={selectValue(model, llmChannel)}>{`渠道已删除 · ${model || '默认模型'}`}</option>}
         </select>
       </label>
-      <div className="composer-mode" role="group" aria-label="外部工具权限模式">
-        <span>模式</span>
+      <div className="composer-mode" role="group" aria-label="外部工具权限模式" title="外部工具权限模式（悬停各档看说明）">
         <div className="composer-mode-seg">
           {PERMISSION_MODES.map(item => (
             <button key={item.value} type="button" className={permissionMode === item.value ? 'active' : ''}
@@ -163,7 +160,6 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
           {compressing ? '压缩中…' : '压缩上下文'}
         </button>
       </div>}
-      </div>
       {queueCount > 0 && <span className="composer-queue-count" title="生成完成后按顺序自动发送">已排队 {queueCount} 条</span>}
       <span className="composer-hint">Enter 发送 · Shift + Enter 换行 · {MODE_HINTS[permissionMode]}</span>
     </div>
