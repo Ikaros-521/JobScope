@@ -146,7 +146,12 @@ def collect_detail(job, data_dir):
         return dict(status='unsupported', message='仅支持已保存的BOSS或智联原始岗位详情链接')
     port = browser._connection(data_dir)
     if not port:
-        return dict(status='needs_login', message='请先打开项目Chrome并登录对应平台')
+        # 与 browser.collect 同一口径：详情读取自动拉起项目浏览器。配置目录留存历史登录态，
+        # 拉起后直接读详情页多半仍有效；确实被登录墙拦下再如实报 needs_login 让用户在该窗口处理。
+        started = browser.start(data_dir, job['source'])
+        port = browser._connection(data_dir)
+        if not port:
+            return dict(status='needs_login', message=started.get('message') or '请先打开项目Chrome并登录对应平台')
     if not browser._lock.acquire(blocking=False):
         return dict(status='backoff', message='项目浏览器正在采集，请稍后重试')
     tab = None
@@ -170,6 +175,9 @@ def collect_detail(job, data_dir):
                     break
                 if attempt < 5:
                     time.sleep(1)
+            # 登录/验证页要顶到前台；标签埋在堆里等于没提示（与 browser.collect 同款处理）。
+            if output['status'] in ('needs_login', 'needs_verification'):
+                browser._front(tab)
             return output
     except Exception:
         logger.exception('岗位详情读取失败 job=%s「%s」', job.get('id'), job.get('title'))

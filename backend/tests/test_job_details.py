@@ -113,6 +113,26 @@ def test_detail_url_is_only_saved_boss_job(tmp_path, url):
     assert not valid_detail_url({**listing(Repository(tmp_path)), 'url': url})
 
 
+def test_collect_detail_auto_starts_project_browser(tmp_path, monkeypatch):
+    # 无运行中的项目浏览器时自动拉起（与 browser.collect 同口径）；拉不起来才报 needs_login，
+    # 且文案用 start() 的实际结果（依赖缺失/配置目录被占各有说法），不再统一甩「先去打开 Chrome」。
+    import jobscope.browser as browser_mod
+    from jobscope.job_details import collect_detail
+    repo = Repository(tmp_path)
+    job = listing(repo)
+    calls = []
+
+    def fake_start(data_dir, source):
+        calls.append(source)
+        return {'installed': True, 'running': False, 'message': '项目 Chrome 启动失败；请关闭占用同一配置目录的浏览器后重试。'}
+
+    monkeypatch.setattr(browser_mod, 'start', fake_start)
+    output = collect_detail(job, data_dir=tmp_path)
+    assert calls == ['boss']
+    assert output['status'] == 'needs_login'
+    assert '启动失败' in output['message']
+
+
 def zhaopin_listing(repo, external_id='CCL1212490300J40899799810'):
     return repo.save_job(dict(external_id=external_id, title='数据采集分析师', company='甲品牌苏州分公司',
                               location='北京 海淀', salary='7000-11000元',
