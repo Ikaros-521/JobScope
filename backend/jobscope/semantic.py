@@ -25,10 +25,10 @@ VALUES = {'met': 1, 'partial': .5, 'unmet': 0}
 GROUP_SIZE = 6         # 每组匹配的要求条数：单次输出小而快，多组并行，进度实时可见。
 MATCH_MAX_WORKERS = 4
 MAX_REQUIREMENTS = 80  # 沿用旧上限；拆解超出部分丢弃并由 omitted 兜底。
-EXTRACT_MAX_TOKENS = 4000
+EXTRACT_MAX_TOKENS = 32000
 EXTRACT_TIMEOUT = 600   # 拆解一次输出整份条目清单，给思考型模型留足预算。
-MATCH_MAX_TOKENS = 6000
-MATCH_TIMEOUT = 300     # 组输出小（6 条映射），超出即视为渠道异常。
+MATCH_MAX_TOKENS = 32000
+MATCH_TIMEOUT = 300     # 组输出小（6 条映射），但思考模型的推理 token 与输出共用预算，同样留满。
 
 
 class RunCancelled(Exception):

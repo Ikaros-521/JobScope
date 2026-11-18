@@ -8,9 +8,12 @@
 import html as html_lib
 import io
 import json
+import logging
 import re
 
 import httpx
+
+logger = logging.getLogger(__name__)
 
 MAX_MARKDOWN_CHARS = 60000
 MAX_JD_CHARS = 20000
@@ -128,8 +131,8 @@ def export_pdf(markdown_text, template_id):
     with pymupdf.open(stream=raw.getvalue(), filetype='pdf') as document:
         try:
             document.subset_fonts()
-        except (RuntimeError, ValueError):
-            pass  # 个别内嵌字体无法子集时保留原样，宁可文件大也不失败
+        except (RuntimeError, ValueError) as exc:
+            logger.debug('字体子集化失败，保留原样嵌入：%s', exc)  # 宁可文件大也不失败
         final = io.BytesIO()
         document.save(final, garbage=4, deflate=True)
         return final.getvalue()
@@ -299,14 +302,18 @@ def optimize_resume(base_text, jd_text, company='', job_title='', instructions='
     if not purpose_configured('analysis'):
         raise ValueError('尚未配置分析模型，请先在「模型设置 → 功能绑定」为「分析」用途绑定模型渠道，再进行简历优化')
     config = get_purpose_config('analysis')
+    logger.info('简历优化开始：目标=%s@%s 资料库取材=%s字',
+                 job_title or '未指定', company or '未指定', len(profile_materials or ''))
     payload = json.dumps(dict(base_resume=base_text[:100000], target=dict(company=company, job_title=job_title, requirements=jd_text[:MAX_JD_CHARS]), instructions=(instructions or '无')[:2000], profile_materials=(profile_materials or '')[:20000]), ensure_ascii=False)
     try:
         content, _ = complete(config, OPTIMIZE_SYSTEM, payload, temperature=.3, max_tokens=8000, timeout=180)
     except (httpx.HTTPError, KeyError, TypeError) as exc:
+        logger.warning('简历优化模型调用失败@%s：%s', company or job_title or '未指定', exc)
         raise ValueError('优化模型请求失败，请确认模型渠道可用后重试') from exc
     markdown_text, notes = _split_optimization(content)
     if len(markdown_text) < 20:
         raise ValueError('模型未返回有效简历内容，请重试或更换分析模型')
+    logger.debug('简历优化完成：markdown=%s字 notes=%s条', len(markdown_text), len(notes))
     return markdown_text[:MAX_MARKDOWN_CHARS], notes
 
 

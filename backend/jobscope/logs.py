@@ -34,6 +34,19 @@ _RING = collections.deque(maxlen=RING_SIZE)
 _SEQ = itertools.count(1)
 
 
+def _source_of(record, message):
+    """请求级日志单独归类：入站 uvicorn 访问行 + 出站 httpx 请求行。
+
+    这类一行一次 HTTP 事务的记录在日志页是噪声（默认隐藏、可切换查看）；
+    httpx 只把「HTTP Request: …」请求行归入 access，其 WARNING/ERROR 留在 app。
+    """
+    if record.name == 'uvicorn.access':
+        return 'access'
+    if record.name == 'httpx' and message.startswith('HTTP Request:'):
+        return 'access'
+    return 'app'
+
+
 class _RingHandler(logging.Handler):
     """把每条到达挂载点的记录按序存进环形缓冲，供 /api/logs 轮询。"""
 
@@ -51,19 +64,23 @@ class _RingHandler(logging.Handler):
                 return
             _RING.append(dict(seq=next(_SEQ), ts=time.strftime('%Y-%m-%d %H:%M:%S'),
                               level=record.levelname, logger=record.name,
+                              source=_source_of(record, message),
                               message=message[:MESSAGE_CAP]))
         except Exception:
             self.handleError(record)
 
 
-def recent_logs(after=0, level='', q='', limit=500):
-    """环形缓冲快照：seq 大于 after 的增量；等级（精确）、关键词、条数在快照上过滤。
+def recent_logs(after=0, level='', q='', limit=500, source=''):
+    """环形缓冲快照：seq 大于 after 的增量；来源、等级（精确）、关键词、条数在快照上过滤。
 
-    latest 恒取整份缓冲的最大 seq（与过滤无关），调用方拿它当下一轮的 after，
-    过滤条件变化也不会漏掉增量。
+    latest 恒取整份缓冲的最大 seq（与任何过滤无关），调用方拿它当下一轮的 after，
+    过滤条件变化也不会漏掉增量。source：'app'=业务日志（默认）、'access'=请求日志、
+    空=全部。
     """
     entries = list(_RING)
     result = [entry for entry in entries if entry['seq'] > after]
+    if source:
+        result = [entry for entry in result if entry['source'] == source]
     if level:
         result = [entry for entry in result if entry['level'] == level]
     if q:

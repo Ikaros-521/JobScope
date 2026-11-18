@@ -16,8 +16,11 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 MAX_FILES = 500
 MAX_FILE_BYTES = 200_000
@@ -128,4 +131,5 @@ def parse_vault(root: Path):
             errors.append(f'{rel}：没有可提取的正文，跳过。')
             continue
         entries.append(entry)
+    logger.info('Obsidian 库扫描完成：%s 篇可导入，%s 条跳过/错误', len(entries), len(errors))
     return entries, errors

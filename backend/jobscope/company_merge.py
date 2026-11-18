@@ -12,6 +12,7 @@
 合并方向（谁是主名）由 `scan` 按岗位数取多者，人工路径由用户在界面上选；本模块不猜方向。
 """
 import json
+import logging
 import re
 from typing import Literal
 
@@ -20,6 +21,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .connectors import CITY_CODES
 from .repository import Repository
+
+logger = logging.getLogger(__name__)
 
 # 自动合并的置信门槛：same 且 confidence ≥ 该值才免审。LLM 只要表现出一点犹豫（猜从属关系、
 # 写法差异超出「形式不同」）就到待审列表去，人工点一下比事后拆错合并便宜。
@@ -166,7 +169,7 @@ def scan(repo, task=None):
                 continue
             except ValueError:
                 # 扫描期间该主体已被并发合并/删除：这一对按待审处理，不中断整轮。
-                pass
+                logger.debug('归并扫描：%s×%s 已被并发处理，转待审', pair['a'], pair['b'])
         if verdict is not None:
             reason = f'llm:{verdict.verdict}({verdict.confidence}) {verdict.reason}'
         else:
@@ -176,5 +179,6 @@ def scan(repo, task=None):
     head = fallback + '；' if fallback else ''
     message = (f"{head}扫过 {len(entities)} 个主体、{len(pairs)} 对候选：自动合并 {len(merged)} 对"
                f"（{'、'.join(merged) or '无'}），待审 {len(proposed)} 对。")
+    logger.info('主体归并扫描：%s', message)
     return dict(entities=len(entities), candidates=len(pairs), merged=len(merged),
                 proposed=len(proposed), merged_pairs=merged, message=message)

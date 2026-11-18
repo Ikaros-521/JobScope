@@ -32,9 +32,34 @@ def test_recent_logs_filter_and_increment(tmp_path):
     limited = client.get('/api/logs', params={'limit': 2}).json()
     assert len(limited['entries']) <= 2
 
-    # 非法等级被参数校验拦下，环形缓冲上限不会被端点撑破。
+    # 非法等级/来源被参数校验拦下，环形缓冲上限不会被端点撑破。
     assert client.get('/api/logs', params={'level': 'TRACE'}).status_code == 422
+    assert client.get('/api/logs', params={'source': 'all'}).status_code == 422
     assert len(_ring_snapshot()) <= RING_SIZE
+
+
+def test_recent_logs_source_split(tmp_path):
+    """请求日志（uvicorn.access / httpx 请求行）单独归类：app 视图默认看不到，access 视图只有它们。"""
+    client = TestClient(create_app(tmp_path))
+    marker = f'source-marker-{uuid.uuid4().hex}'
+    logging.getLogger('jobscope.logs_test').info('业务记号 %s', marker)
+
+    app_view = client.get('/api/logs', params={'source': 'app', 'limit': 2000}).json()
+    assert app_view['entries'], '业务视图应包含业务日志'
+    assert all(entry['source'] == 'app' for entry in app_view['entries'])
+    assert any(marker in entry['message'] for entry in app_view['entries'])
+    # TestClient 的每次请求都会产生 httpx「HTTP Request: …」行，业务视图必须把它们滤掉。
+    assert not any('HTTP Request:' in entry['message'] for entry in app_view['entries'])
+
+    access_view = client.get('/api/logs', params={'source': 'access', 'limit': 2000}).json()
+    assert access_view['entries'], '请求视图应包含 httpx 请求行'
+    assert all(entry['source'] == 'access' for entry in access_view['entries'])
+    assert all('HTTP Request:' in entry['message'] for entry in access_view['entries'])
+
+    # latest 恒取整份缓冲的最大 seq，与来源过滤无关；三次请求各自的 httpx 行也会推
+    # 进计数器，只能断言不减（同 test_recent_logs_filter_and_increment 的口径）。
+    everything = client.get('/api/logs', params={'limit': 2000}).json()
+    assert everything['latest'] >= access_view['latest'] >= app_view['latest'] > 0
 
 
 def _ring_snapshot():

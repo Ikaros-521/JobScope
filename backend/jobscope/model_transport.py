@@ -15,8 +15,18 @@ def _log_call(config, purpose, max_tokens):
 
 
 def _log_usage(purpose, usage):
-    if usage:
-        logger.debug('模型调用[%s] 完成 usage=%s', purpose, usage)
+    """每次模型调用的 token 用量（INFO：输出额度排障要看得见）。兼容 OpenAI/Anthropic 字段名。"""
+    if not usage:
+        return
+    prompt = usage.get('prompt_tokens', usage.get('input_tokens'))
+    completion = usage.get('completion_tokens', usage.get('output_tokens'))
+    total = usage.get('total_tokens')
+    if total is None and prompt is not None and completion is not None:
+        total = prompt + completion
+    logger.info('模型调用[%s] tokens 输入=%s 输出=%s 总计=%s', purpose,
+                prompt if prompt is not None else '?',
+                completion if completion is not None else '?',
+                total if total is not None else '?')
 
 
 class OutputLimitError(ValueError):
@@ -103,6 +113,8 @@ def stream_complete(config, system, user, *, max_tokens=1800, temperature=None, 
     if not isinstance(text, str) or not text.strip():
         truncated = finish_reason in ('max_tokens', 'length')
         if truncated:
+            logger.warning('模型输出触达单次上限[stream_complete] max_tokens=%s finish_reason=%s usage=%s',
+                           max_tokens, finish_reason, usage)
             raise OutputLimitError('模型输出触达单次上限（max_tokens），未生成完整回答；与账户余额无关，可重试一次。')
         raise ValueError('模型返回格式无效')
     _log_usage('complete', usage)
@@ -143,6 +155,7 @@ def complete(config, system, user, *, max_tokens=1800, temperature=None, timeout
     if not isinstance(content, str) or not content.strip():
         truncated = data.get('stop_reason') == 'max_tokens' if protocol == 'anthropic' else data['choices'][0].get('finish_reason') == 'length'
         if truncated:
+            logger.warning('模型输出触达单次上限[complete] max_tokens=%s usage=%s', max_tokens, data.get('usage'))
             raise OutputLimitError('模型输出触达单次上限（max_tokens），未生成完整回答；与账户余额无关，可重试一次。')
         raise ValueError('模型返回格式无效')
     _log_usage('complete', data.get('usage') or {})

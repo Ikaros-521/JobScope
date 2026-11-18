@@ -6,6 +6,7 @@
 """
 
 import json
+import logging
 import re
 import shutil
 import threading
@@ -14,6 +15,8 @@ from pathlib import Path
 
 from .kb_chunking import STRATEGIES, clamp_overlap, clamp_size, chunk_text, format_for
 from .repository import digest, now
+
+logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = 'knowledge-store-2'
 LIST_SNIPPET_CHARS = 400
@@ -156,8 +159,8 @@ class KnowledgeStore:
         if embed and hashes:
             try:
                 self._embed_chunks([(text, digest(text)) for text in chunks if text.strip()])
-            except (ValueError, RuntimeError, OSError):
-                pass  # 嵌入不可用：向量保持待补，词法检索不受影响，status 会如实报告 pending
+            except (ValueError, RuntimeError, OSError) as exc:
+                logger.warning('知识嵌入失败（向量保持待补，词法不受影响）entry=%s：%s', entry['id'], exc)  # status 会如实报告 pending
         return entry
 
     def _embedding_identity(self):
@@ -340,6 +343,7 @@ class KnowledgeStore:
                     if not vector_rows:
                         degraded.append('向量索引尚未建立（可在知识库页重建向量），已降级为词法检索')
                 except (ValueError, RuntimeError) as exc:
+                    logger.warning('知识向量召回失败，已降级词法检索：%s', exc)
                     degraded.append(f'向量召回失败，已降级为词法检索：{exc}')
         scores = {}
         for rank, row in enumerate(lexical, 1):
@@ -389,6 +393,7 @@ class KnowledgeStore:
                 for (text, content_hash), vector in zip(batch, vectors):
                     conn.execute('INSERT OR REPLACE INTO knowledge_vectors VALUES (?,?,?)',
                                  (provider.identity, content_hash, json.dumps(vector)))
+        logger.info('知识向量重建完成：%s 个分块，模型=%s', len(pairs), provider.identity)
         return dict(embedded=len(pairs), model=provider.identity, **self.status())
 
     # ---------- helpers ----------
@@ -579,8 +584,13 @@ class KnowledgeImportManager:
     def _run(self, task_id, event, settings):
         task = self._load(task_id)
         try:
-            self._process_files(task, event, settings)
+            # worker 线程收不到请求中间件的线程级模型配置（contextvar 不跨线程），
+            # LLM 切分按 DB 生效配置解析，否则回落环境变量 → 地址为空。
+            from .settings import ModelSettings, use_config
+            with use_config(ModelSettings(self.repo).effective()):
+                self._process_files(task, event, settings)
         except Exception as exc:  # noqa: BLE001 — 后台线程异常必须落库可见，静默死亡会让任务永远停在 running
+            logger.exception('知识库导入任务异常终止 task=%s', task_id)
             # 中途死掉的文件不能留在 processing：那是不可见的中间态，重启清理只看任务状态。
             for file_state in task.get('files', []):
                 if file_state['state'] == 'processing':
@@ -597,6 +607,7 @@ class KnowledgeImportManager:
     def _process_files(self, task, event, settings):
         task_id = task['id']
         imported = failed = skipped = 0
+        logger.info('知识库导入开始 task=%s 文件=%s', task_id, len(task['files']))
         for file_state in task['files']:
             if event.is_set():
                 break
@@ -643,6 +654,7 @@ class KnowledgeImportManager:
             note = f'（{skipped} 个重复跳过）' if skipped else ''
             task.update(status='completed',
                         message=f'导入完成：成功 {imported}、失败 {failed}{note}{embedded_note}'[:500])
+        logger.info('知识库导入结束 task=%s：成功=%s 失败=%s 跳过=%s', task_id, imported, failed, skipped)
 
     def _process_file(self, task_id, file_state, settings):
         content = (self._staging_dir(task_id) / f'{file_state["index"]:04d}-{file_state["name"]}').read_bytes()
