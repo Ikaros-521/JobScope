@@ -480,6 +480,45 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .pipeline-select:focus { outline: 2px solid var(--green); outline-offset: 1px; }
 /* 数据新鲜度：只陈述「较旧」这一事实与补法（悬浮可见），不给警示色、不拦截任何操作。 */
 .stale-hint { display: inline-flex; align-items: center; font-size: 11px; line-height: 1.6; padding: 0 6px; border-radius: 999px; border: 1px dashed var(--line); color: var(--muted); white-space: nowrap; cursor: help; }
+/* ── 跟进信息（2026-11-18）：截止日/下一步行动的展示。逾期是事实提醒：暖色、不拦截。 ── */
+.follow-due { font-size: 11px; line-height: 1.6; padding: 0 6px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); white-space: nowrap; font-weight: 600; }
+.follow-due.overdue { color: #a2541a; border-color: #e8c9a8; background: #fdf6ec; }
+.job-follow-footer { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.job-follow-footer .follow-note { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.detail-pipeline-select { min-height: 30px; }
+/* ── 今日概览（2026-11-18）：每天的第一屏——待办、新增、数据规模与备份提醒。 ── */
+.today-grid { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 20px; margin-bottom: 20px; }
+.today-panel { padding: 18px 20px; }
+.today-todo .today-panel-link { margin-top: 12px; }
+.today-due-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.today-due-item { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.today-due-item.overdue { border-color: #e8c9a8; background: #fdf6ec; }
+.today-due-item.stale { border-style: dashed; }
+.today-due-title { font-weight: 600; text-align: left; }
+.today-backup-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 20px; border: 1px solid #e8c9a8; border-radius: 10px; background: #fdf6ec; color: #a2541a; font-size: 13px; }
+.today-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: 8px; }
+.today-stat { display: flex; flex-direction: column; gap: 2px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); font-size: 12px; }
+.today-stat b { font-size: 18px; color: var(--green); font-variant-numeric: tabular-nums; }
+button.today-stat { cursor: pointer; text-align: left; }
+.today-second-heading { margin-top: 16px; }
+.today-new-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.today-new-list li { display: flex; flex-direction: column; gap: 2px; }
+.today-task-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.today-task-list li { display: flex; align-items: baseline; gap: 10px; font-size: 13px; }
+.today-task-query { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.today-task-status { flex: none; font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); color: var(--muted); }
+.today-task-status.completed { color: var(--green); border-color: var(--green); }
+.today-task-status.failed, .today-task-status.needs_login, .today-task-status.needs_verification { color: #a2541a; border-color: #e8c9a8; }
+.today-empty-actions { display: flex; gap: 12px; justify-content: center; margin-top: 8px; }
+@media (max-width: 1000px) { .today-grid { grid-template-columns: 1fr; } }
+/* ── 设置中心：备份与恢复面板 ── */
+.backup-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.backup-action-buttons { display: flex; gap: 10px; }
+.backup-list { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; }
+.backup-list li { display: flex; align-items: center; gap: 14px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 13px; }
+.backup-item-name { display: flex; gap: 8px; align-items: baseline; min-width: 0; flex: 1; }
+.backup-item-name span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.backup-item-actions { display: flex; gap: 8px; }
 /* 工资基线导入面板（数据与采集 → 数据源）：手动导入官方指导价位，作 pay 维度兜底基线。 */
 .wage-baseline-panel { margin-top: 18px; }
 .wage-import { display: grid; gap: 10px; margin-bottom: 14px; }
@@ -1494,7 +1533,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .scope-expansion-card small { color: #737373; font-size: 11px; }
 .scope-expansion-card p.scope-expansion-error { color: #8c3a2a; }
 .composer-model { display: inline-flex; align-items: center; gap: 6px; color: #525252; }
-.composer-model select { min-height: 32px; font-size: 12px; padding: 4px 8px; border-radius: 8px; max-width: 220px; }
+.composer-model select { min-height: 32px; font-size: 12px; padding: 4px 8px; border-radius: 8px; max-width: 150px; }
 /* 三档工具权限分段控件：当前档白底绿字，运行/待确认期间禁切 */
 .composer-mode { display: inline-flex; align-items: center; gap: 6px; color: #525252; }
 .composer-mode-seg { display: inline-flex; align-items: center; padding: 2px; background: #f0f2f0; border: 1px solid #dce4df; border-radius: 8px; }

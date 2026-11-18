@@ -6,6 +6,7 @@ import { toast } from './toast'
 import { addCompareCompany } from './compareSelectionStore'
 import { JobCard } from './JobCard'
 import { Icon } from './Icon'
+import { PipelineFollowEditor } from './PipelineFollowEditor'
 
 // 任务状态中文名（局部子集即可；档案页的完整表随来源注册表动态组装，这里不必复用）。
 const taskStatusNames: Record<string, string> = {
@@ -15,9 +16,17 @@ const taskStatusNames: Record<string, string> = {
 
 // 机会管线（2026-11-17）：收藏篮子上的投递跟进状态，顺序即推进方向。
 // 与收藏共用一个篮子：给未收藏岗位设状态会自动收藏；取消收藏即移出管线（后端语义）。
-const PIPELINE_ORDER = ['interested', 'applied', 'interviewing', 'offer', 'archived'] as const
-const PIPELINE_NAMES: Record<string, string> = {
+// 岗位详情页（App.tsx）与今日概览共用这套状态字典。
+export const PIPELINE_ORDER = ['interested', 'applied', 'interviewing', 'offer', 'archived'] as const
+export const PIPELINE_NAMES: Record<string, string> = {
   interested: '意向', applied: '已投递', interviewing: '面试中', offer: 'Offer', archived: '归档',
+}
+// 截止日逾期按本地日历日判断（用户视角的「今天」），与后端 UTC 口径只在跨日零点附近有差异。
+export function isDueOverdue(due: string | null | undefined) {
+  if (!due) return false
+  const now = new Date()
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+  return due < today
 }
 type PipelineFilter = '' | 'tracked' | (typeof PIPELINE_ORDER)[number]
 const PIPELINE_FILTERS: { id: PipelineFilter; label: string }[] = [
@@ -48,6 +57,8 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
   const [recheckTask, setRecheckTask] = useState<Task | null>(null)
   const recheckTimer = useRef(0)
   const [review, setReview] = useState<PipelineReview | null>(null)
+  // 跟进编辑弹窗的目标岗位（2026-11-18）：下一步行动 + 截止日。
+  const [followJob, setFollowJob] = useState<Job | null>(null)
 
   const load = useCallback(async (next = filters.current, page = 1) => {
     if (next.q !== filters.current.q || next.source !== filters.current.source || next.pipeline !== filters.current.pipeline) {
@@ -218,12 +229,19 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
               <option value="">未跟踪</option>
               {PIPELINE_ORDER.map(status => <option key={status} value={status}>{PIPELINE_NAMES[status]}</option>)}
             </select>
+            <button className="text-button" disabled={Boolean(busy)} title="设置下一步行动与截止日；到期的会出现在「今日概览」待办" onClick={() => setFollowJob(item)}>{item.pipeline_due ? '改跟进' : '跟进'}</button>
             <button className="text-button" disabled={Boolean(busy)} title="重读源站原帖，刷新薪资与完整JD" onClick={() => void recheckOne(item)}>反查</button>
             <button className="text-button" onClick={() => joinCompare(item)}>加入横评</button>
           </span>}
-          footer={<span className="tiny-label">{item.detail_collected_at ? `反查于 ${date(item.detail_collected_at)}` : '尚未反查过详情'}</span>} />)}</div>}
+          footer={<span className="tiny-label job-follow-footer">
+            {item.pipeline_due && <b className={`follow-due${isDueOverdue(item.pipeline_due) ? ' overdue' : ''}`} title="跟进截止日；逾期条目同时出现在「今日概览」待办">截止 {item.pipeline_due}{isDueOverdue(item.pipeline_due) ? '（逾期）' : ''}</b>}
+            {item.pipeline_note && <span className="follow-note" title="下一步行动">{item.pipeline_note}</span>}
+            {item.detail_collected_at ? `反查于 ${date(item.detail_collected_at)}` : '尚未反查过详情'}
+          </span>} />)}</div>}
       <Pagination info={info} label="收藏夹" busy={Boolean(busy)} onPage={page => run('page', async () => { await load(undefined, page) })} />
       <div className="list-bottom">反查会用项目浏览器重新读取源站原帖；投递前请以平台页面为准。</div>
+      {followJob && <PipelineFollowEditor job={followJob} onClose={() => setFollowJob(null)}
+        onSaved={() => { void run('follow', async () => { await load() }) }} />}
     </section>
   </section>
 }

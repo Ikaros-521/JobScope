@@ -7,6 +7,8 @@ export type Job = {
   starred?: boolean; starred_at?: string // 收藏标记：重采集幸存，见 repository.save_job
   pipeline_status?: 'interested' | 'applied' | 'interviewing' | 'offer' | 'archived' // 机会管线：与收藏同篮，重采集幸存
   pipeline_status_changed_at?: string
+  pipeline_note?: string // 跟进备注（2026-11-18）：下一步行动；'' 清空
+  pipeline_due?: string // 截止日 YYYY-MM-DD：今日概览据此生成待办
 }
 // 机会管线回顾（收藏夹顶部）：纯本地统计，各列表截前 8 条。
 export type PipelineReview = {
@@ -148,8 +150,31 @@ export function getCompanyLayers(companies: string[], gate?: { own_min: number; 
   return api<{ companies: (CompareLayers & { company: string })[] }>(`/reliability/compare?companies=${encodeURIComponent(companies.join('|'))}${suffix}`)
 }
 // 岗位收藏与反查：PATCH 支持部分字段（starred 显式 false = 取消收藏）；批量反查 ids 与完整JD补采共用一条任务管道。
-export function patchJobs(ids: string[], patch: { starred?: boolean; location?: string; salary?: string; tags?: string[]; pipeline_status?: 'interested' | 'applied' | 'interviewing' | 'offer' | 'archived' | '' }) { return api<{ updated: number }>('/jobs', { method: 'PATCH', body: JSON.stringify({ ids, ...patch }) }) }
+// 跟进信息（2026-11-18）：pipeline_note '' 清空、pipeline_due 'YYYY-MM-DD' 或 '' 清空，均不影响管线状态。
+export function patchJobs(ids: string[], patch: { starred?: boolean; location?: string; salary?: string; tags?: string[]; pipeline_status?: 'interested' | 'applied' | 'interviewing' | 'offer' | 'archived' | ''; pipeline_note?: string; pipeline_due?: string }) { return api<{ updated: number }>('/jobs', { method: 'PATCH', body: JSON.stringify({ ids, ...patch }) }) }
 export function startDetailBatch(ids?: string[]) { return post<{ task: Task }>('/browser/details', ids ? { ids } : {}) }
+// ---- 数据备份（2026-11-18）：SQLite 在线快照 zip 存 .data/backups；恢复先自动落「恢复前」安全备份 ----
+export type BackupInfo = { id: string; name: string; size: number; created_at: string; pre_restore: boolean }
+export type BackupStatus = { backups: BackupInfo[]; last_backup_at: string | null; days_since: number | null; retention: number }
+export function getBackupStatus() { return api<BackupStatus>('/backup') }
+export function createBackup() { return post<{ backup: BackupInfo }>('/backup', {}) }
+export function deleteBackup(id: string) { return api<{ ok: boolean }>(`/backup/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+export function downloadBackup(info: BackupInfo) { return download(`/backup/${encodeURIComponent(info.id)}/download`, info.name) }
+export function restoreBackup(file: File) { return upload<{ restored: boolean; safety_backup: string; jobs: number; evidence: number }>('/backup/restore', file) }
+// ---- 今日概览（2026-11-18）：打开工作区的第一屏，全部只读本库 ----
+export type DashboardDue = { id: string; title: string; company: string; status: string; due: string; overdue: boolean; note: string; changed_at: string }
+export type DashboardNewJob = { id: string; title: string; company: string; source: string; salary: string; location: string; starred: boolean; first_seen_at: string }
+export type Dashboard = {
+  date: string
+  counts: { jobs: number; evidence: number; companies: number; favorites: number; tracked: number }
+  pipeline: PipelineReview
+  due: DashboardDue[]
+  new_jobs: DashboardNewJob[]
+  backup: BackupStatus
+  recent_tasks: Task[]
+  model_configured: boolean
+}
+export function getDashboard() { return api<Dashboard>('/dashboard') }
 // ---- Boss 捕获篮导入（docs/design/boss-import.md）：当前页捕获 + 链接粘贴 → 篮子 → 确认入库 ----
 export type BossTab = { id: string; url: string; title: string }
 // 篮子条目：in_library 表示库里已有同一条岗位（source=boss + encryptJobId 幂等归并）。
@@ -344,6 +369,16 @@ export function date(value: string | null) {
   if (!value) return '时间未知'
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+// 相对天数（2026-11-19）：列表卡片扫描用「X 天前」，比绝对时间戳更快读出档案新旧；解析失败返回原文。
+export function relativeDays(value: string | null | undefined, fallback = '') {
+  if (!value) return fallback
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return value
+  const days = Math.floor((Date.now() - parsed.getTime()) / 86400000)
+  if (days <= 0) return '今天'
+  if (days === 1) return '昨天'
+  return `${days} 天前`
 }
 // 数据新鲜度（2026-11-17）：岗位/证据的采集时间超过阈值时，卡片给出「数据较旧」提示。
 // 求职数据半衰期短：岗位 30 天、公司证据 90 天；只提示不拦截，时间解析失败不判旧。
