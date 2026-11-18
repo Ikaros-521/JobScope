@@ -2,9 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import {
   api, date, listResumeTemplates, previewResumeDocument, listResumeVersions, getResumeVersion,
   createResumeVersion, updateResumeVersion, deleteResumeVersion, optimizeResume, exportResumeVersion,
-  pinResumeVersion, listProfileEntries, PROFILE_CATEGORY_NAMES,
+  pinResumeVersion, listProfileEntries, PROFILE_CATEGORY_NAMES, DEFAULT_TYPOGRAPHY,
 } from './api'
-import type { Job, PageInfo, ProfileEntry, ResumeTemplate, ResumeVersion, ResumeVersionSummary } from './api'
+import type { Job, PageInfo, ProfileEntry, ResumeTemplate, ResumeTypography, ResumeVersion, ResumeVersionSummary } from './api'
+import { ResumeDiff } from './ResumeDiff'
 import { toast } from './toast'
 
 // 岗位详情页「优化简历」跳转预填：带上岗位定位，进入后自动选中该岗位。
@@ -18,6 +19,19 @@ const EXPORT_ITEMS = [
 ] as const
 const EXPORT_EXTENSIONS: Record<string, string> = { pdf: 'pdf', docx: 'docx', html: 'html', md: 'md' }
 
+// 排版选项：与后端 sanitize 白名单一致（resume_workshop.FONT_STACKS/MARGIN_PRESETS）。
+const TYPOGRAPHY_FONTS: [string, string][] = [['', '字体 · 跟随模板'], ['yahei', '微软雅黑'], ['song', '宋体'], ['hei', '黑体'], ['kai', '楷体'], ['fangsong', '仿宋']]
+const TYPOGRAPHY_SIZES = [9.5, 10, 10.5, 11, 11.5, 12, 12.5, 13]
+const TYPOGRAPHY_LINE_HEIGHTS: [number | null, string][] = [[null, '行距 · 跟随模板'], [1.35, '紧凑 1.35'], [1.5, '标准 1.5'], [1.65, '宽松 1.65'], [1.8, '疏朗 1.8']]
+const TYPOGRAPHY_MARGINS: [string, string][] = [['narrow', '窄'], ['standard', '标准'], ['wide', '宽']]
+
+// A4 内容高（297mm @96dpi 减页边距），估算页数与一页纸缩放共用。
+function shrinkCss(basePt: number, scale: number) {
+  return `.resume-body{font-size:${(basePt * scale).toFixed(2)}pt}` +
+    '.resume-body h1{font-size:1.85em}.resume-body h2{font-size:1.15em}.resume-body h3{font-size:1.02em}' +
+    '.resume-body th,.resume-body td{font-size:.95em}.resume-body p.contact{font-size:.92em}'
+}
+
 function Empty({ title, children }: { title: string; children: React.ReactNode }) {
   return <div className="workshop-empty"><h3>{title}</h3><p>{children}</p></div>
 }
@@ -27,6 +41,12 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
   const [versions, setVersions] = useState<ResumeVersionSummary[]>([])
   const [resumeCharacters, setResumeCharacters] = useState<number | null>(null)
   const [current, setCurrent] = useState<ResumeVersion | null>(null)
+  // 排版设置（字体/字号/行距/页边距/一页纸）：随版本保存，预览与导出共用。
+  const [typography, setTypography] = useState<ResumeTypography>(DEFAULT_TYPOGRAPHY)
+  const [pageFit, setPageFit] = useState<{ pages: number; shrink: number } | null>(null)
+  const previewFrameRef = useRef<HTMLIFrameElement | null>(null)
+  // 编辑区视图：编辑正文，或对照优化时基础简历快照看「改动对比」（git diff 风格）。
+  const [editTab, setEditTab] = useState<'edit' | 'diff'>('edit')
   const [title, setTitle] = useState('')
   const [markdown, setMarkdown] = useState('')
   const [templateId, setTemplateId] = useState('classic')
@@ -46,6 +66,7 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
   const [jobQuery, setJobQuery] = useState('')
   const [jobResults, setJobResults] = useState<Job[]>([])
   const [jobSearching, setJobSearching] = useState(false)
+  const [jobSearchFocused, setJobSearchFocused] = useState(false)
   const [selectedJob, setSelectedJob] = useState<Job | null>(null)
   const [jdText, setJdText] = useState('')
   const [pasteCompany, setPasteCompany] = useState('')
@@ -55,6 +76,7 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
   const [profileEntries, setProfileEntries] = useState<ProfileEntry[]>([])
   const [profileSelected, setProfileSelected] = useState<Set<string>>(new Set())
   const jobSearchToken = useRef(0)
+  const jobResultsRef = useRef<HTMLUListElement | null>(null)
   const previewToken = useRef(0)
 
   useEffect(() => {
@@ -95,37 +117,89 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
       .finally(onPrefillConsumed)
   }, [prefill, onPrefillConsumed])
 
-  // 岗位 typeahead：两字符起检索本地档案，序号防过期响应回写。
+  // 岗位候选：聚焦空词直接给最近档案（点开即选，不必先想关键词）；
+  // 有输入就检索（本地子串匹配开销小，原先两字符门槛会静默无反馈）。
+  // 序号防过期响应回写。
   useEffect(() => {
+    if (targetMode !== 'job') { setJobResults([]); setJobSearching(false); return }
     const query = jobQuery.trim()
-    if (targetMode !== 'job' || query.length < 2) { setJobResults([]); setJobSearching(false); return }
+    if (!query && !jobSearchFocused) { setJobResults([]); setJobSearching(false); return }
+    const path = query ? `/jobs?q=${encodeURIComponent(query)}&page=1` : '/jobs?page=1'
     const token = ++jobSearchToken.current
     setJobSearching(true)
-    api<PageInfo & { jobs: Job[] }>(`/jobs?q=${encodeURIComponent(query)}&page=1`)
+    api<PageInfo & { jobs: Job[] }>(path)
       .then(data => { if (token === jobSearchToken.current) setJobResults(data.jobs.slice(0, 8)) })
       .catch(() => { if (token === jobSearchToken.current) setJobResults([]) })
       .finally(() => { if (token === jobSearchToken.current) setJobSearching(false) })
-  }, [jobQuery, targetMode])
+  }, [jobQuery, targetMode, jobSearchFocused])
 
-  // 编辑/模板切换后 800ms 防抖刷新预览；与导出共用后端渲染管线，所见即所得。
+  // 候选浮层在可滚动表单内，输入框贴近可视区底部时会被容器裁掉；
+  // 结果到达时就近滚入视野，避免「明明检索了却看不见」。
   useEffect(() => {
-    if (!current || !markdown.trim()) { setPreviewHtml(''); return }
+    if (jobResults.length > 0) jobResultsRef.current?.scrollIntoView({ block: 'nearest' })
+  }, [jobResults])
+
+  // 编辑/模板/排版切换后 800ms 防抖刷新预览；与导出共用后端渲染管线，所见即所得。
+  useEffect(() => {
+    if (!current || !markdown.trim()) { setPreviewHtml(''); setPageFit(null); return }
     const token = ++previewToken.current
     const timer = setTimeout(() => {
-      previewResumeDocument(markdown, templateId)
+      previewResumeDocument(markdown, templateId, typography)
         .then(data => { if (token === previewToken.current) setPreviewHtml(data.html) })
         .catch(() => { if (token === previewToken.current) setPreviewHtml('') })
     }, 800)
     return () => clearTimeout(timer)
-  }, [current, markdown, templateId])
+  }, [current, markdown, templateId, typography])
 
-  function loadVersion(version: ResumeVersion) {
+  // 预览测量：估页数 + 一页纸时注入字号缩放（与 PDF 导出的阶梯缩放同机制，结果一致）。
+  // iframe 同源（srcDoc + allow-same-origin，无脚本），父页直接读内容文档。
+  function fitPreview() {
+    const doc = previewFrameRef.current?.contentDocument
+    const page = doc?.querySelector<HTMLElement>('.resume-page')
+    const body = doc?.querySelector<HTMLElement>('.resume-body')
+    if (!doc || !page || !body) { setPageFit(null); return }
+    const run = () => {
+      const view = doc.defaultView
+      if (!view) return
+      const cs = view.getComputedStyle(page)
+      const avail = 1122.5 - parseFloat(cs.paddingTop || '0') - parseFloat(cs.paddingBottom || '0')
+      let styleEl = doc.getElementById('preview-fit') as HTMLStyleElement | null
+      if (!styleEl) { styleEl = doc.createElement('style'); styleEl.id = 'preview-fit'; doc.head.appendChild(styleEl) }
+      styleEl.textContent = ''
+      const natural = body.getBoundingClientRect().height
+      const pages = Math.max(1, Math.ceil(natural / avail - 0.02))
+      if (!typography.one_page || natural <= avail) { setPageFit({ pages, shrink: 1 }); return }
+      const basePt = typography.font_size ?? templates.find(item => item.id === templateId)?.body_pt ?? 11
+      let scale = Math.max(0.7, Math.min(1, avail / natural))
+      for (let i = 0; i < 8; i++) {
+        styleEl.textContent = shrinkCss(basePt, scale)
+        if (body.getBoundingClientRect().height <= avail || scale <= 0.7) break
+        scale = Math.max(0.7, scale - 0.04)
+      }
+      setPageFit({ pages: 1, shrink: Math.round(scale * 100) / 100 })
+    }
+    const fonts = doc.fonts
+    if (fonts?.ready) fonts.ready.then(run).catch(run); else run()
+  }
+
+  // 仅切换排版设置（如一页纸开关）不改变服务端 HTML、iframe 不重载时，主动重测。
+  useEffect(() => {
+    if (!previewHtml) return
+    const timer = setTimeout(() => fitPreview(), 60)
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewHtml, typography, templateId])
+
+  // tab 缺省保持当前视图：普通打开/保存不劫持视图，仅优化完成时显式切到「改动对比」。
+  function loadVersion(version: ResumeVersion, tab?: 'edit' | 'diff') {
     setCurrent(version)
     setTitle(version.title)
     setMarkdown(version.markdown)
     setTemplateId(version.template_id || 'classic')
     setNotes(version.notes || [])
+    setTypography({ ...DEFAULT_TYPOGRAPHY, ...(version.typography || {}) })
     setDirty(false)
+    if (tab) setEditTab(tab)
   }
 
   async function selectVersion(id: number) {
@@ -166,9 +240,9 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
         instructions,
         profile_entry_ids: [...profileSelected],
       })
-      loadVersion(version)
+      loadVersion(version, 'diff')
       await refreshVersions()
-      toast('优化完成，已生成新版本；可直接二次编辑或导出。')
+      toast('优化完成，已生成新版本；先在「改动对比」核对改动，可直接二次编辑或导出。')
     } catch (err) { setFormError((err as Error).message) } finally { setBusy(null) }
   }
 
@@ -176,7 +250,7 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
     if (!current || busy || !markdown.trim()) return
     setBusy('save')
     try {
-      const version = await updateResumeVersion(current.id, { title: title.trim() || current.title, markdown, template_id: templateId })
+      const version = await updateResumeVersion(current.id, { title: title.trim() || current.title, markdown, template_id: templateId, typography })
       loadVersion(version)
       await refreshVersions()
       toast('版本已保存。')
@@ -198,10 +272,11 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
   async function exportCurrent(format: string) {
     if (!current || busy) return
     try {
-      // 导出前先把未保存的编辑落库，保证文件与所见一致。
-      if (dirty || markdown.trim() !== current.markdown || templateId !== current.template_id || title.trim() !== current.title) {
+      // 导出前先把未保存的编辑与排版落库，保证文件与所见一致。
+      const typographyDirty = JSON.stringify(typography) !== JSON.stringify(current.typography || DEFAULT_TYPOGRAPHY)
+      if (dirty || typographyDirty || markdown.trim() !== current.markdown || templateId !== current.template_id || title.trim() !== current.title) {
         setBusy('save')
-        const version = await updateResumeVersion(current.id, { title: title.trim() || current.title, markdown, template_id: templateId })
+        const version = await updateResumeVersion(current.id, { title: title.trim() || current.title, markdown, template_id: templateId, typography })
         loadVersion(version)
         await refreshVersions()
       }
@@ -218,7 +293,7 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
   return <div className="workshop-view">
     <section className="page-intro"><div><h1>简历工坊</h1><p>针对不同公司的岗位要求定制简历：AI 优化 → 二次编辑 → 模板排版 → 导出投递。</p></div>
       <div className="workshop-intro-actions">
-        <button type="button" className="button secondary" disabled={Boolean(busy)} onClick={() => { setCurrent(null); setMarkdown(''); setPreviewHtml(''); setDirty(false) }}>新建优化</button>
+        <button type="button" className="button secondary" disabled={Boolean(busy)} onClick={() => { setCurrent(null); setMarkdown(''); setPreviewHtml(''); setPageFit(null); setTypography(DEFAULT_TYPOGRAPHY); setDirty(false) }}>新建优化</button>
         <button type="button" className="button secondary" disabled={Boolean(busy) || resumeCharacters === null || !resumeCharacters} onClick={() => void createFromSaved()}>从我的简历复制</button>
       </div>
     </section>
@@ -237,7 +312,7 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
             return visible.length === 0 ? <Empty title={companyFilter ? '该公司还没有存档' : '还没有定制版本'}>在右侧选择目标岗位并开始优化，每次优化都会保存为一个可二次编辑的版本，并自动设为该岗位的评估用简历。</Empty>
               : visible.map(version => <div className={`workshop-version ${current?.id === version.id ? 'active' : ''}`} key={version.id}>
               <button type="button" className="workshop-version-main" onClick={() => void selectVersion(version.id)} title={version.title}>
-                <strong>{version.title}{version.pinned && <span className="pin-badge" title="该岗位评估适配当前使用的简历">评估用</span>}</strong>
+                <strong><span className="workshop-version-title" title={version.title}>{version.title}</span>{version.pinned && <span className="pin-badge" title="该岗位评估适配当前使用的简历">评估用</span>}</strong>
                 <span>{version.company || version.job_title || '未绑定岗位'}</span>
                 <time>{date(version.updated_at)} · {version.characters.toLocaleString()} 字</time>
               </button>
@@ -279,18 +354,18 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
                 {targetMode === 'job' && (selectedJob
                   ? <div className="workshop-job-chip">
                     <div><strong>{selectedJob.title}</strong><span>{selectedJob.company}{selectedJob.location ? ` · ${selectedJob.location}` : ''}{selectedJob.salary ? ` · ${selectedJob.salary}` : ''}</span></div>
-                    <button type="button" className="text-button" onClick={() => { setSelectedJob(null); setJobQuery('') }} disabled={optimizing}>重选</button>
+                    <button type="button" className="text-button" onClick={() => { setSelectedJob(null); setJobQuery(''); setJobResults([]); setJobSearchFocused(false) }} disabled={optimizing}>重选</button>
                   </div>
                   : <div className="workshop-job-search">
-                    <input value={jobQuery} onChange={event => setJobQuery(event.target.value)} placeholder="搜索本地岗位档案，如：后端 字节" maxLength={200} disabled={optimizing} aria-label="搜索岗位档案" />
+                    <input value={jobQuery} onChange={event => setJobQuery(event.target.value)} onFocus={() => setJobSearchFocused(true)} onBlur={() => setJobSearchFocused(false)} placeholder="点击选最近档案，或输入关键词检索" maxLength={200} disabled={optimizing} aria-label="搜索岗位档案" />
                     {jobSearching && <span className="spinner" aria-hidden="true" />}
-                    {jobResults.length > 0 && <ul className="workshop-job-results">
-                      {jobResults.map(job => <li key={job.id}><button type="button" onClick={() => { setSelectedJob(job); setJobResults([]) }}>
+                    {(jobResults.length > 0 || (!jobSearching && jobQuery.trim())) && <ul className="workshop-job-results" ref={jobResultsRef} onMouseDown={event => event.preventDefault()}>
+                      {jobResults.length > 0 ? jobResults.map(job => <li key={job.id}><button type="button" onClick={() => { setSelectedJob(job); setJobResults([]); setJobSearchFocused(false) }}>
                         <strong>{job.title}</strong><span>{job.company}{job.location ? ` · ${job.location}` : ''}</span>
                         {job.description_status !== 'complete' && <em>仅列表摘要</em>}
-                      </button></li>)}
+                      </button></li>) : <li className="workshop-job-none">没有匹配「{jobQuery.trim()}」的本地岗位：换个关键词，或改用「粘贴岗位 JD」。</li>}
                     </ul>}
-                    <p className="workshop-hint">检索本地已保存岗位；标注「仅列表摘要」的建议先在岗位研究页补全职责。</p>
+                    <p className="workshop-hint">点击输入框直接选最近档案，输入即检索；标注「仅列表摘要」的建议先在岗位研究页补全职责。</p>
                   </div>)}
                 <label className="agent-checkbox"><input type="radio" name="workshop-target" checked={targetMode === 'paste'} onChange={() => setTargetMode('paste')} disabled={optimizing} /><span>粘贴岗位 JD</span></label>
                 {targetMode === 'paste' && <div className="workshop-paste-jd">
@@ -342,8 +417,16 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
             </div>
             {notes.length > 0 && <details className="workshop-notes"><summary>优化说明（{notes.length}）</summary><ul>{notes.map((note, index) => <li key={index}>{note}</li>)}</ul></details>}
           </div>
-          <label className="field-label" htmlFor="workshop-markdown">简历正文 · Markdown，可直接编辑</label>
-          <textarea id="workshop-markdown" className="workshop-markdown" value={markdown} onChange={event => { setMarkdown(event.target.value); setDirty(true) }} maxLength={60000} spellCheck={false} placeholder="# 姓名&#10;&#10;联系方式一行&#10;&#10;## 专业技能&#10;…" />
+          <div className="workshop-edit-toolbar">
+            <label className="field-label" htmlFor="workshop-markdown">简历正文 · Markdown，可直接编辑</label>
+            {current.base_text?.trim() && <div className="workshop-edit-tabs" role="tablist" aria-label="正文查看方式">
+              <button type="button" role="tab" aria-selected={editTab === 'edit'} className={editTab === 'edit' ? 'active' : ''} onClick={() => setEditTab('edit')}>编辑</button>
+              <button type="button" role="tab" aria-selected={editTab === 'diff'} className={editTab === 'diff' ? 'active' : ''} onClick={() => setEditTab('diff')}>改动对比</button>
+            </div>}
+          </div>
+          {editTab === 'diff' && current.base_text?.trim()
+            ? <ResumeDiff base={current.base_text} current={markdown} />
+            : <textarea id="workshop-markdown" className="workshop-markdown" value={markdown} onChange={event => { setMarkdown(event.target.value); setDirty(true) }} maxLength={60000} spellCheck={false} placeholder="# 姓名&#10;&#10;联系方式一行&#10;&#10;## 专业技能&#10;…" />}
           <div className="editor-footer">
             <span className={dirty ? 'editor-unsaved' : ''}>{markdown.length.toLocaleString()} 字符 · {dirty ? '未保存的修改' : '已保存'}{current.job_id && ' · 绑定岗位档案'}</span>
             <button type="button" className="text-button" onClick={() => void selectVersion(current.id)} disabled={Boolean(busy)}>放弃修改</button>
@@ -360,8 +443,46 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
               title={template.description} disabled={busy === 'save'}
               onClick={() => { setTemplateId(template.id); setDirty(true) }}>{template.name}</button>)}
           </div>
+          {/* 排版设置：随版本保存；页数为预览实测估算，一页纸与 PDF 导出的缩放机制一致 */}
+          <div className="workshop-typography">
+            <label>字体
+              <select value={typography.font} disabled={busy === 'save'} aria-label="正文字体"
+                onChange={event => { setTypography(previous => ({ ...previous, font: event.target.value })); setDirty(true) }}>
+                {TYPOGRAPHY_FONTS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+            <label>字号
+              <select value={typography.font_size ?? ''} disabled={busy === 'save'} aria-label="正文字号"
+                onChange={event => { const raw = event.target.value; setTypography(previous => ({ ...previous, font_size: raw ? Number(raw) : null })); setDirty(true) }}>
+                <option value="">跟随模板</option>
+                {TYPOGRAPHY_SIZES.map(size => <option key={size} value={size}>{size}pt</option>)}
+              </select>
+            </label>
+            <label>行距
+              <select value={typography.line_height ?? ''} disabled={busy === 'save'} aria-label="正文行距"
+                onChange={event => { const raw = event.target.value; setTypography(previous => ({ ...previous, line_height: raw ? Number(raw) : null })); setDirty(true) }}>
+                {TYPOGRAPHY_LINE_HEIGHTS.map(([value, label]) => <option key={String(value)} value={value ?? ''}>{label}</option>)}
+              </select>
+            </label>
+            <label>页边距
+              <select value={typography.margin} disabled={busy === 'save'} aria-label="页边距"
+                onChange={event => { setTypography(previous => ({ ...previous, margin: event.target.value })); setDirty(true) }}>
+                {TYPOGRAPHY_MARGINS.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+            <label className="agent-checkbox workshop-onepage" title="超出 A4 一页时自动整体缩小字号压进单页（PDF 导出同步生效）">
+              <input type="checkbox" checked={typography.one_page} disabled={busy === 'save'}
+                onChange={event => { setTypography(previous => ({ ...previous, one_page: event.target.checked })); setDirty(true) }} />
+              <span>一页纸</span>
+            </label>
+            {pageFit && <span className="workshop-pagefit">{typography.one_page
+              ? (pageFit.shrink < 1 ? `一页纸 · 已缩至 ${Math.round(pageFit.shrink * 100)}%` : '一页纸 · 无需缩放')
+              : `约 ${pageFit.pages} 页`}</span>}
+            <button type="button" className="text-button" disabled={busy === 'save'}
+              onClick={() => { setTypography(DEFAULT_TYPOGRAPHY); setDirty(true) }}>重置</button>
+          </div>
           <div className="workshop-preview-frame-wrap">
-            {previewHtml ? <iframe className="workshop-preview-frame" title="简历预览" srcDoc={previewHtml} sandbox="" /> : <div className="loading-state"><span className="spinner" />正在生成预览…</div>}
+            {previewHtml ? <iframe className="workshop-preview-frame" title="简历预览" srcDoc={previewHtml} sandbox="allow-same-origin" ref={previewFrameRef} onLoad={() => fitPreview()} /> : <div className="loading-state"><span className="spinner" />正在生成预览…</div>}
           </div>
           <div className="workshop-export">
             <span className="tiny-label">导出</span>

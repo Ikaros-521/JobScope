@@ -46,7 +46,8 @@ def mock_optimize_model(monkeypatch, content=MODEL_REPLY):
 
 def test_templates_listed_and_preview_renders(client):
     templates = client.get("/api/resume-templates").json()["templates"]
-    assert [item["id"] for item in templates] == ["classic", "modern", "compact"]
+    assert [item["id"] for item in templates] == ["classic", "modern", "compact", "minimal", "fresh", "kai", "navy"]
+    assert all(item["body_pt"] for item in templates)
     preview = client.post("/api/resume-templates/preview", json=dict(markdown="# 张三\n\n138\n\n## 技能\n\n- Python", template_id="modern"))
     assert preview.status_code == 200
     html = preview.json()["html"]
@@ -54,6 +55,47 @@ def test_templates_listed_and_preview_renders(client):
     # 模板差异确实体现在产物里（modern 的蓝色侧标 CSS）
     assert "0b5cbd" in html
     assert client.post("/api/resume-templates/preview", json=dict(markdown="# x", template_id="unknown")).status_code == 400
+
+
+def test_typography_preview_and_version_roundtrip(client):
+    """排版设置：预览 CSS 生效、白名单清洗、随版本保存往返、PATCH 缺省保留。"""
+    preview = client.post("/api/resume-templates/preview", json=dict(
+        markdown="# 张三\n\n- 一行", template_id="modern",
+        typography=dict(font="song", font_size=10.5, line_height=1.5, margin="wide", one_page=True, junk="应被丢弃")))
+    assert preview.status_code == 200
+    html = preview.json()["html"]
+    assert "font-size: 10.5pt" in html and "line-height: 1.5" in html and "SimSun" in html
+    assert "padding: 18mm 20mm" in html  # 宽边距体现在浏览器版心
+    assert "junk" not in html
+    created = client.post("/api/resume-versions", json=dict(
+        title="排版版本", markdown=BASE_RESUME, typography=dict(font="hei", font_size=12, one_page=True, margin="不存在档位")))
+    assert created.status_code == 200
+    version = created.json()
+    assert version["typography"] == {"font": "hei", "font_size": 12, "line_height": None, "margin": "standard", "one_page": True}
+    updated = client.put(f"/api/resume-versions/{version['id']}", json=dict(typography=dict(font="", margin="narrow")))
+    assert updated.status_code == 200
+    assert updated.json()["typography"] == {"font": "", "font_size": None, "line_height": None, "margin": "narrow", "one_page": False}
+    # PATCH 不带 typography → 保留已存设置
+    kept = client.put(f"/api/resume-versions/{version['id']}", json=dict(title="改名"))
+    assert kept.json()["typography"]["margin"] == "narrow"
+    # 导出 HTML 带排版 CSS；one_page 已关，导出不注入一页纸脚本（预览本就无脚本）
+    exported = client.get(f"/api/resume-versions/{version['id']}/export?format=html").content.decode("utf-8")
+    assert "padding: 8mm 12mm" in exported and "<script" not in exported
+
+
+def test_export_pdf_one_page_shrinks(client):
+    """一页纸导出：超一页的内容 + one_page → PDF 缩放为单页；关闭则保持多页保真。"""
+    long_resume = "# 张三\n\n138\n\n" + "\n\n".join(f"## 第{index}段\n\n- " + "、".join(f"要点{i}" for i in range(16)) for index in range(12))
+    wide = client.post("/api/resume-versions", json=dict(title="一页纸", markdown=long_resume, typography=dict(one_page=True))).json()
+    response = client.get(f"/api/resume-versions/{wide['id']}/export?format=pdf")
+    assert response.status_code == 200
+    import pymupdf
+    with pymupdf.open(stream=response.content, filetype='pdf') as document:
+        assert document.page_count == 1
+    multi = client.post("/api/resume-versions", json=dict(title="多页", markdown=long_resume)).json()
+    response = client.get(f"/api/resume-versions/{multi['id']}/export?format=pdf")
+    with pymupdf.open(stream=response.content, filetype='pdf') as document:
+        assert document.page_count > 1
 
 
 def test_version_crud_roundtrip(client):

@@ -1164,7 +1164,7 @@ def create_app(data_dir=None):
     def preview_resume_template(data: ResumePreviewInput):
         if data.template_id not in workshop.TEMPLATES:
             raise HTTPException(400, "未知简历模板，请从内置模板中选择")
-        return {"html": workshop.render_document(data.markdown, data.template_id)}
+        return {"html": workshop.render_document(data.markdown, data.template_id, typography=data.typography)}
 
     @app.get("/api/resume-versions")
     def resume_versions(job_id: str = Query('', max_length=100)):
@@ -1174,7 +1174,9 @@ def create_app(data_dir=None):
     def create_resume_version(data: ResumeVersionInput):
         if data.template_id not in workshop.TEMPLATES:
             raise HTTPException(400, "未知简历模板，请从内置模板中选择")
-        return repo.save_resume_version(data.model_dump())
+        payload = data.model_dump()
+        payload['typography'] = workshop.sanitize_typography(payload.get('typography') or {})
+        return repo.save_resume_version(payload)
 
     @app.get("/api/resume-versions/{version_id}")
     def resume_version_detail(version_id: int):
@@ -1190,6 +1192,8 @@ def create_app(data_dir=None):
         if data.template_id is not None and data.template_id not in workshop.TEMPLATES:
             raise HTTPException(400, "未知简历模板，请从内置模板中选择")
         patch = {key: value for key, value in data.model_dump().items() if value is not None}
+        if 'typography' in patch:
+            patch['typography'] = workshop.sanitize_typography(patch['typography'] or {})
         return repo.save_resume_version(dict(id=version_id, **patch))
 
     @app.delete("/api/resume-versions/{version_id}")

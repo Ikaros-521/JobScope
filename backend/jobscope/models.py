@@ -245,6 +245,7 @@ class ResumeVersionInput(RequestModel):
     jd_digest: str = Field(default='', max_length=20000)
     base_text: str = Field(default='', max_length=100000)
     notes: list[Annotated[str, Field(max_length=600)]] = Field(default_factory=list, max_length=12)
+    typography: dict | None = None
 
 
 class ResumeVersionPatch(RequestModel):
@@ -253,11 +254,13 @@ class ResumeVersionPatch(RequestModel):
     markdown: str | None = Field(default=None, min_length=1, max_length=60000)
     template_id: str | None = Field(default=None, max_length=50)
     notes: list[Annotated[str, Field(max_length=600)]] | None = None
+    typography: dict | None = None
 
 
 class ResumePreviewInput(RequestModel):
     markdown: str = Field(min_length=1, max_length=60000)
     template_id: str = Field(default='classic', max_length=50)
+    typography: dict = Field(default_factory=dict)
 
 
 class OptimizeResumeInput(RequestModel):

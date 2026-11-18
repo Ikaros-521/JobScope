@@ -354,18 +354,21 @@ export function isStale(value: string | null | undefined, days: number) {
 }
 export function safeUrl(url: string) { try { const parsed = new URL(url); return ['http:', 'https:'].includes(parsed.protocol) ? parsed.href : undefined } catch { return undefined } }
 // ---- 简历工坊：JD 定向优化、版本管理、模板预览与多格式导出 ----
-export type ResumeTemplate = { id: string; name: string; description: string }
+export type ResumeTemplate = { id: string; name: string; description: string; body_pt?: number }
+// 排版设置：空值/空串 = 跟随模板缺省；随版本落库，预览与导出共用。
+export type ResumeTypography = { font: string; font_size: number | null; line_height: number | null; margin: string; one_page: boolean }
+export const DEFAULT_TYPOGRAPHY: ResumeTypography = { font: '', font_size: null, line_height: null, margin: 'standard', one_page: false }
 export type ResumeVersionSummary = { id: number; title: string; job_id: string; company: string; job_title: string; template_id: string; pinned: boolean; created_at: string; updated_at: string; characters: number }
-export type ResumeVersion = ResumeVersionSummary & { job_id: string; jd_digest: string; base_text: string; markdown: string; notes: string[] }
-export type ResumeVersionDraft = { title: string; markdown: string; template_id?: string; job_id?: string; company?: string; job_title?: string; jd_digest?: string; base_text?: string; notes?: string[] }
+export type ResumeVersion = ResumeVersionSummary & { job_id: string; jd_digest: string; base_text: string; markdown: string; notes: string[]; typography?: ResumeTypography | null }
+export type ResumeVersionDraft = { title: string; markdown: string; template_id?: string; job_id?: string; company?: string; job_title?: string; jd_digest?: string; base_text?: string; notes?: string[]; typography?: ResumeTypography }
 export function listResumeTemplates() { return api<{ templates: ResumeTemplate[] }>('/resume-templates') }
-export function previewResumeDocument(markdown: string, templateId: string) {
-  return post<{ html: string }>('/resume-templates/preview', { markdown, template_id: templateId })
+export function previewResumeDocument(markdown: string, templateId: string, typography?: ResumeTypography) {
+  return post<{ html: string }>('/resume-templates/preview', { markdown, template_id: templateId, typography: typography || {} })
 }
 export function listResumeVersions(jobId?: string) { return api<{ versions: ResumeVersionSummary[] }>(`/resume-versions${jobId ? `?job_id=${encodeURIComponent(jobId)}` : ''}`) }
 export function getResumeVersion(id: number) { return api<ResumeVersion>(`/resume-versions/${id}`) }
 export function createResumeVersion(draft: ResumeVersionDraft) { return post<ResumeVersion>('/resume-versions', draft) }
-export function updateResumeVersion(id: number, patch: Partial<Pick<ResumeVersionDraft, 'title' | 'markdown' | 'template_id' | 'notes'>>) {
+export function updateResumeVersion(id: number, patch: Partial<Pick<ResumeVersionDraft, 'title' | 'markdown' | 'template_id' | 'notes' | 'typography'>>) {
   return api<ResumeVersion>(`/resume-versions/${id}`, { method: 'PUT', body: JSON.stringify(patch) })
 }
 export function deleteResumeVersion(id: number) { return api<{ ok: boolean }>(`/resume-versions/${id}`, { method: 'DELETE' }) }

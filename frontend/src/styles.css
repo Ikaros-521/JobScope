@@ -1939,16 +1939,17 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 
 /* 左栏：版本列表 */
 .workshop-version-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; scrollbar-gutter: stable; }
-.workshop-version { display: flex; align-items: stretch; gap: 4px; border-radius: 8px; }
+.workshop-version { display: flex; flex-direction: column; gap: 2px; border-radius: 8px; }
 .workshop-version.active { background: #eef4f0; }
-.workshop-version-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 9px 10px;
+.workshop-version-main { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: stretch; justify-content: flex-start; gap: 2px; padding: 9px 10px 2px;
   border: 0; border-radius: 8px; background: none; cursor: pointer; text-align: left; }
 .workshop-version-main:hover { background: #f4f8f5; }
 .workshop-version.active .workshop-version-main { cursor: default; }
-.workshop-version-main strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workshop-version-main strong { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; }
+.workshop-version-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workshop-version-main span { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .workshop-version-main time { font-size: 11px; color: var(--muted); }
-.workshop-version-delete { flex: 0 0 auto; align-self: center; margin-right: 6px; padding: 3px 8px; border: 1px solid transparent;
+.workshop-version-delete { flex: 0 0 auto; align-self: center; padding: 3px 8px; border: 1px solid transparent;
   border-radius: 6px; background: none; color: var(--muted); font-size: 11.5px; cursor: pointer; }
 .workshop-version-delete:hover { color: #b42318; border-color: #f0c8c4; }
 .workshop-version-delete.confirm { color: #fff; background: #b42318; border-color: #b42318; }
@@ -1978,6 +1979,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .workshop-job-results strong { font-size: 12.5px; }
 .workshop-job-results span { font-size: 11.5px; color: var(--muted); }
 .workshop-job-results em { font-style: normal; color: #b54708; font-size: 11px; }
+.workshop-job-none { padding: 10px 12px; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .workshop-job-chip { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 10px;
   border: 1px solid var(--line); border-radius: 8px; background: #f7faf8; }
 .workshop-job-chip strong { display: block; font-size: 12.5px; }
@@ -2004,10 +2006,44 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
   background: #fbfcfb; font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace; font-size: 12.5px; line-height: 1.7; resize: none; }
 .workshop-edit .editor-footer { padding: 0 16px 12px; }
 
+/* 编辑 / 改动对比切换；对比看板以优化时基础简历快照为基准（git diff 风格） */
+.workshop-edit-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding-right: 16px; }
+.workshop-edit-toolbar .field-label { flex: 1; min-width: 0; }
+.workshop-edit-tabs { display: inline-flex; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 999px; overflow: hidden; }
+.workshop-edit-tabs button { padding: 3px 12px; border: 0; background: var(--paper); color: var(--muted); font-size: 12px; cursor: pointer; white-space: nowrap; }
+.workshop-edit-tabs button + button { border-left: 1px solid var(--line); }
+.workshop-edit-tabs button.active { background: var(--selected); color: var(--green); font-weight: 600; }
+.resume-diff { flex: 1; min-height: 0; display: flex; flex-direction: column; margin: 6px 16px 10px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #fbfcfb; }
+.resume-diff-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 7px 12px; border-bottom: 1px solid var(--line); background: #fafafa; }
+.diff-stat-add { color: #1a7f4b; font-weight: 600; font-size: 12px; white-space: nowrap; }
+.diff-stat-del { color: #b42318; font-weight: 600; font-size: 12px; white-space: nowrap; }
+.resume-diff-legend .tiny-label { margin-left: auto; }
+.resume-diff-body { flex: 1; min-height: 0; overflow-y: auto; padding: 6px 0; font-size: 12.5px; line-height: 1.7; }
+.diff-row { display: flex; gap: 8px; padding: 0 12px 0 8px; }
+.diff-gutter { flex: 0 0 12px; text-align: center; color: var(--muted); user-select: none; }
+.diff-text { flex: 1; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-add { background: #ecf7f0; }
+.diff-del { background: #fdf0ee; }
+.diff-add .diff-gutter { color: #1a7f4b; }
+.diff-del .diff-gutter { color: #b42318; }
+.diff-row mark { border-radius: 2px; padding: 0 1px; }
+.diff-del mark { background: #f3c5bd; }
+.diff-add mark { background: #b9e4ca; }
+.diff-fold { color: var(--muted); font-size: 11.5px; background: #fafafa; }
+.resume-diff-empty { flex: 1; min-height: 0; margin: 6px 16px 10px; border: 1px dashed var(--line); border-radius: 8px;
+  display: flex; align-items: center; justify-content: center; color: var(--muted); font-size: 12.5px; padding: 20px; text-align: center; }
+
 /* 右栏：模板与预览 */
-.workshop-template-row { display: flex; gap: 6px; padding: 10px 16px 8px; }
+.workshop-template-row { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 16px 6px; }
 .workshop-template-chip { padding: 4px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper);
   font-size: 12px; cursor: pointer; }
+/* 排版设置行：字体/字号/行距/页边距/一页纸 + 页数反馈 */
+.workshop-typography { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 0 16px 10px; border-bottom: 1px solid var(--line); }
+.workshop-typography label { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.workshop-typography select { padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper);
+  color: var(--green); font-size: 12px; max-width: 128px; }
+.workshop-typography .workshop-onepage { gap: 5px; font-size: 12px; color: var(--green); }
+.workshop-pagefit { margin-left: auto; font-size: 11.5px; color: var(--muted); white-space: nowrap; }
 .workshop-template-chip:hover { border-color: var(--green); }
 .workshop-template-chip.active { background: var(--green); border-color: var(--green); color: #fff; }
 .workshop-preview-frame-wrap { flex: 1; min-height: 0; margin: 0 16px; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #f4f5f7; position: relative; }
@@ -2200,11 +2236,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .analysis-history-list button.active { border-color: #3a7d44; color: #3a7d44; font-weight: 600; }
 
 /* 评估适配：两栏布局（宽屏左映射表/右信息栏）+ 表格工具栏 + 行内改判控件。 */
-.analysis-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 18px; align-items: start; }
-@media (max-width: 1100px) { .analysis-grid { grid-template-columns: 1fr; } }
-.analysis-side { display: grid; gap: 14px; align-content: start; }
-.analysis-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 10px; }
-.analysis-toolbar .requirement-heading { margin: 0 auto 0 0; }
+.analysis-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 0 0 10px; }
 .analysis-toolbar select { font-size: 12px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
 .status-cell { display: inline-flex; align-items: center; }
 .status-select { font-size: 12px; padding: 2px 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
@@ -2214,13 +2246,11 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 /* 简历存档：工坊侧栏 pin/公司筛选/行内导出 + 岗位详情评估简历选择条。 */
 .workshop-company-filter { margin-bottom: 8px; }
 .workshop-company-filter select { width: 100%; font-size: 12px; padding: 5px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); }
-.workshop-version strong { display: inline-flex; align-items: center; gap: 6px; }
-.pin-badge { font-size: 11px; color: #3a7d44; border: 1px solid #3a7d44; border-radius: 4px; padding: 0 4px; font-weight: 400; white-space: nowrap; }
-.workshop-version-actions { display: inline-flex; align-items: center; gap: 6px; }
+.pin-badge { flex: 0 0 auto; font-size: 11px; color: #3a7d44; border: 1px solid #3a7d44; border-radius: 4px; padding: 0 4px; font-weight: 400; white-space: nowrap; }
+.workshop-version-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; padding: 0 10px 8px; }
+.workshop-version-actions .text-button { padding: 3px 2px; }
 .workshop-version-export { position: relative; }
-.workshop-version-export summary { cursor: pointer; font-size: 12px; color: var(--muted); list-style: none; }
-.workshop-version-export summary::before { content: '导出'; }
-.workshop-version-export[open] summary::before { content: '收起'; }
+.workshop-version-export summary { display: inline-block; padding: 3px 2px; cursor: pointer; font-size: 12px; color: var(--muted); list-style: none; }
 .workshop-version-export > div { position: absolute; right: 0; z-index: 12; background: var(--paper); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 6px 16px rgba(0,0,0,.12); display: grid; min-width: 96px; }
 .workshop-version-export > div button { text-align: left; padding: 5px 10px; font-size: 12px; background: none; border: none; cursor: pointer; }
 .workshop-version-export > div button:hover { background: var(--surface); }

@@ -32,18 +32,102 @@ body { margin: 0; font-size: 11pt; line-height: 1.5; color: #222222; }
 .resume-body h1, .resume-body h2, .resume-body h3, .resume-body h4 { page-break-inside: avoid; }
 """
 
-# 仅浏览器（iframe 预览 / HTML 导出 / 打印）生效；A4 版心与屏幕留白。
-PAGE_CSS = """
-@page { size: A4; margin: 0; }
-html, body { background: #f4f5f7; }
-.resume-page { max-width: 186mm; margin: 0 auto; padding: 13mm 15mm; background: #ffffff; box-shadow: 0 1px 8px rgba(15, 23, 42, .12); }
-@media print { html, body { background: #ffffff; } .resume-page { max-width: none; margin: 0; padding: 12mm 14mm; box-shadow: none; } }
+# 仅浏览器（iframe 预览 / HTML 导出 / 打印）生效；A4 版心随页边距设置变化。
+# 边距三档：屏幕/打印内边距 + PDF 版心 inset（pt，A4=595×842pt）。
+MARGIN_PRESETS = {
+    'narrow': {'screen': ('8mm', '12mm'), 'print': ('8mm', '10mm'), 'pdf': (34, 32, 34, 32)},
+    'standard': {'screen': ('13mm', '15mm'), 'print': ('12mm', '14mm'), 'pdf': (42, 40, 42, 40)},
+    'wide': {'screen': ('18mm', '20mm'), 'print': ('16mm', '18mm'), 'pdf': (57, 51, 57, 51)},
+}
+
+# 排版字体预设：key 存库，栈仅渲染期展开（跟随模板 = 不覆盖）。
+FONT_STACKS = {
+    'yahei': "'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', Arial, sans-serif",
+    'song': "Georgia, 'Times New Roman', 'SimSun', serif",
+    'hei': "'SimHei', 'Microsoft YaHei', 'PingFang SC', sans-serif",
+    'kai': "'KaiTi', 'STKaiti', 'SimSun', serif",
+    'fangsong': "'FangSong', 'STFangsong', 'SimSun', serif",
+}
+
+
+def _page_css(margin='standard'):
+    preset = MARGIN_PRESETS.get(margin) or MARGIN_PRESETS['standard']
+    v, h = preset['screen']
+    pv, ph = preset['print']
+    return f"""
+@page {{ size: A4; margin: 0; }}
+html, body {{ background: #f4f5f7; }}
+.resume-page {{ max-width: 186mm; margin: 0 auto; padding: {v} {h}; background: #ffffff; box-shadow: 0 1px 8px rgba(15, 23, 42, .12); }}
+@media print {{ html, body {{ background: #ffffff; }} .resume-page {{ max-width: none; margin: 0; padding: {pv} {ph}; box-shadow: none; }} }}
 """
+
+
+def sanitize_typography(raw):
+    """排版设置白名单清洗：未知键丢弃、越界回退缺省；返回可安全落库的 dict。"""
+    data = raw if isinstance(raw, dict) else {}
+    font = data.get('font')
+    font = font if font in FONT_STACKS else ''
+    size = data.get('font_size')
+    try:
+        size = round(float(size), 1) if size is not None and 9 <= float(size) <= 13 else None
+    except (TypeError, ValueError):
+        size = None
+    line_height = data.get('line_height')
+    try:
+        line_height = round(float(line_height), 2) if line_height is not None and 1.2 <= float(line_height) <= 1.9 else None
+    except (TypeError, ValueError):
+        line_height = None
+    margin = data.get('margin')
+    margin = margin if margin in MARGIN_PRESETS else 'standard'
+    return {'font': font, 'font_size': size, 'line_height': line_height, 'margin': margin, 'one_page': bool(data.get('one_page'))}
+
+
+def typography_css(typography, base_pt, scale=1.0):
+    """排版覆盖 CSS：字号/行距/字体；显式字号或缩放时标题改按 em 等比，保证整体可缩。"""
+    t = sanitize_typography(typography)
+    props = []
+    if t['font']:
+        props.append(f"font-family: {FONT_STACKS[t['font']]}")
+    if t['font_size'] or scale != 1.0:
+        props.append(f"font-size: {round((t['font_size'] or base_pt) * scale, 2)}pt")
+    if t['line_height']:
+        props.append(f"line-height: {t['line_height']}")
+    css = f".resume-body {{ {'; '.join(props)}; }}\n" if props else ''
+    if t['font_size'] or scale != 1.0:
+        css += ('.resume-body h1 { font-size: 1.85em; } .resume-body h2 { font-size: 1.15em; } .resume-body h3 { font-size: 1.02em; } '
+                '.resume-body th, .resume-body td { font-size: 0.95em; } .resume-body p.contact { font-size: 0.92em; }\n')
+    return css
+
+
+# 导出 HTML 的一页纸自适配脚本：独立打开文件时自测高度并整体缩进 A4 单页。
+ONE_PAGE_SCRIPT = """
+<script>
+(function(){
+function fit(){
+  var page=document.querySelector('.resume-page'),body=document.querySelector('.resume-body');
+  if(!page||!body)return;
+  var cs=getComputedStyle(page);
+  var avail=1122.5-parseFloat(cs.paddingTop||'0')-parseFloat(cs.paddingBottom||'0');
+  body.style.zoom='1';body.style.width='';
+  var h=body.getBoundingClientRect().height;
+  if(h<=avail)return;
+  var z=Math.max(.72,avail/h);
+  body.style.zoom=z;body.style.width=(100/z)+'%';
+  var g=0;
+  while(body.getBoundingClientRect().height>avail&&z>.72&&g++<6){
+    z=Math.max(.72,z-.04);body.style.zoom=z;body.style.width=(100/z)+'%';
+  }
+}
+if(document.readyState==='complete')fit();else window.addEventListener('load',fit);
+window.addEventListener('beforeprint',fit);
+})();
+</script>"""
 
 TEMPLATES = {
     'classic': {
         'name': '经典衬线',
         'description': '居中姓名 + 深蓝分隔线，衬线字体，传统行业与国企银行友好',
+        'body_pt': 11,
         'css': """
 .resume-body { font-family: Georgia, 'Times New Roman', 'SimSun', serif; color: #1c1c1c; }
 .resume-body h1 { font-size: 21pt; text-align: center; letter-spacing: 2pt; color: #16324f; margin: 0 0 4pt; }
@@ -55,6 +139,7 @@ TEMPLATES = {
     'modern': {
         'name': '现代无衬线',
         'description': '左对齐大姓名 + 蓝色侧标分节，互联网与技术岗位常用',
+        'body_pt': 11,
         'css': """
 .resume-body { font-family: 'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', Arial, sans-serif; color: #24292f; }
 .resume-body h1 { font-size: 20pt; color: #0b5cbd; margin: 0 0 2pt; }
@@ -66,6 +151,7 @@ TEMPLATES = {
     'compact': {
         'name': '紧凑单栏',
         'description': '小字号高密度排版，灰底节标题，经历多时压缩到一页',
+        'body_pt': 10,
         'css': """
 .resume-body { font-size: 10pt; line-height: 1.38; color: #262a2e; }
 .resume-body h1 { font-size: 16pt; margin: 0 0 2pt; }
@@ -76,13 +162,62 @@ TEMPLATES = {
 .resume-body li { margin: 1pt 0; }
 """,
     },
+    'minimal': {
+        'name': '极简留白',
+        'description': '黑白灰配色，细线分节大留白，内容精炼时气质干净，通用度高',
+        'body_pt': 11,
+        'css': """
+.resume-body { font-family: 'Microsoft YaHei', 'PingFang SC', Arial, sans-serif; color: #111111; }
+.resume-body h1 { font-size: 18pt; letter-spacing: 1pt; margin: 0 0 2pt; }
+.resume-body p.contact { color: #666666; font-size: 10pt; margin: 0 0 10pt; padding-bottom: 6pt; border-bottom: 0.5pt solid #cccccc; }
+.resume-body h2 { font-size: 11.5pt; letter-spacing: 3pt; color: #111111; margin: 12pt 0 5pt; padding-bottom: 2pt; border-bottom: 0.5pt solid #dddddd; }
+.resume-body h3 { font-size: 11pt; color: #333333; margin: 7pt 0 2pt; }
+""",
+    },
+    'fresh': {
+        'name': '清新青绿',
+        'description': '青绿点缀 + 左侧标分节，明快不张扬，应届生与互联网岗位友好',
+        'body_pt': 11,
+        'css': """
+.resume-body { font-family: 'Microsoft YaHei', 'PingFang SC', Arial, sans-serif; color: #1f2937; }
+.resume-body h1 { font-size: 20pt; color: #0f766e; margin: 0 0 2pt; }
+.resume-body p.contact { color: #64748b; font-size: 10pt; margin: 0 0 8pt; }
+.resume-body h2 { font-size: 12pt; color: #0f766e; border-left: 3pt solid #14b8a6; padding-left: 6pt; margin: 10pt 0 5pt; }
+.resume-body h3 { font-size: 11pt; color: #134e4a; margin: 7pt 0 2pt; }
+""",
+    },
+    'kai': {
+        'name': '典雅楷体',
+        'description': '楷体标题居中排布，温文尔雅，文化、教育、艺术类岗位气质',
+        'body_pt': 11,
+        'css': """
+.resume-body { font-family: Georgia, 'SimSun', serif; color: #26221c; }
+.resume-body h1, .resume-body h2, .resume-body h3 { font-family: 'KaiTi', 'STKaiti', 'SimSun', serif; }
+.resume-body h1 { font-size: 22pt; text-align: center; letter-spacing: 4pt; color: #7c2d12; margin: 0 0 4pt; }
+.resume-body p.contact { text-align: center; color: #57534e; font-size: 10pt; margin: 0 0 8pt; }
+.resume-body h2 { font-size: 13pt; color: #7c2d12; text-align: center; letter-spacing: 2pt; margin: 11pt 0 5pt; }
+.resume-body h3 { font-size: 11.5pt; color: #292524; margin: 7pt 0 2pt; }
+""",
+    },
+    'navy': {
+        'name': '深蓝商务',
+        'description': '深蓝色块标题横幅，正式稳重，央企国企与管理岗气质',
+        'body_pt': 11,
+        'css': """
+.resume-body { font-family: 'Microsoft YaHei', 'PingFang SC', Arial, sans-serif; color: #1f2937; }
+.resume-body h1 { font-size: 20pt; text-align: center; color: #ffffff; background-color: #1e3a5f; padding: 6pt 0; letter-spacing: 3pt; margin: 0 0 6pt; }
+.resume-body p.contact { text-align: center; color: #475569; font-size: 10pt; margin: 0 0 8pt; }
+.resume-body h2 { font-size: 12pt; color: #ffffff; background-color: #1e3a5f; padding: 2pt 6pt; margin: 10pt 0 5pt; }
+.resume-body h3 { font-size: 11pt; color: #1e3a5f; margin: 7pt 0 2pt; }
+""",
+    },
 }
 
 EXPORT_FORMATS = {'pdf': 'application/pdf', 'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'html': 'text/html; charset=utf-8', 'md': 'text/markdown; charset=utf-8'}
 
 
 def template_summary():
-    return [dict(id=key, name=item['name'], description=item['description']) for key, item in TEMPLATES.items()]
+    return [dict(id=key, name=item['name'], description=item['description'], body_pt=item.get('body_pt', 11)) for key, item in TEMPLATES.items()]
 
 
 def _template(template_id):
@@ -103,32 +238,60 @@ def resume_body_html(markdown_text):
     return _contact_line(md_to_html(markdown_text))
 
 
-def render_document(markdown_text, template_id, title='简历'):
-    """完整 HTML 文档：iframe 预览与 HTML 导出共用，所见即所得。"""
-    css = BASE_CSS + _template(template_id)['css']
+def render_document(markdown_text, template_id, title='简历', typography=None, one_page_script=False):
+    """完整 HTML 文档：iframe 预览与 HTML 导出共用，所见即所得。
+
+    typography 为排版设置（font/font_size/line_height/margin/one_page）；
+    one_page_script 仅导出的独立 HTML 需要（预览由父页测量缩放，无需脚本）。"""
+    tpl = _template(template_id)
+    t = sanitize_typography(typography)
+    css = BASE_CSS + tpl['css'] + typography_css(t, tpl.get('body_pt', 11))
+    script = ONE_PAGE_SCRIPT if (t['one_page'] and one_page_script) else ''
     safe_title = html_lib.escape(title or '简历')
     return f"""<!DOCTYPE html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{safe_title}</title>
-<style>{PAGE_CSS}{css}</style></head>
-<body><div class="resume-page resume-body">{resume_body_html(markdown_text)}</div></body></html>"""
+<style>{_page_css(t['margin'])}{css}</style></head>
+<body><div class="resume-page resume-body">{resume_body_html(markdown_text)}</div>{script}</body></html>"""
 
 
-def export_pdf(markdown_text, template_id):
+def _render_story_pages(html, css, insets):
+    """Story 渲染为 PDF 字节；返回 (bytes, 页数)。insets 为 A4 版心 (左,上,右,下) pt。"""
     import pymupdf
-    css = BASE_CSS + _template(template_id)['css']
-    story = pymupdf.Story(html=resume_body_html(markdown_text), user_css=css)
+    story = pymupdf.Story(html=html, user_css=css)
     raw = io.BytesIO()
+    mediabox = pymupdf.paper_rect('a4')
+    where = mediabox + insets
+    pages = 0
     with pymupdf.DocumentWriter(raw) as writer:
-        mediabox = pymupdf.paper_rect('a4')
-        where = mediabox + (42, 40, -42, -40)
         more = 1
         while more:
             device = writer.begin_page(mediabox)
             more, _ = story.place(where)
             story.draw(device)
             writer.end_page()
+            pages += 1
+    return raw.getvalue(), pages
+
+
+def export_pdf(markdown_text, template_id, typography=None):
+    import pymupdf
+    tpl = _template(template_id)
+    t = sanitize_typography(typography)
+    base_pt = tpl.get('body_pt', 11)
+    # Story 的 HTML 需自带 .resume-body 包裹层，模板与排版的 .resume-body 选择器才能命中
+    # （历史 bug：裸 HTML 导致 PDF 一直用默认字体、忽略模板样式）。
+    body_html = f'<div class="resume-body">{resume_body_html(markdown_text)}</div>'
+    insets = MARGIN_PRESETS[t['margin']]['pdf']
+    # 一页纸：字号阶梯缩放重排，取首个单页装下的档位；到 0.72 仍装不下则按最小档交付（多页保真不裁切）。
+    scales = [1.0, .96, .92, .88, .84, .8, .76, .72] if t['one_page'] else [1.0]
+    raw = pages = None
+    for scale in scales:
+        css = BASE_CSS + tpl['css'] + typography_css(t, base_pt, scale)
+        raw, pages = _render_story_pages(body_html, css, insets)
+        if pages <= 1:
+            break
     # Story 会整字体内嵌（CJK 字体动辄数 MB）；子集化+压缩后再交付。
-    with pymupdf.open(stream=raw.getvalue(), filetype='pdf') as document:
+    with pymupdf.open(stream=raw, filetype='pdf') as document:
         try:
             document.subset_fonts()
         except (RuntimeError, ValueError) as exc:
@@ -249,12 +412,14 @@ def export_docx(markdown_text):
 def export_version(version, export_format):
     """按格式导出版本，返回 (media_type, bytes)；文件名由端点统一处理。"""
     markdown_text = version['markdown']
+    template_id = version.get('template_id') or 'classic'
+    typography = version.get('typography') or {}
     if export_format == 'md':
         return EXPORT_FORMATS['md'], markdown_text.encode('utf-8')
     if export_format == 'html':
-        return EXPORT_FORMATS['html'], render_document(markdown_text, version.get('template_id') or 'classic', version.get('title') or '简历').encode('utf-8')
+        return EXPORT_FORMATS['html'], render_document(markdown_text, template_id, version.get('title') or '简历', typography=typography, one_page_script=True).encode('utf-8')
     if export_format == 'pdf':
-        return EXPORT_FORMATS['pdf'], export_pdf(markdown_text, version.get('template_id') or 'classic')
+        return EXPORT_FORMATS['pdf'], export_pdf(markdown_text, template_id, typography)
     if export_format == 'docx':
         return EXPORT_FORMATS['docx'], export_docx(markdown_text)
     raise ValueError(f'不支持的导出格式：{export_format}')

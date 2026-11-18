@@ -52,6 +52,9 @@ class Repository:
             columns = {row['name'] for row in conn.execute('PRAGMA table_info(resume_versions)')}
             if 'pinned' not in columns:
                 conn.execute('ALTER TABLE resume_versions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0')
+            # resume_versions.typography：排版设置 JSON（字体/字号/行距/页边距/一页纸），随版本保存。
+            if 'typography' not in columns:
+                conn.execute("ALTER TABLE resume_versions ADD COLUMN typography TEXT NOT NULL DEFAULT '{}'")
             # job_preferences 并入 profile_entries（2026-11-18）：偏好申报本就是个人资料的一种立场
             # 条目，category='preference' 承载；原 dimension 降为标签（模型注入只取 statement，无损），
             # title 用维度中文名，id 原样保留（已存报告的 fact_ids 引用不失效）。迁移后旧表退役删除。
@@ -279,7 +282,7 @@ class Repository:
 
     # ---- 简历工坊：每次针对岗位的定制结果保存为一个可二次编辑的投递版本 ----
 
-    _VERSION_COLUMNS = "id,title,job_id,company,job_title,jd_digest,base_text,markdown,template_id,notes,created_at,updated_at,pinned"
+    _VERSION_COLUMNS = "id,title,job_id,company,job_title,jd_digest,base_text,markdown,template_id,notes,created_at,updated_at,pinned,typography"
 
     def list_resume_versions(self, job_id=None):
         """存档摘要（新→旧）；job_id 给定时只看绑定该岗位的版本。"""
@@ -319,6 +322,10 @@ class Repository:
             item["notes"] = json.loads(item.get("notes") or "[]")
         except ValueError:
             item["notes"] = []
+        try:
+            item["typography"] = json.loads(item.get("typography") or "{}")
+        except ValueError:
+            item["typography"] = {}
         return item
 
     def save_resume_version(self, data):
@@ -326,19 +333,22 @@ class Repository:
         existing = self.resume_version(data["id"]) if data.get("id") else None
         timestamp = now()
         if existing:
-            fields = {key: data[key] for key in ("title", "job_id", "company", "job_title", "jd_digest", "markdown", "template_id") if key in data}
+            fields = {key: data[key] for key in ("title", "job_id", "company", "job_title", "jd_digest", "markdown", "template_id", "typography") if key in data}
             fields["notes"] = json.dumps(data.get("notes", existing["notes"]), ensure_ascii=False)
+            if "typography" in fields:
+                fields["typography"] = json.dumps(fields["typography"] if fields["typography"] is not None else {}, ensure_ascii=False)
             fields["updated_at"] = timestamp
             with self.connection() as conn:
                 conn.execute(f"UPDATE resume_versions SET {','.join(key + '=?' for key in fields)} WHERE id=?", (*fields.values(), data["id"]))
             return self.resume_version(data["id"])
-        item = dict(job_id="", company="", job_title="", jd_digest="", base_text="", notes=[], template_id="classic")
+        item = dict(job_id="", company="", job_title="", jd_digest="", base_text="", notes=[], template_id="classic", typography={})
         item.update(data)
         item["notes"] = json.dumps(item["notes"], ensure_ascii=False)
+        item["typography"] = json.dumps(item.get("typography") or {}, ensure_ascii=False)
         with self.connection() as conn:
             cursor = conn.execute(
-                "INSERT INTO resume_versions (title,job_id,company,job_title,jd_digest,base_text,markdown,template_id,notes,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (item["title"], item["job_id"], item["company"], item["job_title"], item["jd_digest"], item["base_text"], item["markdown"], item["template_id"], item["notes"], timestamp, timestamp),
+                "INSERT INTO resume_versions (title,job_id,company,job_title,jd_digest,base_text,markdown,template_id,notes,created_at,updated_at,typography) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                (item["title"], item["job_id"], item["company"], item["job_title"], item["jd_digest"], item["base_text"], item["markdown"], item["template_id"], item["notes"], timestamp, timestamp, item["typography"]),
             )
             version_id = cursor.lastrowid
         return self.resume_version(version_id)
