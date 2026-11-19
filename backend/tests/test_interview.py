@@ -203,6 +203,37 @@ def test_unknown_persona_rejected(client, monkeypatch):
     assert client.post('/api/interview/sessions', json=dict(persona_id='nope')).status_code == 400
 
 
+def test_worker_uses_bound_model_config(client, monkeypatch):
+    """回归：出题 worker 在后台线程，contextvar 不跨线程——必须显式挂生效配置。
+
+    修前的 bug：请求线程 purpose_configured 走有效配置放行，worker 却回落环境变量
+    （本测试 delenv 模拟未设 JOBSCOPE_LLM_URL），complete 收到空 url →「地址为空」。
+    """
+    monkeypatch.delenv("JOBSCOPE_LLM_URL", raising=False)
+    assert client.put('/api/settings/models', json={
+        'llm': dict(mode='remote', url='https://fixture.example/v1', model='fixture-model', protocol='openai'),
+    }).status_code == 200
+    recorded = []
+
+    def fake_complete(config, system, user, **kwargs):
+        recorded.append(dict(url=config.get('url'), model=config.get('model')))
+        plan = dict(opening='你好', questions=[dict(topic='项目深挖', question='讲讲你的项目', focus='真实性',
+                                                    followups=['数据呢'], source='general')])
+        return json.dumps(plan, ensure_ascii=False), {}
+
+    # build_question_plan 内延迟 import complete：patch 传输层才覆盖真实调用链
+    monkeypatch.setattr('jobscope.model_transport.complete', fake_complete)
+    response = client.post('/api/interview/sessions', json=dict(persona_id='product', company_style='generic'))
+    assert response.status_code == 200, response.text
+    join_run(client, response.json()['run_id'])
+    session = client.get(f"/api/interview/sessions/{response.json()['session_id']}").json()['session']
+    assert session['status'] == 'ready'
+    assert recorded, '出题没有走到模型调用'
+    # 生效配置（saved llm → analysis 回落）拼出完整 chat/completions 端点，而非环境回落空地址
+    assert recorded[0]['url'] == 'https://fixture.example/v1/chat/completions'
+    assert recorded[0]['model'] == 'fixture-model'
+
+
 def test_unknown_company_style_rejected(client, monkeypatch):
     patch_plan(monkeypatch)
     assert client.post('/api/interview/sessions', json=dict(persona_id='product', company_style='nope')).status_code == 400

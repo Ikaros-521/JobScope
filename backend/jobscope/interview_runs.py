@@ -16,6 +16,7 @@ from .interview import ADVANCE_TOOL, build_interviewer_system, build_persona, bu
 from .repository import now
 from .semantic import RunCancelled
 from .model_transport import stream_turn
+from .settings import ModelSettings, use_config
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,10 @@ class InterviewManager:
         started = time.time()
         try:
             persona, material, config = session['persona'], session['material'], session['config']
-            plan = build_question_plan(persona, material, question_count=config.get('question_count', 8))
+            # worker 线程收不到请求中间件挂的线程级模型配置（contextvar 不跨线程）：
+            # 必须显式组装生效配置（含「分析」绑定与对话模型回落），否则回落环境变量 → 地址为空。
+            with use_config(ModelSettings(self.repo).effective()):
+                plan = build_question_plan(persona, material, question_count=config.get('question_count', 8))
             session['question_plan'] = plan
             session['status'] = 'ready'
             conversation_id = self.repo.create_conversation(interview_scope(session['id']), mode='interview')
@@ -164,11 +168,13 @@ class InterviewManager:
                 # 开场轮：对话历史为空，给一句只有本轮可见的触发语，不落库。
                 messages.append(dict(role='user', content='（候选人已就座，请开始面试）'))
             from .interview import get_config
-            assistant, _usage, reasoning = stream_turn(
-                get_config(), messages, [ADVANCE_TOOL],
-                on_delta=lambda piece: handle.push('delta', dict(text=piece)),
-                on_reasoning=lambda piece: handle.push('reasoning_delta', dict(text=piece)),
-                should_stop=handle.cancel.is_set, register_abort=handle.add_abort, timeout=120)
+            # 同出题：线程级配置必须显式挂到当前 worker（含「分析」绑定与对话模型回落）。
+            with use_config(ModelSettings(self.repo).effective()):
+                assistant, _usage, reasoning = stream_turn(
+                    get_config(), messages, [ADVANCE_TOOL],
+                    on_delta=lambda piece: handle.push('delta', dict(text=piece)),
+                    on_reasoning=lambda piece: handle.push('reasoning_delta', dict(text=piece)),
+                    should_stop=handle.cancel.is_set, register_abort=handle.add_abort, timeout=120)
             verdict = self._apply_verdict(session, assistant)
             entry = dict(role='assistant', content=assistant.get('content') or '')
             if reasoning:
@@ -268,7 +274,9 @@ class InterviewManager:
             segments = [seg for seg in session['progress'].get('segments', []) if seg.get('reviewable') and seg.get('answers')]
             if not segments:
                 raise ValueError('本场还没有可复盘的问答')
-            report = generate_report(session['persona'], segments, session['material'], should_stop=handle.cancel.is_set)
+            # 同出题：线程级配置必须显式挂到当前 worker（含「分析」绑定与对话模型回落）。
+            with use_config(ModelSettings(self.repo).effective()):
+                report = generate_report(session['persona'], segments, session['material'], should_stop=handle.cancel.is_set)
             session['report'] = dict(**report, reviewed=len(segments), generated_at=now())
             session['status'] = 'done'
             session = self.repo.save_interview_session(session)
