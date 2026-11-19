@@ -313,11 +313,6 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCo
         ? { title: '围绕这份岗位展开', text: 'Agent 可检索本岗位与同公司的公共资料。需要比较其他岗位或公司时，可复制对话并扩大范围。' }
         : { title: `围绕 ${company} 展开`, text: 'Agent 可检索该公司的岗位与资料。需要跨公司比较时，可复制对话进入全局范围。' }
 
-  const channelName = modelChannels.find(item => item.id === conversation.llm_channel)?.name
-  const modelSuffix = conversation.llm_channel
-    ? ` · ${channelName || '渠道已删除'} · ${conversation.model || '默认模型'}`
-    : conversation.model ? ` · ${conversation.model}` : ''
-
   function pickPermissionMode(mode: PermissionMode) {
     if (mode === conversation.permission_mode) return
     if (mode === 'full') { setModeDialog(true); return }
@@ -349,10 +344,6 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCo
       <header className="chat-main-head">
         <div className="chat-main-title">
           <h2>{isGlobal ? conversation.title : scope.kind === 'job' ? (scope.title || scope.company) : `${company || '未选定公司'} · 对话`}</h2>
-          <span className="chat-main-sub">
-            Agent · {isGlobal ? '全部岗位、公司资料与知识库' : isJob ? '本岗位与同公司公共资料' : '本公司岗位与资料'}
-            {modelSuffix}
-          </span>
         </div>
         <span className={`chat-state ${run ? 'busy' : ''}`}>{opening ? '正在打开会话…' : run ? (run.approval ? '等待工具确认' : '生成中…') : '空闲'}</span>
       </header>

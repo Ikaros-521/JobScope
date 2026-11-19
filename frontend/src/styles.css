@@ -685,7 +685,6 @@ button.today-stat { cursor: pointer; text-align: left; }
 .chat-section { border-top: 1px solid var(--line); padding: 24px; background: #fafafa; }
 .job-chat { padding: 16px; }
 .job-chat .chat-page { height: calc(100vh - 240px); min-height: 440px; padding: 0; }
-.job-chat .chat-main-head { padding: 12px 16px; }
 .chat-suggestions { display: flex; flex-wrap: wrap; gap: 8px; margin: 16px 0; }
 .chat-suggestions button { background: #fff; font-size: 13px; color: #404040; border: 1px solid var(--line); padding: 10px 14px; min-height: 40px; border-radius: 10px; text-align: left; }
 .chat-suggestions button:hover { border-color: var(--green); color: var(--green); background: var(--selected); }
@@ -1397,18 +1396,18 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 /* ===== 全局对话（类 Agent 会话页） ===== */
 .main:has(.chat-global) .page-footer { display: none; }
 .chat-page { display: flex; gap: 16px; height: calc(100vh - 210px); min-height: 480px; padding: 0 0 20px; position: relative; }
+/* 全局对话页没有 page-intro（顶部仅剩面包屑）：对话区直接撑满剩余视口。 */
+.chat-page.chat-global { height: calc(100vh - 88px); }
 /* 三栏布局里对话列会被压窄：允许 chat-page 收缩，内部按容器宽度自适应。 */
 .job-chat .chat-page { min-width: 0; container-type: inline-size; }
 @container (max-width: 460px) {
   .chat-page .composer-hint { display: none; }
-  .chat-page .chat-main-head { padding: 10px 14px; gap: 10px; }
+  .chat-page .chat-main-head { gap: 10px; }
   .chat-page .chat-main-title h2 { max-width: 100%; }
   .chat-page .chat-suggestions button { padding: 8px 10px; min-height: 34px; }
   .chat-page .chat-welcome h3 { font-size: 16px; }
   .chat-page .chat-welcome p { font-size: 12px; line-height: 1.7; }
 }
-.main > .page-intro.chat-intro { margin-bottom: 16px; }
-.chat-intro p { max-width: 560px; }
 .chat-sidebar { width: 264px; flex: none; display: flex; flex-direction: column; background: #fff; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; transition: width .18s ease; }
 .chat-page.sessions-collapsed .chat-sidebar { width: 56px; }
 .chat-sidebar-top { display: flex; align-items: center; gap: 8px; padding: 12px; border-bottom: 1px solid var(--line); }
@@ -1434,17 +1433,16 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .session-rename input { flex: 1; min-width: 0; min-height: 32px; font-size: 12px; padding: 4px 8px; }
 .session-rename button { font-size: 12px; min-height: 32px; padding: 4px 10px; }
 .chat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: #fff; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
-.chat-main-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px 24px; border-bottom: 1px solid var(--line); flex: none; }
+.chat-main-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 16px; border-bottom: 1px solid var(--line); flex: none; }
 .chat-main-title { min-width: 0; }
 .chat-main-title h2 { font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 480px; }
-.chat-main-sub { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
 .chat-state { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 8px; flex: none; }
 .chat-state::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: #d4d4d4; }
 .chat-state.busy { color: var(--green); }
 .chat-state.busy::before { background: #446c58; animation: chat-pulse 1.2s ease-in-out infinite; }
 @keyframes chat-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
 .chat-thread-wrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.chat-thread { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px 24px; }
+.chat-thread { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 12px 24px; }
 .chat-thread > article, .chat-thread > .chat-welcome, .chat-thread > div { max-width: 860px; margin-left: auto; margin-right: auto; }
 .chat-welcome { text-align: center; padding: 64px 0 32px; }
 .chat-welcome h3 { font-size: 20px; line-height: 1.8; }
