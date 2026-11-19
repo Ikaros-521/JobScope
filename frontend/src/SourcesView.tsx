@@ -101,7 +101,7 @@ export function SourcesView({ active, tab, onTabChange, sources, loading, jobsTo
   }
 
   return <div className="sources-workspace">
-    <section className="page-intro"><div><h1>数据与采集</h1><p>采集岗位、补全职责，让每份资料有据可查。</p></div><Button className="button secondary" busy={busy === 'metadata'} disabled={Boolean(busy)} onClick={() => void perform('metadata', refreshMetadata)}><Icon name="source" size={16} />刷新状态</Button></section>
+    <section className="page-intro compact"><h1 className="sr-only">数据与采集</h1><Button className="button secondary" busy={busy === 'metadata'} disabled={Boolean(busy)} onClick={() => void perform('metadata', refreshMetadata)}><Icon name="source" size={16} />刷新状态</Button></section>
     <div className="management-overview" aria-label="数据概况">
       <div><span className="overview-icon"><Icon name="jobs" /></span><div><span>本地岗位</span><strong>{jobsTotal.toLocaleString()}<small>份档案</small></strong></div></div>
       <div><span className="overview-icon"><Icon name="globe" /></span><div><span>专用浏览器</span><strong>{browser ? browser.running ? '运行中' : '未启动' : '状态未知'}<small>登录后采集</small></strong></div></div>

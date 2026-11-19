@@ -244,6 +244,8 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .icon-button:hover { background: #ededed; }
 .page-intro { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px 24px; margin: 24px 0 20px; }
 .page-intro h1 { font-size: 26px; line-height: 1.4; margin-bottom: 4px; letter-spacing: -.5px; }
+/* 精简页头：视觉标题让位给面包屑，仅保留功能件（按钮/实时状态/统计），高度压到一行。 */
+.page-intro.compact { margin: 10px 0 8px; min-height: 0; }
 .page-intro p { color: #525252; font-size: 14px; line-height: 1.6; }
 .button { border-radius: 8px; padding: 12px 16px; font-size: 14px; font-weight: 500; min-height: 44px; line-height: 1.4; white-space: nowrap; }
 .button.primary { background: var(--green); color: #fff; border: 1px solid var(--green); }

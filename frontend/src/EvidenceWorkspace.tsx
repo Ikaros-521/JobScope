@@ -100,7 +100,7 @@ export function EvidenceWorkspace({ refreshMetadata, modelConfigured, active, na
     chooseCompany(navigation.scope.company)
   }, [active, navigation])
   return <>
-    <section className="page-intro"><div><h1>公司资料库</h1><p>按公司核对来源，围绕单一主体展开调查</p></div><span className="revision-label">精确主体 · 独立对话</span></section>
+    <section className="page-intro compact"><h1 className="sr-only">公司资料库</h1></section>
     <section className="paper-panel evidence-library-controls"><form onSubmit={event => { event.preventDefault(); const values = { company: company.trim(), q: search.trim() }; setFilter(values); setChatCompany(values.company); void run('search', () => load(1, values)) }}>
       <div><label className="field-label" htmlFor="evidence-company">公司主体（精确匹配）</label><input id="evidence-company" list="known-companies" value={company} onChange={event => setCompany(event.target.value)} placeholder="输入或选择已保存的公司" maxLength={300} /><datalist id="known-companies">{companies.map(item => <option value={item.company} key={item.company}>{item.evidence_count} 条证据</option>)}</datalist></div>
       <button className="button secondary" type="submit" disabled={Boolean(busy)}>{busy === 'search' ? <span className="spinner" /> : null}查询资料</button>

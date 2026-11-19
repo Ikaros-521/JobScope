@@ -173,7 +173,6 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
 
   const rechecking = Boolean(recheckTask && ['running', 'pending'].includes(recheckTask.status))
   return <section className="favorites-view" aria-label="收藏夹">
-    <section className="page-intro"><div><h1>收藏夹</h1><p>标过星的岗位集中在这里：反查最新情况、直接横评公司、直达源帖</p></div><span className="revision-label">收藏随岗位档案保存在本机</span></section>
     <section className="paper-panel favorites-panel">
       {/* 机会管线回顾：纯本地统计，指路不施压——待跟进只是「看一眼进展」的提醒，不评分不排名。 */}
       {review && Object.keys(review.totals).length ? <div className="pipeline-review">

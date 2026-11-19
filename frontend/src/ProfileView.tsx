@@ -88,7 +88,7 @@ export function ProfileView({ onImportViaChat }: { onImportViaChat?: (prompt: st
   const charTotal = (entries ?? []).reduce((sum, item) => sum + item.content.length, 0)
 
   return <section className="profile-view" aria-label="个人资料库">
-    <section className="page-intro"><div><h1>个人资料库</h1><p>存放完整版的个人材料：项目经历、工作细节、技能佐证，以及求职偏好的硬性条件申报。简历因匹配度与篇幅常是删减版——优化简历时从这里取材，把阉割版内容扩写充实；启用的偏好申报则会在评估适配时自动判上。</p></div>
+    <section className="page-intro compact"><h1 className="sr-only">个人资料库</h1>
       <span className="revision-label">{entries?.length ?? '…'} 条材料 · 约 {charTotal.toLocaleString()} 字</span></section>
     <section className="paper-panel profile-panel">
       <div className="profile-toolbar">

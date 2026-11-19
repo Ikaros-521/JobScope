@@ -415,8 +415,6 @@ export function CompanyCompare() {
   }, [jdRows])
 
   return <div className="compare-page">
-    <section className="page-intro"><div><h1>数据分析 · 公司横评</h1><p>把几家公司放在一起看：六维参考、岗位构成、同层薪资与描述具体度。薪资对比按职类·经验·学历分层，全部来自本地已保存材料。</p></div><span className="revision-label">本地计算 · 不联网</span></section>
-
     <section className="paper-panel compare-controls">
       <div className="section-heading">
         <div><h2>选择对比公司</h2><p className="body-small muted">从已登记的公司里选 2-{MAX_COMPANIES} 家；分数由各家的已保存材料算出，维度覆盖与样本量可能不同。</p></div>

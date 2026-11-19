@@ -292,7 +292,7 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
   const templateName = templates.find(item => item.id === templateId)?.name || templateId
 
   return <div className="workshop-view">
-    <section className="page-intro"><div><h1>简历工坊</h1><p>针对不同公司的岗位要求定制简历：AI 优化 → 二次编辑 → 模板排版 → 导出投递。</p></div>
+    <section className="page-intro compact"><h1 className="sr-only">简历工坊</h1>
       <div className="workshop-intro-actions">
         <button type="button" className="button secondary" disabled={Boolean(busy)} onClick={() => { setCurrent(null); setMarkdown(''); setPreviewHtml(''); setPageFit(null); setTypography(DEFAULT_TYPOGRAPHY); setDirty(false) }}>新建优化</button>
         <button type="button" className="button secondary" disabled={Boolean(busy) || resumeCharacters === null || !resumeCharacters} onClick={() => void createFromSaved()}>从我的简历复制</button>

@@ -49,11 +49,9 @@ export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJob
   }
 
   if (error) return <section className="today-view" aria-label="今日概览">
-    <section className="page-intro"><div><h1>今日概览</h1></div></section>
     <div className="paper-panel"><div className="empty"><h3>暂时读不到概览</h3><p>{error}</p></div></div>
   </section>
   if (!data) return <section className="today-view" aria-label="今日概览">
-    <section className="page-intro"><div><h1>今日概览</h1></div></section>
     <div className="loading-state"><span className="spinner" />正在读取本机数据…</div>
   </section>
 
@@ -62,9 +60,6 @@ export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJob
   const staleFollowUps = pipeline.follow_ups
 
   return <section className="today-view" aria-label="今日概览">
-    <section className="page-intro"><div><h1>今日概览</h1><p>每天的第一屏：先处理待办，再看看新增与采集近况；数据都在本机。</p></div>
-      <span className="revision-label">读取于 {date(new Date().toISOString())}</span></section>
-
     {counts.jobs === 0 ? <section className="paper-panel today-panel">
       <div className="empty"><div className="empty-icon"><Icon name="jobs" /></div><h3>档案库还是空的</h3>
         <p>从采集或导入第一份岗位开始：采集的每份档案都保留原文、出处与时间。</p>

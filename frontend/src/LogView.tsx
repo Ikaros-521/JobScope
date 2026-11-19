@@ -128,9 +128,8 @@ export function LogView() {
   const errorCount = visible.filter(entry => (LEVEL_ORDER[entry.level] ?? 0) >= LEVEL_ORDER.ERROR).length
 
   return <>
-    <section className="page-intro"><div><h1>运行日志</h1>
-      <p>后端进程的实时日志（保留最近 2000 条，重启清空）。默认只看业务日志；请求日志（每次 API 访问与出站调用的记录）可用「日志类型」切换查看。DEBUG 明细需以 <code>JOBSCOPE_LOG_LEVEL=DEBUG</code> 启动后端。</p>
-    </div><span className="revision-label">{following ? '实时跟随' : '已上滚查看历史'}</span></section>
+    <section className="page-intro compact"><h1 className="sr-only">运行日志</h1>
+      <span className="revision-label">{following ? '实时跟随' : '已上滚查看历史'}</span></section>
     <div className="log-view">
       <form className="log-toolbar" onSubmit={search}>
         <label className="search-input"><Icon name="search" size={16} /><span className="sr-only">日志关键词</span>

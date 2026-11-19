@@ -619,7 +619,7 @@ export function JobResearch({
 
   return <>
     <div className="jobs-view" hidden={!active}>
-      <section className="page-intro"><div><h1>岗位研究</h1><p>把岗位要求、公司证据和你的经历逐项核对</p></div></section>
+      <section className="page-intro compact"><h1 className="sr-only">岗位研究</h1></section>
       {emptyLibrary && <section className="empty-library-intro"><h2>从一个机会开始</h2><p>粘贴你正在考虑的岗位，或查找外部机会。每份档案保留出处。</p></section>}
       {paneFocus !== 'chat' && <div className="job-entry-actions"><button className="button primary" onClick={() => openModal('boss-import')} title="捕获项目浏览器里看到的 Boss 页面、粘贴分享链接，批量导入岗位">从 Boss 导入</button><button className="button secondary" onClick={() => openModal('job')}>粘贴已有岗位 JD</button><button className="button secondary" onClick={() => setDiscoveryOpen(!discoveryOpen)} aria-expanded={discoveryOpen}>查找外部岗位</button></div>}
       <section className="search-section" aria-labelledby="collect-heading" hidden={!discoveryOpen || paneFocus === 'chat'}>

@@ -241,7 +241,7 @@ export function KnowledgeView({ onCountChange }: { onCountChange?: (total: numbe
   const importActive = Boolean(importTask && IMPORT_ACTIVE.has(importTask.status))
   return <div className={`knowledge-view${dragging ? ' dragging' : ''}`} onDragEnter={onDragEnter} onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
     {dragging && <div className="kb-drop-overlay" role="status"><Icon name="source" size={36} /><strong>松开鼠标，导入文件到知识库</strong><span>支持多选；单文件 ≤100MB，单批 ≤20 个</span></div>}
-    <section className="page-intro"><div><h1>知识库</h1><p>录入或上传你的知识（面试复盘、行业认知、PDF/Word 文档），对话中的 Agent 会按分块检索并引用它们。</p></div>
+    <section className="page-intro compact"><h1 className="sr-only">知识库</h1>
       <div className="knowledge-intro-actions">
         <input ref={fileInput} type="file" multiple accept={KB_ACCEPT} hidden onChange={event => void handleUpload(event.target.files)} aria-hidden="true" tabIndex={-1} />
         <button className="button secondary" title={KB_DOCUMENTS_TIP} disabled={Boolean(busy) || importActive} onClick={() => fileInput.current?.click()}>
