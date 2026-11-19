@@ -40,12 +40,11 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   const [intensity, setIntensity] = useState<'gentle' | 'standard' | 'stress'>('standard')
   const [questionCount, setQuestionCount] = useState(8)
   const [mode, setMode] = useState<'job' | 'jd' | 'free'>('free')
-  const [jobs, setJobs] = useState<{ id: string; label: string }[]>([])
   const [jobId, setJobId] = useState('')
+  const [jobLabel, setJobLabel] = useState('')
   const [jobTitle, setJobTitle] = useState('')
   const [companyName, setCompanyName] = useState('')
   const [jdText, setJdText] = useState('')
-  const [prefill, setPrefill] = useState<{ jobId: string; label: string } | null>(null)
   const [answer, setAnswer] = useState('')
   const streamRef = useRef<EventSource | null>(null)
   const selectedRef = useRef('')
@@ -124,10 +123,6 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
 
   useEffect(() => {
     void listInterviewPersonas().then(data => { setPersonas(data.cards); setStyles(data.styles) }).catch(err => setError((err as Error).message))
-    // 岗位库选择器数据源：最近更新的 50 条（选择器里按「公司 · 岗位」显示）。
-    void api<{ jobs: { id: string; title: string; company: string }[] }>('/jobs?page=1&page_size=50')
-      .then(data => setJobs(data.jobs.map(item => ({ id: item.id, label: `${item.company} · ${item.title}` }))))
-      .catch(() => { /* 列表失败不阻塞开面，可走粘贴 JD/自由练 */ })
     void refreshSessions()
     return closeStream
   }, [refreshSessions, closeStream])
@@ -135,10 +130,10 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   // 岗位详情/评估缺口深链：打开新建面板、切到岗位库模式并预选岗位（#/interview?job=<id> 刷新同路径）。
   useEffect(() => {
     if (!deepLink) return
-    setCreating(true); setCard(''); setMode('job'); setJobId(deepLink.jobId); setPrefill(null)
+    setCreating(true); setCard(''); setMode('job'); setJobId(deepLink.jobId); setJobLabel('')
     void api<{ job: { title: string; company: string } }>(`/jobs/${encodeURIComponent(deepLink.jobId)}`)
-      .then(data => setPrefill({ jobId: deepLink.jobId, label: `${data.job.company} · ${data.job.title}` }))
-      .catch(() => setPrefill(null))
+      .then(data => setJobLabel(`${data.job.company} · ${data.job.title}`))
+      .catch(() => setJobLabel(''))
   }, [deepLink])
 
   // 流式期间贴底：新 delta 与新消息都把面试间滚到最下。
@@ -237,9 +232,10 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
         style={style} onStyle={setStyle}
         round={round} onRound={setRound} intensity={intensity} onIntensity={setIntensity}
         questionCount={questionCount} onQuestionCount={setQuestionCount}
-        mode={mode} onMode={setMode} jobs={jobs} jobId={jobId} onJobId={setJobId}
+        mode={mode} onMode={setMode} jobId={jobId} jobLabel={jobLabel}
+        onPickJob={(id, label) => { setJobId(id); setJobLabel(label) }}
         jobTitle={jobTitle} onJobTitle={setJobTitle} companyName={companyName} onCompanyName={setCompanyName}
-        jdText={jdText} onJdText={setJdText} prefill={prefill}
+        jdText={jdText} onJdText={setJdText}
         modelConfigured={modelConfigured} onConfigureModel={onConfigureModel}
         busy={busy} onStart={() => void startSession()} />}
       {session && !creating && <>
@@ -257,25 +253,21 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   </div>
 }
 
-function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRound, intensity, onIntensity, questionCount, onQuestionCount, mode, onMode, jobs, jobId, onJobId, jobTitle, onJobTitle, companyName, onCompanyName, jdText, onJdText, prefill, modelConfigured, onConfigureModel, busy, onStart }: {
+function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRound, intensity, onIntensity, questionCount, onQuestionCount, mode, onMode, jobId, jobLabel, onPickJob, jobTitle, onJobTitle, companyName, onCompanyName, jdText, onJdText, modelConfigured, onConfigureModel, busy, onStart }: {
   cards: InterviewPersonaCard[]; styles: InterviewStyle[]; card: string; onCard: (value: string) => void
   style: string; onStyle: (value: string) => void
   round: string; onRound: (value: string) => void
   intensity: 'gentle' | 'standard' | 'stress'; onIntensity: (value: 'gentle' | 'standard' | 'stress') => void
   questionCount: number; onQuestionCount: (value: number) => void
   mode: 'job' | 'jd' | 'free'; onMode: (value: 'job' | 'jd' | 'free') => void
-  jobs: { id: string; label: string }[]; jobId: string; onJobId: (value: string) => void
+  jobId: string; jobLabel: string; onPickJob: (id: string, label: string) => void
   jobTitle: string; onJobTitle: (value: string) => void
   companyName: string; onCompanyName: (value: string) => void
   jdText: string; onJdText: (value: string) => void
-  prefill: { jobId: string; label: string } | null
   modelConfigured: boolean; onConfigureModel: () => void
   busy: boolean; onStart: () => void
 }) {
   const active = cards.find(item => item.id === card)
-  // 岗位库下拉里没有深链岗位时补一项，保证预选可见。
-  const jobOptions = prefill && !jobs.some(item => item.id === prefill.jobId)
-    ? [{ id: prefill.jobId, label: prefill.label }, ...jobs] : jobs
   const customNeedsTitle = card === 'custom' && mode === 'free' && !jobTitle.trim()
   const startDisabled = !card || busy || !modelConfigured || customNeedsTitle || (mode === 'job' && !jobId)
   return <section className="interview-create">
@@ -307,11 +299,10 @@ function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRou
         <button key={value} className={mode === value ? 'active' : ''} onClick={() => onMode(value)}>{label}</button>)}
     </div>
     <div className="iv-target">
-      {mode === 'job' && <select className="iv-job-select" value={jobId} onChange={event => onJobId(event.target.value)} aria-label="选择目标岗位">
-        <option value="">{jobs.length ? '选择岗位（最近更新在前）' : '岗位库为空，可切「粘贴 JD」或「自由练」'}</option>
-        {jobOptions.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
-      </select>}
-      {mode === 'job' && jobId && <span className="tiny-label">将自动带上该岗位的完整 JD、评估缺口、简历存档与公司资料库情报</span>}
+      {mode === 'job' && <>
+        <JobPicker value={jobId} label={jobLabel} onSelect={onPickJob} />
+        {jobId && <span className="tiny-label">将自动带上该岗位的完整 JD、评估缺口、简历存档与公司资料库情报</span>}
+      </>}
       {mode === 'jd' && <>
         <textarea className="iv-jd" value={jdText} onChange={event => onJdText(event.target.value)} rows={4} maxLength={20000}
           placeholder="粘贴完整的职位描述（职责 + 任职要求），出题与追问都以它为准" />
@@ -332,6 +323,64 @@ function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRou
         : <span className="tiny-label">出题约需 1-3 分钟（岗位 JD + 评估缺口 + 简历 + 公司资料 四源合一），完成后进入面试间</span>}
     </div>
   </section>
+}
+
+// 岗位检索下拉（combobox）：输入走服务端 /jobs?q= 实时检索（title/company/description 子串匹配），
+// 空查询给最近更新的 20 条；岗位多时靠关键词收窄，不靠翻页。
+function JobPicker({ value, label, onSelect }: { value: string; label: string; onSelect: (id: string, label: string) => void }) {
+  const [query, setQuery] = useState('')
+  const [focused, setFocused] = useState(false)
+  const [results, setResults] = useState<{ id: string; label: string; meta: string }[]>([])
+  const [loading, setLoading] = useState(false)
+  const boxRef = useRef<HTMLDivElement>(null)
+  const tokenRef = useRef(0)
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const ticket = ++tokenRef.current
+      const params = new URLSearchParams({ page: '1', page_size: '20' })
+      if (query.trim()) params.set('q', query.trim())
+      setLoading(true)
+      api<{ jobs: { id: string; title: string; company: string; salary?: string; location?: string }[] }>(`/jobs?${params.toString()}`)
+        .then(data => {
+          if (tokenRef.current !== ticket) return
+          setResults(data.jobs.map(item => ({
+            id: item.id, label: `${item.company} · ${item.title}`,
+            meta: [item.salary, item.location].filter(Boolean).join(' ｜ '),
+          })))
+        })
+        .catch(() => { if (tokenRef.current === ticket) setResults([]) })
+        .finally(() => { if (tokenRef.current === ticket) setLoading(false) })
+    }, 250)
+    return () => clearTimeout(timer)
+  }, [query])
+
+  // 点外面才收下拉：列表项用 onMouseDown preventDefault，避免先失焦把选中吞掉。
+  useEffect(() => {
+    function onDocMouseDown(event: MouseEvent) {
+      if (boxRef.current && !boxRef.current.contains(event.target as Node)) setFocused(false)
+    }
+    document.addEventListener('mousedown', onDocMouseDown)
+    return () => document.removeEventListener('mousedown', onDocMouseDown)
+  }, [])
+
+  return <div className="iv-picker" ref={boxRef}>
+    <input className="iv-picker-input" value={focused ? query : label}
+      placeholder="输入公司或岗位关键词检索（如：阿里 数据），空输入给最近岗位"
+      onFocus={() => { setFocused(true); setQuery('') }}
+      onKeyDown={event => { if (event.key === 'Escape') setFocused(false) }}
+      onChange={event => setQuery(event.target.value)}
+      aria-label="检索目标岗位" />
+    {focused && <div className="iv-picker-list" role="listbox" aria-label="岗位检索结果">
+      {loading && results.length === 0 && <div className="iv-picker-empty">检索中…</div>}
+      {!loading && results.length === 0 && <div className="iv-picker-empty">没有匹配的岗位——可切「粘贴 JD」或「自由练」</div>}
+      {results.map(item => <button key={item.id} className={`iv-picker-item${item.id === value ? ' active' : ''}`} title={item.label}
+        onMouseDown={event => event.preventDefault()}
+        onClick={() => { onSelect(item.id, item.label); setQuery(''); setFocused(false) }}>
+        <span>{item.label}</span>{item.meta && <em>{item.meta}</em>}
+      </button>)}
+    </div>}
+  </div>
 }
 
 function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer, busy, answer, onAnswer, onSend, onFinish, onStop, threadRef }: {

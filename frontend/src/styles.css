@@ -1647,6 +1647,11 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 @media (min-width: 1200px) and (min-height: 700px) {
   .main-workbench { display: flex; flex-direction: column; height: 100dvh; overflow: hidden; padding-bottom: 16px; }
   .main-workbench > .topbar, .main-workbench > .page-intro, .main-workbench > .search-section { flex-shrink: 0; }
+  /* App 壳拆分（bbc2a4e）后岗位研究内容包进了 .jobs-view 包装层：工作台模式下由它接管 main 的
+     弹性列角色，否则 research-layout 的 flex:1 失效、面板随内容长高并被 overflow 裁掉，
+     详情/列表的内部滚动条都会消失。hidden 时保持 display:none（与下方 evidence-view 同款守卫）。 */
+  .main-workbench > .jobs-view:not([hidden]) { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+  .main-workbench > .jobs-view:not([hidden]) > .page-intro, .main-workbench > .jobs-view:not([hidden]) > .search-section { flex-shrink: 0; }
   .main-workbench .topbar { height: 48px; }
   .main-workbench .page-intro { margin: 12px 0; }
   .main-workbench .page-intro > div { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 16px; }
@@ -2398,7 +2403,16 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .iv-modes button { border: 1px solid var(--line, #d8d4c8); background: var(--panel, #fff); padding: 6px 14px; border-radius: 999px; cursor: pointer; font-size: 13px; color: var(--muted, #666); }
 .iv-modes button.active { border-color: var(--accent, #8a6d3b); color: var(--accent, #8a6d3b); font-weight: 600; background: var(--accent-soft, #f3ecdb); }
 .iv-target { display: flex; flex-direction: column; gap: 8px; }
-.iv-job-select { max-width: 480px; font: inherit; font-size: 13px; padding: 8px 10px; border: 1px solid var(--line, #d8d4c8); border-radius: 8px; }
+/* 岗位检索下拉（combobox）：输入走 /jobs?q= 服务端检索 */
+.iv-picker { position: relative; max-width: 480px; }
+.iv-picker-input { width: 100%; font: inherit; font-size: 13px; padding: 8px 10px; border: 1px solid var(--line, #d8d4c8); border-radius: 8px; }
+.iv-picker-input:focus { border-color: var(--accent, #8a6d3b); outline: none; }
+.iv-picker-list { position: absolute; z-index: 30; top: calc(100% + 4px); left: 0; right: 0; max-height: 260px; overflow-y: auto; background: var(--panel, #fff); border: 1px solid var(--line, #d8d4c8); border-radius: 10px; box-shadow: 0 8px 24px rgba(0, 0, 0, .12); }
+.iv-picker-item { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; width: 100%; text-align: left; border: 0; background: none; padding: 9px 12px; cursor: pointer; font-size: 13px; }
+.iv-picker-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.iv-picker-item:hover, .iv-picker-item.active { background: var(--accent-soft, #f3ecdb); }
+.iv-picker-item em { font-style: normal; font-size: 11px; color: var(--muted, #999); white-space: nowrap; }
+.iv-picker-empty { padding: 10px 12px; font-size: 12px; color: var(--muted, #888); }
 .iv-target-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .iv-mini-input { flex: 1; min-width: 220px; max-width: 360px; font: inherit; font-size: 13px; padding: 8px 10px; border: 1px solid var(--line, #d8d4c8); border-radius: 8px; }
 .iv-warn { color: var(--danger, #b33); }
