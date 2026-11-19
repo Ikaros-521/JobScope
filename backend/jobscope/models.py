@@ -177,6 +177,19 @@ class JobBatchDelete(RequestModel):
     ids: list[str] = Field(min_length=1, max_length=1000)
 
 
+class JobDedupMark(RequestModel):
+    """岗位去重标记（2026-11-19）：primary_id 是保留的主记录，其余标记为其重复项。
+
+    标记不删除任何档案：重复项默认不再出现在列表与统计里，可随时拆开还原。"""
+    primary_id: str = Field(min_length=1, max_length=100)
+    duplicate_ids: list[Annotated[str, Field(min_length=1, max_length=100)]] = Field(min_length=1, max_length=50)
+
+
+class JobDedupRelease(RequestModel):
+    """拆开重复组：被标记的岗位恢复独立身份，重新出现在列表与统计。"""
+    ids: list[str] = Field(min_length=1, max_length=200)
+
+
 class IndexInput(RequestModel):
     operation: Literal['sync', 'rebuild', 'embed'] = 'sync'
 

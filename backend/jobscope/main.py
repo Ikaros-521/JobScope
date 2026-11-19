@@ -28,7 +28,7 @@ from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput
+from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -653,6 +653,24 @@ def create_app(data_dir=None):
     @app.get('/api/jobs/pipeline/review')
     def pipeline_review():
         return _pipeline_review_payload()
+
+    # ── 岗位去重（2026-11-19）：同公司+标题归一匹配置信候选，人工确认标记主次，统计不再双算。 ──
+
+    @app.get('/api/jobs/duplicates/scan')
+    def duplicates_scan():
+        """规则扫描候选对（只读不写）+ 现有重复组；标记永远由人工确认。"""
+        return {**repo.duplicate_candidates(), **repo.duplicate_groups()}
+
+    @app.post('/api/jobs/duplicates/mark')
+    def mark_duplicates(data: JobDedupMark):
+        try:
+            return repo.mark_duplicates(data.primary_id, data.duplicate_ids)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.post('/api/jobs/duplicates/release')
+    def release_duplicates(data: JobDedupRelease):
+        return {'released': repo.release_duplicates(data.ids)}
 
     @app.get('/api/dashboard')
     def dashboard():

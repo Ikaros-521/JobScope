@@ -178,10 +178,10 @@ class Repository:
                         item[field] = previous[field]
             # 收藏标记是用户意图不是采集数据：重采集整包覆盖 payload 时必须幸存，
             # 否则一次日常刷新就把用户标过的岗位全部静默取消收藏。
-            # 机会管线状态与跟进信息（2026-11-17/18）同为用户意图，随收藏一起幸存。
+            # 机会管线状态与跟进信息（2026-11-17/18）、去重标记（2026-11-19）同为用户意图，随收藏一起幸存。
             if previous:
                 for field in ('starred', 'starred_at', 'pipeline_status', 'pipeline_status_changed_at',
-                              'pipeline_note', 'pipeline_due'):
+                              'pipeline_note', 'pipeline_due', 'duplicate_of'):
                     if field in previous:
                         item[field] = previous[field]
             item['platform_tags'] = list(dict.fromkeys(data.get('platform_tags', data.get('tags', []))))
@@ -220,9 +220,10 @@ class Repository:
             item["evidence_ids"] = [r[0] for r in conn.execute("SELECT evidence_id FROM job_evidence WHERE job_id=? ORDER BY rowid", (job_id,))]
             return item
 
-    def jobs(self, q="", location=""):
+    def jobs(self, q="", location="", include_duplicates=False):
         # 全量读回是 compare/details-status/reliability 等重端点的底座：逐条 self.job() 是
         # 每行一次新连接的 N+1，几千份档案就是几千次连接。这里单连接两次查询等价替换。
+        # 去重标记的重复项默认不进统计与回顾（主记录已代表）；需要看全量时显式传 include_duplicates。
         with self.connection() as conn:
             rows = conn.execute("SELECT payload FROM jobs ORDER BY updated_at DESC").fetchall()
             linked = {}
@@ -231,6 +232,8 @@ class Repository:
             items = []
             for row in rows:
                 item = json.loads(row["payload"])
+                if not include_duplicates and item.get("duplicate_of"):
+                    continue
                 item["evidence_ids"] = linked.get(item["id"], [])
                 items.append(item)
         return [item for item in items if q.casefold() in " ".join([item["title"], item["company"], item["description"]]).casefold() and location.casefold() in item["location"].casefold()]
@@ -491,8 +494,11 @@ class Repository:
 
     @staticmethod
     def _job_filters(q='', location='', source='', salary_min=None, salary_max=None, starred=False, pipeline_status=''):
-        """薪资区间按重叠判定：只要岗位月薪范围与给定区间有交集就算命中，面议/年薪等无法解析的岗位自然落选。"""
-        where, params = [], []
+        """薪资区间按重叠判定：只要岗位月薪范围与给定区间有交集就算命中，面议/年薪等无法解析的岗位自然落选。
+
+        去重标记（2026-11-19）的重复项一律不进列表：它们是同一岗位的次要记录，主记录已代表；
+        详情按 id 直读仍可见（那里能看到「与 X 视为同一岗位」并拆开）。"""
+        where, params = ["json_extract(payload,'$.duplicate_of') IS NULL"], []
         if q:
             where.append("instr(lower(json_extract(payload,'$.title') || ' ' || json_extract(payload,'$.company') || ' ' || json_extract(payload,'$.description')),lower(?)) > 0")
             params.append(q)
@@ -612,6 +618,12 @@ class Repository:
                     continue
                 if isinstance(scope, dict) and scope.get('kind') == 'job' and scope.get('job_id') in existing:
                     conn.execute('DELETE FROM conversations WHERE id=?', (row['id'],))
+            # 主记录被删时其重复项自动晋升：清掉指向已删 id 的 duplicate_of，不让标记悬空。
+            dup_rows = conn.execute(f"SELECT id, payload FROM jobs WHERE json_extract(payload,'$.duplicate_of') IN ({marks})", existing).fetchall()
+            for row in dup_rows:
+                item = json.loads(row['payload'])
+                item.pop('duplicate_of', None)
+                conn.execute('UPDATE jobs SET payload=? WHERE id=?', (json.dumps(item, ensure_ascii=False), row['id']))
             cursor = conn.execute(f'DELETE FROM jobs WHERE id IN ({marks})', existing)
             return cursor.rowcount
 
@@ -743,7 +755,7 @@ class Repository:
                                    FROM jobs j
                                    JOIN job_evidence je ON je.job_id=j.id
                                    JOIN evidence e ON e.id=je.evidence_id
-                                   WHERE e.kind='job_posting'
+                                   WHERE e.kind='job_posting' AND json_extract(j.payload,'$.duplicate_of') IS NULL
                                    GROUP BY j.id HAVING first_seen >= ?
                                    ORDER BY first_seen DESC LIMIT ?""", (cutoff, limit)).fetchall()
         items = []
@@ -776,6 +788,135 @@ class Repository:
             if len(items) >= limit:
                 break
         return items
+
+    # ── 岗位去重（2026-11-19）：同一岗位多平台/多次采集各存一条时，标记主次而不是删除。 ──
+    # 重复项默认不进列表与统计（_job_filters / jobs()），详情按 id 仍可读；拆开即恢复独立身份。
+
+    @staticmethod
+    def _job_title_key(title):
+        """标题归一键：NFKC 折全角、去括号装饰与空白、casefold。只做形态归一，不做语义判断。"""
+        text = unicodedata.normalize('NFKC', str(title or '')).casefold()
+        text = re.sub(r'[\s]*[\u3010\[\(（][^\u3011\]\)）]*[\u3011\]\)）][\s]*', '', text)
+        text = re.sub(r'[^\w\u4e00-\u9fff]+', '', text, flags=re.UNICODE)
+        return text
+
+    def duplicate_candidates(self, max_pairs=50):
+        """规则扫描候选重复对：同公司 + 标题归一相等或互相包含 + 双方都未标记。
+
+        只返回候选，绝不自动合并——错合并比漏合并糟（删错的统计口径要人工回溯）。"""
+        with self.connection() as conn:
+            rows = conn.execute("""SELECT payload FROM jobs
+                                   ORDER BY json_extract(payload,'$.company'), json_extract(payload,'$.title')""").fetchall()
+        jobs = [json.loads(row[0]) for row in rows]
+        def summary(item):
+            return {'id': item.get('id'), 'title': item.get('title', ''), 'company': item.get('company', ''),
+                    'location': item.get('location', ''), 'salary': item.get('salary', ''),
+                    'source': item.get('source', ''), 'updated_at': item.get('updated_at', ''),
+                    'starred': bool(item.get('starred')), 'pipeline_status': item.get('pipeline_status') or ''}
+        candidates = []
+        groups: dict[str, list[dict]] = {}
+        for item in jobs:
+            if item.get('duplicate_of'):
+                continue
+            groups.setdefault(str(item.get('company') or ''), []).append(item)
+        for company, members in groups.items():
+            if len(members) < 2 or len(members) > 60:  # 超大组多半是泛化公司名，配对噪声大，不扫
+                continue
+            keyed = [(self._job_title_key(item.get('title')), item) for item in members]
+            for i in range(len(keyed)):
+                for j in range(i + 1, len(keyed)):
+                    key_a, item_a = keyed[i]
+                    key_b, item_b = keyed[j]
+                    if not key_a or not key_b:
+                        continue
+                    if key_a == key_b or key_a in key_b or key_b in key_a:
+                        candidates.append({'company': company, 'a': summary(item_a), 'b': summary(item_b),
+                                           'match': 'exact' if key_a == key_b else 'contains'})
+                        if len(candidates) >= max_pairs:
+                            return {'candidates': candidates, 'truncated': True}
+        return {'candidates': candidates, 'truncated': False}
+
+    def mark_duplicates(self, primary_id, duplicate_ids):
+        """标记主次：重复项的用户意图字段（收藏/管线/跟进）主记录缺什么就上提什么，
+        然后重复项自身清掉这些字段并写 duplicate_of——意图不丢，统计不再双算。"""
+        primary = self.job(primary_id)
+        if primary is None:
+            raise ValueError('主记录岗位不存在')
+        duplicate_ids = [job_id for job_id in dict.fromkeys(duplicate_ids) if job_id != primary_id]
+        carried: dict[str, bool] = {}
+        with self.connection() as conn:
+            for job_id in duplicate_ids:
+                conn.execute('BEGIN IMMEDIATE')
+                row = conn.execute('SELECT payload FROM jobs WHERE id=?', (job_id,)).fetchone()
+                if row is None:
+                    continue
+                dup = json.loads(row['payload'])
+                if dup.get('duplicate_of'):
+                    continue  # 已属于其他组：不跨组抢记录，UI 层面由「拆开」先行
+                # 意图上提：主记录没有的字段才搬（重复项的收藏/管线不该静默消失）。
+                if dup.get('starred') and not primary.get('starred'):
+                    primary['starred'] = True
+                    primary['starred_at'] = dup.get('starred_at') or primary.get('starred_at') or now()
+                    carried['starred'] = True
+                if dup.get('pipeline_status') and not primary.get('pipeline_status'):
+                    for field in ('pipeline_status', 'pipeline_status_changed_at', 'pipeline_note', 'pipeline_due'):
+                        if dup.get(field):
+                            primary[field] = dup[field]
+                    carried['pipeline'] = True
+                dup['duplicate_of'] = primary_id
+                for field in ('starred', 'starred_at', 'pipeline_status', 'pipeline_status_changed_at',
+                              'pipeline_note', 'pipeline_due'):
+                    dup.pop(field, None)
+                conn.execute('UPDATE jobs SET payload=? WHERE id=?', (json.dumps(dup, ensure_ascii=False), job_id))
+            primary['updated_at'] = now()
+            conn.execute('UPDATE jobs SET payload=?, updated_at=? WHERE id=?',
+                         (json.dumps(primary, ensure_ascii=False), primary['updated_at'], primary_id))
+        return {'primary': primary, 'marked': len(duplicate_ids), 'carried': carried}
+
+    def release_duplicates(self, ids):
+        """拆开：清掉 duplicate_of，岗位恢复独立身份（重新进列表与统计）。
+        之前上提到主记录的收藏/管线不回迁——那是一次显式合并动作，不能靠猜反向执行。"""
+        released = 0
+        for job_id in dict.fromkeys(ids):
+            with self.connection() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                row = conn.execute('SELECT payload FROM jobs WHERE id=?', (job_id,)).fetchone()
+                if row is None:
+                    continue
+                item = json.loads(row['payload'])
+                if not item.get('duplicate_of'):
+                    continue
+                item.pop('duplicate_of', None)
+                conn.execute('UPDATE jobs SET payload=? WHERE id=?', (json.dumps(item, ensure_ascii=False), job_id))
+                released += 1
+        return released
+
+    def duplicate_groups(self):
+        """现有重复组：主记录 + 其重复项的摘要；主记录已删除的孤儿自动晋升（清标记）。"""
+        orphans = []
+        with self.connection() as conn:
+            rows = conn.execute("SELECT payload FROM jobs WHERE json_extract(payload,'$.duplicate_of') IS NOT NULL").fetchall()
+            live_ids = {row['id'] for row in conn.execute('SELECT id FROM jobs').fetchall()} if rows else set()
+        grouped: dict[str, list[dict]] = {}
+        for row in rows:
+            item = json.loads(row['payload'])
+            target = str(item.get('duplicate_of') or '')
+            if target not in live_ids:
+                orphans.append(item['id'])
+                continue
+            grouped.setdefault(target, []).append(item)
+        released = self.release_duplicates(orphans) if orphans else 0
+        groups = []
+        for primary_id, dups in grouped.items():
+            primary = self.job(primary_id)
+            if primary is None:
+                continue
+            def summary(item):
+                return {'id': item.get('id'), 'title': item.get('title', ''), 'company': item.get('company', ''),
+                        'location': item.get('location', ''), 'salary': item.get('salary', ''),
+                        'source': item.get('source', ''), 'updated_at': item.get('updated_at', '')}
+            groups.append({'primary': summary(primary), 'duplicates': [summary(item) for item in dups]})
+        return {'groups': groups, 'promoted': released}
 
     def conversation(self, conversation_id, scope):
         encoded = json.dumps(scope, sort_keys=True, ensure_ascii=False)
