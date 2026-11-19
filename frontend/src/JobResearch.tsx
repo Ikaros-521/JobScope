@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { api, post, plain, date, isStale, computeReliability, collectCompanySignals, extractCompanySignals, getReliability, getReliabilityHistory, patchJobs, startCompanyResearch, startAnalyzeRun, cancelAnalyzeRun, openAnalyzeStream, listJobReports, getJobReport, updateAnalysisStatus, listResumeVersions, pinResumeVersion, getAnalyzeRun } from './api'
-import type { Analysis, AnalyzeRunStart, Evidence, Job, PageInfo, ReliabilityHistory, ReliabilityReport, ReportSummary, ResumeVersionSummary, Source, Task, ConversationNavigation } from './api'
+import { api, post, plain, date, isStale, relativeDays, computeReliability, collectCompanySignals, extractCompanySignals, getReliability, getReliabilityHistory, patchJobs, startCompanyResearch, startAnalyzeRun, cancelAnalyzeRun, openAnalyzeStream, listJobReports, getJobReport, updateAnalysisStatus, listResumeVersions, pinResumeVersion, getAnalyzeRun } from './api'
+import type { Analysis, AnalyzeRunStart, Evidence, Job, PageInfo, ReliabilityHistory, ReliabilityReport, ReportSummary, ResumeVersionSummary, Source, SourceHealth, Task, ConversationNavigation } from './api'
 import { toast, dismissToast, failedTaskToast, taskSucceeded } from './toast'
 import { Pagination, emptyPage } from './Pagination'
 import { EvidenceCard } from './EvidenceCard'
@@ -42,7 +42,7 @@ function needsFullJd(job: Job) {
 }
 
 export function JobResearch({
-  active, loading, sources, locations, cityPinyin, modelConfigured, resumeSaved, sourceNames,
+  active, loading, sources, locations, cityPinyin, modelConfigured, resumeSaved, sourceNames, sourceHealth,
   query, onQueryChange, location, onLocationChange, source, onSourceChange,
   refreshMetadata, refreshFavorites, onTotalChange,
   onOpenSettings, onConfigureModel, onOpenSources, onOpenCompanyChat, onOpenGlobalAgent, onOpenCompare, onOpenKnowledge, onOpenResume,
@@ -57,6 +57,8 @@ export function JobResearch({
   modelConfigured: boolean
   resumeSaved: boolean
   sourceNames: Record<string, string>
+  // 来源健康度（2026-11-19）：App 在 refreshMetadata 里一并拉取；检索区按所选来源显示上次采集结果。
+  sourceHealth: SourceHealth[]
   // 采集表单草稿与「数据与采集」页共享同一份（App 持有，两处受控）。
   query: string; onQueryChange: (value: string) => void
   location: string; onLocationChange: (value: string) => void
@@ -634,6 +636,18 @@ export function JobResearch({
         {/* 需要登录的平台在提交前就亮明前置条件（独立元素，避免被矮屏下 footnote 的折叠规则藏掉）。 */}
         {selectedSource?.login === 'required' && <p className="collect-login-note" role="note">「{selectedSource.name}」需要登录后才能返回岗位：请先到「数据与采集 → 浏览器采集」打开专用浏览器并登录，再回到这里用浏览器入口采集；未登录直接检索只会得到登录或验证提示。</p>}
         <div className="search-footnote"><span><span className="small-dot" />{selectedSource?.description || '标注“需浏览器”的来源，需要先在项目 Chrome 中登录。'}</span></div>
+        {/* 采集前健康预检（2026-11-19）：上次采集的真实结果在提交前就亮出来——被登录墙挡过、
+            连续失败时先去处理，而不是点了才知道；只陈述事实与补法，不给诊断结论。 */}
+        {(() => {
+          const health = sourceHealth.find(item => item.source === source)
+          if (!health || !health.last_run_at) return null
+          const warn = health.last_status !== 'completed'
+          const statusText = { completed: '成功', needs_login: '被登录墙挡下', needs_verification: '需要人工验证', failed: '失败', backoff: '退避等待中', running: '进行中', pending: '等待中' }[health.last_status] || health.last_status
+          return <p className={`source-health-line${warn ? ' warn' : ''}`} role="note" title={health.last_message || undefined}>
+            上次采集 {statusText} · {relativeDays(health.last_run_at, date(health.last_run_at))}{health.failed ? ` · 近期失败 ${health.failed} 次` : ''}{warn ? '。建议先处理再采集：' : ''}
+            {warn && <button type="button" className="text-button" onClick={() => onOpenSources('health')}>看来源健康<Icon name="arrow" size={12} /></button>}
+          </p>
+        })()}
       </section>
 
       {job && paneFocus !== 'chat' && <div className="job-reading-actions"><span>{job.title}</span><button className="button primary small" onClick={openJobChat}>问这份岗位</button></div>}

@@ -1,0 +1,24 @@
+/* 岗位去重面板（2026-11-19）：数据与采集 → 岗位去重。
+   独立文件而非进 styles.css：并行会话正在扫改共享样式表，组件级引入避免互相踩踏。 */
+.dedup-panel { display: flex; flex-direction: column; gap: 14px; }
+.dedup-hint { font-size: 13px; color: var(--muted); line-height: 1.7; }
+.dedup-hint b { color: inherit; }
+.dedup-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.dedup-candidate { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; background: var(--surface); }
+.dedup-candidate-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.dedup-match-tag { font-size: 11px; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line); }
+.dedup-pair { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 10px; }
+.dedup-job { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.dedup-job.keep { border-color: var(--green); box-shadow: inset 0 0 0 1px var(--green); }
+.dedup-job strong { font-size: 13px; }
+.dedup-job-meta { font-size: 12px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.dedup-job button { align-self: flex-start; }
+.dedup-group { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.dedup-group-title { font-size: 12px; color: var(--muted); display: flex; align-items: baseline; gap: 8px; }
+.dedup-dup-row { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); padding-left: 18px; border-left: 2px dashed var(--line); margin-left: 8px; flex-wrap: wrap; }
+.dedup-dup-row strong { color: var(--muted); font-weight: 600; }
+@media (max-width: 800px) { .dedup-pair { grid-template-columns: 1fr; } }
+/* ── 采集前健康预检（2026-11-19）：岗位研究检索区里所选来源的上次采集结果。 ── */
+.source-health-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 10px 16px 0; }
+.source-health-line.warn { color: #a2541a; }
+.source-health-line .text-button { font-size: 12px; min-height: 22px; padding: 0; }

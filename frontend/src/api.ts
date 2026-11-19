@@ -153,6 +153,16 @@ export function getCompanyLayers(companies: string[], gate?: { own_min: number; 
 // 跟进信息（2026-11-18）：pipeline_note '' 清空、pipeline_due 'YYYY-MM-DD' 或 '' 清空，均不影响管线状态。
 export function patchJobs(ids: string[], patch: { starred?: boolean; location?: string; salary?: string; tags?: string[]; pipeline_status?: 'interested' | 'applied' | 'interviewing' | 'offer' | 'archived' | ''; pipeline_note?: string; pipeline_due?: string }) { return api<{ updated: number }>('/jobs', { method: 'PATCH', body: JSON.stringify({ ids, ...patch }) }) }
 export function startDetailBatch(ids?: string[]) { return post<{ task: Task }>('/browser/details', ids ? { ids } : {}) }
+// ---- 岗位去重（2026-11-19）：同公司+标题归一匹配置信候选，人工确认标记主次，统计不再双算 ----
+export type DedupJobSummary = { id: string; title: string; company: string; location: string; salary: string; source: string; updated_at: string; starred?: boolean; pipeline_status?: string }
+export type DedupCandidate = { company: string; match: 'exact' | 'contains'; a: DedupJobSummary; b: DedupJobSummary }
+export type DedupGroup = { primary: DedupJobSummary; duplicates: DedupJobSummary[] }
+export type DedupScan = { candidates: DedupCandidate[]; truncated: boolean; groups: DedupGroup[]; promoted?: number }
+export function getDuplicateScan() { return api<DedupScan>('/jobs/duplicates/scan') }
+export function markDuplicates(primaryId: string, duplicateIds: string[]) {
+  return post<{ primary: { id: string; title: string }; marked: number; carried: Record<string, boolean> }>('/jobs/duplicates/mark', { primary_id: primaryId, duplicate_ids: duplicateIds })
+}
+export function releaseDuplicates(ids: string[]) { return post<{ released: number }>('/jobs/duplicates/release', { ids }) }
 // ---- 数据备份（2026-11-18）：SQLite 在线快照 zip 存 .data/backups；恢复先自动落「恢复前」安全备份 ----
 export type BackupInfo = { id: string; name: string; size: number; created_at: string; pre_restore: boolean }
 export type BackupStatus = { backups: BackupInfo[]; last_backup_at: string | null; days_since: number | null; retention: number }

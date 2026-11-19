@@ -8,6 +8,7 @@ import { CityInput } from './CityInput'
 import type { SavedLocation } from './CityInput'
 import { DetailBatch } from './DetailBatch'
 import { CompanyLookup } from './CompanyLookup'
+import { JobDedup } from './JobDedup'
 import { ResearchIndex } from './ResearchIndex'
 import { SignalSourceSettings } from './SignalSourceSettings'
 import { WageBaselines } from './WageBaselines'
@@ -18,7 +19,7 @@ import { navigateTabs } from './tabNavigation'
 // 纯视图 + 视图内状态；跨视图共享的采集条件（query/location）与来源登记仍在 App，经 props 进出，
 // 行为与拆分前完全一致——这是视图搬移，不是功能改写。
 
-export type SourcesTab = 'collect' | 'lookup' | 'catalog' | 'health' | 'history'
+export type SourcesTab = 'collect' | 'lookup' | 'catalog' | 'health' | 'history' | 'dedup'
 
 export function SourcesView({ active, tab, onTabChange, sources, loading, jobsTotal, browser, onBrowserStatus, tasks, tasksInfo,
                               loadTasks, busy, perform, refreshMetadata, onJobsChanged, onOpenJobs,
@@ -107,7 +108,7 @@ export function SourcesView({ active, tab, onTabChange, sources, loading, jobsTo
       <div><span className="overview-icon"><Icon name="globe" /></span><div><span>专用浏览器</span><strong>{browser ? browser.running ? '运行中' : '未启动' : '状态未知'}<small>登录后采集</small></strong></div></div>
       <div><span className="overview-icon"><Icon name="book" /></span><div><span>采集记录</span><strong>{tasksInfo.total.toLocaleString()}<small>次任务</small></strong></div></div>
     </div>
-    <div className="management-tabs" role="tablist" aria-label="数据管理分区" onKeyDown={navigateTabs}>{([{ id: 'collect', label: '采集工作台' }, { id: 'lookup', label: '公司快查' }, { id: 'catalog', label: '数据源' }, { id: 'health', label: '来源健康' }, { id: 'history', label: '任务记录' }] as const).map(item => <button key={item.id} id={`sources-${item.id}-tab`} role="tab" aria-controls={`sources-${item.id}-panel`} aria-selected={tab === item.id} tabIndex={tab === item.id ? 0 : -1} onClick={() => onTabChange(item.id)}>{item.label}{item.id === 'catalog' && <span>{sources.length}</span>}</button>)}</div>
+    <div className="management-tabs" role="tablist" aria-label="数据管理分区" onKeyDown={navigateTabs}>{([{ id: 'collect', label: '采集工作台' }, { id: 'lookup', label: '公司快查' }, { id: 'catalog', label: '数据源' }, { id: 'health', label: '来源健康' }, { id: 'history', label: '任务记录' }, { id: 'dedup', label: '岗位去重' }] as const).map(item => <button key={item.id} id={`sources-${item.id}-tab`} role="tab" aria-controls={`sources-${item.id}-panel`} aria-selected={tab === item.id} tabIndex={tab === item.id ? 0 : -1} onClick={() => onTabChange(item.id)}>{item.label}{item.id === 'catalog' && <span>{sources.length}</span>}</button>)}</div>
     <div id="sources-collect-panel" role="tabpanel" aria-labelledby="sources-collect-tab" hidden={tab !== 'collect'}>
       <section className="browser-panel paper-panel">
         <div className="browser-guide"><span className="section-label">浏览器采集</span><h2>从已登录的平台<br />带回真实岗位</h2><p>使用项目专属 Chrome，登录状态与日常浏览器分开保存。</p><ol className="collection-steps"><li><span>1</span><div><strong>选择平台</strong><p>在右侧填写关键词与城市</p></div></li><li><span>2</span><div><strong>打开浏览器并登录</strong><p>遇到验证时，请在浏览器内手动完成</p></div></li><li><span>3</span><div><strong>开始采集</strong><p>结果自动存档，任务记录保留真实状态</p></div></li></ol><div className="browser-status"><span className={`connection-dot ${browser?.running ? 'connected' : ''}`} />{browser?.message || '浏览器状态未知'}</div></div>
@@ -125,6 +126,10 @@ export function SourcesView({ active, tab, onTabChange, sources, loading, jobsTo
     </div>
     <div id="sources-lookup-panel" role="tabpanel" aria-labelledby="sources-lookup-tab" hidden={tab !== 'lookup'}>
       <CompanyLookup refreshMetadata={refreshMetadata} />
+    </div>
+    <div id="sources-dedup-panel" role="tabpanel" aria-labelledby="sources-dedup-tab" hidden={tab !== 'dedup'} className="paper-panel">
+      {/* 岗位去重（2026-11-19）：同公司+标题归一候选人工确认，标记主次让统计不再双算。 */}
+      <JobDedup onJobsChanged={onJobsChanged} />
     </div>
     <div id="sources-catalog-panel" role="tabpanel" aria-labelledby="sources-catalog-tab" hidden={tab !== 'catalog'}>
       <div className="management-section-heading"><div><h2>岗位与公司数据源</h2><p>接口优先，浏览器补充；可用状态不代表已登录。</p></div></div>

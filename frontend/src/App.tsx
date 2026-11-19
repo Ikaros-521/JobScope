@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { api } from './api'
-import type { BrowserStatus, ConversationNavigation, PageInfo, Source, Task } from './api'
+import { api, getSourceHealth } from './api'
+import type { BrowserStatus, ConversationNavigation, PageInfo, Source, SourceHealth, Task } from './api'
 import { signalTaskNames } from './SignalSources'
 import { toast } from './toast'
 import { emptyPage } from './Pagination'
@@ -120,6 +120,7 @@ export default function App() {
   const [favTotal, setFavTotal] = useState(0)
   const [tasksInfo, setTasksInfo] = useState<PageInfo>(emptyPage)
   const [sources, setSources] = useState<Source[]>([])
+  const [sourceHealth, setSourceHealth] = useState<SourceHealth[]>([])
   const [locations, setLocations] = useState<{ location: string; jobs: number }[]>([])
   const [cityPinyin, setCityPinyin] = useState<Record<string, string[]>>({})
   const [tasks, setTasks] = useState<Task[]>([])
@@ -184,6 +185,7 @@ export default function App() {
       api<{ locations: { location: string; jobs: number }[] }>('/locations'),
       api<{ pinyin: Record<string, string[]> }>('/cities'),
       api<PageInfo>('/knowledge?page_size=1'),
+      getSourceHealth(),
     ])
     if (results[0].status === 'fulfilled') { setOnline(true); setModelConfigured(results[0].value.model_configured) } else setOnline(false)
     if (results[1].status === 'fulfilled') setSources(results[1].value.sources)
@@ -192,6 +194,7 @@ export default function App() {
     if (results[4].status === 'fulfilled') setLocations(results[4].value.locations)
     if (results[5].status === 'fulfilled') setCityPinyin(results[5].value.pinyin)
     if (results[6].status === 'fulfilled') setKnowledgeTotal(results[6].value.total)
+    if (results[7].status === 'fulfilled') setSourceHealth(results[7].value.sources)
   }, [])
   useEffect(() => {
     let active = true
@@ -256,7 +259,7 @@ export default function App() {
       {/* 岗位研究常驻挂载（hidden 切换）：筛选与选中状态在视图切换间保留；跨视图联动经下方信号。 */}
       <JobResearch
         active={view === 'jobs'} loading={loading} sources={sources} locations={locations} cityPinyin={cityPinyin}
-        modelConfigured={modelConfigured} resumeSaved={resumeSaved} sourceNames={sourceNames}
+        modelConfigured={modelConfigured} resumeSaved={resumeSaved} sourceNames={sourceNames} sourceHealth={sourceHealth}
         query={query} onQueryChange={setQuery} location={location} onLocationChange={setLocation}
         source={source} onSourceChange={setSource}
         refreshMetadata={refreshMetadata} refreshFavorites={refreshFavCount} onTotalChange={setJobsTotal}
@@ -296,7 +299,7 @@ export default function App() {
       {view === 'sources' && <SourcesView active={view === 'sources'} tab={sourcesTab} onTabChange={setSourcesTab}
         sources={sources} loading={loading} jobsTotal={jobsTotal} browser={browser} onBrowserStatus={setBrowser}
         tasks={tasks} tasksInfo={tasksInfo} loadTasks={loadTasks} busy={shellBusy} perform={perform}
-        refreshMetadata={refreshMetadata} onJobsChanged={() => { setRefreshTick(tick => tick + 1); return Promise.resolve() }} onOpenJobs={() => { setJobOpenRequest({ kind: 'list', token: Date.now() }); setView('jobs') }}
+        refreshMetadata={refreshMetadata} onJobsChanged={() => { setRefreshTick(tick => tick + 1); void refreshFavCount(); return Promise.resolve() }} onOpenJobs={() => { setJobOpenRequest({ kind: 'list', token: Date.now() }); setView('jobs') }}
         query={query} onQueryChange={setQuery} location={location} onLocationChange={setLocation}
         browserSource={browserSource} onBrowserSourceChange={setBrowserSource}
         browserLimit={browserLimit} onBrowserLimitChange={setBrowserLimit}
