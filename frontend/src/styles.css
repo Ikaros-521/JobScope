@@ -2393,3 +2393,12 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .iv-bad-answer { border-left: 3px solid var(--danger, #b33); padding: 6px 10px; margin-top: 6px; font-size: 13px; line-height: 1.7; background: #fbf3f2; border-radius: 0 8px 8px 0; }
 .iv-error { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border: 1px solid #d9a441; background: #fdf6e7; border-radius: 8px; font-size: 13px; margin-bottom: 8px; }
 .iv-error-close { border: 0; background: none; cursor: pointer; color: inherit; }
+/* 目标岗位三模式（岗位库/粘贴JD/自由练）与自定义输入 */
+.iv-modes { display: flex; gap: 6px; }
+.iv-modes button { border: 1px solid var(--line, #d8d4c8); background: var(--panel, #fff); padding: 6px 14px; border-radius: 999px; cursor: pointer; font-size: 13px; color: var(--muted, #666); }
+.iv-modes button.active { border-color: var(--accent, #8a6d3b); color: var(--accent, #8a6d3b); font-weight: 600; background: var(--accent-soft, #f3ecdb); }
+.iv-target { display: flex; flex-direction: column; gap: 8px; }
+.iv-job-select { max-width: 480px; font: inherit; font-size: 13px; padding: 8px 10px; border: 1px solid var(--line, #d8d4c8); border-radius: 8px; }
+.iv-target-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.iv-mini-input { flex: 1; min-width: 220px; max-width: 360px; font: inherit; font-size: 13px; padding: 8px 10px; border: 1px solid var(--line, #d8d4c8); border-radius: 8px; }
+.iv-warn { color: var(--danger, #b33); }

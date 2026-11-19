@@ -86,7 +86,8 @@ def join_run(client, run_id, timeout=5):
 
 def create_session(client, monkeypatch, **extra):
     patch_plan(monkeypatch)
-    body = dict(persona_id='ali_product', **extra)
+    body = dict(persona_id='product', company_style='alibaba')
+    body.update(extra)
     response = client.post('/api/interview/sessions', json=body)
     assert response.status_code == 200, response.text
     data = response.json()
@@ -99,9 +100,9 @@ def test_create_requires_model(bare_client):
 
 
 def test_personas_cards(client):
-    cards = client.get('/api/interview/personas').json()['cards']
-    assert {card['id'] for card in cards} >= {'ali_product', 'hr_interviewer'}
-    assert all(card['rounds'] for card in cards)
+    payload = client.get('/api/interview/personas').json()
+    assert {card['id'] for card in payload['cards']} >= {'product', 'hr'}
+    assert all(card['rounds'] for card in payload['cards'])
 
 
 def test_create_session_plans(client, monkeypatch):
@@ -176,7 +177,7 @@ def test_conflict_finish_during_planning(client, monkeypatch):
     gate = threading.Event()
     monkeypatch.setattr('jobscope.interview_runs.build_question_plan',
                         lambda persona, material, question_count=8: (gate.wait(5), fake_plan())[1])
-    data = client.post('/api/interview/sessions', json=dict(persona_id='ali_product')).json()
+    data = client.post('/api/interview/sessions', json=dict(persona_id='product')).json()
     time.sleep(0.2)  # 等 worker 起来并进入阻塞
     assert client.post(f"/api/interview/sessions/{data['session_id']}/finish", json={}).status_code == 409
     gate.set()
@@ -200,3 +201,34 @@ def test_delete_session_removes_conversation(client, monkeypatch):
 def test_unknown_persona_rejected(client, monkeypatch):
     patch_plan(monkeypatch)
     assert client.post('/api/interview/sessions', json=dict(persona_id='nope')).status_code == 400
+
+
+def test_unknown_company_style_rejected(client, monkeypatch):
+    patch_plan(monkeypatch)
+    assert client.post('/api/interview/sessions', json=dict(persona_id='product', company_style='nope')).status_code == 400
+
+
+def test_custom_requires_job_anchor(client, monkeypatch):
+    patch_plan(monkeypatch)
+    # 自定义岗位没有任何锚点（无岗位/无JD/无岗位名）→ 400
+    assert client.post('/api/interview/sessions', json=dict(persona_id='custom')).status_code == 400
+    # 填了岗位名即可开面，岗位名进画像
+    data = create_session(client, monkeypatch, persona_id='custom', job_title='数据分析师')
+    session = client.get(f"/api/interview/sessions/{data['session_id']}").json()['session']
+    assert session['persona']['job_title'] == '数据分析师'
+
+
+def test_job_session_carries_company_brief(client, monkeypatch):
+    repo = client.app.state.repo
+    job = repo.save_job(dict(title='数据分析师', company='甲公司', description='负责指标体系与实验设计', location='杭州'), 'user_import')
+    repo.save_evidence(dict(title='公司简介', company='甲公司', kind='company_statement', text='主营电商与云计算业务，年度活跃用户过亿'), 'user_import')
+    data = create_session(client, monkeypatch, job_id=job['id'])
+    session = client.get(f"/api/interview/sessions/{data['session_id']}").json()['session']
+    assert '电商与云计算' in session['material']['company_brief']
+    assert session['material']['gaps'] or session['material']['jd_summary']  # JD 材料照常带上
+
+
+def test_personas_payload_has_styles(client):
+    payload = client.get('/api/interview/personas').json()
+    assert {card['id'] for card in payload['cards']} >= {'product', 'operations', 'data', 'dev', 'hr', 'custom'}
+    assert {style['id'] for style in payload['styles']} == {'alibaba', 'bigtech', 'generic'}

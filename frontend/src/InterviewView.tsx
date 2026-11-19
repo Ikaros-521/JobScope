@@ -5,7 +5,7 @@ import {
   api, cancelInterviewRun, createInterviewSession, deleteInterviewSession, finishInterview, getInterviewMessages,
   getInterviewSession, listInterviewPersonas, listInterviewSessions, openInterviewStream, sendInterviewTurn,
 } from './api'
-import type { InterviewMessage, InterviewPersonaCard, InterviewSession, InterviewSessionSummary } from './api'
+import type { InterviewMessage, InterviewPersonaCard, InterviewSession, InterviewSessionSummary, InterviewStyle } from './api'
 
 // 模拟面试工作区（2026-11-19）：左侧场次列表 + 右侧「面试间 | 复盘报告」。
 // 面试官是纯拟真的无工具 agent：对话中零提示零点评，评价全部在复盘页签。
@@ -30,12 +30,20 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   const [stream, setStream] = useState<StreamState>(null)
   const [error, setError] = useState('')
   const [tab, setTab] = useState<'room' | 'report'>('room')
-  // 新建面板：卡片优先（WorkBuddy 专家卡形态），配置后置——选卡即可开面，轮次/强度在卡下轻量调整。
+  // 新建面板：卡片=岗位专家（细分到岗位类型），公司风格是独立开关；目标岗位三模式：
+  // 岗位库选择（自动带 JD/评估缺口/简历存档/公司资料）｜粘贴 JD｜自由练（自定义卡必须填岗位名）。
   const [creating, setCreating] = useState(false)
   const [card, setCard] = useState<string>('')
+  const [styles, setStyles] = useState<InterviewStyle[]>([])
+  const [style, setStyle] = useState('generic')
   const [round, setRound] = useState('')
   const [intensity, setIntensity] = useState<'gentle' | 'standard' | 'stress'>('standard')
   const [questionCount, setQuestionCount] = useState(8)
+  const [mode, setMode] = useState<'job' | 'jd' | 'free'>('free')
+  const [jobs, setJobs] = useState<{ id: string; label: string }[]>([])
+  const [jobId, setJobId] = useState('')
+  const [jobTitle, setJobTitle] = useState('')
+  const [companyName, setCompanyName] = useState('')
   const [jdText, setJdText] = useState('')
   const [prefill, setPrefill] = useState<{ jobId: string; label: string } | null>(null)
   const [answer, setAnswer] = useState('')
@@ -115,15 +123,19 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   }, [closeStream, refreshSessions])
 
   useEffect(() => {
-    void listInterviewPersonas().then(data => setPersonas(data.cards)).catch(err => setError((err as Error).message))
+    void listInterviewPersonas().then(data => { setPersonas(data.cards); setStyles(data.styles) }).catch(err => setError((err as Error).message))
+    // 岗位库选择器数据源：最近更新的 50 条（选择器里按「公司 · 岗位」显示）。
+    void api<{ jobs: { id: string; title: string; company: string }[] }>('/jobs?page=1&page_size=50')
+      .then(data => setJobs(data.jobs.map(item => ({ id: item.id, label: `${item.company} · ${item.title}` }))))
+      .catch(() => { /* 列表失败不阻塞开面，可走粘贴 JD/自由练 */ })
     void refreshSessions()
     return closeStream
   }, [refreshSessions, closeStream])
 
-  // 岗位详情/评估缺口深链：打开新建面板并预选岗位（#/interview?job=<id> 刷新同路径）。
+  // 岗位详情/评估缺口深链：打开新建面板、切到岗位库模式并预选岗位（#/interview?job=<id> 刷新同路径）。
   useEffect(() => {
     if (!deepLink) return
-    setCreating(true); setCard(''); setPrefill(null)
+    setCreating(true); setCard(''); setMode('job'); setJobId(deepLink.jobId); setPrefill(null)
     void api<{ job: { title: string; company: string } }>(`/jobs/${encodeURIComponent(deepLink.jobId)}`)
       .then(data => setPrefill({ jobId: deepLink.jobId, label: `${data.job.company} · ${data.job.title}` }))
       .catch(() => setPrefill(null))
@@ -140,14 +152,18 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
 
   async function startSession() {
     setError('')
-    if (!card) { setError('请先选择一位面试官'); return }
+    if (!card) { setError('请先选择面试官岗位'); return }
+    const targetJobId = mode === 'job' ? jobId : ''
+    if (mode === 'job' && !targetJobId) { setError('请从岗位库选择一个岗位'); return }
+    if (card === 'custom' && mode === 'free' && !jobTitle.trim()) { setError('自定义岗位需要先填写目标岗位名称'); return }
     try {
       const started = await createInterviewSession({
-        persona_id: card, round, intensity, question_count: questionCount,
-        ...(prefill ? { job_id: prefill.jobId } : {}),
-        ...(!prefill && jdText.trim() ? { jd_text: jdText.trim() } : {}),
+        persona_id: card, company_style: style, round, intensity, question_count: questionCount,
+        ...(targetJobId ? { job_id: targetJobId } : {}),
+        ...(mode === 'jd' ? { jd_text: jdText.trim(), company: companyName.trim(), ...(jobTitle.trim() ? { job_title: jobTitle.trim() } : {}) } : {}),
+        ...(mode === 'free' ? { company: companyName.trim(), ...(card === 'custom' && jobTitle.trim() ? { job_title: jobTitle.trim() } : {}) } : {}),
       })
-      setCreating(false); setJdText('')
+      setCreating(false); setJdText(''); setJobTitle(''); setCompanyName('')
       setSelected(started.session_id); selectedRef.current = started.session_id
       setSession(null); setMessages([])
       attach(started.run_id)
@@ -216,10 +232,14 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
     <div className="interview-main">
       {error && <div className="iv-error" role="alert"><span>{error}</span><button className="iv-error-close" onClick={() => setError('')} aria-label="关闭提示"><Icon name="close" size={14} /></button></div>}
       {(!session || creating) && <CreatePanel
-        cards={personas} card={card} onCard={value => { setCard(value); const preset = personas.find(item => item.id === value); setRound(preset?.default_round ?? '') }}
+        cards={personas} styles={styles} card={card}
+        onCard={value => { setCard(value); const preset = personas.find(item => item.id === value); setRound(preset?.default_round ?? '') }}
+        style={style} onStyle={setStyle}
         round={round} onRound={setRound} intensity={intensity} onIntensity={setIntensity}
         questionCount={questionCount} onQuestionCount={setQuestionCount}
-        jdText={jdText} onJdText={setJdText} prefill={prefill} onClearPrefill={() => setPrefill(null)}
+        mode={mode} onMode={setMode} jobs={jobs} jobId={jobId} onJobId={setJobId}
+        jobTitle={jobTitle} onJobTitle={setJobTitle} companyName={companyName} onCompanyName={setCompanyName}
+        jdText={jdText} onJdText={setJdText} prefill={prefill}
         modelConfigured={modelConfigured} onConfigureModel={onConfigureModel}
         busy={busy} onStart={() => void startSession()} />}
       {session && !creating && <>
@@ -237,29 +257,41 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   </div>
 }
 
-function CreatePanel({ cards, card, onCard, round, onRound, intensity, onIntensity, questionCount, onQuestionCount, jdText, onJdText, prefill, onClearPrefill, modelConfigured, onConfigureModel, busy, onStart }: {
-  cards: InterviewPersonaCard[]; card: string; onCard: (value: string) => void
+function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRound, intensity, onIntensity, questionCount, onQuestionCount, mode, onMode, jobs, jobId, onJobId, jobTitle, onJobTitle, companyName, onCompanyName, jdText, onJdText, prefill, modelConfigured, onConfigureModel, busy, onStart }: {
+  cards: InterviewPersonaCard[]; styles: InterviewStyle[]; card: string; onCard: (value: string) => void
+  style: string; onStyle: (value: string) => void
   round: string; onRound: (value: string) => void
   intensity: 'gentle' | 'standard' | 'stress'; onIntensity: (value: 'gentle' | 'standard' | 'stress') => void
   questionCount: number; onQuestionCount: (value: number) => void
+  mode: 'job' | 'jd' | 'free'; onMode: (value: 'job' | 'jd' | 'free') => void
+  jobs: { id: string; label: string }[]; jobId: string; onJobId: (value: string) => void
+  jobTitle: string; onJobTitle: (value: string) => void
+  companyName: string; onCompanyName: (value: string) => void
   jdText: string; onJdText: (value: string) => void
-  prefill: { jobId: string; label: string } | null; onClearPrefill: () => void
+  prefill: { jobId: string; label: string } | null
   modelConfigured: boolean; onConfigureModel: () => void
   busy: boolean; onStart: () => void
 }) {
   const active = cards.find(item => item.id === card)
+  // 岗位库下拉里没有深链岗位时补一项，保证预选可见。
+  const jobOptions = prefill && !jobs.some(item => item.id === prefill.jobId)
+    ? [{ id: prefill.jobId, label: prefill.label }, ...jobs] : jobs
+  const customNeedsTitle = card === 'custom' && mode === 'free' && !jobTitle.trim()
+  const startDisabled = !card || busy || !modelConfigured || customNeedsTitle || (mode === 'job' && !jobId)
   return <section className="interview-create">
     <h2 className="sr-only">新建模拟面试</h2>
     {!modelConfigured && <div className="iv-model-hint">模拟面试需要先绑定分析模型。<button className="inline-button" onClick={onConfigureModel}>去设置中心</button></div>}
     <div className="iv-cards">
       {cards.map(item => <button key={item.id} className={`iv-card${item.id === card ? ' active' : ''}`} onClick={() => onCard(item.id)}>
         <strong>{item.name}</strong>
-        <span className="tiny-label">{item.company}</span>
         <p>{item.blurb}</p>
         <span className="iv-card-tags">{item.tags.map(tag => <em key={tag}>{tag}</em>)}</span>
       </button>)}
     </div>
     {active && <div className="iv-config">
+      <label>公司风格<select value={style} onChange={event => onStyle(event.target.value)} aria-label="公司面试风格">
+        {styles.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+      </select></label>
       <label>轮次<select value={round} onChange={event => onRound(event.target.value)} aria-label="面试轮次">
         {active.rounds.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
       </select></label>
@@ -270,14 +302,34 @@ function CreatePanel({ cards, card, onCard, round, onRound, intensity, onIntensi
         {[6, 8, 10].map(value => <option key={value} value={value}>{value} 题</option>)}
       </select></label>
     </div>}
+    <div className="iv-modes" role="tablist" aria-label="目标岗位来源">
+      {([['job', '从岗位库选'], ['jd', '粘贴 JD'], ['free', '自由练']] as const).map(([value, label]) =>
+        <button key={value} className={mode === value ? 'active' : ''} onClick={() => onMode(value)}>{label}</button>)}
+    </div>
     <div className="iv-target">
-      {prefill ? <span className="iv-prefill">目标岗位：{prefill.label}<button className="inline-button" onClick={onClearPrefill}>改为自由练</button></span>
-        : <textarea className="iv-jd" value={jdText} onChange={event => onJdText(event.target.value)} rows={3} maxLength={20000}
-            placeholder="可选：粘贴一份 JD 开面（不填 = 按画像通用出题；从岗位详情「模拟面试」进入会自动带上岗位与评估缺口）" />}
+      {mode === 'job' && <select className="iv-job-select" value={jobId} onChange={event => onJobId(event.target.value)} aria-label="选择目标岗位">
+        <option value="">{jobs.length ? '选择岗位（最近更新在前）' : '岗位库为空，可切「粘贴 JD」或「自由练」'}</option>
+        {jobOptions.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+      </select>}
+      {mode === 'job' && jobId && <span className="tiny-label">将自动带上该岗位的完整 JD、评估缺口、简历存档与公司资料库情报</span>}
+      {mode === 'jd' && <>
+        <textarea className="iv-jd" value={jdText} onChange={event => onJdText(event.target.value)} rows={4} maxLength={20000}
+          placeholder="粘贴完整的职位描述（职责 + 任职要求），出题与追问都以它为准" />
+        <div className="iv-target-row">
+          <input className="iv-mini-input" value={jobTitle} onChange={event => onJobTitle(event.target.value)} maxLength={120} placeholder="岗位名称（可选，如：数据分析师）" aria-label="岗位名称" />
+          <input className="iv-mini-input" value={companyName} onChange={event => onCompanyName(event.target.value)} maxLength={120} placeholder="公司名称（可选，用于带上公司资料）" aria-label="公司名称" />
+        </div>
+      </>}
+      {mode === 'free' && <div className="iv-target-row">
+        {card === 'custom' && <input className="iv-mini-input" value={jobTitle} onChange={event => onJobTitle(event.target.value)} maxLength={120}
+          placeholder="目标岗位名称（必填，如：数据分析师）" aria-label="目标岗位名称" />}
+        <input className="iv-mini-input" value={companyName} onChange={event => onCompanyName(event.target.value)} maxLength={120} placeholder="公司名称（可选，用于带上公司资料）" aria-label="公司名称" />
+      </div>}
     </div>
     <div className="iv-create-actions">
-      <button className="button primary" disabled={!card || busy || !modelConfigured} onClick={onStart}><Icon name="mic" size={16} />开始出题</button>
-      <span className="tiny-label">出题约需 1-3 分钟（JD + 评估缺口 + 简历三源合一），完成后进入面试间</span>
+      <button className="button primary" disabled={startDisabled} onClick={onStart}><Icon name="mic" size={16} />开始出题</button>
+      {customNeedsTitle ? <span className="tiny-label iv-warn">先填目标岗位名称，面试官才知道面什么</span>
+        : <span className="tiny-label">出题约需 1-3 分钟（岗位 JD + 评估缺口 + 简历 + 公司资料 四源合一），完成后进入面试间</span>}
     </div>
   </section>
 }

@@ -27,16 +27,23 @@ def interview_scope(session_id):
     return dict(kind='interview', session_id=session_id)
 
 
-def new_session(*, persona_id, round_id, intensity, question_count, material):
-    """建场次：画像编译成三段式快照存进 payload（预设后续升级不影响已开场次）。"""
-    persona = build_persona(persona_id, round_id, intensity)
+def new_session(*, persona_id, round_id, intensity, question_count, material,
+                company_style='generic', job_title='', company_name=''):
+    """建场次：画像编译成三段式快照存进 payload（预设后续升级不影响已开场次）。
+
+    岗位锚点优先级：材料（岗位库/粘贴JD）> 入参 job_title > 画像岗位类型。
+    """
+    persona = build_persona(persona_id, round_id, intensity, company_style=company_style,
+                            job_title=job_title or material.get('job_title', ''),
+                            company_name=company_name or material.get('company', ''))
     session_id = 'I-' + uuid.uuid4().hex
-    label = ' · '.join(part for part in (material.get('company'), material.get('job_title')) if part)
+    label = ' · '.join(part for part in (material.get('company') or persona['company_name'],
+                                         material.get('job_title') or persona['job_title']) if part)
     return dict(
         id=session_id, title=f'{label or persona["name"]} 模拟面试',
         job_id=material.get('job_id', ''), company=material.get('company', ''), job_title=material.get('job_title', ''),
         persona=persona, material=material,
-        config=dict(question_count=question_count, intensity=intensity, preset_id=persona_id),
+        config=dict(question_count=question_count, intensity=intensity, preset_id=persona_id, company_style=company_style),
         question_plan=None, progress=dict(phase='opening', current_index=0, segments=[], rounds=0),
         status='planning', report=None, conversation_id='', created_at=now(),
     )

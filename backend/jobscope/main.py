@@ -26,7 +26,7 @@ from . import collect_service
 from . import company_merge
 from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
-from .interview import assemble_material, persona_cards
+from .interview import assemble_material, company_brief_from, persona_cards
 from .interview_runs import InterviewManager, interview_scope, new_session
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
@@ -1232,34 +1232,43 @@ def create_app(data_dir=None):
 
     @app.get('/api/interview/personas')
     def interview_personas():
-        return dict(cards=persona_cards())
+        cards, styles = persona_cards()
+        return dict(cards=cards, styles=styles)
 
-    def interview_material(job_id, jd_text):
-        """建场次的候选材料包：岗位（含评估缺口）> 粘贴 JD > 纯自由练。简历随岗位自动带存档。"""
-        if job_id:
-            job = get_job(job_id)
+    def interview_material(data):
+        """建场次的候选材料包：岗位（评估缺口+公司情报）> 粘贴 JD > 纯自由练。
+
+        公司情报来自公司资料库证据（非岗位 postings），面试官据此结合公司业务提问。
+        """
+        if data.job_id:
+            job = get_job(data.job_id)
             if job['source'] == 'boss' and job.get('description_status') != 'complete':
                 raise HTTPException(409, '当前只有搜索列表摘要，请先取得完整岗位职责后再模拟面试')
-            pinned = repo.pinned_resume_version(job_id)
+            pinned = repo.pinned_resume_version(data.job_id)
             if pinned and pinned['markdown'].strip():
                 resume = dict(text=pinned['markdown'], format='text', label=f"存档《{pinned['title']}》")
             else:
                 resume = repo.resume()
-            _summaries, report = repo.list_reports(job_id)
-            return assemble_material(job, resume, report)
-        if jd_text.strip():
-            return assemble_material(dict(id='', company='', title='自定义 JD', description=jd_text.strip(), source='user_import'), repo.resume())
-        return assemble_material(None, repo.resume())
+            _summaries, report = repo.list_reports(data.job_id)
+            return assemble_material(job, resume, report, company_brief=company_brief_from(repo, job['company']))
+        if data.jd_text.strip():
+            return assemble_material(dict(id='', company=data.company.strip(), title=data.job_title.strip() or '自定义 JD',
+                                          description=data.jd_text.strip(), source='user_import'),
+                                     repo.resume(), company_brief=company_brief_from(repo, data.company))
+        return assemble_material(None, repo.resume(), company_brief=company_brief_from(repo, data.company))
 
     @app.post('/api/interview/sessions')
     def create_interview_session(data: InterviewCreateInput):
         if not purpose_configured('analysis'):
             raise HTTPException(400, '模拟面试需要先在设置中心绑定分析模型')
+        if data.persona_id == 'custom' and not (data.job_id or data.jd_text.strip() or data.job_title.strip()):
+            raise HTTPException(400, '自定义岗位需要先指明目标岗位：从岗位库选择、粘贴 JD 或填写岗位名称')
         try:
-            material = interview_material(data.job_id, data.jd_text)
+            material = interview_material(data)
             session = repo.save_interview_session(new_session(
                 persona_id=data.persona_id, round_id=data.round, intensity=data.intensity,
-                question_count=data.question_count, material=material))
+                question_count=data.question_count, material=material,
+                company_style=data.company_style, job_title=data.job_title, company_name=data.company))
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
         handle = interview_runs.start_plan(session)

@@ -32,37 +32,62 @@ COMPANY_STYLES = {
         label='阿里巴巴',
         values=['客户第一、业务结果导向', '数据驱动（指标定义 → 归因 → 反事实推演）', '复杂协同推动力', '结构性思考与判断力', '价值观契合（真诚, 不背口号）'],
         probing='连环 WHY：为什么做、为什么这么做、为什么是你；对任何数字追问口径与归因；给业务场景假设题现场拆解。',
-        mix=[('项目深挖（STAR + 数据）', .40), ('业务与行业理解', .20), ('指标体系设计', .15), ('方案设计/场景拆解', .15), ('协作冲突与价值观', .10)],
     ),
     'bigtech': dict(
         label='一线互联网大厂',
         values=['结果与 impact 量化', '方法论清晰、能抽象可迁移', '节奏快、接受挑战式追问', '落地执行力与取舍意识'],
         probing='快节奏追问：先抓回答里的模糊处逼量化，再问方案代价与替代项；不接受名词堆砌，要求讲「为什么这么设计」。',
-        mix=[('项目深挖（STAR + 数据）', .40), ('方法论与取舍', .20), ('指标体系设计', .15), ('方案设计/场景拆解', .15), ('协作冲突', .10)],
     ),
     'generic': dict(
-        label='通用',
+        label='通用（按材料推断风格）',
         values=['经历真实、表达清晰', '岗位核心能力匹配', '学习与成长潜力'],
         probing='由浅入深，先听完整回答再挑最模糊的一处追问；对没有量化的经历追问数据。',
-        mix=[('项目深挖（STAR + 数据）', .40), ('岗位核心能力', .25), ('业务理解', .15), ('协作与动机', .20)],
     ),
 }
 
+# 题型配比挂在角色层：同一家公司面产品与面数据分析师，考的东西完全不同。
 ROLE_FAMILIES = {
     'product': dict(
         label='产品经理 / 产品专家',
         focus='业务理解、数据敏感度、方案取舍、跨团队推动',
         data_rule='候选人讲到的每个项目/动作都必须有量化前后对比；缺失即追问「结果怎么衡量、变化了多少」。',
+        mix=[('项目深挖（STAR + 数据）', .40), ('业务与行业理解', .20), ('指标体系设计', .15), ('方案设计/场景拆解', .15), ('协作冲突与价值观', .10)],
+    ),
+    'operations': dict(
+        label='运营 / 用户增长',
+        focus='指标与转化、活动策划与复盘、渠道与用户分层、执行落地',
+        data_rule='活动与增长动作必须有转化率/ROI/留存的前后对比；缺失即追问口径与基数。',
+        mix=[('项目/活动深挖（STAR + 数据）', .35), ('指标体系与增长', .20), ('渠道与用户运营', .15), ('方案设计/场景拆解', .15), ('协作与执行', .15)],
+    ),
+    'data': dict(
+        label='数据分析师',
+        focus='指标口径、取数与分析能力、实验设计（A/B）、业务归因',
+        data_rule='讲任何分析结论都要能说清数据口径、样本与可信度；含糊即追问「这个数怎么算出来的」。',
+        mix=[('项目/分析深挖（STAR + 数据）', .35), ('指标口径与实验设计', .25), ('业务归因与洞察', .20), ('工具与方法（SQL等）', .10), ('协作与推动', .10)],
+    ),
+    'dev': dict(
+        label='软件研发工程师',
+        focus='系统与方案设计、工程取舍、线上问题排查、工程质量',
+        data_rule='性能/稳定性/规模必须有数字（QPS、RT、错误率）；「很快/很稳」一律追问基准。',
+        mix=[('项目深挖（STAR + 数据）', .35), ('系统设计', .25), ('工程取舍与难题攻坚', .20), ('线上排查/场景假设', .10), ('协作与工程习惯', .10)],
+    ),
+    'design': dict(
+        label='设计师',
+        focus='设计判断与决策依据、用户价值与业务约束的平衡、协作影响力',
+        data_rule='设计结果要有验证方式（数据、可用性测试、反馈）；「我觉得好」追问依据。',
+        mix=[('项目深挖（决策与依据）', .40), ('设计判断与方法', .20), ('用户价值与业务平衡', .20), ('协作与影响力', .20)],
     ),
     'hr': dict(
-        label='HR 面',
+        label='HR 面试官',
         focus='动机真实性、稳定性、自我认知、价值观行为化（BEI）',
         data_rule='动机与规划要能落到具体行为与事实；空泛表态（热爱/感兴趣）追问背后的具体事件。',
+        mix=[('动机核实（离职/求职原因）', .30), ('价值观 BEI 行为化', .25), ('稳定性与规划', .15), ('薪资预期', .15), ('自我认知', .15)],
     ),
     'general': dict(
         label='通用岗位',
         focus='岗位核心能力、项目真实度、协作与成长',
         data_rule='没有量化的经历一律追问数据来源与口径。',
+        mix=[('项目深挖（STAR + 数据）', .40), ('岗位核心能力', .25), ('业务理解', .15), ('协作与动机', .20)],
     ),
 }
 
@@ -79,57 +104,72 @@ INTENSITY = {
     'stress': dict(label='压力面', rule='主动质疑与挑战：对泛泛而谈直接打断并要求给具体例子；对漂亮话追问反事实（如果没成呢）；保持职业素养但不容含糊。'),
 }
 
+# 卡片 = 岗位专家（role family）；公司风格是独立开关（前端 styles），二者自由组合。
+# 具体岗位名（job_title）与目标公司（company）由建场入参带入——「具体岗位都不确定怎么面试」。
 PERSONA_PRESETS = [
-    dict(id='ali_product', name='阿里产品专家', company_style='alibaba', role_family='product',
+    dict(id='product', name='产品专家', role_family='product',
          rounds=['business', 'cross', 'director', 'hr'], default_round='business',
-         blurb='连环 WHY + 数据拷问 + 价值观底色，按阿里 P6/P7 产品面节奏出题与追问',
-         tags=['连环 WHY', '数据拷问', '场景拆解']),
-    dict(id='bigtech_product', name='互联网产品面试官', company_style='bigtech', role_family='product',
-         rounds=['business', 'cross', 'director'], default_round='business',
-         blurb='一线大厂通用产品面：impact 量化、方案取舍、快节奏挑战式追问',
-         tags=['impact 量化', '快节奏']),
-    dict(id='hr_interviewer', name='HR 面试官', company_style='generic', role_family='hr',
+         blurb='项目深挖 + 指标体系 + 方案设计，产品岗全轮次通吃', tags=['项目深挖', '指标体系', '方案设计']),
+    dict(id='operations', name='运营专家', role_family='operations',
+         rounds=['business', 'cross', 'director', 'hr'], default_round='business',
+         blurb='活动复盘 + 增长指标 + 用户分层，运营岗的转化与 ROI 追问', tags=['转化率', 'ROI', '活动复盘']),
+    dict(id='data', name='数据分析师', role_family='data',
+         rounds=['business', 'cross', 'director', 'hr'], default_round='business',
+         blurb='指标口径 + A/B 实验设计 + 业务归因，专治「这个数怎么算的」', tags=['口径', 'A/B 实验', '归因']),
+    dict(id='dev', name='软件研发工程师', role_family='dev',
+         rounds=['business', 'cross', 'director', 'hr'], default_round='business',
+         blurb='系统设计 + 工程取舍 + 线上排查，技术面的深度追问', tags=['系统设计', '工程取舍', '排查']),
+    dict(id='design', name='设计师', role_family='design',
+         rounds=['business', 'cross', 'director', 'hr'], default_round='business',
+         blurb='设计决策依据 + 用户价值与业务平衡，追问「凭什么这么设计」', tags=['设计判断', '验证依据']),
+    dict(id='hr', name='HR 面试官', role_family='hr',
          rounds=['hr'], default_round='hr',
-         blurb='离职原因、薪资预期、职业规划与价值观行为化追问，专练 HR 关卡',
-         tags=['动机核实', 'BEI', '谈薪']),
-    dict(id='custom', name='自定义面试官', company_style='generic', role_family='general',
+         blurb='离职原因、薪资预期、职业规划与价值观行为化追问，专练 HR 关卡', tags=['动机核实', 'BEI', '谈薪']),
+    dict(id='custom', name='自定义岗位', role_family='general',
          rounds=['business', 'cross', 'director', 'hr'], default_round='business',
-         blurb='按 JD 内容自动推断面试风格，任何公司与岗位都能练',
-         tags=['按 JD 推断']),
+         blurb='填上具体岗位名称再开面；按 JD 与岗位名自动推断考什么', tags=['按 JD 推断', '任意岗位']),
 ]
 
 
 def persona_cards():
-    """前端卡片网格：内置面试官人设卡（名称/简介/可选轮次），WorkBuddy 专家卡的产品形态。"""
-    cards = []
-    for preset in PERSONA_PRESETS:
-        cards.append(dict(id=preset['id'], name=preset['name'], blurb=preset['blurb'], tags=preset['tags'],
-                          rounds=[dict(id=round_id, label=ROUND_STYLES[round_id]['label']) for round_id in preset['rounds']],
-                          default_round=preset['default_round'],
-                          company=COMPANY_STYLES[preset['company_style']]['label']))
-    return cards
+    """前端开面面板：岗位专家卡 + 公司风格开关（二者自由组合）。"""
+    cards = [dict(id=preset['id'], name=preset['name'], blurb=preset['blurb'], tags=preset['tags'],
+                  rounds=[dict(id=round_id, label=ROUND_STYLES[round_id]['label']) for round_id in preset['rounds']],
+                  default_round=preset['default_round'])
+             for preset in PERSONA_PRESETS]
+    styles = [dict(id=style_id, label=style['label']) for style_id, style in COMPANY_STYLES.items()]
+    return cards, styles
 
 
 def get_preset(preset_id):
     for preset in PERSONA_PRESETS:
         if preset['id'] == preset_id:
             return preset
-    raise ValueError('未知的面试官画像')
+    raise ValueError('未知的面试官岗位画像')
 
 
-def build_persona(preset_id, round_id, intensity='standard'):
-    """把卡片 + 轮次 + 强度编译成三段式人设（角色说明/工作方法/任务要求的素材）。"""
+def get_company_style(style_id):
+    style = COMPANY_STYLES.get(style_id)
+    if style is None:
+        raise ValueError('未知的公司面试风格')
+    return style
+
+
+def build_persona(preset_id, round_id, intensity='standard', company_style='generic', job_title='', company_name=''):
+    """把岗位卡 × 公司风格 × 轮次 × 强度编译成三段式人设（角色说明/工作方法/任务要求的素材）。"""
     preset = get_preset(preset_id)
     if round_id not in preset['rounds']:
         round_id = preset['default_round']
-    company = COMPANY_STYLES[preset['company_style']]
+    style = get_company_style(company_style)
     role = ROLE_FAMILIES[preset['role_family']]
     round_style = ROUND_STYLES[round_id]
     return dict(
-        preset_id=preset_id, name=preset['name'], company=company['label'],
+        preset_id=preset_id, name=preset['name'], role_label=role['label'],
+        company=style['label'], company_style_key=company_style,
+        job_title=(job_title or '').strip(), company_name=(company_name or '').strip(),
         round=round_id, round_label=round_style['label'], intensity=intensity,
         intensity_label=INTENSITY[intensity]['label'],
-        role=role, company_style=company, round_style=round_style,
+        role=role, company_style=style, round_style=round_style,
     )
 
 
@@ -150,21 +190,24 @@ ADVANCE_TOOL = dict(
 
 
 def build_interviewer_system(persona, material, plan, *, phase='opening'):
-    """面试官 system prompt：三段式人设 + 导演规则 + 题单 + 候选材料。
+    """面试官 system prompt：三段式人设 + 导演规则 + 题单 + 候选材料（含公司情报）。
 
     导演规则（hidden direction）：追问优先级 无量化数据 > 无个人动作 > 无结果 > STAR 缺失；
     答透即换题不恋战；每题最多追问 3 层；不剧透参考答案、不实时点评——评价全部留给复盘。
     """
-    mix_text = '；'.join(f'{name}（{int(weight * 100)}%）' for name, weight in persona['company_style']['mix'])
     questions_text = '\n'.join(
         f'{index}. [{item["topic"]}]（来源:{item["source"]}）{item["question"]}\n   考察点:{item["focus"]} 追问路径:{"/".join(item["followups"])}'
         for index, item in enumerate(plan['questions']))
     gaps_text = '\n'.join(f'- {gap}' for gap in material.get('gaps', [])[:8]) or '（本场没有适配评估数据）'
+    target_line = persona['job_title'] or material.get('job_title') or '（未指明具体岗位，按画像与材料推断）'
+    company_line = material.get('company') or persona['company_name'] or '（未指明公司）'
+    brief_text = (material.get('company_brief') or '').strip()
+    company_section = f'\n公司情报（可自然融入提问，如结合业务场景出方案题；不确定的信息不要当事实引用）：\n{brief_text}' if brief_text else ''
     return f"""你是本场模拟面试的面试官，全程保持角色，绝不提及自己是 AI 或在「模拟」。
 
 【角色说明】
-- 公司风格：{persona['company']}。看重：{'；'.join(persona['company_style']['values'])}。
-- 岗位视角：{persona['role']['label']}，关注 {persona['role']['focus']}。
+- 面试风格：{persona['company']}。看重：{'；'.join(persona['company_style']['values'])}。
+- 岗位视角：{persona['role_label']}，关注 {persona['role']['focus']}。本次招聘岗位：{target_line}；目标公司：{company_line}。
 - 本轮次：{persona['round_label']}。{persona['round_style']['focus']}。
 - 面试强度：{persona['intensity_label']}。{INTENSITY[persona['intensity']]['rule']}
 - 口吻：直接、不客套、有深度，像真实大厂面试官；提问由浅入深直到找到能力边界。
@@ -193,7 +236,7 @@ JD 关键信息：
 {gaps_text}
 
 简历要点：
-{material.get('resume_digest') or '（未提供简历，只按 JD 与通用题提问）'}"""
+{material.get('resume_digest') or '（未提供简历，只按 JD 与通用题提问）'}{company_section}"""
 
 
 # ---- 出题：三源合一 → 结构化题单 ----
@@ -233,13 +276,15 @@ def build_question_plan(persona, material, *, question_count=8):
     """出题：一次非流式大预算调用（分析绑定），Pydantic 校验失败直接报错给前端。"""
     from .model_transport import complete
     payload = dict(
-        persona=dict(company=persona['company'], round=persona['round_label'], role=persona['role']['label'],
-                     focus=persona['role']['focus'], mix=[dict(topic=name, weight=weight) for name, weight in persona['company_style']['mix']],
+        persona=dict(company=persona['company'], round=persona['round_label'], role=persona['role_label'],
+                     job_title=persona['job_title'], focus=persona['role']['focus'],
+                     mix=[dict(topic=name, weight=weight) for name, weight in persona['role']['mix']],
                      probing=persona['company_style']['probing']),
         question_count=question_count,
         jd=material.get('jd_summary') or '',
         gaps=material.get('gaps') or [],
         resume=material.get('resume_digest') or '',
+        company_brief=material.get('company_brief') or '',
     )
     content, _ = complete(get_config(), _PLAN_SYSTEM, json.dumps(payload, ensure_ascii=False),
                           temperature=.3, max_tokens=PLAN_MAX_TOKENS, timeout=300)
@@ -257,10 +302,24 @@ def build_question_plan(persona, material, *, question_count=8):
 
 JD_SUMMARY_CHARS = 3000
 RESUME_DIGEST_CHARS = 4000
+COMPANY_BRIEF_CHARS = 1800
 
 
-def assemble_material(job, resume, report=None):
-    """出题与面试官共用的候选材料包：JD 摘录 + 简历存档摘录 + 适配评估缺口。
+def company_brief_from(repo, company_name, *, limit=5, per_item_chars=300):
+    """公司资料库 → 面试官的公司情报摘要（非岗位 postings 的证据，新→旧取前几条）。"""
+    if not (company_name or '').strip():
+        return ''
+    items = repo.evidence(company=company_name.strip(), include_job_postings=False)
+    parts = []
+    for item in items[:limit]:
+        text = ' '.join(str(item.get('text') or '').split())[:per_item_chars]
+        if text:
+            parts.append(f"[{item.get('kind', '材料')}] {item.get('title', '')}：{text}")
+    return '\n'.join(parts)[:COMPANY_BRIEF_CHARS]
+
+
+def assemble_material(job, resume, report=None, company_brief=''):
+    """出题与面试官共用的候选材料包：JD 摘录 + 简历存档摘录 + 适配评估缺口 + 公司情报。
 
     gaps 是模拟面试相对开源方案的差异化弹药：评估判定 partial/unmet/unknown 的
     要求清单（requirement：rationale），出题时至少一半转成核实型问题。
@@ -275,6 +334,7 @@ def assemble_material(job, resume, report=None):
         jd_summary=((job or {}).get('description') or '').strip()[:JD_SUMMARY_CHARS],
         resume_digest=((resume or {}).get('text') or '').strip()[:RESUME_DIGEST_CHARS],
         gaps=gaps[:10], report_id=(report or {}).get('id', ''), resume_label=(resume or {}).get('label', ''),
+        company_brief=(company_brief or '').strip(),
     )
 
 

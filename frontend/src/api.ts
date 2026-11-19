@@ -505,9 +505,11 @@ export function reembedKnowledge() { return post<KnowledgeReembedResult>('/knowl
 export type AnalysisStatusResult = { report: Analysis | null; message: string | null }
 export function updateAnalysisStatus(jobId: string, jdQuote: string, status: string) { return api<AnalysisStatusResult>(`/jobs/${encodeURIComponent(jobId)}/analysis/status`, { method: 'PUT', body: JSON.stringify({ jd_quote: jdQuote, status }) }) }
 
-// ---- 模拟面试：画像卡片 → 出题 → 逐题对话 → 复盘（后台 run + SSE，同 analyze/chat 模式） ----
+// ---- 模拟面试：岗位专家卡 × 公司风格 → 出题 → 逐题对话 → 复盘（后台 run + SSE，同 analyze/chat 模式） ----
 export type InterviewRound = { id: string; label: string }
-export type InterviewPersonaCard = { id: string; name: string; blurb: string; tags: string[]; rounds: InterviewRound[]; default_round: string; company: string }
+// 卡片=岗位角色（产品/运营/数据/研发/设计/HR/自定义），公司风格是独立开关，二者自由组合。
+export type InterviewPersonaCard = { id: string; name: string; blurb: string; tags: string[]; rounds: InterviewRound[]; default_round: string }
+export type InterviewStyle = { id: string; label: string }
 export type InterviewPlanQuestion = { topic: string; question: string; focus: string; followups: string[]; source: string }
 export type InterviewPlan = { opening: string; questions: InterviewPlanQuestion[] }
 // 进度片段：按题归档的回答/弱点信号/面试官内心评价；index=-1 是反问环节的 wrap 片段（不复盘）。
@@ -519,7 +521,7 @@ export type InterviewReport = { summary: string; dimensions: InterviewDimension[
 export type InterviewIntensity = 'gentle' | 'standard' | 'stress'
 export type InterviewSession = {
   id: string; title: string; job_id: string; company: string; job_title: string
-  persona: { preset_id: string; name: string; company: string; round: string; round_label: string; intensity_label: string }
+  persona: { preset_id: string; name: string; role_label: string; company: string; round: string; round_label: string; intensity_label: string; job_title: string; company_name: string }
   config: { question_count: number; intensity: InterviewIntensity; preset_id: string }
   material: { resume_label?: string; gaps?: string[] }
   question_plan: InterviewPlan | null
@@ -532,12 +534,12 @@ export type InterviewSession = {
 export type InterviewSessionSummary = { id: string; title: string; company: string; job_id: string; status: InterviewSession['status']; persona_name: string; round_label: string; has_report: boolean; created_at: string; updated_at: string }
 export type InterviewMessage = { id: string; ts: string; role: 'user' | 'assistant'; content: string; reasoning?: string }
 export type InterviewRunStatus = { run_id: string; session_id: string; done: boolean; cancelled: boolean }
-export function listInterviewPersonas() { return api<{ cards: InterviewPersonaCard[] }>('/interview/personas') }
+export function listInterviewPersonas() { return api<{ cards: InterviewPersonaCard[]; styles: InterviewStyle[] }>('/interview/personas') }
 export function listInterviewSessions() { return api<{ sessions: InterviewSessionSummary[] }>('/interview/sessions') }
 export function getInterviewSession(id: string) { return api<{ session: InterviewSession; active_run: InterviewRunStatus | null }>(`/interview/sessions/${encodeURIComponent(id)}`)
 }
 export function getInterviewMessages(id: string) { return api<{ messages: InterviewMessage[] }>(`/interview/sessions/${encodeURIComponent(id)}/messages`) }
-export function createInterviewSession(body: { persona_id: string; round?: string; intensity?: InterviewIntensity; question_count?: number; job_id?: string; jd_text?: string }) {
+export function createInterviewSession(body: { persona_id: string; company_style?: string; round?: string; intensity?: InterviewIntensity; question_count?: number; job_id?: string; jd_text?: string; job_title?: string; company?: string }) {
   return post<{ session_id: string; run_id: string }>('/interview/sessions', body)
 }
 export function sendInterviewTurn(id: string, answer: string) { return post<{ run_id: string; session_id: string }>(`/interview/sessions/${encodeURIComponent(id)}/runs`, { answer }) }

@@ -138,13 +138,20 @@ class AnalyzeInput(RequestModel):
 
 
 class InterviewCreateInput(RequestModel):
-    """模拟面试开场合：画像卡 + 轮次 + 强度；岗位与粘贴 JD 二选一，都不给即纯自由练。"""
+    """模拟面试开场合：岗位专家卡 × 公司风格 × 轮次 × 强度。
+
+    目标三选一：岗位库 job_id / 粘贴 jd_text / 纯自由练（custom 卡必须给 job_title 作岗位锚点）；
+    company 供自由练/粘贴 JD 时拉公司资料库情报。
+    """
     persona_id: str = Field(min_length=1, max_length=60)
+    company_style: str = Field(default='generic', max_length=30)
     round: str = Field(default='', max_length=30)  # 空=用画像卡默认轮次
     intensity: Literal['gentle', 'standard', 'stress'] = 'standard'
     question_count: int = Field(default=8, ge=4, le=12)
     job_id: str | None = Field(default=None, max_length=100)
     jd_text: str = Field(default='', max_length=20000)
+    job_title: str = Field(default='', max_length=120)
+    company: str = Field(default='', max_length=120)
 
 
 class InterviewTurnInput(RequestModel):
