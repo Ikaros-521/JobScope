@@ -87,10 +87,20 @@ const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon: string
   ] },
 ]
 const NAV_STORAGE_KEY = 'jobscope-nav-expanded'
+// 视图级深链（P1，2026-11-19）：#/<view> 双向同步——刷新/书签保位，浏览器回退走回上个视图。
+// 用 #/ 前缀避开与页面内元素 id 的锚点冲突；不认识的 hash 落回今日概览。
+const VIEW_IDS: readonly ViewId[] = NAV_GROUPS.flatMap(group => group.items.map(item => item.id))
+function viewFromHash(): ViewId | null {
+  const hash = window.location.hash
+  if (!hash.startsWith('#/')) return null
+  const candidate = hash.slice(2)
+  return (VIEW_IDS as readonly string[]).includes(candidate) ? candidate as ViewId : null
+}
 
 export default function App() {
   // 今日概览（2026-11-18）是每天的第一屏：待办、新增与备份提醒都在这里。
-  const [view, setView] = useState<ViewId>('today')
+  // 带 #/<view> 深链打开时落深链视图（刷新/书签保位）。
+  const [view, setView] = useState<ViewId>(() => viewFromHash() ?? 'today')
   // 导航组展开状态：默认全展开（首次访问能看到全部功能）；切换视图自动展开所在组，从不自动收起。
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => {
     try {
@@ -118,6 +128,30 @@ export default function App() {
       return next
     })
   }, [view])
+  // 地址栏 ↔ 视图双向同步：切换压入历史（浏览器回退可走回上个视图），回退/前进/手改地址经 hashchange 生效。
+  useEffect(() => {
+    const onHashChange = () => { const next = viewFromHash(); if (next) setView(next) }
+    window.addEventListener('hashchange', onHashChange)
+    return () => window.removeEventListener('hashchange', onHashChange)
+  }, [])
+  useEffect(() => {
+    const target = `#/${view}`
+    if (window.location.hash === target) return
+    // 无 hash 的首次进入只替换当前历史项（避免多压一条「空 → #/today」）；后续切换压栈，回退键可走回上个视图。
+    if (!window.location.hash) window.history.replaceState(null, '', target)
+    else window.location.hash = `/${view}`
+  }, [view])
+  // 刷新回到岗位研究时接续上次选中的岗位：先验证还在库里（被删则清掉记忆），再走 selectJob 全量复位。
+  useEffect(() => {
+    if (view !== 'jobs') return
+    let last: string | null = null
+    try { last = sessionStorage.getItem('jobscope-last-job') } catch { /* 存储不可用忽略 */ }
+    if (!last) return
+    void api<Job>(`/jobs/${encodeURIComponent(last)}`)
+      .then(() => selectJob(last as string))
+      .catch(() => { try { sessionStorage.removeItem('jobscope-last-job') } catch { /* 同上 */ } })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   // 岗位详情「优化简历」跳转工坊时的预填（工坊消费后清空，避免切回时重复生效）。
   const [workshopPrefill, setWorkshopPrefill] = useState<WorkshopPrefill | null>(null)
   // 横评已选列表（共享 store）：侧栏徽标用；资料库/岗位详情「加入横评」直接写这份 store。
@@ -395,6 +429,7 @@ export default function App() {
   function selectJob(id: string) {
     closeAnalyzeStream(); setAnalyzeRun(null); analyzeActiveRef.current = false; setAnalysisHistory(null); setActiveReportId(null); setJobVersions(null)  // 切走岗位停止消费；后台 run 继续跑完并落库
     setPaneFocus('info'); setDiscoveryOpen(false); jobGeneration.current++; activeJobId.current = id; setSelectedId(id); setDetail(null); setAnalysis(null); setReliability(null); setReliabilityHistory(null); setReliabilityLoading(false); setReliabilityAction(null); setEvidenceFocus(''); setDescExpanded(false); setCompanyPage(0); setTab('overview')
+    try { sessionStorage.setItem('jobscope-last-job', id) } catch { /* 存储不可用时仅本次会话生效 */ }
     const panel = document.querySelector<HTMLElement>('.detail-panel')
     panel?.scrollTo({ top: 0 })
     scrollToSelectedDetail.current = window.matchMedia('(max-width: 1040px)').matches
@@ -705,6 +740,22 @@ export default function App() {
     setJobs(list => list.map(entry => entry.id === item.id ? { ...entry, ...patch } : entry))
     setDetail(current => current?.job.id === item.id ? { ...current, job: { ...current.job, ...patch } } : current)
   }
+
+  // 报告缺口 → 工坊闭环（P1，2026-11-19）：未满足/部分满足的要求与缺口清单组装成优化重点
+  // 说明，走既有 prefill 链路（自动选中岗位 + 预填说明），优化产出存档后可回评对比。
+  function optimizeFromGaps(report: Analysis) {
+    if (!job) return
+    const problemRequirements = report.requirements
+      .filter(item => item.status === 'unmet' || item.status === 'partial')
+      .map(item => String(item.requirement || '').trim()).filter(Boolean)
+    const gaps = (report.gaps || []).map(item => plain(item)).filter(Boolean)
+    const lines: string[] = []
+    if (problemRequirements.length) lines.push(`优先补强以下未满足/部分满足的岗位要求：\n- ${problemRequirements.join('\n- ')}`)
+    if (gaps.length) lines.push(`评估指出的缺口：\n- ${gaps.join('\n- ')}`)
+    // instructions 后端上限 2000 字符，超长截断而不是报错打回。
+    setWorkshopPrefill({ jobId: job.id, company: job.company, jobTitle: job.title, instructions: lines.join('\n\n').slice(0, 2000) })
+    setView('workshop')
+  }
   async function setStarredSelected(starred: boolean) {
     await perform('star-batch', async () => {
       const result = await patchJobs([...selectedIds], { starred })
@@ -826,7 +877,7 @@ export default function App() {
                 </select><span className="tiny-label">评估适配自动使用所选简历；工坊针对该岗位的新产出会自动接管</span></div>}
                 {tab === 'analysis' && (!analysis ? (analyzeRun ? <AnalyzeProgress run={analyzeRun} onCancel={() => void cancelAnalyze()} /> : <Empty title={busy === 'analyze' ? '正在对应岗位要求…' : '让经历与要求逐项对照'} icon="resume">{busy === 'analyze' ? '分析完成后，将展示匹配依据、未知项与面试核实问题。' : <>{resumeSaved ? '点击“评估适配”，查看有依据的匹配与缺口。' : <>先在<button className="inline-button" onClick={() => setView('resume')}>我的简历</button>保存个人经历，再生成适配分析。</>}分数仅供辅助比较，不代表录用概率。</>}</Empty>) : <>
                   {analysisHistory && analysisHistory.length > 1 && <div className="analysis-history"><span className="analysis-history-label">历史评估</span><div className="analysis-history-list">{analysisHistory.map(item => <button key={item.id} className={item.id === activeReportId ? 'active' : ''} title={item.method === 'rule_assisted' ? '规则分析（未绑定分析模型时自动回退）' : '模型辅助语义分析'} onClick={() => void loadHistoryReport(item.id)}>{date(item.created_at)}{item.score != null ? ` · ${Math.round(item.score)} 分` : ''}{item.method === 'rule_assisted' ? ' · 规则' : ''}</button>)}</div></div>}
-                  <AnalysisView analysis={analysis} onStatusChange={(quote, status) => void changeRequirementStatus(quote, status)} />
+                  <AnalysisView analysis={analysis} onStatusChange={(quote, status) => void changeRequirementStatus(quote, status)} onOptimizeGaps={() => optimizeFromGaps(analysis)} />
                 </>)}
                 {tab === 'evidence' && <><div className="section-heading"><div><h3>证据与出处</h3></div><button className="text-button" onClick={() => openModal('evidence')}><Icon name="plus" size={14} />补充资料</button></div>{evidenceTotal ? <JobEvidence key={job.id} jobId={job.id} focus={evidenceFocus} /> : <Empty title="尚无证据资料">采集岗位或补充公司材料后，原文与来源会保存在这里。</Empty>}</>}
               </div>
@@ -908,7 +959,7 @@ function AnalyzeProgress({ run, onCancel }: { run: AnalyzeRunState; onCancel: ()
 }
 const ANALYSIS_STATUS_ORDER: Record<string, number> = { unmet: 0, partial: 1, unknown: 2, met: 3 }
 
-function AnalysisView({ analysis, onStatusChange }: { analysis: Analysis; onStatusChange: (quote: string, status: string) => void }) {
+function AnalysisView({ analysis, onStatusChange, onOptimizeGaps }: { analysis: Analysis; onStatusChange: (quote: string, status: string) => void; onOptimizeGaps?: () => void }) {
   const coverage = Math.max(0, Math.min(100, analysis.coverage * 100))
   const judged = analysis.requirements.filter(item => item.status !== 'unknown').length
   const score = analysis.score
@@ -976,7 +1027,15 @@ function AnalysisView({ analysis, onStatusChange }: { analysis: Analysis; onStat
     </tr>)}</tbody></table></div> : <div className="inline-empty">当前筛选下没有条目</div>) : <div className="inline-empty">尚未提取到可分析的要求</div>}
       </>}
       {analysisTab === 'hard' && Boolean(analysis.hard_conditions?.length) && <div className="hard-conditions in-subtab"><h4>硬性条件 · 单独核实</h4>{analysis.hard_conditions?.map((item, index) => <HardCondition key={index} value={item} />)}</div>}
-      {analysisTab === 'basis' && <div className="analysis-columns"><AnalysisList title="已有依据" items={analysis.strengths} /><AnalysisList title="缺口与未知" items={analysis.gaps} /></div>}
+      {analysisTab === 'basis' && <>
+        <div className="analysis-columns"><AnalysisList title="已有依据" items={analysis.strengths} /><AnalysisList title="缺口与未知" items={analysis.gaps} /></div>
+        {/* 报告→工坊闭环（P1）：读出缺口不止步于展示，带着未满足项直接进优化流程。 */}
+        {(analysis.gaps?.length || analysis.requirements.some(item => item.status === 'unmet' || item.status === 'partial')) && onOptimizeGaps && (
+          <div className="analysis-gap-actions">
+            <button type="button" className="button secondary small" onClick={onOptimizeGaps}><Icon name="wand" size={14} />带着缺口去工坊优化</button>
+            <span className="tiny-label">未满足 / 部分满足的要求与缺口清单，会作为优化重点说明带入工坊</span>
+          </div>)}
+      </>}
       {analysisTab === 'interview' && <AnalysisList title="面试时建议核实" items={analysis.questions} />}
       {analysisTab === 'facts' && <div className="analysis-facts-grid"><SalaryView value={analysis.salary} /><div className="analysis-note company-summary"><h4>公司证据</h4><p>{readable(analysis.company_summary)}</p><span className="source-annotation">出处见「证据资料」 · {analysis.evidence_ids.length} 条关联证据</span></div></div>}
     </div>

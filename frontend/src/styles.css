@@ -639,6 +639,8 @@ button.today-stat { cursor: pointer; text-align: left; }
 .analysis-subtabs button.active { border-color: var(--green); color: var(--green); background: var(--selected); font-weight: 600; }
 .analysis-subtabs button span { font-size: 12px; font-weight: 400; color: inherit; opacity: .75; }
 .analysis-subtab-panel { margin-top: 14px; }
+/* 报告→工坊闭环（2026-11-19）：「依据缺口」页签底部的行动入口，缺口不止步于展示。 */
+.analysis-gap-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--line); }
 .requirements-table-wrap { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
 .requirements-table { width: 100%; border-collapse: collapse; table-layout: fixed; text-align: left; font-size: 13px; line-height: 1.9; }
 .requirements-table th { font-size: 12px; color: #525252; font-weight: 500; background: #f5f5f5; padding: 12px; border-bottom: 1px solid var(--line); }

@@ -9,7 +9,8 @@ import { ResumeDiff } from './ResumeDiff'
 import { toast } from './toast'
 
 // 岗位详情页「优化简历」跳转预填：带上岗位定位，进入后自动选中该岗位。
-export type WorkshopPrefill = { jobId: string; company: string; jobTitle: string }
+// instructions（P1 闭环，2026-11-19）：评估报告「带着缺口优化」传入的重点说明。
+export type WorkshopPrefill = { jobId: string; company: string; jobTitle: string; instructions?: string }
 
 const EXPORT_ITEMS = [
   { format: 'pdf', label: 'PDF' },
@@ -108,11 +109,11 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
     void exportResumeVersion(version.id, format, name).catch(err => toast((err as Error).message, 'error'))
   }
 
-  // 岗位详情跳转预填：拉取该岗位并自动选中。
+  // 岗位详情跳转预填：拉取该岗位并自动选中；评估报告带来的缺口说明一并预填到优化重点。
   useEffect(() => {
     if (!prefill) return
     api<Job>(`/jobs/${encodeURIComponent(prefill.jobId)}`)
-      .then(job => { setSelectedJob(job); setTargetMode('job'); setJobQuery(`${prefill.jobTitle} ${prefill.company}`.trim()) })
+      .then(job => { setSelectedJob(job); setTargetMode('job'); setJobQuery(`${prefill.jobTitle} ${prefill.company}`.trim()); setInstructions(prefill.instructions || '') })
       .catch(() => toast('岗位档案读取失败，请手动选择目标岗位'))
       .finally(onPrefillConsumed)
   }, [prefill, onPrefillConsumed])
