@@ -814,7 +814,7 @@ export default function App() {
 
       {view === 'knowledge' && <KnowledgeView onCountChange={setKnowledgeTotal} />}
 
-      {view === 'global' && <><section className="page-intro chat-intro"><div><h1>全局对话</h1><p>跨岗位、跨公司检索项目资料与知识库，回答标注公司与出处</p></div><span className="revision-label">会话保存在本机</span></section><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onManageExtensions={() => openSettings('extensions')} onOpenKnowledge={() => setView('knowledge')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} prefill={chatPrompt} /></>}
+      {view === 'global' && <ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onManageExtensions={() => openSettings('extensions')} onOpenKnowledge={() => setView('knowledge')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} prefill={chatPrompt} />}
 
       {view === 'compare' && <CompanyCompare />}
 
