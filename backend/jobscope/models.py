@@ -137,6 +137,20 @@ class AnalyzeInput(RequestModel):
     job_id: str = Field(min_length=1, max_length=100)
 
 
+class InterviewCreateInput(RequestModel):
+    """模拟面试开场合：画像卡 + 轮次 + 强度；岗位与粘贴 JD 二选一，都不给即纯自由练。"""
+    persona_id: str = Field(min_length=1, max_length=60)
+    round: str = Field(default='', max_length=30)  # 空=用画像卡默认轮次
+    intensity: Literal['gentle', 'standard', 'stress'] = 'standard'
+    question_count: int = Field(default=8, ge=4, le=12)
+    job_id: str | None = Field(default=None, max_length=100)
+    jd_text: str = Field(default='', max_length=20000)
+
+
+class InterviewTurnInput(RequestModel):
+    answer: str = Field(default='', max_length=8000)  # 空=开场（面试官自我介绍+第一题）
+
+
 class ModelBindingInput(RequestModel):
     """功能级模型绑定：channel 指向已存渠道+模型；embedding 另有 local；抽取/分析可 disabled/inherit。"""
     purpose: Literal["agent", "embedding", "extraction", "analysis"]

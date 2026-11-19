@@ -26,9 +26,11 @@ from . import collect_service
 from . import company_merge
 from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
+from .interview import assemble_material, persona_cards
+from .interview_runs import InterviewManager, interview_scope, new_session
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput
+from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -100,12 +102,14 @@ def create_app(data_dir=None):
     bindings.migrate_legacy_activation(settings)
     runs = RunManager(repo)
     analyze_runs = AnalyzeManager(repo)
+    interview_runs = InterviewManager(repo)
     scope_expansions = ScopeExpansionStore(repo)
     knowledge = KnowledgeStore(repo)
     knowledge_imports = KnowledgeImportManager(knowledge, repo)
     app.state.knowledge_imports = knowledge_imports  # exposed for tests: 并发上传要走同一个锁
     app.state.runs = runs  # exposed for tests: join worker threads to avoid cross-test leaks
     app.state.analyze_runs = analyze_runs  # exposed for tests: join worker threads to avoid cross-test leaks
+    app.state.interview_runs = interview_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
     # 数据备份（2026-11-18）：`.data/` 是生产数据，备份/恢复能力是一等公民而非运维纪律。
@@ -1220,6 +1224,124 @@ def create_app(data_dir=None):
     def cancel_analyze_run(run_id: str = PathParam(max_length=100)):
         try:
             return analyze_runs.cancel(run_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+
+    # ---- 模拟面试：画像卡片 → 出题 → 逐题对话 → 复盘报告（后台 run + SSE，同 analyze 模式） ----
+    # 出题/面试官/复盘统一走「分析」功能绑定（effective() 已含回落全局对话模型的逻辑）。
+
+    @app.get('/api/interview/personas')
+    def interview_personas():
+        return dict(cards=persona_cards())
+
+    def interview_material(job_id, jd_text):
+        """建场次的候选材料包：岗位（含评估缺口）> 粘贴 JD > 纯自由练。简历随岗位自动带存档。"""
+        if job_id:
+            job = get_job(job_id)
+            if job['source'] == 'boss' and job.get('description_status') != 'complete':
+                raise HTTPException(409, '当前只有搜索列表摘要，请先取得完整岗位职责后再模拟面试')
+            pinned = repo.pinned_resume_version(job_id)
+            if pinned and pinned['markdown'].strip():
+                resume = dict(text=pinned['markdown'], format='text', label=f"存档《{pinned['title']}》")
+            else:
+                resume = repo.resume()
+            _summaries, report = repo.list_reports(job_id)
+            return assemble_material(job, resume, report)
+        if jd_text.strip():
+            return assemble_material(dict(id='', company='', title='自定义 JD', description=jd_text.strip(), source='user_import'), repo.resume())
+        return assemble_material(None, repo.resume())
+
+    @app.post('/api/interview/sessions')
+    def create_interview_session(data: InterviewCreateInput):
+        if not purpose_configured('analysis'):
+            raise HTTPException(400, '模拟面试需要先在设置中心绑定分析模型')
+        try:
+            material = interview_material(data.job_id, data.jd_text)
+            session = repo.save_interview_session(new_session(
+                persona_id=data.persona_id, round_id=data.round, intensity=data.intensity,
+                question_count=data.question_count, material=material))
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        handle = interview_runs.start_plan(session)
+        return dict(session_id=session['id'], run_id=handle.id)
+
+    @app.get('/api/interview/sessions')
+    def list_interview_sessions():
+        return dict(sessions=repo.interview_sessions())
+
+    def get_session_or_404(session_id):
+        session = repo.get_interview_session(session_id)
+        if session is None:
+            raise HTTPException(404, '面试场次不存在')
+        return session
+
+    @app.get('/api/interview/sessions/{session_id}')
+    def read_interview_session(session_id: str = PathParam(max_length=100)):
+        session = get_session_or_404(session_id)
+        handle = interview_runs.active_for_session(session_id)
+        return dict(session=session, active_run=handle.snapshot() if handle else None)
+
+    @app.get('/api/interview/sessions/{session_id}/messages')
+    def interview_session_messages(session_id: str = PathParam(max_length=100)):
+        session = get_session_or_404(session_id)
+        if not session.get('conversation_id'):
+            return dict(messages=[])
+        conversation = repo.get_conversation(session['conversation_id'], interview_scope(session_id))
+        return dict(messages=conversation['messages'])
+
+    @app.post('/api/interview/sessions/{session_id}/runs')
+    def start_interview_turn(data: InterviewTurnInput, session_id: str = PathParam(max_length=100)):
+        session = get_session_or_404(session_id)
+        if session['status'] not in ('ready', 'live') or not session.get('question_plan'):
+            raise HTTPException(409, '该场次还未准备好（出题中 / 复盘生成中 / 已结束）')
+        try:
+            handle = interview_runs.start_turn(session, data.answer)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return dict(run_id=handle.id, session_id=session_id)
+
+    @app.post('/api/interview/sessions/{session_id}/finish')
+    def finish_interview_session(session_id: str = PathParam(max_length=100)):
+        session = get_session_or_404(session_id)
+        if session['status'] not in ('ready', 'live'):
+            raise HTTPException(409, '当前状态不能生成复盘（出题中或已在复盘）')
+        handle = interview_runs.start_report(session)
+        return dict(run_id=handle.id)
+
+    @app.delete('/api/interview/sessions/{session_id}')
+    def delete_interview_session(session_id: str = PathParam(max_length=100)):
+        session = get_session_or_404(session_id)
+        handle = interview_runs.active_for_session(session_id)
+        if handle:
+            raise HTTPException(409, '场次正在生成中，请先停止再删除')
+        if session.get('conversation_id'):
+            try:
+                repo.delete_conversation(session['conversation_id'], interview_scope(session_id))
+            except ValueError:
+                pass  # 对话行已不在：删除会话仍要继续
+        repo.delete_interview_session(session_id)
+        return dict(ok=True)
+
+    @app.get('/api/interview/runs/{run_id}')
+    def interview_run_status(run_id: str = PathParam(max_length=100)):
+        handle = interview_runs.get(run_id)
+        if handle is None:
+            raise HTTPException(404, '运行不存在或已结束')
+        return handle.snapshot()
+
+    @app.get('/api/interview/runs/{run_id}/stream')
+    def interview_run_stream(run_id: str = PathParam(max_length=100)):
+        try:
+            generator = interview_runs.stream(run_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return StreamingResponse(generator(), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+    @app.post('/api/interview/runs/{run_id}/cancel')
+    def cancel_interview_run(run_id: str = PathParam(max_length=100)):
+        try:
+            return interview_runs.cancel(run_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
 

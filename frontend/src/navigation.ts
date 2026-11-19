@@ -1,7 +1,7 @@
 // 视图与导航的共享定义（2026-11-19 自 App.tsx 拆出）：App 壳做路由与侧栏，
 // JobResearch 等工作区组件需要引用同一套视图集合与深链解析，放独立模块避免循环导入。
 
-export type ViewId = 'today' | 'jobs' | 'favorites' | 'resume' | 'profile' | 'workshop' | 'sources' | 'evidence' | 'compare' | 'global' | 'knowledge' | 'logs' | 'settings'
+export type ViewId = 'today' | 'jobs' | 'favorites' | 'resume' | 'profile' | 'workshop' | 'sources' | 'evidence' | 'compare' | 'interview' | 'global' | 'knowledge' | 'logs' | 'settings'
 export type SettingsTab = 'model' | 'system' | 'extensions'
 
 export const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon: string; label: string }[] }[] = [
@@ -9,6 +9,7 @@ export const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon:
     { id: 'today', icon: 'sun', label: '今日概览' },
     { id: 'jobs', icon: 'jobs', label: '岗位研究' },
     { id: 'favorites', icon: 'star', label: '收藏' },
+    { id: 'interview', icon: 'mic', label: '模拟面试' },
     { id: 'evidence', icon: 'book', label: '公司资料库' },
     { id: 'compare', icon: 'chart', label: '数据分析' },
   ] },
@@ -36,6 +37,12 @@ export const VIEW_IDS: readonly ViewId[] = NAV_GROUPS.flatMap(group => group.ite
 export function viewFromHash(): ViewId | null {
   const hash = window.location.hash
   if (!hash.startsWith('#/')) return null
-  const candidate = hash.slice(2)
+  const candidate = hash.slice(2).split('?')[0]
   return (VIEW_IDS as readonly string[]).includes(candidate) ? candidate as ViewId : null
+}
+// 视图级深链可带查询参数（如 #/interview?job=<id> 预选岗位开模拟面试）；仅同视图刷新/回退时有意义。
+export function hashQuery(): URLSearchParams {
+  const hash = window.location.hash
+  const query = hash.includes('?') ? hash.slice(hash.indexOf('?') + 1) : ''
+  return new URLSearchParams(query)
 }

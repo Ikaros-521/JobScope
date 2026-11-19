@@ -1,0 +1,385 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Markdown } from './chat/Markdown'
+import { Icon } from './Icon'
+import {
+  api, cancelInterviewRun, createInterviewSession, deleteInterviewSession, finishInterview, getInterviewMessages,
+  getInterviewSession, listInterviewPersonas, listInterviewSessions, openInterviewStream, sendInterviewTurn,
+} from './api'
+import type { InterviewMessage, InterviewPersonaCard, InterviewSession, InterviewSessionSummary } from './api'
+
+// 模拟面试工作区（2026-11-19）：左侧场次列表 + 右侧「面试间 | 复盘报告」。
+// 面试官是纯拟真的无工具 agent：对话中零提示零点评，评价全部在复盘页签。
+// 流式渲染只复用 Markdown，不复用 ChatWorkspace（模型下拉/工具选项不适用面试场景）。
+
+export type InterviewDeepLink = { jobId: string; token: number } | null
+
+type StreamState = { runId: string; answer: string } | null
+
+const STATUS_NAMES: Record<string, string> = { planning: '出题中', ready: '待开始', live: '面试中', reporting: '复盘生成中', done: '已复盘', failed: '出题失败' }
+const INTENSITY_NAMES: Record<string, string> = { gentle: '温和', standard: '标准', stress: '压力面' }
+const SOURCE_NAMES: Record<string, string> = { jd: 'JD', gap: '评估缺口', resume: '简历', general: '通用' }
+
+export default function InterviewView({ deepLink, modelConfigured, onConfigureModel }: {
+  deepLink: InterviewDeepLink; modelConfigured: boolean; onConfigureModel: () => void
+}) {
+  const [personas, setPersonas] = useState<InterviewPersonaCard[]>([])
+  const [sessions, setSessions] = useState<InterviewSessionSummary[]>([])
+  const [selected, setSelected] = useState<string>('')
+  const [session, setSession] = useState<InterviewSession | null>(null)
+  const [messages, setMessages] = useState<InterviewMessage[]>([])
+  const [stream, setStream] = useState<StreamState>(null)
+  const [error, setError] = useState('')
+  const [tab, setTab] = useState<'room' | 'report'>('room')
+  // 新建面板：卡片优先（WorkBuddy 专家卡形态），配置后置——选卡即可开面，轮次/强度在卡下轻量调整。
+  const [creating, setCreating] = useState(false)
+  const [card, setCard] = useState<string>('')
+  const [round, setRound] = useState('')
+  const [intensity, setIntensity] = useState<'gentle' | 'standard' | 'stress'>('standard')
+  const [questionCount, setQuestionCount] = useState(8)
+  const [jdText, setJdText] = useState('')
+  const [prefill, setPrefill] = useState<{ jobId: string; label: string } | null>(null)
+  const [answer, setAnswer] = useState('')
+  const streamRef = useRef<EventSource | null>(null)
+  const selectedRef = useRef('')
+  selectedRef.current = selected
+  const threadRef = useRef<HTMLDivElement>(null)
+
+  const refreshSessions = useCallback(async () => {
+    try { setSessions((await listInterviewSessions()).sessions) } catch { /* 列表失败不阻塞面试间 */ }
+  }, [])
+
+  const closeStream = useCallback(() => { streamRef.current?.close(); streamRef.current = null; setStream(null) }, [])
+
+  const loadSession = useCallback(async (id: string) => {
+    try {
+      const detail = await getInterviewSession(id)
+      setSession(detail.session)
+      if (detail.session.conversation_id) {
+        const data = await getInterviewMessages(id)
+        if (selectedRef.current === id) setMessages(data.messages)
+      } else if (selectedRef.current === id) {
+        setMessages([])
+      }
+      // 后台仍在跑（切走再回来）：重连事件流续播，无需用户操作。
+      if (detail.active_run && !detail.active_run.done && streamRef.current === null) {
+        attach(detail.active_run.run_id)
+      }
+      return detail.session
+    } catch (err) { setError((err as Error).message); return null }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const attach = useCallback((runId: string) => {
+    closeStream()
+    setStream({ runId, answer: '' })
+    const source = openInterviewStream(runId, (event, data) => {
+      if (event === 'delta') {
+        setStream(current => current && current.runId === runId ? { ...current, answer: current.answer + String(data.text ?? '') } : current)
+        return
+      }
+      if (event === 'done') {
+        closeStream()
+        const next = data.session as InterviewSession | undefined
+        if (selectedRef.current && next && next.id === selectedRef.current) {
+          setSession(next)
+          void getInterviewMessages(next.id).then(item => { if (selectedRef.current === next.id) setMessages(item.messages) }).catch(() => {})
+        } else if (next) {
+          setSelected(next.id); selectedRef.current = next.id; setSession(next)
+          void getInterviewMessages(next.id).then(item => { if (selectedRef.current === next.id) setMessages(item.messages) }).catch(() => {})
+        }
+        if (next?.status === 'done') setTab('report')
+        void refreshSessions()
+        return
+      }
+      if (event === 'error') {
+        closeStream(); setError(String(data.message ?? '生成失败'))
+        if (selectedRef.current) void loadSession(selectedRef.current)
+        void refreshSessions()
+        return
+      }
+      if (event === 'cancelled') {
+        closeStream(); setError('已停止本轮生成')
+        if (selectedRef.current) void loadSession(selectedRef.current)
+        void refreshSessions()
+        return
+      }
+      if (event === 'end') {
+        // done 未达而流终止（服务重启等）：以服务端状态为准解锁。
+        closeStream()
+        if (selectedRef.current) void loadSession(selectedRef.current)
+      }
+    })
+    source.onerror = () => { /* 短暂网络故障由 EventSource 自动重连续播事件日志 */ }
+    streamRef.current = source
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [closeStream, refreshSessions])
+
+  useEffect(() => {
+    void listInterviewPersonas().then(data => setPersonas(data.cards)).catch(err => setError((err as Error).message))
+    void refreshSessions()
+    return closeStream
+  }, [refreshSessions, closeStream])
+
+  // 岗位详情/评估缺口深链：打开新建面板并预选岗位（#/interview?job=<id> 刷新同路径）。
+  useEffect(() => {
+    if (!deepLink) return
+    setCreating(true); setCard(''); setPrefill(null)
+    void api<{ job: { title: string; company: string } }>(`/jobs/${encodeURIComponent(deepLink.jobId)}`)
+      .then(data => setPrefill({ jobId: deepLink.jobId, label: `${data.job.company} · ${data.job.title}` }))
+      .catch(() => setPrefill(null))
+  }, [deepLink])
+
+  // 流式期间贴底：新 delta 与新消息都把面试间滚到最下。
+  useEffect(() => { threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight }) }, [messages, stream?.answer])
+
+  const selectSession = useCallback((id: string) => {
+    closeStream(); setError(''); setAnswer(''); setTab('room')
+    setSelected(id); selectedRef.current = id; setSession(null); setMessages([])
+    void loadSession(id)
+  }, [closeStream, loadSession])
+
+  async function startSession() {
+    setError('')
+    if (!card) { setError('请先选择一位面试官'); return }
+    try {
+      const started = await createInterviewSession({
+        persona_id: card, round, intensity, question_count: questionCount,
+        ...(prefill ? { job_id: prefill.jobId } : {}),
+        ...(!prefill && jdText.trim() ? { jd_text: jdText.trim() } : {}),
+      })
+      setCreating(false); setJdText('')
+      setSelected(started.session_id); selectedRef.current = started.session_id
+      setSession(null); setMessages([])
+      attach(started.run_id)
+      void refreshSessions()
+    } catch (err) { setError((err as Error).message) }
+  }
+
+  async function send() {
+    if (!session || streamRef.current) return
+    const content = answer.trim()
+    if (session.status === 'ready' ? false : !content) return
+    const optimistic = content
+    setAnswer('')
+    if (optimistic) setMessages(current => [...current, { id: `tmp-${Date.now()}`, ts: '', role: 'user', content: optimistic }])
+    try {
+      const started = await sendInterviewTurn(session.id, optimistic)
+      attach(started.run_id)
+    } catch (err) {
+      setError((err as Error).message)
+      if (optimistic) setMessages(current => current.filter(item => !item.id.startsWith('tmp-')))
+    }
+  }
+
+  async function finish() {
+    if (!session || streamRef.current) return
+    try {
+      const started = await finishInterview(session.id)
+      attach(started.run_id)
+    } catch (err) { setError((err as Error).message) }
+  }
+
+  async function stop() {
+    if (!stream) return
+    try { await cancelInterviewRun(stream.runId) } catch { /* 等服务端 cancelled 事件兜底 */ }
+  }
+
+  async function removeSession(id: string) {
+    try {
+      await deleteInterviewSession(id)
+      if (selectedRef.current === id) { closeStream(); setSelected(''); selectedRef.current = ''; setSession(null); setMessages([]) }
+      void refreshSessions()
+    } catch (err) { setError((err as Error).message) }
+  }
+
+  const plan = session?.question_plan
+  const progress = session?.progress
+  const askedCount = progress ? Math.min(progress.current_index + 1, plan?.questions.length ?? 0) : 0
+  const busy = streamRef.current !== null
+  const report = session?.report
+  return <div className="interview-page">
+    <aside className="interview-side">
+      <div className="interview-side-head">
+        <span>面试场次</span>
+        <button className="button primary small" onClick={() => { setCreating(value => !value); setCard(''); setError('') }}><Icon name="plus" size={14} />新建</button>
+      </div>
+      <div className="interview-session-list">
+        {sessions.length === 0 && <p className="muted body-small">还没有场次。选一位面试官开一场。</p>}
+        {sessions.map(item => <div key={item.id} className={`interview-session-item${item.id === selected ? ' active' : ''}`} onClick={() => selectSession(item.id)}>
+          <strong>{item.title}</strong>
+          <span className="tiny-label">{item.persona_name || '自定义'} · {item.round_label}</span>
+          <span className={`iv-status ${item.status}`}>{STATUS_NAMES[item.status] || item.status}{item.has_report ? ' · 有复盘' : ''}</span>
+          <button className="iv-session-delete" aria-label="删除场次" title="删除场次" onClick={event => { event.stopPropagation(); void removeSession(item.id) }}><Icon name="close" size={13} /></button>
+        </div>)}
+      </div>
+    </aside>
+    <div className="interview-main">
+      {error && <div className="iv-error" role="alert"><span>{error}</span><button className="iv-error-close" onClick={() => setError('')} aria-label="关闭提示"><Icon name="close" size={14} /></button></div>}
+      {(!session || creating) && <CreatePanel
+        cards={personas} card={card} onCard={value => { setCard(value); const preset = personas.find(item => item.id === value); setRound(preset?.default_round ?? '') }}
+        round={round} onRound={setRound} intensity={intensity} onIntensity={setIntensity}
+        questionCount={questionCount} onQuestionCount={setQuestionCount}
+        jdText={jdText} onJdText={setJdText} prefill={prefill} onClearPrefill={() => setPrefill(null)}
+        modelConfigured={modelConfigured} onConfigureModel={onConfigureModel}
+        busy={busy} onStart={() => void startSession()} />}
+      {session && !creating && <>
+        <div className="interview-subtabs" role="tablist" aria-label="面试分区" style={{ marginTop: 8 }}>
+          <button role="tab" aria-selected={tab === 'room'} className={tab === 'room' ? 'active' : ''} onClick={() => setTab('room')}>面试间</button>
+          <button role="tab" aria-selected={tab === 'report'} className={tab === 'report' ? 'active' : ''} onClick={() => setTab('report')} disabled={!report}>复盘报告{report ? '' : '（结束后生成）'}</button>
+        </div>
+        {tab === 'room' ? <RoomPanel
+          session={session} plan={plan ?? null} progress={progress ?? { phase: 'opening', current_index: 0, rounds: 0, segments: [] }} askedCount={askedCount} messages={messages}
+          streamAnswer={stream?.answer ?? ''} busy={busy} answer={answer} onAnswer={setAnswer}
+          onSend={() => void send()} onFinish={() => void finish()} onStop={() => void stop()} threadRef={threadRef} />
+        : <ReportPanel report={report ?? null} persona={session.persona} />}
+      </>}
+    </div>
+  </div>
+}
+
+function CreatePanel({ cards, card, onCard, round, onRound, intensity, onIntensity, questionCount, onQuestionCount, jdText, onJdText, prefill, onClearPrefill, modelConfigured, onConfigureModel, busy, onStart }: {
+  cards: InterviewPersonaCard[]; card: string; onCard: (value: string) => void
+  round: string; onRound: (value: string) => void
+  intensity: 'gentle' | 'standard' | 'stress'; onIntensity: (value: 'gentle' | 'standard' | 'stress') => void
+  questionCount: number; onQuestionCount: (value: number) => void
+  jdText: string; onJdText: (value: string) => void
+  prefill: { jobId: string; label: string } | null; onClearPrefill: () => void
+  modelConfigured: boolean; onConfigureModel: () => void
+  busy: boolean; onStart: () => void
+}) {
+  const active = cards.find(item => item.id === card)
+  return <section className="interview-create">
+    <h2 className="sr-only">新建模拟面试</h2>
+    {!modelConfigured && <div className="iv-model-hint">模拟面试需要先绑定分析模型。<button className="inline-button" onClick={onConfigureModel}>去设置中心</button></div>}
+    <div className="iv-cards">
+      {cards.map(item => <button key={item.id} className={`iv-card${item.id === card ? ' active' : ''}`} onClick={() => onCard(item.id)}>
+        <strong>{item.name}</strong>
+        <span className="tiny-label">{item.company}</span>
+        <p>{item.blurb}</p>
+        <span className="iv-card-tags">{item.tags.map(tag => <em key={tag}>{tag}</em>)}</span>
+      </button>)}
+    </div>
+    {active && <div className="iv-config">
+      <label>轮次<select value={round} onChange={event => onRound(event.target.value)} aria-label="面试轮次">
+        {active.rounds.map(item => <option key={item.id} value={item.id}>{item.label}</option>)}
+      </select></label>
+      <label>强度<select value={intensity} onChange={event => onIntensity(event.target.value as 'gentle' | 'standard' | 'stress')} aria-label="面试强度">
+        {(['gentle', 'standard', 'stress'] as const).map(value => <option key={value} value={value}>{INTENSITY_NAMES[value]}</option>)}
+      </select></label>
+      <label>题量<select value={questionCount} onChange={event => onQuestionCount(Number(event.target.value))} aria-label="题量">
+        {[6, 8, 10].map(value => <option key={value} value={value}>{value} 题</option>)}
+      </select></label>
+    </div>}
+    <div className="iv-target">
+      {prefill ? <span className="iv-prefill">目标岗位：{prefill.label}<button className="inline-button" onClick={onClearPrefill}>改为自由练</button></span>
+        : <textarea className="iv-jd" value={jdText} onChange={event => onJdText(event.target.value)} rows={3} maxLength={20000}
+            placeholder="可选：粘贴一份 JD 开面（不填 = 按画像通用出题；从岗位详情「模拟面试」进入会自动带上岗位与评估缺口）" />}
+    </div>
+    <div className="iv-create-actions">
+      <button className="button primary" disabled={!card || busy || !modelConfigured} onClick={onStart}><Icon name="mic" size={16} />开始出题</button>
+      <span className="tiny-label">出题约需 1-3 分钟（JD + 评估缺口 + 简历三源合一），完成后进入面试间</span>
+    </div>
+  </section>
+}
+
+function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer, busy, answer, onAnswer, onSend, onFinish, onStop, threadRef }: {
+  session: InterviewSession
+  plan: InterviewSession['question_plan']
+  progress: InterviewSession['progress']
+  askedCount: number
+  messages: InterviewMessage[]
+  streamAnswer: string; busy: boolean
+  answer: string; onAnswer: (value: string) => void
+  onSend: () => void; onFinish: () => void; onStop: () => void
+  threadRef: React.RefObject<HTMLDivElement | null>
+}) {
+  const total = plan?.questions.length ?? 0
+  const ready = session.status === 'ready'
+  return <div className="interview-room">
+    <div className="interview-room-head">
+      <div className="iv-room-meta">
+        <strong>{session.persona.name}</strong>
+        <span>{session.persona.round_label} · {session.persona.intensity_label}</span>
+        {session.status === 'live' && total > 0 && <span className="iv-progress">Q{Math.min(askedCount, total)}/{total}</span>}
+        <span className={`iv-status ${session.status}`}>{STATUS_NAMES[session.status] || session.status}</span>
+      </div>
+      <div className="iv-room-actions">
+        {busy && <button className="button secondary small" onClick={onStop}>停止</button>}
+        {(session.status === 'ready' || session.status === 'live') && <button className="button secondary small" disabled={busy} onClick={onFinish}><Icon name="check" size={14} />结束并生成复盘</button>}
+      </div>
+    </div>
+    {session.status === 'planning' && <div className="iv-state">正在按「JD + 评估缺口 + 简历」生成专属题单，约 1-3 分钟…<span className="spinner" /></div>}
+    {session.status === 'failed' && <div className="iv-state">出题失败，删除本场后重新开一场即可。</div>}
+    {session.status === 'reporting' && <div className="iv-state">复盘生成中：逐题点评（含好差答案对比）→ 汇总维度与高危清单…<span className="spinner" /></div>}
+    <div className="interview-thread" ref={threadRef}>
+      {ready && plan && <div className="iv-plan">
+        <p className="iv-plan-opening">{plan.opening}</p>
+        <ol>{plan.questions.map((item, index) => <li key={index}>
+          <span className="iv-topic">{item.topic}</span><span className="iv-source">{SOURCE_NAMES[item.source] || '通用'}</span>
+          <p>{item.question}</p>
+        </li>)}</ol>
+        <div className="iv-plan-note">面试官会按这份题单逐题追问（每题最多 3 层）；回答越真实，复盘越有价值。</div>
+        <button className="button primary" onClick={onSend}><Icon name="mic" size={16} />开始面试</button>
+      </div>}
+      {messages.map(item => <div key={item.id} className={`iv-msg ${item.role}`}>
+        <span className="iv-who">{item.role === 'assistant' ? session.persona.name : '你'}</span>
+        {item.role === 'assistant' ? <div className="iv-content"><Markdown content={item.content} /></div> : <div className="iv-content">{item.content}</div>}
+      </div>)}
+      {streamAnswer && <div className="iv-msg assistant streaming">
+        <span className="iv-who">{session.persona.name}</span>
+        <div className="iv-content"><Markdown content={streamAnswer} /></div>
+      </div>}
+    </div>
+    {!ready && session.status === 'live' && <div className="interview-composer">
+      <textarea
+        value={answer} onChange={event => onAnswer(event.target.value)}
+        placeholder="像真面试一样回答（讲具体项目、给数据）；Ctrl+Enter 提交" rows={3} maxLength={8000}
+        onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) { event.preventDefault(); onSend() } }}
+      />
+      <div className="iv-composer-actions">
+        <span className="tiny-label">面试中不剧透不点评 · 评价看复盘</span>
+        <button className="button primary" disabled={busy || !answer.trim()} onClick={onSend}>提交回答</button>
+      </div>
+    </div>}
+    {progress?.phase === 'wrapup' && session.status === 'live' && <div className="tiny-label" style={{ marginTop: 6 }}>面试官已进入反问收尾——聊完点右上「结束并生成复盘」。</div>}
+  </div>
+}
+
+function ReportPanel({ report, persona }: { report: InterviewSession['report']; persona: InterviewSession['persona'] }) {
+  if (!report) return <div className="iv-state">复盘还没有生成。回面试间点「结束并生成复盘」。</div>
+  return <div className="interview-report">
+    <section className="paper-panel">
+      <div className="section-heading"><h2>本场总评</h2><span className="tiny-label">{persona.name} · {persona.round_label} · 复盘了 {report.reviewed ?? report.questions.length} 题</span></div>
+      <p className="iv-summary">{report.summary}</p>
+      <div className="iv-dimensions">
+        {report.dimensions.map(item => <div key={item.name} className="iv-dimension">
+          <strong>{item.name}</strong>
+          <span className="iv-score" data-score={item.score}>{'★'.repeat(item.score)}{'☆'.repeat(5 - item.score)}</span>
+          <p>{item.comment}</p>
+        </div>)}
+      </div>
+    </section>
+    <section className="paper-panel">
+      <h3>逐题复盘（好答案 vs 踩坑）</h3>
+      <div className="iv-reviews">
+        {report.questions.map((item, index) => <details key={index} open={index === 0} className="iv-review">
+          <summary><span className="iv-topic">{item.topic}</span>{item.question}</summary>
+          <p className="iv-critique"><Markdown content={item.critique} /></p>
+          {item.missing.length > 0 && <p className="iv-missing">缺失要素：{item.missing.join('、')}</p>}
+          {item.model_answer && <div className="iv-model-answer"><strong>高分示范</strong><Markdown content={item.model_answer} /></div>}
+          {item.bad_answer_note && <p className="iv-bad-answer"><strong>踩坑提醒</strong>{item.bad_answer_note}</p>}
+        </details>)}
+      </div>
+    </section>
+    <div className="analysis-columns">
+      <AnalysisQuickList title="下次真面试前必须补（高危清单）" items={report.risk_list} />
+      <AnalysisQuickList title="行动建议" items={report.actions} />
+    </div>
+  </div>
+}
+
+function AnalysisQuickList({ title, items }: { title: string; items: string[] }) {
+  return <section className="analysis-list paper-panel"><h4>{title}</h4>
+    {items?.length ? <ul>{items.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p className="muted">本轮没有特别突出的项。</p>}
+  </section>
+}

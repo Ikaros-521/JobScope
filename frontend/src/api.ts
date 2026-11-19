@@ -504,3 +504,47 @@ export function reembedKnowledge() { return post<KnowledgeReembedResult>('/knowl
 // 需求行手动改判：改判记忆按岗位保存（重评沿用），并同步重算所有已存报告；返回最新报告。
 export type AnalysisStatusResult = { report: Analysis | null; message: string | null }
 export function updateAnalysisStatus(jobId: string, jdQuote: string, status: string) { return api<AnalysisStatusResult>(`/jobs/${encodeURIComponent(jobId)}/analysis/status`, { method: 'PUT', body: JSON.stringify({ jd_quote: jdQuote, status }) }) }
+
+// ---- 模拟面试：画像卡片 → 出题 → 逐题对话 → 复盘（后台 run + SSE，同 analyze/chat 模式） ----
+export type InterviewRound = { id: string; label: string }
+export type InterviewPersonaCard = { id: string; name: string; blurb: string; tags: string[]; rounds: InterviewRound[]; default_round: string; company: string }
+export type InterviewPlanQuestion = { topic: string; question: string; focus: string; followups: string[]; source: string }
+export type InterviewPlan = { opening: string; questions: InterviewPlanQuestion[] }
+// 进度片段：按题归档的回答/弱点信号/面试官内心评价；index=-1 是反问环节的 wrap 片段（不复盘）。
+export type InterviewSegment = { index: number; question: { topic: string; question: string; focus: string; followups: string[] }; answers: string[]; notes: string[]; signals: string[]; reviewable: boolean }
+export type InterviewProgress = { phase: 'opening' | 'questioning' | 'wrapup'; current_index: number; rounds: number; segments: InterviewSegment[] }
+export type InterviewDimension = { name: string; score: number; comment: string }
+export type InterviewReview = { topic: string; question: string; critique: string; missing: string[]; model_answer: string; bad_answer_note: string }
+export type InterviewReport = { summary: string; dimensions: InterviewDimension[]; risk_list: string[]; actions: string[]; questions: InterviewReview[]; reviewed?: number; generated_at?: string }
+export type InterviewIntensity = 'gentle' | 'standard' | 'stress'
+export type InterviewSession = {
+  id: string; title: string; job_id: string; company: string; job_title: string
+  persona: { preset_id: string; name: string; company: string; round: string; round_label: string; intensity_label: string }
+  config: { question_count: number; intensity: InterviewIntensity; preset_id: string }
+  material: { resume_label?: string; gaps?: string[] }
+  question_plan: InterviewPlan | null
+  progress: InterviewProgress
+  status: 'planning' | 'ready' | 'live' | 'reporting' | 'done' | 'failed'
+  report: InterviewReport | null
+  conversation_id: string
+  created_at: string; updated_at: string
+}
+export type InterviewSessionSummary = { id: string; title: string; company: string; job_id: string; status: InterviewSession['status']; persona_name: string; round_label: string; has_report: boolean; created_at: string; updated_at: string }
+export type InterviewMessage = { id: string; ts: string; role: 'user' | 'assistant'; content: string; reasoning?: string }
+export type InterviewRunStatus = { run_id: string; session_id: string; done: boolean; cancelled: boolean }
+export function listInterviewPersonas() { return api<{ cards: InterviewPersonaCard[] }>('/interview/personas') }
+export function listInterviewSessions() { return api<{ sessions: InterviewSessionSummary[] }>('/interview/sessions') }
+export function getInterviewSession(id: string) { return api<{ session: InterviewSession; active_run: InterviewRunStatus | null }>(`/interview/sessions/${encodeURIComponent(id)}`)
+}
+export function getInterviewMessages(id: string) { return api<{ messages: InterviewMessage[] }>(`/interview/sessions/${encodeURIComponent(id)}/messages`) }
+export function createInterviewSession(body: { persona_id: string; round?: string; intensity?: InterviewIntensity; question_count?: number; job_id?: string; jd_text?: string }) {
+  return post<{ session_id: string; run_id: string }>('/interview/sessions', body)
+}
+export function sendInterviewTurn(id: string, answer: string) { return post<{ run_id: string; session_id: string }>(`/interview/sessions/${encodeURIComponent(id)}/runs`, { answer }) }
+export function finishInterview(id: string) { return post<{ run_id: string }>(`/interview/sessions/${encodeURIComponent(id)}/finish`, {}) }
+export function deleteInterviewSession(id: string) { return api<{ ok: boolean }>(`/interview/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+export function cancelInterviewRun(runId: string) { return post<InterviewRunStatus>(`/interview/runs/${encodeURIComponent(runId)}/cancel`) }
+const INTERVIEW_STREAM_EVENTS = ['start', 'delta', 'reasoning_delta', 'done', 'error', 'cancelled', 'end'] as const
+export function openInterviewStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
+  return openStream(`/api/interview/runs/${encodeURIComponent(runId)}/stream`, INTERVIEW_STREAM_EVENTS, onEvent)
+}

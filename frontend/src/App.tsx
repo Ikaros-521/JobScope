@@ -28,7 +28,9 @@ import Tutorial, { tutorialSeenVersion, TUTORIAL_VERSION } from './Tutorial'
 import { useCompareSelection } from './compareSelectionStore'
 import { ChatWorkspace } from './chat/ChatWorkspace'
 import { Icon } from './Icon'
-import { NAV_GROUPS, NAV_STORAGE_KEY, viewFromHash } from './navigation'
+import InterviewView from './InterviewView'
+import type { InterviewDeepLink } from './InterviewView'
+import { NAV_GROUPS, NAV_STORAGE_KEY, hashQuery, viewFromHash } from './navigation'
 import type { SettingsTab, ViewId } from './navigation'
 
 // App 壳（2026-11-19 拆分）：导航、视图路由（#/ 深链）、跨视图信号与各工作区装配。
@@ -66,18 +68,40 @@ export default function App() {
     })
   }, [view])
   // 地址栏 ↔ 视图双向同步：切换压入历史（浏览器回退可走回上个视图），回退/前进/手改地址经 hashchange 生效。
+  // 带查询参数的深链（#/interview?job=<id>）在进视图时转成请求信号，由目标工作区消费。
+  const [interviewRequest, setInterviewRequest] = useState<InterviewDeepLink>(null)
+  function openInterview(jobId = '') {
+    setInterviewRequest(jobId ? { jobId, token: Date.now() } : null)
+    setView('interview')
+  }
   useEffect(() => {
-    const onHashChange = () => { const next = viewFromHash(); if (next) setView(next) }
+    const onHashChange = () => {
+      const next = viewFromHash()
+      if (next) setView(next)
+      if (next === 'interview') {
+        const job = hashQuery().get('job') || ''
+        setInterviewRequest(job ? { jobId: job, token: Date.now() } : null)
+      }
+    }
     window.addEventListener('hashchange', onHashChange)
     return () => window.removeEventListener('hashchange', onHashChange)
   }, [])
   useEffect(() => {
     const target = `#/${view}`
-    if (window.location.hash === target) return
+    const current = window.location.hash
+    // 带查询参数的深链（如 #/interview?job=x）视为已同步：改写会丢参数并误触发 hashchange。
+    if (current === target || current.startsWith(`${target}?`)) return
     // 无 hash 的首次进入只替换当前历史项（避免多压一条「空 → #/today」）；后续切换压栈，回退键可走回上个视图。
     if (!window.location.hash) window.history.replaceState(null, '', target)
     else window.location.hash = `/${view}`
   }, [view])
+  // 直接以深链打开应用（书签/刷新）时同样消费一次 #/interview?job=<id>。
+  useEffect(() => {
+    if (view !== 'interview') return
+    const job = hashQuery().get('job') || ''
+    setInterviewRequest(job ? { jobId: job, token: Date.now() } : null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   // 岗位详情「优化简历」跳转工坊时的预填（工坊消费后清空，避免切回时重复生效）。
   const [workshopPrefill, setWorkshopPrefill] = useState<WorkshopPrefill | null>(null)
   function openWorkshop(prefill: WorkshopPrefill) { setWorkshopPrefill(prefill); setView('workshop') }
@@ -253,7 +277,7 @@ export default function App() {
     </aside>
 
     <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'settings' || view === 'compare' || view === 'favorites' || view === 'knowledge' || view === 'logs' || view === 'profile' || view === 'today' ? 'main main-compact' : 'main'}>
-      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'today' ? '今日概览' : view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'resume' ? '我的简历' : view === 'profile' ? '个人资料库' : view === 'workshop' ? '简历工坊' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'knowledge' ? '知识库' : view === 'logs' ? '运行日志' : view === 'settings' ? '设置中心' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" title="刷新档案、元数据与收藏角标" onClick={() => setRefreshTick(tick => tick + 1)}><Icon name="source" size={17} /></button></div></header>
+      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'today' ? '今日概览' : view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'interview' ? '模拟面试' : view === 'resume' ? '我的简历' : view === 'profile' ? '个人资料库' : view === 'workshop' ? '简历工坊' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'knowledge' ? '知识库' : view === 'logs' ? '运行日志' : view === 'settings' ? '设置中心' : '数据与采集'}</div><div className="topbar-right"><span className="local-tag"><span />本地资料库</span><button className="icon-button" aria-label="刷新工作区" title="刷新档案、元数据与收藏角标" onClick={() => setRefreshTick(tick => tick + 1)}><Icon name="source" size={17} /></button></div></header>
       <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} onConfigureModel={configureModel} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => openSettings('extensions')} onOpenCompare={() => setView('compare')} onOpenKnowledge={() => setView('knowledge')} openCompanyChat={companyChatRequest} /></div>
 
       {/* 岗位研究常驻挂载（hidden 切换）：筛选与选中状态在视图切换间保留；跨视图联动经下方信号。 */}
@@ -266,6 +290,7 @@ export default function App() {
         onOpenSettings={openSettings} onConfigureModel={configureModel} onOpenSources={tab => { setSourcesTab(tab); setView('sources') }}
         onOpenCompanyChat={openCompanyChat} onOpenGlobalAgent={openGlobalAgent}
         onOpenCompare={() => setView('compare')} onOpenKnowledge={() => setView('knowledge')} onOpenResume={() => setView('resume')}
+        onOpenInterview={jobId => openInterview(jobId)}
         onNavigateConversation={navigateConversation} onConversationOpened={chatOpened}
         onWorkshopPrefill={openWorkshop}
         openRequest={jobOpenRequest} onOpenHandled={() => setJobOpenRequest(null)}
@@ -283,6 +308,8 @@ export default function App() {
       {view === 'global' && <><h1 className="sr-only">全局对话</h1><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onManageExtensions={() => openSettings('extensions')} onOpenKnowledge={() => setView('knowledge')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} prefill={chatPrompt} /></>}
 
       {view === 'compare' && <CompanyCompare />}
+
+      {view === 'interview' && <InterviewView deepLink={interviewRequest} modelConfigured={modelConfigured} onConfigureModel={configureModel} />}
 
       {view === 'favorites' && <FavoritesView onOpenJob={openJobFrom} onOpenCompare={() => setView('compare')} onChange={() => {
         // 收藏变动：刷新角标并通知岗位研究（后者仅在「只看收藏」过滤时重刷列表）。

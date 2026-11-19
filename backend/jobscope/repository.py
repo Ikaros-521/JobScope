@@ -42,6 +42,7 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS wage_baselines (id TEXT PRIMARY KEY, city TEXT NOT NULL, role TEXT NOT NULL, education TEXT NOT NULL, year TEXT NOT NULL, monthly_median REAL NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS profile_entries (id TEXT PRIMARY KEY, category TEXT NOT NULL, title TEXT NOT NULL, org TEXT NOT NULL DEFAULT '', period TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS requirement_overrides (job_id TEXT NOT NULL REFERENCES jobs(id), quote_digest TEXT NOT NULL, status TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY(job_id, quote_digest));
+                CREATE TABLE IF NOT EXISTS interview_sessions (id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
             """)
             self._migrate_conversations(conn)
             # profile_entries.source 记录条目来源（笔记库导入的「规范化库根::相对路径」锚点），幂等重导靠它原位更新。
@@ -430,6 +431,40 @@ class Repository:
     def delete_profile_entry(self, entry_id):
         with self.connection() as conn:
             return conn.execute('DELETE FROM profile_entries WHERE id=?', (entry_id,)).rowcount > 0
+
+    # ---- 模拟面试：场次 = 画像/材料/题单/进度的整体快照（payload JSON，jobs 同款模式） ----
+
+    def save_interview_session(self, session):
+        session = {**session, 'updated_at': now()}
+        with self.connection() as conn:
+            conn.execute('INSERT INTO interview_sessions (id,payload,updated_at) VALUES (?,?,?) '
+                         'ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at',
+                         (session['id'], json.dumps(session, ensure_ascii=False), session['updated_at']))
+        return session
+
+    def interview_sessions(self, limit=100):
+        """场次摘要（新→旧）：列表页只要标题与状态，不解析完整 payload 的材料与题单。"""
+        with self.connection() as conn:
+            rows = conn.execute('SELECT id, payload FROM interview_sessions ORDER BY updated_at DESC LIMIT ?', (limit,)).fetchall()
+        result = []
+        for row in rows:
+            payload = json.loads(row['payload'])
+            persona = payload.get('persona') or {}
+            result.append(dict(id=row['id'], title=payload.get('title', '模拟面试'), company=payload.get('company', ''),
+                               job_id=payload.get('job_id', ''), status=payload.get('status', 'planning'),
+                               persona_name=persona.get('name', ''), round_label=persona.get('round_label', ''),
+                               has_report=bool(payload.get('report')), created_at=payload.get('created_at', ''),
+                               updated_at=payload.get('updated_at', '')))
+        return result
+
+    def get_interview_session(self, session_id):
+        with self.connection() as conn:
+            row = conn.execute('SELECT payload FROM interview_sessions WHERE id=?', (session_id,)).fetchone()
+        return json.loads(row['payload']) if row else None
+
+    def delete_interview_session(self, session_id):
+        with self.connection() as conn:
+            return conn.execute('DELETE FROM interview_sessions WHERE id=?', (session_id,)).rowcount > 0
 
     def save_report(self, report):
         with self.connection() as conn:

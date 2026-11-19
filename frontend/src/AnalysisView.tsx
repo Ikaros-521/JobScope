@@ -48,7 +48,7 @@ export function AnalyzeProgress({ run, onCancel }: { run: AnalyzeRunState; onCan
   </section>
 }
 
-export function AnalysisView({ analysis, onStatusChange, onOptimizeGaps }: { analysis: Analysis; onStatusChange: (quote: string, status: string) => void; onOptimizeGaps?: () => void }) {
+export function AnalysisView({ analysis, onStatusChange, onOptimizeGaps, onInterviewGaps }: { analysis: Analysis; onStatusChange: (quote: string, status: string) => void; onOptimizeGaps?: () => void; onInterviewGaps?: () => void }) {
   const coverage = Math.max(0, Math.min(100, analysis.coverage * 100))
   const judged = analysis.requirements.filter(item => item.status !== 'unknown').length
   const score = analysis.score
@@ -118,11 +118,12 @@ export function AnalysisView({ analysis, onStatusChange, onOptimizeGaps }: { ana
       {analysisTab === 'hard' && Boolean(analysis.hard_conditions?.length) && <div className="hard-conditions in-subtab"><h4>硬性条件 · 单独核实</h4>{analysis.hard_conditions?.map((item, index) => <HardCondition key={index} value={item} />)}</div>}
       {analysisTab === 'basis' && <>
         <div className="analysis-columns"><AnalysisList title="已有依据" items={analysis.strengths} /><AnalysisList title="缺口与未知" items={analysis.gaps} /></div>
-        {/* 报告→工坊闭环（P1）：读出缺口不止步于展示，带着未满足项直接进优化流程。 */}
-        {(analysis.gaps?.length || analysis.requirements.some(item => item.status === 'unmet' || item.status === 'partial')) && onOptimizeGaps && (
+        {/* 报告→工坊/面试闭环：读出缺口不止步于展示——去工坊改材料，或直接拿缺口练面试。 */}
+        {(analysis.gaps?.length || analysis.requirements.some(item => item.status === 'unmet' || item.status === 'partial')) && (onOptimizeGaps || onInterviewGaps) && (
           <div className="analysis-gap-actions">
-            <button type="button" className="button secondary small" onClick={onOptimizeGaps}><Icon name="wand" size={14} />带着缺口去工坊优化</button>
-            <span className="tiny-label">未满足 / 部分满足的要求与缺口清单，会作为优化重点说明带入工坊</span>
+            {onOptimizeGaps && <button type="button" className="button secondary small" onClick={onOptimizeGaps}><Icon name="wand" size={14} />带着缺口去工坊优化</button>}
+            {onInterviewGaps && <button type="button" className="button secondary small" onClick={onInterviewGaps}><Icon name="mic" size={14} />拿缺口练模拟面试</button>}
+            <span className="tiny-label">缺口会变成面试官的重点追问；也可先去工坊优化简历再练</span>
           </div>)}
       </>}
       {analysisTab === 'interview' && <AnalysisList title="面试时建议核实" items={analysis.questions} />}
