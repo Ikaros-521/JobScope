@@ -246,6 +246,36 @@ def test_login_wall_detection(tmp_path):
     assert boss_import._login_wall(type('T', (), {'url': 'https://www.zhipin.com/safe/verify', 'title': '安全验证'})()) is True
 
 
+def test_page_url_paging_keeps_other_params():
+    # 收藏页实测形态（推荐中心 tab=4）：翻页只动 page，其余参数原样保留。
+    url = 'https://www.zhipin.com/web/geek/recommend?tab=4&sub=1&page=1&tag=4'
+    assert boss_import._page_url(url, 2) == 'https://www.zhipin.com/web/geek/recommend?tab=4&sub=1&page=2&tag=4'
+    assert boss_import._page_url(url, 10) == 'https://www.zhipin.com/web/geek/recommend?tab=4&sub=1&page=10&tag=4'
+    # URL 不带 page 参数 → 返回空串，调用方退回滚动加载兜底。
+    assert boss_import._page_url('https://www.zhipin.com/web/geek/recommend?tab=4', 2) == ''
+
+
+def test_open_favorites_probes_calibrated_entry_first():
+    visited = []
+    page_url = boss_import.FAVORITE_PRIMARY
+
+    class FakeTab:
+        url = page_url
+        title = '收藏'
+
+        def get(self, url, timeout=20):
+            visited.append(url)
+            return True
+
+        def run_js(self, script):
+            return {'page_url': self.url,
+                    'cards': [{'id': 'favCard00001', 'title': 'x', 'link_text': 'x', 'text': '', 'tags': []}]}
+
+    assert boss_import._open_favorites(FakeTab()) == page_url
+    # 实测入口直进：第一跳就是收藏页，不再先绕个人中心。
+    assert visited == [page_url]
+
+
 def test_p1_endpoints_contract(client, tmp_path, monkeypatch):
     # browse 状态端点与 open 端点：无浏览器时优雅降级，绝不 500、绝不真开 Chrome。
     monkeypatch.setattr(browser, 'start', lambda data_dir=None, source='boss': {'installed': True, 'running': False, 'message': 'stub-start'})

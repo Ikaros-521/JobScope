@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         JobScope 岗位捕获
 // @namespace    jobscope.local
-// @version      1.0.0
+// @version      1.1.0
 // @description  在任意浏览器的 Boss 直聘页面上，把当前页看到的岗位一键推送到本地 JobScope 捕获篮。浏览时照常用自己的定位与筛选，看到的即可捕获。
 // @match        https://www.zhipin.com/*
 // @grant        GM_xmlhttpRequest
@@ -15,7 +15,8 @@
   const JOBSCOPE_PORT = 8765
   const API = `http://127.0.0.1:${JOBSCOPE_PORT}/api/import/basket/remote`
 
-  // 与后端 boss_import.CARDS_JS 同一套抽取逻辑：锚点上溯卡片容器，类名启发式取字段。
+  // 与后端 boss_import.CARDS_JS 同一套抽取逻辑：锚点定位卡片容器，类名启发式取字段。
+  // 排除右侧 sider-recommend 推送栏（平台推荐不是用户收藏/搜索结果）；
   // 后端会重建 id 与 URL 并清洗文本，这里抽到什么送什么。
   function collectCards() {
     const clsOf = (el) => { const c = el && el.className; return typeof c === 'string' ? c : (c && c.baseVal) || '' }
@@ -25,19 +26,24 @@
       }
       return ''
     }
+    const one = (root, sel) => {
+      const el = root.querySelector(sel)
+      return el ? (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160) : ''
+    }
     const grab = (root) => ({
-      title: pick(root, /(^|[\s-])(job-name|job-title)/),
+      title: one(root, '[class*="job-name-text"]') || pick(root, /(^|[\s-])(job-name|job-title)/),
       salary: pick(root, /salary/),
-      company: pick(root, /company-name|company-info/),
-      area: pick(root, /job-area|job-city|job-location/),
+      company: one(root, '.company-info b') || one(root, '[class*="company-name"]') || pick(root, /company-name|company-info/),
+      area: pick(root, /job-area|job-city|job-location|(^|[\s-])location/).replace(/[\[\]【】]/g, ''),
     })
     const cards = []
     const seen = new Set()
     for (const a of document.querySelectorAll('a[href*="/job_detail/"]')) {
       const match = (a.getAttribute('href') || '').match(/\/job_detail\/([A-Za-z0-9_-]+)\.html/)
       if (!match || seen.has(match[1])) continue
+      if (a.closest('[class*="sider-recommend"]')) continue
       seen.add(match[1])
-      let card = a
+      let card = a.closest('li') || a
       for (let i = 0; i < 3; i++) {
         const parent = card.parentElement
         if (!parent) break

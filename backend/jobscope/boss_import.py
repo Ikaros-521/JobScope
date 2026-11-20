@@ -14,7 +14,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from urllib.parse import parse_qs, urlencode, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from . import browser
 from .connectors import CITY_CODES, DEFAULT_DATA, loads_payload, map_boss, plain
@@ -30,8 +30,12 @@ TITLE_PATTERN = re.compile(r'[【「\[]([^】」\]]{2,80})[】」\]]')
 # 单次粘贴上限：分享文本可能整页粘贴，超出的链接提示分批。
 MAX_LINKS = 200
 
-# 列表页卡片抽取：锚点上溯到卡片容器，按类名启发式取字段。Boss 改版时类名会漂移，
-# 抽不到字段就少填、Python 侧按城市字典补地点；整体抽不到卡片时明确报错并指引用链接粘贴。
+# 列表页卡片抽取：锚点定位卡片容器，按类名启发式取字段。已按 2026-11-20 实测校准两点：
+# 1) 推荐中心（收藏页）右侧有平台推送的 sider-recommend 栏，卡片是 <a> 包 <li> 的异形结构，
+#    必须整栏排除，否则平台推荐岗会混进用户的收藏/搜索结果（数据污染）；
+# 2) 收藏卡是 li.item-boss，干净字段在 .job-name-text（岗位名）、.company-info b（公司名）、
+#    .location（地点），启发式匹配不到时按旧正则兜底。Boss 改版时类名漂移，抽不到字段就少填、
+#    Python 侧按城市字典补地点；整体抽不到卡片时明确报错并指引用链接粘贴。
 CARDS_JS = r'''return (() => {
   const clsOf = (el) => { const c = el && el.className; return typeof c === 'string' ? c : (c && c.baseVal) || ''; };
   const pick = (root, rx) => {
@@ -40,19 +44,26 @@ CARDS_JS = r'''return (() => {
     }
     return '';
   };
+  const one = (root, sel) => {
+    const el = root.querySelector(sel);
+    return el ? (el.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 160) : '';
+  };
   const grab = (root) => ({
-    title: pick(root, /(^|[\s-])(job-name|job-title)/),
+    title: one(root, '[class*="job-name-text"]') || pick(root, /(^|[\s-])(job-name|job-title)/),
     salary: pick(root, /salary/),
-    company: pick(root, /company-name|company-info/),
-    area: pick(root, /job-area|job-city|job-location/),
+    company: one(root, '.company-info b') || one(root, '[class*="company-name"]') || pick(root, /company-name|company-info/),
+    area: pick(root, /job-area|job-city|job-location|(^|[\s-])location/).replace(/[\[\]【】]/g, ''),
   });
   const cards = [];
   const seen = new Set();
   for (const a of document.querySelectorAll('a[href*="/job_detail/"]')) {
     const match = (a.getAttribute('href') || '').match(/\/job_detail\/([A-Za-z0-9_-]+)\.html/);
     if (!match || seen.has(match[1])) continue;
+    if (a.closest('[class*="sider-recommend"]')) continue;
     seen.add(match[1]);
-    let card = a;
+    // 卡片容器：优先锚点所在 li（搜索页 li.job-card-wrapper、收藏页 li.item-boss 都适用）；
+    // 不在 li 里的异形卡片再上溯三层找容器。
+    let card = a.closest('li') || a;
     for (let i = 0; i < 3; i++) {
       const parent = card.parentElement;
       if (!parent) break;
@@ -537,12 +548,14 @@ def browse_status():
 
 
 # ---- P1：一键收藏导入-------------------------------------------------------------
-# 收藏页 URL 未被公开索引（登录态页面）：先从个人中心自动发现「收藏/感兴趣」入口，
-# 找不到再探测候选路径；都失败就引导用户手动打开收藏页后用「捕获当前页」（P0 能力兜底）。
-# 首跑校准点：若入口改版，把实测 URL 补进 FAVORITE_CANDIDATES。
+# 收藏页 = 推荐中心（web/geek/recommend）的第 4 个页签，2026-11-20 首跑实测校准：
+# 直接进 FAVORITE_PRIMARY；打不开再回个人中心做「收藏/感兴趣」链接发现与历史候选兜底。
+# 入口再改版时把实测 URL 换进 FAVORITE_PRIMARY 即可。
 
 USER_CENTER = 'https://www.zhipin.com/web/user/'
+FAVORITE_PRIMARY = 'https://www.zhipin.com/web/geek/recommend?tab=4&sub=1&page=1&tag=4'
 FAVORITE_CANDIDATES = (
+    FAVORITE_PRIMARY,
     'https://www.zhipin.com/web/user/collect.html',
     'https://www.zhipin.com/web/user/favorite',
     'https://www.zhipin.com/web/geek/favorite',
@@ -564,28 +577,71 @@ def _login_wall(tab):
     return '验证' in title or 'Verification' in title
 
 
+def _snapshot_cards(tab, tries=5, interval=2):
+    """Boss 是 SPA：导航完成后卡片要约 2-3 秒才异步渲染，一进页面就读 DOM 只会拿到空。
+
+    轮询读 CARDS_JS 直到出现卡片（首读 + 4 次×2s，上限 ~8s）；超时如实返回最后的空快照，
+    由调用方按「没解析到」处理，不硬造数据。
+    """
+    snapshot = {}
+    for attempt in range(tries):
+        try:
+            snapshot = tab.run_js(CARDS_JS)
+        except Exception:
+            snapshot = {}
+        if isinstance(snapshot, dict) and snapshot.get('cards'):
+            return snapshot
+        if attempt < tries - 1:
+            time.sleep(interval)
+    return snapshot if isinstance(snapshot, dict) else {}
+
+
 def _open_favorites(tab):
     """定位收藏列表页并确认有岗位卡片；返回实际页面 URL，''=没找到，'login'=被登录墙拦住。"""
-    tab.get(USER_CENTER, timeout=20)
-    if _login_wall(tab):
-        return 'login'
-    for candidate in [str(tab.run_js(FAVORITE_LINK_JS) or '')] + list(FAVORITE_CANDIDATES):
-        if not candidate.startswith('https://www.zhipin.com'):
-            continue
+    def probe(candidate):
         try:
             tab.get(candidate, timeout=20)
         except Exception:
-            continue
+            return ''
         if _login_wall(tab):
             return 'login'
-        snapshot = tab.run_js(CARDS_JS)
-        if isinstance(snapshot, dict) and snapshot.get('cards'):
+        snapshot = _snapshot_cards(tab)
+        if snapshot.get('cards'):
             return str(snapshot.get('page_url') or candidate)
+        return ''
+
+    # 实测收藏入口直进（推荐中心 tab=4）；打不开再回个人中心做链接发现与历史候选兜底。
+    outcome = probe(FAVORITE_PRIMARY)
+    if outcome:
+        return outcome
+    tab.get(USER_CENTER, timeout=20)
+    if _login_wall(tab):
+        return 'login'
+    for candidate in [str(tab.run_js(FAVORITE_LINK_JS) or '')] + list(FAVORITE_CANDIDATES[1:]):
+        if not candidate.startswith('https://www.zhipin.com'):
+            continue
+        outcome = probe(candidate)
+        if outcome:
+            return outcome
     return ''
 
 
+def _page_url(url, page):
+    """把列表页 URL 的 page 参数换到指定页；URL 不带 page 参数返回 ''（调用方退回滚动加载）。"""
+    try:
+        parts = urlsplit(url)
+        query = parse_qs(parts.query)
+        if 'page' not in query:
+            return ''
+        query['page'] = [str(page)]
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query, doseq=True), parts.fragment))
+    except ValueError:
+        return ''
+
+
 def import_favorites(repo, task, data_dir=None, max_pages=10):
-    """一键收藏导入：开新 tab 定位收藏页 → 每页抽卡入篮 → 滚动自动翻页（5s±随机，上限 10 页）。
+    """一键收藏导入：开新 tab 进收藏页（推荐中心 tab=4）→ 每页抽卡入篮 → page 参数逐页翻页
+    （2-4s 间隔，上限 10 页；URL 无 page 参数的列表页退回滚动加载）。
 
     逐页落任务进度；任何一页失败都保留已捕获内容。登录/验证墙把 tab 留在前台交人工处理。
     """
@@ -613,30 +669,45 @@ def import_favorites(repo, task, data_dir=None, max_pages=10):
                 return outcome
             if not url:
                 outcome = {'status': 'failed',
-                           'message': '没有找到收藏页入口：请在项目浏览器手动打开 Boss 收藏页，然后用「捕获当前页」导入（收藏夹也可能是空的）。'}
+                           'message': f'没有找到收藏页入口：请在项目浏览器手动打开 {FAVORITE_PRIMARY}，然后用「捕获当前页」导入（收藏夹也可能是空的）。'}
                 return outcome
             seen: set[str] = set()
             pages = 0
+            filled = 0
             stall_note = ''
+            current = url
             while pages < max_pages:
-                snapshot = tab.run_js(CARDS_JS)
-                cards = snapshot.get('cards') if isinstance(snapshot, dict) else None
-                page_items = [item for item in (_card_to_item(card, 'favorite', str((snapshot or {}).get('page_url') or url))
+                tab.run_js(SCROLL_BOTTOM_JS)
+                snapshot = _snapshot_cards(tab)
+                cards = snapshot.get('cards')
+                page_items = [item for item in (_card_to_item(card, 'favorite', str(snapshot.get('page_url') or current))
                                                 for card in (cards or []) if isinstance(card, dict)) if item]
                 fresh = [item for item in page_items if item['external_id'] not in seen]
                 seen.update(item['external_id'] for item in fresh)
                 basket_add(fresh, data_dir=data_dir)
                 pages += 1
+                if fresh:
+                    filled += 1
                 logger.info('收藏导入进度：第 %s 页 新捕获=%s 累计=%s', pages, len(fresh), len(seen))
                 task.update(count=len(seen), message=f'收藏导入进行中：已捕获 {len(seen)} 条（第 {pages} 页）')
                 repo.update_task(task)
-                if fresh and pages < max_pages and not _login_wall(tab):
-                    tab.run_js(SCROLL_BOTTOM_JS)
+                if not fresh or pages >= max_pages or _login_wall(tab):
+                    if not fresh and pages > 1:
+                        stall_note = f'；第 {pages} 页后没有新岗位，已停止翻页'
+                    break
+                next_url = _page_url(current, pages + 1)
+                if next_url:
+                    # 收藏页是 URL 翻页（page 参数）：直接打开下一页；空页下一轮按 stall 收停。
+                    try:
+                        tab.get(next_url, timeout=20)
+                    except Exception:
+                        stall_note = f'；第 {pages + 1} 页打开失败，已停止翻页'
+                        break
+                    current = next_url
+                    time.sleep(random.uniform(2, 4))
+                else:
+                    # URL 不带 page 参数的列表页：维持滚动加载节奏（旧兜底路径）。
                     time.sleep(random.uniform(4, 6))
-                    continue
-                if pages < max_pages and not _login_wall(tab) and pages > 1:
-                    stall_note = f'；第 {pages} 页后没有新岗位，已停止翻页'
-                break
             if _login_wall(tab):
                 if seen:
                     outcome = {'status': 'needs_login',
@@ -646,7 +717,7 @@ def import_favorites(repo, task, data_dir=None, max_pages=10):
                 return outcome
             if seen:
                 outcome = {'status': 'completed',
-                           'message': f'收藏导入完成：共捕获 {len(seen)} 条（{pages} 页）{stall_note}；请到捕获篮确认入库。'}
+                           'message': f'收藏导入完成：共捕获 {len(seen)} 条（{filled} 页有新岗位）{stall_note}；请到捕获篮确认入库。'}
             else:
                 outcome = {'status': 'failed',
                            'message': '没有解析到收藏岗位：收藏夹可能是空的，或页面结构已变化；可在收藏页手动用「捕获当前页」验证。'}

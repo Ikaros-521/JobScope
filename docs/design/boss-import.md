@@ -109,6 +109,7 @@ POST /api/import/confirm          # {auto_star, ids?} → 批量落库
 
 ### P1 首跑校准点
 
-- **收藏页入口**：URL 未被公开索引（登录态页面）。实现为「个人中心 `web/user/` 页 JS 发现含「收藏/感兴趣」的链接 → 候选路径探测（`FAVORITE_CANDIDATES`）→ 都失败引导手动打开收藏页 + 捕获当前页」。首跑确认真实入口后，把实测 URL 补进 `FAVORITE_CANDIDATES` 并上移到首位。
-- **收藏页翻页方式**：当前按无限滚动处理（滚动到底触发加载）；若实际是按钮翻页，自动翻页会在第 1 页后停下（消息明示），可手动翻页后重跑（篮子幂等合并）。
+- **收藏页入口**（已校准 2026-11-20）：实测为推荐中心第 4 个页签 `https://www.zhipin.com/web/geek/recommend?tab=4&sub=1&page=1&tag=4`，已固化为 `FAVORITE_PRIMARY` 直进；打不开仍回退「个人中心 `web/user/` 页 JS 发现含「收藏/感兴趣」的链接 → 历史候选探测（`FAVORITE_CANDIDATES`）→ 都失败引导手动打开收藏页 + 捕获当前页」。入口再改版时把实测 URL 换进 `FAVORITE_PRIMARY` 即可。
+- **收藏页翻页方式**（已校准 2026-11-20）：URL `page` 参数翻页。实现为 `_page_url` 逐页打开（2-4s 随机间隔，上限 10 页）；URL 不带 page 参数的列表页退回滚动加载。翻到空页（无新岗位）自动收停，消息明示页数。
+- **收藏页结构与 SPA 渲染**（已校准 2026-11-20）：收藏卡是 `li.item-boss`，干净字段在 `.job-name-text`（岗位名）、`.company-info b`（公司名）、`.location`（地点）；右侧 `sider-recommend` 平台推送栏必须整栏排除——它的卡片是异形 `<a>` 包 `<li>`，旧上溯会把整栏串成一张卡、把平台推荐岗混进收藏（数据污染）。Boss 是 SPA，导航完成后卡片约 2-3s 才异步渲染，探针与翻页统一走 `_snapshot_cards` 轮询（~8s 上限），一进页面就读 DOM 只会拿到空。
 - **逛即采集**：只接住 `wapi/zpgeek/search/joblist.json`，字段映射直接复用 `connectors.map_boss`；登录失效（code 7/8/9）只更新提示不产垃圾条目。
