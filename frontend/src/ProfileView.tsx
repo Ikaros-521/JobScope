@@ -151,7 +151,6 @@ export function ProfileView({ onImportViaChat }: { onImportViaChat?: (prompt: st
               {item.tags.length > 0 && <div className="job-card-meta">{item.tags.map(tag => <span className="job-tags" key={tag}><span>{tag}</span></span>)}</div>}
             </article>)}
           </div>)}
-      <p className="tiny-label list-bottom">资料库是完整版材料，不受简历篇幅约束；「我的简历」保持投递用的精简版。简历工坊优化时勾选这里的相关条目，AI 会从中取材把对应内容扩写充实——只使用已写下的事实，不虚构。「求职偏好」类条目另有用途：启用的硬性条件申报（到岗方式、排班、薪资期望等）会在评估适配时自动作为已确认事实判上。</p>
     </section>
   </section>
 }

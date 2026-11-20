@@ -27,8 +27,14 @@ with sync_playwright() as p:
     page.on('pageerror', lambda error: errors.append(str(error)))
     page.request.put(BASE + '/api/resume', data={'text': 'Existing resume', 'format': 'text'})
     page.goto(BASE)
+    # 新档案会自动弹教程遮罩（拦截点击）：等它出现按 Esc 跳过。
+    try:
+        page.get_by_role('dialog', name='使用教程').wait_for(state='attached', timeout=15000)
+        page.keyboard.press('Escape')
+    except Exception:
+        pass
     page.get_by_role('navigation', name='主导航').get_by_role('button', name='我的简历', exact=True).click()
-    editor = page.get_by_label('简历正文 · 可直接编辑或粘贴', exact=True)
+    editor = page.get_by_label('简历正文', exact=True)
     expect(editor).to_have_value('Existing resume')
     page.get_by_label('简历文件', exact=True).set_input_files({'name': '候选人简历.pdf', 'mimeType': 'application/pdf', 'buffer': pdf})
     expect(page.get_by_label('提取文本预览', exact=True)).to_contain_text('Python')

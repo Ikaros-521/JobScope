@@ -252,7 +252,7 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
   const modelInfo = metadata[draft?.model.trim() ?? '']
   const canSave = Boolean(draft?.name.trim() && draft.url.trim() && !busy && !needsKey)
 
-  return <><section className="page-intro"><div><h1>模型设置</h1><p>渠道保存地址与密钥；每个功能单独决定用哪个渠道的哪个模型。</p></div>
+  return <><section className="page-intro"><div><h1>模型设置</h1></div>
     <div className="model-security"><span className="revision-label">保存在本机</span><small>密钥不回显、不上传</small></div></section>
     {loadError ? <section className="paper-panel"><div role="alert"><h2>暂时无法读取模型配置</h2><p>{loadError}</p></div><button className="button secondary" type="button" onClick={() => { setLoadError(null); setLoadAttempt(current => current + 1) }}>重新加载</button></section>
       : <div className="model-settings-shell">
@@ -301,30 +301,30 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
           </aside>
 
           {draft ? <section className="paper-panel channel-editor" aria-label={draft.id ? '编辑渠道' : '新建渠道'}>
-            <div className="section-heading"><div><h2>{draft.id ? '编辑渠道' : '新建渠道'}</h2><p className="body-small muted">选服务商、填密钥、选模型，即可完成配置。</p></div><button type="button" className="text-button" disabled={Boolean(busy)} onClick={() => { setDraft(null); setSelectedId(channels?.[0]?.id ?? null); setFormDirty(false) }}>取消</button></div>
+            <div className="section-heading"><div><h2>{draft.id ? '编辑渠道' : '新建渠道'}</h2></div><button type="button" className="text-button" disabled={Boolean(busy)} onClick={() => { setDraft(null); setSelectedId(channels?.[0]?.id ?? null); setFormDirty(false) }}>取消</button></div>
             <div className="channel-stepnav" role="group" aria-label="配置步骤">
               {STEPS.map(step => <button type="button" key={step.id} className={activeStep === step.id ? 'active' : ''} aria-current={activeStep === step.id ? 'step' : undefined} onClick={() => goToStep(step.id, step.target)}><span>{step.id}</span>{step.label}</button>)}
             </div>
             <fieldset className="channel-editor-form" disabled={Boolean(busy)}>
               <section className="channel-form-section" aria-labelledby="provider-heading">
-                <div className="channel-step-heading"><span aria-hidden="true">1</span><h3 id="provider-heading">选择服务商</h3><span className="body-small muted">自动填入地址与协议</span></div>
+                <div className="channel-step-heading"><span aria-hidden="true">1</span><h3 id="provider-heading">选择服务商</h3></div>
                 <div className="provider-picks" role="group" aria-label="服务商预设">{catalog.map(item => <button type="button" key={item.id} aria-pressed={draft.channel === item.id} onClick={() => chooseProvider(item.id)}>{item.name}</button>)}</div>
                 {preset?.note && <p className="field-help">{preset.note}</p>}
               </section>
               <section className="channel-form-section" aria-labelledby="connection-heading">
                 <div className="channel-step-heading"><span aria-hidden="true">2</span><h3 id="connection-heading">连接信息</h3><span className="body-small muted">密钥仅保存在本机</span></div>
                 <div className="channel-grid">
-                  <div><label className="field-label" htmlFor="channel-name">渠道名称 <span className="muted">必填</span></label><input id="channel-name" value={draft.name} onChange={event => update({ name: event.target.value })} placeholder="例如 工作专用 · DeepSeek" maxLength={100} autoComplete="off" /></div>
+                  <div><label className="field-label" htmlFor="channel-name">渠道名称</label><input id="channel-name" value={draft.name} onChange={event => update({ name: event.target.value })} placeholder="例如 工作专用 · DeepSeek" maxLength={100} autoComplete="off" /></div>
                   <div><label className="field-label" htmlFor="channel-protocol">接口协议</label><select id="channel-protocol" value={draft.protocol} onChange={event => update({ protocol: event.target.value as Protocol })}><option value="openai">OpenAI 兼容</option><option value="anthropic">Anthropic Messages</option></select></div>
                 </div>
-                <label className="field-label" htmlFor="channel-url">服务地址 <span className="muted">必填 · 支持 Base URL 或完整端点</span></label><input id="channel-url" type="url" value={draft.url} onChange={event => update({ url: event.target.value })} placeholder="https://api.example.com/v1" maxLength={2000} autoComplete="off" spellCheck={false} />
+                <label className="field-label" htmlFor="channel-url">服务地址 <span className="muted">支持 Base URL 或完整端点</span></label><input id="channel-url" type="url" value={draft.url} onChange={event => update({ url: event.target.value })} placeholder="https://api.example.com/v1" maxLength={2000} autoComplete="off" spellCheck={false} />
                 <label className="field-label" htmlFor="channel-key">API 密钥 <span className="muted">{draft.id && savedChannel?.key_set ? '· 已保存，留空保留' : '· 本地无鉴权服务可留空'}</span></label>
                 <div className="channel-key-input"><input id="channel-key" type={showKey ? 'text' : 'pass' + 'word'} value={draft.key} onChange={event => update({ key: event.target.value, clear_key: false })} placeholder="填写该渠道的 API Key" maxLength={4000} autoComplete={'new-pass' + 'word'} spellCheck={false} /><button type="button" className="button secondary" aria-controls="channel-key" aria-pressed={showKey} onClick={() => setShowKey(current => !current)}>{showKey ? '隐藏' : '显示'}</button></div>
                 {draft.id && <label className="model-key-clear"><input type="checkbox" checked={draft.clear_key} onChange={event => update({ clear_key: event.target.checked, key: '' })} />清除已保存的密钥</label>}
                 {needsKey && <p className="field-help key-warning" role="alert">已更换服务地址或协议，请重新填写密钥，或勾选清除密钥后再保存。</p>}
               </section>
               <section className="channel-form-section" aria-labelledby="models-heading">
-                <div className="channel-step-heading"><span aria-hidden="true">3</span><h3 id="models-heading">选择默认模型</h3><span className="body-small muted">也可直接输入模型 ID</span></div>
+                <div className="channel-step-heading"><span aria-hidden="true">3</span><h3 id="models-heading">选择默认模型</h3></div>
                 <div className="model-picker-heading"><span className="body-small muted">{lists?.source === 'live' ? '账户在线清单' : lists?.source === 'saved' ? '已保存清单与官方参考' : '官方参考清单'} · {candidates.length} 个</span><button type="button" className="button secondary" disabled={!draft.url.trim() || needsKey} onClick={() => void action('discover')}>{busy === 'discover' && <span className="spinner" aria-hidden="true" />}{busy === 'discover' ? '正在获取…' : '获取账户模型'}</button></div>
                 <label className="field-label" htmlFor="channel-model-search">搜索模型</label><input id="channel-model-search" type="search" value={modelQuery} onChange={event => setModelQuery(event.target.value)} placeholder="输入关键词筛选，不改变已选模型" autoComplete="off" />
                 {orderedMatches.length > 0 ? <div className="model-options channel-model-options" role="group" aria-label="模型搜索结果">{orderedMatches.slice(0, 60).map(item => <button type="button" key={item} aria-pressed={draft.model === item} onClick={() => chooseModel(item)}><span>{item}</span><span>{metadata[item] ? `${contextLabel(metadata[item].context_tokens)} 上下文 · ` : ''}{draft.model === item ? '已选择' : '选择'}</span></button>)}</div> : <p className="channel-model-empty">{candidates.length ? '没有匹配项，可在下方直接填写模型 ID。' : '暂无模型清单。填入地址与密钥后获取，或直接填写模型 ID。'}</p>}
@@ -372,7 +372,6 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
                 <div><dt>密钥</dt><dd>{selected.key_set ? '已保存（不回显）' : '未保存'}</dd></div>
                 <div><dt>连接测试</dt><dd>{selected.last_test ? <>{selected.last_test.ok ? '通过' : '失败'} · {selected.last_test.target === 'embedding' ? '向量' : '对话'} {selected.last_test.model || '未记录模型'} · {testTime(selected.last_test.at)}{selected.last_test.ok ? ` · ${selected.last_test.duration_ms} ms` : ''}</> : '尚未测试'}</dd></div>
               </dl>
-              <p className="body-small muted">功能绑定直接使用这条渠道的密钥；轮换密钥后无需改任何功能。</p>
               <div className="model-settings-actions">
                 <button type="button" className="button primary" disabled={Boolean(busy) || defaultChannelId === selected.id} onClick={() => void setAsDefault(selected)}>{busy === `activate-${selected.id}` ? '设置中…' : defaultChannelId === selected.id ? '当前对话默认' : '设为对话默认'}</button>
                 <button type="button" className="button secondary" disabled={Boolean(busy) || !selected.model} onClick={() => void testChannel(selected, 'llm')}>{busy === `test-${selected.id}-llm` ? '测试中…' : '测试连接'}</button>
@@ -398,7 +397,7 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
           {bindings === null && <div className="paper-panel"><p className="body-small muted" role="status">正在读取功能绑定…</p></div>}
           {bindings && <>
             <div className="paper-panel binding-matrix">
-              <div className="section-heading"><div><h2>功能与模型</h2><p className="body-small muted">一屏总览 4 个功能各自使用哪条渠道的哪个模型，点击「调整」只展开当前一项。</p></div><span className="badge good"><span />{configuredPurposes} / {PURPOSE_ORDER.length} 已配置</span></div>
+              <div className="section-heading"><div><h2>功能与模型</h2></div><span className="badge good"><span />{configuredPurposes} / {PURPOSE_ORDER.length} 已配置</span></div>
               <div className="binding-matrix-scroll">
                 <table>
                   <thead><tr><th scope="col">功能</th><th scope="col">模型来源</th><th scope="col">渠道</th><th scope="col">模型</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead>
@@ -428,7 +427,7 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
               inFlight={inFlight.current}
               onCollapse={() => setExpandedPurpose(null)}
               onChange={binding => updatePurpose(expandedPurpose, binding)} />
-              : <p className="binding-placeholder"><span className="status-dot off" aria-hidden="true" />4 个功能配置均已收起，点击上表「调整」只展开对应一项，再点一次可收起。</p>}
+              : <p className="binding-placeholder"><span className="status-dot off" aria-hidden="true" />配置均已收起 · 点击上表「调整」展开一项</p>}
           </>}
         </section>}
         <p className="model-footer-note">功能绑定直接使用渠道的密钥；轮换密钥后无需改任何功能。密钥仅保存在本机，不回显。上下文窗口用于对话用量估算，不是单次输出上限。</p>

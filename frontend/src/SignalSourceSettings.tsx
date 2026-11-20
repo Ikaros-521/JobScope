@@ -50,7 +50,7 @@ export function SignalSourceSettings() {
     finally { setBusy('') }
   }
   return <section className="paper-panel signal-sources" aria-label="求职参考来源">
-    <div className="section-heading"><div><span className="section-label">求职参考</span><h2>信号来源与付费接口</h2><p className="muted body-small">保存设置后，在求职参考的「按来源补数据」或横评的「补数据来源」中执行。付费 API 每次手动勾选；多平台检索里的企查查 / 天眼查仍是公开网页。</p></div><button className="button secondary small" type="button" disabled={Boolean(busy) || loading} onClick={() => void load()}>刷新</button></div>
+    <div className="section-heading"><div><h2>信号来源与付费接口</h2><p className="muted body-small">保存设置后，在求职参考的「按来源补数据」或横评的「补数据来源」中执行。付费 API 每次手动勾选；多平台检索里的企查查 / 天眼查仍是公开网页。</p></div><button className="button secondary small" type="button" disabled={Boolean(busy) || loading} onClick={() => void load()}>刷新</button></div>
     {loading ? <p role="status" className="tiny-label">正在读取来源设置与最近执行结果…</p> : null}
     {error ? <p role="status" className="tiny-label">读取失败：{error}，可点击刷新重试。</p> : null}
     {sources ? <div className="signal-source-rows">{Object.entries(sources).map(([id, item]) => {

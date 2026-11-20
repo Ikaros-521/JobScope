@@ -142,7 +142,7 @@ export function SystemSettings() {
 
   return <section className="system-settings" aria-label="系统设置">
     <div className="paper-panel system-panel">
-      <div className="section-heading"><div><h2>聊天显示</h2><p className="body-small muted">对全局、公司与岗位对话同时生效；随时切换，历史消息按所选模式重新呈现。</p></div></div>
+      <div className="section-heading"><div><h2>聊天显示</h2></div></div>
       <div className="mode-picks display-mode-picks" role="group" aria-label="聊天显示模式">
         {DISPLAY_MODES.map(mode => <button type="button" key={mode.value} aria-pressed={settings.chat_display_mode === mode.value} onClick={() => pickMode(mode.value)}>
           <strong>{mode.label}</strong>

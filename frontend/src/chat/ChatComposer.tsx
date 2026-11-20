@@ -161,7 +161,7 @@ export function ChatComposer({ input, onInputChange, model, llmChannel = '', mod
         </button>
       </div>}
       {queueCount > 0 && <span className="composer-queue-count" title="生成完成后按顺序自动发送">已排队 {queueCount} 条</span>}
-      <span className="composer-hint">Enter 发送 · Shift + Enter 换行 · {MODE_HINTS[permissionMode]}</span>
+      <span className="composer-hint">{MODE_HINTS[permissionMode]}</span>
     </div>
   </div>
 }

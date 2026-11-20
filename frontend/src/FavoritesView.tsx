@@ -238,7 +238,6 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
             {item.detail_collected_at ? `反查于 ${date(item.detail_collected_at)}` : '尚未反查过详情'}
           </span>} />)}</div>}
       <Pagination info={info} label="收藏夹" busy={Boolean(busy)} onPage={page => run('page', async () => { await load(undefined, page) })} />
-      <div className="list-bottom">反查会用项目浏览器重新读取源站原帖；投递前请以平台页面为准。</div>
       {followJob && <PipelineFollowEditor job={followJob} onClose={() => setFollowJob(null)}
         onSaved={() => { void run('follow', async () => { await load() }) }} />}
     </section>

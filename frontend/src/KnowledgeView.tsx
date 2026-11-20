@@ -250,7 +250,7 @@ export function KnowledgeView({ onCountChange }: { onCountChange?: (total: numbe
         <button className="button primary" onClick={() => void openEditor(null)}><Icon name="plus" size={16} />新建知识</button>
       </div></section>
 
-    {stagingText && <div className="kb-import-card paper-panel" role="status"><span className="spinner" /><strong>{stagingText}</strong><span className="muted body-small">大文件上传可能需要一些时间；上传完成后自动开始后台导入</span></div>}
+    {stagingText && <div className="kb-import-card paper-panel" role="status"><span className="spinner" /><strong>{stagingText}</strong></div>}
     {importTask && !stagingText && <ImportTaskCard task={importTask} onStop={() => void stopImport()} onClose={() => { pollToken.current += 1; setImportTask(null) }} />}
 
     <div className="management-overview" aria-label="知识库概况">
@@ -271,7 +271,7 @@ export function KnowledgeView({ onCountChange }: { onCountChange?: (total: numbe
         <div className="knowledge-settings-grid">
           <div><label className="field-label" htmlFor="kb-size">块大小 <span>· 字符</span></label><input id="kb-size" type="number" min={64} max={2000} value={settingsDraft?.size ?? settings.size} onChange={event => setSettingsDraft({ ...settingsDraft!, size: Number(event.target.value) })} inputMode="numeric" /></div>
           <div><label className="field-label" htmlFor="kb-overlap">相邻重叠 <span>· 字符</span></label><input id="kb-overlap" type="number" min={0} max={2000} value={settingsDraft?.overlap ?? settings.overlap} onChange={event => setSettingsDraft({ ...settingsDraft!, overlap: Number(event.target.value) })} inputMode="numeric" /></div>
-          <div className="kb-separators"><label className="field-label" htmlFor="kb-separators">分隔符 <span>· 仅分隔符策略，逗号分隔，如 ：\n\n, 。</span></label><input id="kb-separators" value={settingsDraft?.separators ?? settings.separators.join(', ')} onChange={event => setSettingsDraft({ ...settingsDraft!, separators: event.target.value })} placeholder="默认：\n\n, \n, 。, ！, ？, ；" /></div>
+          <div className="kb-separators"><label className="field-label" htmlFor="kb-separators">分隔符</label><input id="kb-separators" value={settingsDraft?.separators ?? settings.separators.join(', ')} onChange={event => setSettingsDraft({ ...settingsDraft!, separators: event.target.value })} placeholder="仅分隔符策略 · 逗号分隔，默认：\n\n, \n, 。, ！, ？, ；" /></div>
           <div><label className="field-label" htmlFor="kb-mode">检索模式</label><select id="kb-mode" value={settingsDraft?.retrieval_mode || settings.retrieval_mode} onChange={event => setSettingsDraft({ ...settingsDraft!, retrieval_mode: event.target.value })}><option value="lexical">词法（BM25）</option><option value="hybrid">混合（向量+词法）</option></select></div>
         </div>
         <div className="knowledge-settings-actions">

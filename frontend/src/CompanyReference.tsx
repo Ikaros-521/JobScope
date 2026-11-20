@@ -293,7 +293,7 @@ export function CompanyReference({ report, history, busy, loading, action, compa
   }
   return <section className="reliability-panel" aria-label="求职参考">
     <div className="section-heading">
-      <div><span className="section-label">求职参考</span><h3>{report ? `${report.company} · 主观参考` : '主观参考'}</h3></div>
+      <div><h3>{report ? `${report.company} · 主观参考` : '主观参考'}</h3></div>
       <div className="purpose-heading-actions">
         <button type="button" className="button secondary small" disabled={!company.trim()} onClick={joinCompare}>加入横评</button>
         <button type="button" className="button secondary small" disabled={Boolean(busy)} onClick={onCompute}>{busy ? '整理中…' : report ? '重新计算' : '生成参考'}</button>

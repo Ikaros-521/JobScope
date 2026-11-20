@@ -308,10 +308,10 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCo
   const welcome = !isGlobal && !isJob && !company
     ? { title: '先确认公司主体，再开始对话', text: '在上方输入资料库中的精确公司名称，Agent 将围绕这一主体检索。' }
     : isGlobal
-      ? { title: '让 Agent 帮你查资料、做比较、准备面试', text: '可检索项目岗位与公司资料、你录入的知识库和简历，按需调用 Skills 或 MCP；回答保留来源。' }
+      ? { title: '全局对话', text: '可检索项目岗位、公司资料、知识库与简历；回答保留来源。' }
       : isJob
-        ? { title: '围绕这份岗位展开', text: 'Agent 可检索本岗位与同公司的公共资料。需要比较其他岗位或公司时，可复制对话并扩大范围。' }
-        : { title: `围绕 ${company} 展开`, text: 'Agent 可检索该公司的岗位与资料。需要跨公司比较时，可复制对话进入全局范围。' }
+        ? { title: '围绕这份岗位展开', text: 'Agent 可检索本岗位与同公司的公共资料。' }
+        : { title: `围绕 ${company} 展开`, text: 'Agent 可检索该公司的岗位与资料。' }
 
   function pickPermissionMode(mode: PermissionMode) {
     if (mode === conversation.permission_mode) return

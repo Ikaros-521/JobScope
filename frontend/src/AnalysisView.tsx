@@ -36,7 +36,7 @@ export function AnalyzeProgress({ run, onCancel }: { run: AnalyzeRunState; onCan
   ]
   const minutes = Math.floor(elapsed / 60)
   return <section className="paper-panel analyze-progress">
-    <div className="section-heading"><div><h2>正在评估适配<span className="analyze-elapsed">{minutes > 0 ? `${minutes} 分 ${elapsed % 60} 秒` : `${elapsed} 秒`}</span></h2><p className="body-small muted">拆解 → 分组匹配 → 校验计分，已完成的条目实时出现在下方；取消将在当前小组完成后生效。</p></div><button className="button secondary small" onClick={onCancel}>取消分析</button></div>
+    <div className="section-heading"><div><h2>正在评估适配<span className="analyze-elapsed">{minutes > 0 ? `${minutes} 分 ${elapsed % 60} 秒` : `${elapsed} 秒`}</span></h2></div><button className="button secondary small" title="取消将在当前分组完成后生效，已完成条目保留" onClick={onCancel}>取消分析</button></div>
     <ul className="analyze-stages">{stages.map(stage => <li key={stage.label} className={stage.status}>
       <span className="stage-marker">{stage.status === 'done' ? '✓' : stage.status === 'running' ? <span className="spinner" /> : '○'}</span>
       {stage.label}{stage.detail && <span className="stage-detail">{stage.detail}</span>}
@@ -79,7 +79,7 @@ export function AnalysisView({ analysis, onStatusChange, onOptimizeGaps, onInter
       <div className="analysis-coverage"><span>{editable ? '语义证据覆盖' : '词项核实覆盖'} {Math.round(coverage)}%</span><span>{judged} / {analysis.requirements.length} 项有对应依据</span><progress className="coverage-progress" value={coverage} max="100" aria-label="要求证据覆盖率" /></div>
       <div className="analysis-tags"><span>{editable ? '模型辅助分析' : '规则辅助 · 词项核实'}</span><span>简历：{analysis.resume_label || '我的简历'}</span></div>
     </div>
-    <p className="analysis-disclaimer">未知项可在「判断」列手动改判（按你的确认重算并跨重评保留）；硬性条件也可在「个人资料库 → 求职偏好」提前申报，评估时自动判上；分数仅供辅助比较，不代表录用概率</p>
+    <p className="analysis-disclaimer">未知项可在「判断」列手动改判（按你的确认重算并跨重评保留）；硬性条件也可在「个人资料库 → 求职偏好」提前申报，评估时自动判上</p>
     {analysis.limitations && <details className="analysis-limitations"><summary>分析范围与限制</summary><p>{readable(analysis.limitations)}</p></details>}
     <div className="analysis-subtabs" role="tablist" aria-label="适配报告分区" onKeyDown={navigateTabs}>
       {subTabs.map(item => <button key={item.id} id={`analysis-${item.id}-tab`} role="tab" aria-controls="analysis-subtab-panel" aria-selected={analysisTab === item.id} tabIndex={analysisTab === item.id ? 0 : -1} className={analysisTab === item.id ? 'active' : ''} onClick={() => setAnalysisTab(item.id)}>{item.label}{item.count != null && <span>{item.count}</span>}</button>)}
@@ -123,7 +123,6 @@ export function AnalysisView({ analysis, onStatusChange, onOptimizeGaps, onInter
           <div className="analysis-gap-actions">
             {onOptimizeGaps && <button type="button" className="button secondary small" onClick={onOptimizeGaps}><Icon name="wand" size={14} />带着缺口去工坊优化</button>}
             {onInterviewGaps && <button type="button" className="button secondary small" onClick={onInterviewGaps}><Icon name="mic" size={14} />拿缺口练模拟面试</button>}
-            <span className="tiny-label">缺口会变成面试官的重点追问；也可先去工坊优化简历再练</span>
           </div>)}
       </>}
       {analysisTab === 'interview' && <AnalysisList title="面试时建议核实" items={analysis.questions} />}

@@ -419,7 +419,7 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
             {notes.length > 0 && <details className="workshop-notes"><summary>优化说明（{notes.length}）</summary><ul>{notes.map((note, index) => <li key={index}>{note}</li>)}</ul></details>}
           </div>
           <div className="workshop-edit-toolbar">
-            <label className="field-label" htmlFor="workshop-markdown">简历正文 · Markdown，可直接编辑</label>
+            <label className="field-label" htmlFor="workshop-markdown">简历正文</label>
             {current.base_text?.trim() && <div className="workshop-edit-tabs" role="tablist" aria-label="正文查看方式">
               <button type="button" role="tab" aria-selected={editTab === 'edit'} className={editTab === 'edit' ? 'active' : ''} onClick={() => setEditTab('edit')}>编辑</button>
               <button type="button" role="tab" aria-selected={editTab === 'diff'} className={editTab === 'diff' ? 'active' : ''} onClick={() => setEditTab('diff')}>改动对比</button>
@@ -486,10 +486,9 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
             {previewHtml ? <iframe className="workshop-preview-frame" title="简历预览" srcDoc={previewHtml} sandbox="allow-same-origin" ref={previewFrameRef} onLoad={() => fitPreview()} /> : <div className="loading-state"><span className="spinner" />正在生成预览…</div>}
           </div>
           <div className="workshop-export">
-            <span className="tiny-label">导出</span>
             {EXPORT_ITEMS.map(item => <button type="button" className="button secondary small" key={item.format}
               disabled={Boolean(busy)} onClick={() => void exportCurrent(item.format)}>{busy === `export-${item.format}` ? <span className="spinner" /> : null}{item.label}</button>)}
-            <p className="workshop-hint">PDF/HTML 按当前模板排版；导出前会自动保存未存的修改。</p>
+            <p className="workshop-hint">导出前会自动保存未存的修改。</p>
           </div>
         </> : <div className="workshop-template-gallery">
           {templates.map(template => <article className={`workshop-template-card ${templateId === template.id ? 'active' : ''}`} key={template.id} onClick={() => setTemplateId(template.id)}>

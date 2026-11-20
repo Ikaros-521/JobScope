@@ -47,7 +47,7 @@ export function WageBaselines({ refreshMetadata }: { refreshMetadata: () => Prom
 
   return <section className="paper-panel wage-baseline-panel">
     <div className="section-heading">
-      <div><span className="section-label">求职参考</span><h2>工资基线（人社局指导价位）</h2>
+      <div><h2>工资基线（人社局指导价位）</h2>
         <p className="muted body-small">把官方发布的工资指导价位按「城市 × 职类 × 学历」导入本机；某公司同城同层的招聘报价样本不足 5 条时，报告自动改用基线作对照并写明口径差异。只做手动导入，本项目不抓取官网。</p></div>
       <button className="button secondary small" type="button" onClick={() => setExpanded(value => !value)}>{expanded ? '收起导入' : rows?.length ? '导入更多' : '导入'}</button>
     </div>

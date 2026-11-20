@@ -50,11 +50,20 @@ def main():
 
         page.route('**/api/**', intercept)
         page.goto(args.url)
+        # 新档案会自动弹教程遮罩（拦截点击）：等它出现按 Esc 跳过；再展开「岗位研究」组。
+        try:
+            page.get_by_role('dialog', name='使用教程').wait_for(state='attached', timeout=15000)
+            page.keyboard.press('Escape')
+        except Exception:
+            pass
+        nav_toggle = page.get_by_role('button', name='岗位研究', exact=True).first
+        if nav_toggle.get_attribute('aria-expanded') == 'false':
+            nav_toggle.click()
         page.locator('.sidebar').get_by_role('button', name=re.compile(r'^收藏')).click()
-        page.get_by_label('选择岗位：受控岗位0 · 受控甲公司', exact=True).check()
-        page.get_by_label('选择岗位：受控岗位2 · 受控甲公司', exact=True).check()
+        page.locator('.favorites-view').get_by_label('选择岗位：受控岗位0 · 受控甲公司', exact=True).check()
+        page.locator('.favorites-view').get_by_label('选择岗位：受控岗位2 · 受控甲公司', exact=True).check()
         page.get_by_role('button', name='收藏夹下一页', exact=True).click()
-        page.get_by_label('选择岗位：受控岗位1 · 受控乙公司', exact=True).check()
+        page.locator('.favorites-view').get_by_label('选择岗位：受控岗位1 · 受控乙公司', exact=True).check()
         expect(page.get_by_text('跨页已选 3 项（本页 1 项）', exact=True)).to_be_visible()
         page.get_by_role('button', name='横评选中公司', exact=True).click()
         page.get_by_role('button', name=re.compile(r'^数据分析')).click()
@@ -63,16 +72,16 @@ def main():
         expect(page.locator('.compare-chip').filter(has_text='受控乙公司')).to_have_count(1)
         page.locator('.sidebar').get_by_role('button', name=re.compile(r'^收藏')).click()
         # Selection is scoped to this favorites mount; reselect to verify bulk request IDs.
-        page.get_by_label('选择岗位：受控岗位0 · 受控甲公司', exact=True).check()
+        page.locator('.favorites-view').get_by_label('选择岗位：受控岗位0 · 受控甲公司', exact=True).check()
         page.get_by_role('button', name='收藏夹下一页', exact=True).click()
-        page.get_by_label('选择岗位：受控岗位1 · 受控乙公司', exact=True).check()
+        page.locator('.favorites-view').get_by_label('选择岗位：受控岗位1 · 受控乙公司', exact=True).check()
         page.get_by_role('button', name='反查选中', exact=True).click()
         expect(page.get_by_role('button', name='反查选中', exact=True)).to_be_enabled()
         assert mutations[-1] == ('recheck', ['favorite-0', 'favorite-1'])
         page.locator('.favorites-batch').get_by_role('button', name='取消收藏', exact=True).click()
         expect(page.get_by_role('button', name='横评选中公司', exact=True)).to_have_count(0)
         assert mutations[-1] == ('unstar', ['favorite-0', 'favorite-1'])
-        page.get_by_label('选择岗位：受控岗位2 · 受控甲公司', exact=True).check()
+        page.locator('.favorites-view').get_by_label('选择岗位：受控岗位2 · 受控甲公司', exact=True).check()
         page.get_by_role('textbox', name='收藏内搜索', exact=True).fill('甲公司')
         page.get_by_role('button', name='筛选', exact=True).click()
         expect(page.get_by_text('筛选已变更，已清空此前跨页选择。', exact=True)).to_be_visible()

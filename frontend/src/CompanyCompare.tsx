@@ -417,7 +417,7 @@ export function CompanyCompare() {
   return <div className="compare-page">
     <section className="paper-panel compare-controls">
       <div className="section-heading">
-        <div><h2>选择对比公司</h2><p className="body-small muted">从已登记的公司里选 2-{MAX_COMPANIES} 家；分数由各家的已保存材料算出，维度覆盖与样本量可能不同。</p></div>
+        <div><h2>选择对比公司</h2></div>
         <div className="compare-toolbar-actions">
           <button type="button" className="button secondary"
                   disabled={!needsCollect.length || computing || Boolean(collecting) || Boolean(batchProgress) || signalSelection.loading || Boolean(signalSelection.error)}
@@ -495,8 +495,7 @@ export function CompanyCompare() {
 
     {selected.length === 0
       ? <section className="paper-panel compare-empty">
-          <h3>把几家公司放在一起看</h3>
-          <p className="body-small muted">在上方输入公司名加入对比（最多 {MAX_COMPANIES} 家），或在公司资料库、岗位详情里点「加入横评」。候选来自公司资料库登记过的主体；从没算过参考分的公司会先显示「还没有参考报告」，加入后一键重算即可。薪资对比默认按岗位分层，公司级中位数只作构成参考。</p>
+          <p className="body-small muted">在上方输入公司名加入对比（最多 {MAX_COMPANIES} 家），或在公司资料库、岗位详情里点「加入横评」；加入后点「重新计算所选」出分。</p>
         </section>
       : <>
         <div className="compare-grid">
@@ -539,7 +538,7 @@ export function CompanyCompare() {
         </div>
 
         <section className="paper-panel compare-table-panel">
-          <div className="section-heading"><div><h2>明细对照</h2><p className="body-small muted">每格数字都可回溯：在岗位档案的求职参考里展开对应维度查看依据与出处。</p></div></div>
+          <div className="section-heading"><div><h2>明细对照</h2></div></div>
           <div className="compare-table-wrap">
             <table className="compare-table">
               <thead><tr>

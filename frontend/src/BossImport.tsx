@@ -210,7 +210,7 @@ export function BossImport({ onClose, onImported }: { onClose: () => void; onImp
     </section>
 
     <section className="boss-import-section" aria-labelledby="boss-import-links-heading">
-      <div className="boss-import-heading"><h3 id="boss-import-links-heading">粘贴 Boss 链接</h3><span className="tiny-label">App 分享文本可直接整段粘贴</span></div>
+      <div className="boss-import-heading"><h3 id="boss-import-links-heading">粘贴 Boss 链接</h3></div>
       <textarea value={paste} onChange={event => setPaste(event.target.value)} rows={4} maxLength={50000}
         placeholder={'每行一条，或整段粘贴 App 分享文本：\n【后端开发】20-30K·14薪 经验3-5年 本科 杭州\nhttps://www.zhipin.com/job_detail/xxxx.html'} />
       <div className="boss-import-actions">

@@ -60,7 +60,7 @@ export function CompanyLookup({ refreshMetadata }: { refreshMetadata: () => Prom
     } catch (err) { setError((err as Error).message) } finally { setBusy(false) }
   }
   return <section className="lookup-panel paper-panel">
-    <div className="section-heading"><div><h2>公司快查</h2><p className="body-small muted">用项目浏览器打开企查查 / 天眼查公开搜索页，把页面可见的公司信息快照存进资料库。公开页数据有限，取到什么存什么。</p></div></div>
+    <div className="section-heading"><div><h2>公司快查</h2></div></div>
     <form onSubmit={lookup}>
       <div className="browser-fields">
         <div><label className="field-label" htmlFor="lookup-channel">快查渠道</label><select id="lookup-channel" value={channel} onChange={event => setChannel(event.target.value as 'qcc' | 'tyc' | 'aiqicha')}>{CHANNELS.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></div>
@@ -82,7 +82,6 @@ export function CompanyLookup({ refreshMetadata }: { refreshMetadata: () => Prom
           <p className="lookup-fields">{Object.entries(card.fields).map(([label, value]) => `${label}：${value}`).join(' · ') || '该页未给出更多结构化字段，原文已按快照保存'}</p>
         </article>
       })}</div>}
-      <p className="tiny-label">快照按解析出的公司名归档到公司资料库（企业信息快照）；重复查询按同一出处去重，不会产生重复条目。</p>
     </div>}
     {error && <p className="alert error" role="alert">{error}</p>}
     <p className="tiny-label">仅读取公开页可见内容；遇到登录或验证时，请在项目浏览器内手动完成后重试，本应用不会自动绕过。</p>

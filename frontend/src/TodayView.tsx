@@ -112,7 +112,7 @@ export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJob
       </div>
 
       <section className="paper-panel today-panel" aria-label="最近采集">
-        <div className="section-heading"><div><h2>最近采集</h2><p className="body-small muted">各渠道最近 5 条任务；需要登录/验证的会直接说明。</p></div>
+        <div className="section-heading"><div><h2>最近采集</h2></div>
           <span className="purpose-heading-actions"><button className="text-button" onClick={onOpenSources}>数据与采集<Icon name="arrow" size={13} /></button></span></div>
         {recentTasks.length === 0 ? <div className="inline-empty">还没有采集记录。</div>
           : <ul className="today-task-list">

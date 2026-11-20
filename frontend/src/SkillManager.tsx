@@ -92,7 +92,7 @@ export function SkillManager({ skills, busy, act, prefill, onPrefillConsumed }: 
         {Boolean(skill.scripts.length) ? <ul className="skill-scripts">{skill.scripts.map(path => <li key={path}><code>{path}</code></li>)}</ul> : <p className="muted">没有脚本文件</p>}
         <p className="field-help">同名重新导入会覆盖此 Skill；导出的 zip 不含脚本内容，可在其他宿主粘贴 SKILL.md 使用。</p>
         {importError && <p role="alert" className="mcp-import-error">{importError}</p>}
-      </> : <div className="extensions-empty"><h3>{skills.length ? '选择 Skill 查看详情' : '把常用方法交给 Agent'}</h3><p>{skills.length ? '在列表中选择一项，查看资源或管理启用状态。' : '从市场安装，或使用列表顶部的按钮导入 SKILL.md。'}</p></div>}
+      </> : <div className="extensions-empty">{skills.length ? <><h3>选择 Skill 查看详情</h3><p>在列表中选择一项，查看资源或管理启用状态。</p></> : <p>从市场安装，或使用列表顶部的按钮导入 SKILL.md。</p>}</div>}
     </section>
   </div>
 }

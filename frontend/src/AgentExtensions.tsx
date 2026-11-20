@@ -9,13 +9,6 @@ import { navigateTabs } from './tabNavigation'
 
 type Tab = 'mcp-market' | 'mcp' | 'skill-market' | 'skills'
 
-const TAB_DESCRIPTIONS: Record<Tab, string> = {
-  'mcp-market': '从内置目录与 npm 在线检索发现 MCP 服务，添加后在「MCP 工具」测试与授权。接入「检索 / 网页」类服务（如 Tavily、Brave、Fetch）并设为自动授权后，对话 Agent 会在项目资料不足时主动联网核实外部信息。',
-  mcp: '先保存连接，再测试、授权并启用。搜索类服务设为自动授权后，Agent 无需逐次确认即可联网检索；已读取简历的会话仍会要求确认，防止个人资料外发。',
-  'skill-market': '从内置目录与 GitHub 在线检索发现 Skills，安装后在「Skills」管理启用状态。',
-  skills: '导入 SKILL.md，管理资源与启用状态。',
-}
-
 export function AgentExtensions() {
   const [data, setData] = useState<Extensions>({ servers: [], skills: [] })
   const [tab, setTab] = useState<Tab>('mcp-market')
@@ -63,10 +56,10 @@ export function AgentExtensions() {
   const enabledSkills = data.skills.filter(item => item.enabled).length
   const countsReady = !loading && !loadError
   return <section className="extensions-workspace" aria-label="Agent 扩展管理">
-    <section className="page-intro"><div><h1>Agent 扩展</h1><p>为通用 Agent 连接工具、补充工作方法。</p></div></section>
+    <section className="page-intro"><div><h1>Agent 扩展</h1></div></section>
     <div className="extensions-overview" aria-label="扩展启用概览" aria-busy={loading}>
-      <article className="extension-summary"><span>MCP 工具</span><strong>{countsReady ? `${enabledServers} / ${data.servers.length}` : '—'}</strong><small>启用 / 总计</small><p>连接外部服务，按工具授权。</p></article>
-      <article className="extension-summary"><span>Skills</span><strong>{countsReady ? `${enabledSkills} / ${data.skills.length}` : '—'}</strong><small>启用 / 总计</small><p>保存工作方法，按需读取。</p></article>
+      <article className="extension-summary"><span>MCP 工具</span><strong>{countsReady ? `${enabledServers} 启用 · 共 ${data.servers.length}` : '—'}</strong></article>
+      <article className="extension-summary"><span>Skills</span><strong>{countsReady ? `${enabledSkills} 启用 · 共 ${data.skills.length}` : '—'}</strong></article>
     </div>
     <div className="agent-extension-body">
       <div className="extensions-toolbar">
@@ -80,7 +73,6 @@ export function AgentExtensions() {
       {loading && <p className="alert" role="status">正在读取扩展配置…</p>}
       {loadError && <div className="alert" role="alert"><p>扩展配置读取失败：{loadError}</p><button type="button" className="button secondary small" disabled={Boolean(busy)} onClick={() => void load()}>重试</button></div>}
       <div id="extensions-panel" role="tabpanel" aria-labelledby={`extensions-tab-${tab}`} tabIndex={0}>
-        <div className="extensions-description"><p>{TAB_DESCRIPTIONS[tab]}</p></div>
         {tab === 'mcp-market' && <MarketView kind="mcp" busy={busy} onInstallMcp={entry => void installMcp(entry)} onInstallSkill={entry => void installSkill(entry)} onTemplate={useTemplate} />}
         {tab === 'skill-market' && <MarketView kind="skill" busy={busy} onInstallMcp={entry => void installMcp(entry)} onInstallSkill={entry => void installSkill(entry)} onTemplate={useTemplate} />}
         {tab === 'mcp' && countsReady && <McpManager servers={data.servers} busy={busy} act={act} focusId={focusServer} onFocusConsumed={() => setFocusServer(null)} />}
