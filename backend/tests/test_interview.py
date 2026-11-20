@@ -263,3 +263,47 @@ def test_personas_payload_has_styles(client):
     payload = client.get('/api/interview/personas').json()
     assert {card['id'] for card in payload['cards']} >= {'product', 'operations', 'data', 'dev', 'hr', 'custom'}
     assert {style['id'] for style in payload['styles']} == {'alibaba', 'bigtech', 'generic'}
+
+
+PERSONA = dict(company='大厂风格', company_style=dict(values=['数据驱动']), role_label='产品', role=dict(focus='需求落地'),
+               round_label='业务面（一面）', round_style=dict(focus='业务理解'), intensity='standard',
+               intensity_label='标准', job_title='产品经理', company_name='甲公司')
+MATERIAL = dict(gaps=[], jd_summary='', resume_digest='')
+
+
+def test_interviewer_prompt_carries_progress():
+    """追问超限/反问超轮必须注入系统记账硬指令——模型自己数不清追问轮数（线上第 0 题追 18 轮的根因）。"""
+    from jobscope.interview import build_interviewer_system
+    plan = fake_plan()
+    base = build_interviewer_system(PERSONA, MATERIAL, plan, phase='questioning')
+    assert '实时进度' not in base  # 无进度时保持旧形态
+    over = build_interviewer_system(PERSONA, MATERIAL, plan, phase='questioning',
+                                    progress=dict(current_index=0, segments=[dict(answers=['答'] * 5)]))
+    assert '当前第 1/2 题' in over and '追问层 4/3' in over
+    assert '硬性要求' in over and 'verdict=next' in over
+    under = build_interviewer_system(PERSONA, MATERIAL, plan, phase='questioning',
+                                     progress=dict(current_index=1, segments=[dict(answers=['答'] * 2)]))
+    assert '当前第 2/2 题' in under and '追问层 1/3' in under and '硬性要求' not in under
+    wrapup = build_interviewer_system(PERSONA, MATERIAL, plan, phase='wrapup',
+                                      progress=dict(segments=[dict(index=-1, reviewable=False, answers=['问'] * 5)]))
+    assert '反问环节已进行 5 轮' in wrapup and '本轮必须直接告别收尾' in wrapup
+
+
+def test_turn_prompt_injects_progress(client, monkeypatch):
+    """每轮对话的 system 都带最新进度（system 逐轮重建，进行中的场次下一轮即生效）。"""
+    data = create_session(client, monkeypatch)
+    seen = []
+
+    def fake_stream_turn(config, messages, tools, **kwargs):
+        seen.append(messages[0]['content'])
+        reply = dict(role='assistant', content='讲讲你的项目。',
+                     tool_calls=[dict(id='c1', type='function', function=dict(name='advance', arguments=advance_args('next', 0)))])
+        return reply, {}, ''
+
+    monkeypatch.setattr('jobscope.interview_runs.stream_turn', fake_stream_turn)
+    opened = client.post(f"/api/interview/sessions/{data['session_id']}/runs", json=dict(answer=''))
+    join_run(client, opened.json()['run_id'])
+    assert '【实时进度' in seen[0] and '当前第 1/2 题' in seen[0]
+    turn = client.post(f"/api/interview/sessions/{data['session_id']}/runs", json=dict(answer='我做了一个会员增长项目'))
+    join_run(client, turn.json()['run_id'])
+    assert '当前第 2/2 题' in seen[1]

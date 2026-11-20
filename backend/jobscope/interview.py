@@ -189,15 +189,48 @@ ADVANCE_TOOL = dict(
 )
 
 
-def build_interviewer_system(persona, material, plan, *, phase='opening'):
+def _progress_directive(plan, phase, progress):
+    """实时进度块（hidden direction）：模型对长对话数不清追问轮数，必须喂系统记账。
+
+    追问层 = 本题回答数-1；达到 3 层下一轮硬性要求 verdict=next；反问环节超 2 轮硬性要求告别。
+    """
+    if not progress:
+        return ''
+    questions = plan.get('questions') or []
+    total = len(questions)
+    segments = progress.get('segments') or []
+    if phase == 'wrapup':
+        wrap = next((seg for seg in reversed(segments) if not seg.get('reviewable')), {})
+        asked = len(wrap.get('answers', []))
+        lines = [f'- 反问环节已进行 {asked} 轮。',
+                 '- 反问至多 2 轮：达到后即输出简短告别（感谢＋一句总括），明确说「今天的面试就到这里」，此后不再提任何问题。']
+        if asked >= 4:
+            lines.append('【硬性要求】反问已超 2 轮：本轮必须直接告别收尾，不再提任何新问题。')
+        return '\n【实时进度（系统记账，以此为准）】\n' + '\n'.join(lines) + '\n'
+    index = min(max(int(progress.get('current_index', 0)), 0), max(total - 1, 0))
+    answers = len(segments[-1].get('answers', [])) if segments else 0
+    followups = max(answers - 1, 0)
+    topic = (questions[index].get('topic') if 0 <= index < total else '') or ''
+    lines = [f'- 当前第 {index + 1}/{total} 题{f"「{topic}」" if topic else ""}，候选人已答 {answers} 次（追问层 {followups}/3）。']
+    if followups >= 3:
+        lines.append('【硬性要求】本题追问层已用完：本轮必须 verdict=next 进入下一题（可先一句简短过渡再抛下一题）。')
+    else:
+        lines.append('- 本题追问层用完必须 verdict=next 换题；全部题走完 verdict=wrapup 进入反问环节。')
+    return '\n【实时进度（系统记账，以此为准）】\n' + '\n'.join(lines) + '\n'
+
+
+def build_interviewer_system(persona, material, plan, *, phase='opening', progress=None):
     """面试官 system prompt：三段式人设 + 导演规则 + 题单 + 候选材料（含公司情报）。
 
     导演规则（hidden direction）：追问优先级 无量化数据 > 无个人动作 > 无结果 > STAR 缺失；
     答透即换题不恋战；每题最多追问 3 层；不剧透参考答案、不实时点评——评价全部留给复盘。
+    progress 是场次实时记账（current_index/segments）：模型面对长对话数不清自己追问了几轮，
+    必须把系统侧的准确进度喂回去，追问超限换题、反问超轮收尾才有硬依据。
     """
     questions_text = '\n'.join(
         f'{index}. [{item["topic"]}]（来源:{item["source"]}）{item["question"]}\n   考察点:{item["focus"]} 追问路径:{"/".join(item["followups"])}'
         for index, item in enumerate(plan['questions']))
+    progress_block = _progress_directive(plan, phase, progress)
     gaps_text = '\n'.join(f'- {gap}' for gap in material.get('gaps', [])[:8]) or '（本场没有适配评估数据）'
     target_line = persona['job_title'] or material.get('job_title') or '（未指明具体岗位，按画像与材料推断）'
     company_line = material.get('company') or persona['company_name'] or '（未指明公司）'
@@ -224,7 +257,7 @@ def build_interviewer_system(persona, material, plan, *, phase='opening'):
 - 每轮回复：先输出面试官的对话文本（自然口语，中文，一般不超过 5 句），然后必须调用 advance 工具上报调度决策。
 - 不剧透参考答案；不点评候选人表现好坏；不解释出题意图；不用 emoji；不复述题目全文。
 - 一次只问一个问题；问题要具体到场景，不要问「你有什么问题想问我」以外的开放闲聊。
-
+{progress_block}
 【本场题单】（当前阶段：{ {'opening': '待开场：先用一句自我介绍开场，然后抛出第 0 题', 'questioning': '逐题推进中', 'wrapup': '反问与收尾'}[phase]}）
 {questions_text}
 

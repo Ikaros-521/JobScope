@@ -523,7 +523,7 @@ export type InterviewSession = {
   id: string; title: string; job_id: string; company: string; job_title: string
   persona: { preset_id: string; name: string; role_label: string; company: string; round: string; round_label: string; intensity_label: string; job_title: string; company_name: string }
   config: { question_count: number; intensity: InterviewIntensity; preset_id: string }
-  material: { resume_label?: string; gaps?: string[] }
+  material: { resume_label?: string; resume_digest?: string; gaps?: string[]; jd_summary?: string; company_brief?: string }
   question_plan: InterviewPlan | null
   progress: InterviewProgress
   status: 'planning' | 'ready' | 'live' | 'reporting' | 'done' | 'failed'

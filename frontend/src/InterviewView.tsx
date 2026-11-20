@@ -46,6 +46,8 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   const [companyName, setCompanyName] = useState('')
   const [jdText, setJdText] = useState('')
   const [answer, setAnswer] = useState('')
+  // starting：点「开始出题」到场次建好之间的一次性闸门，防连点重场，也让按钮立刻进加载态。
+  const [starting, setStarting] = useState(false)
   const streamRef = useRef<EventSource | null>(null)
   const selectedRef = useRef('')
   selectedRef.current = selected
@@ -57,9 +59,14 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
 
   const closeStream = useCallback(() => { streamRef.current?.close(); streamRef.current = null; setStream(null) }, [])
 
+  // 待首装场次的 id：新建后先拉 planning 态场次当等待区；若 SSE done 抢先换装了题单，
+  // 迟到的 GET 结果不得拿旧 planning 态把就绪场覆盖回去（否则等待区永远卡住）。
+  const planningRef = useRef('')
+
   const loadSession = useCallback(async (id: string) => {
     try {
       const detail = await getInterviewSession(id)
+      planningRef.current = ''
       setSession(detail.session)
       if (detail.session.conversation_id) {
         const data = await getInterviewMessages(id)
@@ -86,6 +93,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
       }
       if (event === 'done') {
         closeStream()
+        planningRef.current = ''
         const next = data.session as InterviewSession | undefined
         if (selectedRef.current && next && next.id === selectedRef.current) {
           setSession(next)
@@ -146,11 +154,13 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   }, [closeStream, loadSession])
 
   async function startSession() {
+    if (starting || busy) return
     setError('')
     if (!card) { setError('请先选择面试官岗位'); return }
     const targetJobId = mode === 'job' ? jobId : ''
     if (mode === 'job' && !targetJobId) { setError('请从岗位库选择一个岗位'); return }
     if (card === 'custom' && mode === 'free' && !jobTitle.trim()) { setError('自定义岗位需要先填写目标岗位名称'); return }
+    setStarting(true)
     try {
       const started = await createInterviewSession({
         persona_id: card, company_style: style, round, intensity, question_count: questionCount,
@@ -159,11 +169,19 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
         ...(mode === 'free' ? { company: companyName.trim(), ...(card === 'custom' && jobTitle.trim() ? { job_title: jobTitle.trim() } : {}) } : {}),
       })
       setCreating(false); setJdText(''); setJobTitle(''); setCompanyName('')
+      setTab('room')
       setSelected(started.session_id); selectedRef.current = started.session_id
       setSession(null); setMessages([])
       attach(started.run_id)
+      // 立刻把 planning 态场次拉进面试间当等待区（出题在后台跑）：不再让表单原地干等 1-3 分钟。
+      planningRef.current = started.session_id
+      try {
+        const detail = await getInterviewSession(started.session_id)
+        if (selectedRef.current === started.session_id && planningRef.current === started.session_id) setSession(detail.session)
+      } catch { /* 拉取失败不打断：SSE done 事件兜底换装 */ }
       void refreshSessions()
     } catch (err) { setError((err as Error).message) }
+    finally { setStarting(false) }
   }
 
   async function send() {
@@ -237,7 +255,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
         jobTitle={jobTitle} onJobTitle={setJobTitle} companyName={companyName} onCompanyName={setCompanyName}
         jdText={jdText} onJdText={setJdText}
         modelConfigured={modelConfigured} onConfigureModel={onConfigureModel}
-        busy={busy} onStart={() => void startSession()} />}
+        busy={busy || starting} onStart={() => void startSession()} starting={starting} />}
       {session && !creating && <>
         <div className="interview-subtabs" role="tablist" aria-label="面试分区" style={{ marginTop: 8 }}>
           <button role="tab" aria-selected={tab === 'room'} className={tab === 'room' ? 'active' : ''} onClick={() => setTab('room')}>面试间</button>
@@ -253,7 +271,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   </div>
 }
 
-function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRound, intensity, onIntensity, questionCount, onQuestionCount, mode, onMode, jobId, jobLabel, onPickJob, jobTitle, onJobTitle, companyName, onCompanyName, jdText, onJdText, modelConfigured, onConfigureModel, busy, onStart }: {
+function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRound, intensity, onIntensity, questionCount, onQuestionCount, mode, onMode, jobId, jobLabel, onPickJob, jobTitle, onJobTitle, companyName, onCompanyName, jdText, onJdText, modelConfigured, onConfigureModel, busy, starting, onStart }: {
   cards: InterviewPersonaCard[]; styles: InterviewStyle[]; card: string; onCard: (value: string) => void
   style: string; onStyle: (value: string) => void
   round: string; onRound: (value: string) => void
@@ -265,7 +283,7 @@ function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRou
   companyName: string; onCompanyName: (value: string) => void
   jdText: string; onJdText: (value: string) => void
   modelConfigured: boolean; onConfigureModel: () => void
-  busy: boolean; onStart: () => void
+  busy: boolean; starting: boolean; onStart: () => void
 }) {
   const active = cards.find(item => item.id === card)
   const customNeedsTitle = card === 'custom' && mode === 'free' && !jobTitle.trim()
@@ -318,7 +336,7 @@ function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRou
       </div>}
     </div>
     <div className="iv-create-actions">
-      <button className="button primary" disabled={startDisabled} onClick={onStart}><Icon name="mic" size={16} />开始出题</button>
+      <button className="button primary" disabled={startDisabled} onClick={onStart}>{starting ? <span className="spinner" /> : <Icon name="mic" size={16} />}开始出题</button>
       {customNeedsTitle ? <span className="tiny-label iv-warn">先填目标岗位名称，面试官才知道面什么</span>
         : <span className="tiny-label">出题约需 1-3 分钟（岗位 JD + 评估缺口 + 简历 + 公司资料 四源合一），完成后进入面试间</span>}
     </div>
@@ -383,6 +401,31 @@ function JobPicker({ value, label, onSelect }: { value: string; label: string; o
   </div>
 }
 
+// 出题等待区（2026-11-20）：点「开始出题」立刻跳进来接管主区——材料清单 + 真实计时，
+// 表单不再原地干等。计时锚在场次 created_at 上，切场次再回来不归零。
+function PlanningWait({ session }: { session: InterviewSession }) {
+  const createdAt = new Date(session.created_at).getTime()
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(timer)
+  }, [])
+  const elapsed = Number.isFinite(createdAt) ? Math.max(0, Math.round((now - createdAt) / 1000)) : 0
+  const elapsedLabel = elapsed >= 60 ? `${Math.floor(elapsed / 60)} 分 ${elapsed % 60} 秒` : `${elapsed} 秒`
+  const material = session.material ?? {}
+  const sources = [
+    material.jd_summary ? '岗位 JD' : '',
+    material.gaps?.length ? '评估缺口' : '',
+    material.resume_digest ? (material.resume_label ? `简历存档《${material.resume_label}》` : '简历') : '',
+    material.company_brief ? '公司资料' : '',
+  ].filter(Boolean)
+  return <div className="iv-waiting">
+    <div className="iv-waiting-head"><span className="spinner" />正在出题…已等待 {elapsedLabel}</div>
+    {sources.length > 0 && <div className="iv-waiting-sources">出题材料已就位：{sources.map(item => <em key={item}>{item}</em>)}</div>}
+    <p className="iv-waiting-note">岗位专家正按材料定制 {session.config.question_count} 道题，约 1-3 分钟。留在本页出完自动进面试间；切去别的页面后，从左侧场次列表点开本场继续。</p>
+  </div>
+}
+
 function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer, busy, answer, onAnswer, onSend, onFinish, onStop, threadRef }: {
   session: InterviewSession
   plan: InterviewSession['question_plan']
@@ -409,7 +452,7 @@ function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer
         {(session.status === 'ready' || session.status === 'live') && <button className="button secondary small" disabled={busy} onClick={onFinish}><Icon name="check" size={14} />结束并生成复盘</button>}
       </div>
     </div>
-    {session.status === 'planning' && <div className="iv-state">正在按「JD + 评估缺口 + 简历」生成专属题单，约 1-3 分钟…<span className="spinner" /></div>}
+    {session.status === 'planning' && <PlanningWait session={session} />}
     {session.status === 'failed' && <div className="iv-state">出题失败，删除本场后重新开一场即可。</div>}
     {session.status === 'reporting' && <div className="iv-state">复盘生成中：逐题点评（含好差答案对比）→ 汇总维度与高危清单…<span className="spinner" /></div>}
     <div className="interview-thread" ref={threadRef}>
@@ -431,6 +474,10 @@ function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer
         <div className="iv-content"><Markdown content={streamAnswer} /></div>
       </div>}
     </div>
+    {progress?.phase === 'wrapup' && session.status === 'live' && <div className="iv-wrapup-bar">
+      <span>面试官已进入反问收尾，随时可结束本场</span>
+      <button className="button primary small" disabled={busy} onClick={onFinish}><Icon name="check" size={14} />结束并生成复盘</button>
+    </div>}
     {!ready && session.status === 'live' && <div className="interview-composer">
       <textarea
         value={answer} onChange={event => onAnswer(event.target.value)}
@@ -442,7 +489,6 @@ function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer
         <button className="button primary" disabled={busy || !answer.trim()} onClick={onSend}>提交回答</button>
       </div>
     </div>}
-    {progress?.phase === 'wrapup' && session.status === 'live' && <div className="tiny-label" style={{ marginTop: 6 }}>面试官已进入反问收尾——聊完点右上「结束并生成复盘」。</div>}
   </div>
 }
 

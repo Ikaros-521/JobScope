@@ -161,7 +161,8 @@ class InterviewManager:
             conversation_id = session['conversation_id']
             history = self.repo.get_conversation(conversation_id)['messages']
             phase = session['progress'].get('phase', 'opening')
-            system = build_interviewer_system(session['persona'], session['material'], session['question_plan'], phase=phase)
+            system = build_interviewer_system(session['persona'], session['material'], session['question_plan'],
+                                              phase=phase, progress=session['progress'])
             messages = [dict(role='system', content=system)]
             messages += [dict(role=item['role'], content=item['content']) for item in history if item.get('role') in ('user', 'assistant')]
             if not messages[-1]['role'] == 'user':

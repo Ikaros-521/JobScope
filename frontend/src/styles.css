@@ -2308,6 +2308,9 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 @keyframes iv-blink { 50% { opacity: 0; } }
 .iv-who { font-size: 11px; color: var(--muted, #999); }
 .interview-composer { border-top: 1px solid var(--line, #e3e0d8); padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
+/* 反问收尾条：结束出口必须显眼，不再藏底部小字（用户看不见就一直等「怎么还没结束」） */
+.iv-wrapup-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 14px; border-top: 1px solid var(--line, #e3e0d8); background: var(--accent-soft, #f3ecdb); font-size: 12.5px; color: var(--accent, #8a6d3b); }
+.iv-wrapup-bar + .interview-composer { border-top: 0; }
 .interview-composer textarea { width: 100%; resize: vertical; font: inherit; font-size: 13.5px; padding: 9px 11px; border: 1px solid var(--line, #d8d4c8); border-radius: 8px; }
 .iv-composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 /* 题单预览（待开始态） */
@@ -2355,3 +2358,11 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .iv-target-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .iv-mini-input { flex: 1; min-width: 220px; max-width: 360px; font: inherit; font-size: 13px; padding: 8px 10px; border: 1px solid var(--line, #d8d4c8); border-radius: 8px; }
 .iv-warn { color: var(--danger, #b33); }
+/* 出题等待区：点「开始出题」立即接管主区，材料清单 + 计时（锚 created_at） */
+.iv-waiting { align-self: center; width: min(680px, 100%); border: 1px dashed var(--line, #d8d4c8); border-radius: 12px; padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; }
+.iv-waiting-head { display: flex; align-items: center; gap: 10px; font-size: 14px; font-weight: 600; color: var(--ink, #222); }
+.iv-waiting-head .spinner { width: 14px; height: 14px; border-width: 2px; color: var(--accent, #8a6d3b); }
+.iv-waiting-sources { font-size: 12px; color: var(--muted, #666); display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.iv-waiting-sources em { font-style: normal; font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--chip, #f1efe8); color: var(--accent, #8a6d3b); }
+.iv-waiting-note { margin: 0; font-size: 12px; color: var(--muted, #888); line-height: 1.6; }
+.iv-create-actions .spinner { width: 14px; height: 14px; border-width: 2px; margin-right: 6px; }
