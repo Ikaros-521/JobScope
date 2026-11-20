@@ -15,6 +15,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .settings import get_active_configs, use_config
+
 logger = logging.getLogger(__name__)
 
 # 面试官每轮回复的输出预算：思考 token 与输出共用（GLM 语义），低于 2000 会被思考吃穿。
@@ -431,9 +433,15 @@ def generate_report(persona, segments, material, should_stop=None):
     from .semantic import RunCancelled
     if should_stop is not None and should_stop():
         raise RunCancelled()
+    configs = get_active_configs()
     reviews = [None] * len(segments)
     with ThreadPoolExecutor(max_workers=3) as pool:
-        futures = {pool.submit(review_segment, persona, segment): index for index, segment in enumerate(segments)}
+        # contextvar 不跨线程：逐题点评跑在池子线程，use_config 挂在复盘 worker 上取不到，
+        # 必须把生效全典显式带进任务重新挂（挂单 purpose 会让池内 get_purpose_config KeyError）。
+        def _review(segment):
+            with use_config(configs):
+                return review_segment(persona, segment)
+        futures = {pool.submit(_review, segment): index for index, segment in enumerate(segments)}
         for future, index in futures.items():
             reviews[index] = future.result()
     if should_stop is not None and should_stop():

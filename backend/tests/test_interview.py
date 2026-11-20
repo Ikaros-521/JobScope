@@ -307,3 +307,41 @@ def test_turn_prompt_injects_progress(client, monkeypatch):
     turn = client.post(f"/api/interview/sessions/{data['session_id']}/runs", json=dict(answer='我做了一个会员增长项目'))
     join_run(client, turn.json()['run_id'])
     assert '当前第 2/2 题' in seen[1]
+
+
+def test_report_pool_threads_carry_config(client, monkeypatch):
+    """回归：复盘逐题点评跑在线程池，contextvar 不跨线程——生效配置必须显式带进池子任务。
+
+    修前的 bug：use_config 挂在复盘 worker 线程上，generate_report 的 ThreadPoolExecutor
+    里 review_segment 在池子线程 get_config() 取到空 → complete 报「地址为空，请填写服务地址」。
+    """
+    monkeypatch.delenv("JOBSCOPE_LLM_URL", raising=False)
+    assert client.put('/api/settings/models', json={
+        'llm': dict(mode='remote', url='https://fixture.example/v1', model='fixture-model', protocol='openai'),
+    }).status_code == 200
+    data = create_session(client, monkeypatch)
+    patch_stream(monkeypatch, [dict(content='讲讲你的项目。', advance=advance_args('next', 0))])
+    opened = client.post(f"/api/interview/sessions/{data['session_id']}/runs", json=dict(answer=''))
+    join_run(client, opened.json()['run_id'])
+    turn = client.post(f"/api/interview/sessions/{data['session_id']}/runs", json=dict(answer='我做过会员项目，提升了 12%'))
+    join_run(client, turn.json()['run_id'])
+    recorded = []
+
+    def fake_complete(config, system, user, **kwargs):
+        recorded.append(config.get('url'))
+        if 'evaluation_gaps' in user:  # 汇总轮 payload 顶层带 evaluation_gaps
+            payload = dict(summary='总评：有料。', dimensions=[dict(name='表达', score=3, comment='清晰')],
+                           risk_list=['补数据'], actions=['改简历'])
+        else:  # 逐题点评轮（池子线程）
+            payload = dict(critique='偏故事化。', missing=['量化数据'], model_answer='示范。', bad_answer_note='别只讲故事。')
+        return json.dumps(payload, ensure_ascii=False), {}
+
+    monkeypatch.setattr('jobscope.model_transport.complete', fake_complete)
+    finished = client.post(f"/api/interview/sessions/{data['session_id']}/finish", json={})
+    assert finished.status_code == 200, finished.text
+    join_run(client, finished.json()['run_id'])
+    session = client.get(f"/api/interview/sessions/{data['session_id']}").json()['session']
+    assert session['status'] == 'done'
+    # 逐题点评（池子线程）+ 汇总（worker 线程）都拿到生效配置的完整端点，无一空 url
+    assert len(recorded) == 2
+    assert all(url == 'https://fixture.example/v1/chat/completions' for url in recorded), recorded

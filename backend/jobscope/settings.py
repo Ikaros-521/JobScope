@@ -98,6 +98,15 @@ def get_purpose_config(purpose='extraction'):
     return (_active.get() or environment())[purpose].copy()
 
 
+def get_active_configs():
+    """当前线程生效的四 purpose 全典（use_config 挂的即它；无则线程级 environment 兜底）。
+
+    给「worker → 再开线程池」的链路用：contextvar 不跨线程，池子任务要重新 use_config
+    必须挂这个全典——挂单 purpose 的 config 会让池内 get_purpose_config[purpose] KeyError。
+    """
+    return (_active.get() or environment()).copy()
+
+
 def purpose_configured(purpose):
     return get_purpose_config(purpose)['mode'] == 'remote'
 
