@@ -14,6 +14,8 @@ import type { InterviewMessage, InterviewPersonaCard, InterviewSession, Intervie
 export type InterviewDeepLink = { jobId: string; token: number } | null
 
 type StreamState = { runId: string; answer: string } | null
+// 复盘等后台 run 的实时进度（SSE progress 事件）：stage=review 逐题点评 done/total，summary=汇总中。
+type RunProgress = { stage: 'review' | 'summary'; done: number; total: number; topic?: string } | null
 
 const STATUS_NAMES: Record<string, string> = { planning: '出题中', ready: '待开始', live: '面试中', reporting: '复盘生成中', done: '已复盘', failed: '出题失败' }
 const INTENSITY_NAMES: Record<string, string> = { gentle: '温和', standard: '标准', stress: '压力面' }
@@ -28,6 +30,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   const [session, setSession] = useState<InterviewSession | null>(null)
   const [messages, setMessages] = useState<InterviewMessage[]>([])
   const [stream, setStream] = useState<StreamState>(null)
+  const [runProgress, setRunProgress] = useState<RunProgress>(null)
   const [error, setError] = useState('')
   const [tab, setTab] = useState<'room' | 'report'>('room')
   // 新建面板：卡片=岗位专家（细分到岗位类型），公司风格是独立开关；目标岗位三模式：
@@ -57,7 +60,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
     try { setSessions((await listInterviewSessions()).sessions) } catch { /* 列表失败不阻塞面试间 */ }
   }, [])
 
-  const closeStream = useCallback(() => { streamRef.current?.close(); streamRef.current = null; setStream(null) }, [])
+  const closeStream = useCallback(() => { streamRef.current?.close(); streamRef.current = null; setStream(null); setRunProgress(null) }, [])
 
   // 待首装场次的 id：新建后先拉 planning 态场次当等待区；若 SSE done 抢先换装了题单，
   // 迟到的 GET 结果不得拿旧 planning 态把就绪场覆盖回去（否则等待区永远卡住）。
@@ -89,6 +92,12 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
     const source = openInterviewStream(runId, (event, data) => {
       if (event === 'delta') {
         setStream(current => current && current.runId === runId ? { ...current, answer: current.answer + String(data.text ?? '') } : current)
+        return
+      }
+      if (event === 'progress') {
+        // 复盘等后台 run 的实时进度：逐题点评 x/y（带题名）/汇总中，事件流重连会从 0 重放取到最新。
+        setRunProgress({ stage: data.stage === 'summary' ? 'summary' : 'review',
+                         done: Number(data.done ?? 0), total: Number(data.total ?? 0), topic: data.topic ? String(data.topic) : undefined })
         return
       }
       if (event === 'done') {
@@ -264,7 +273,8 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
         {tab === 'room' ? <RoomPanel
           session={session} plan={plan ?? null} progress={progress ?? { phase: 'opening', current_index: 0, rounds: 0, segments: [] }} askedCount={askedCount} messages={messages}
           streamAnswer={stream?.answer ?? ''} busy={busy} answer={answer} onAnswer={setAnswer}
-          onSend={() => void send()} onFinish={() => void finish()} onStop={() => void stop()} threadRef={threadRef} />
+          onSend={() => void send()} onFinish={() => void finish()} onStop={() => void stop()} threadRef={threadRef}
+          reportProgress={runProgress} />
         : <ReportPanel report={report ?? null} persona={session.persona} />}
       </>}
     </div>
@@ -426,7 +436,7 @@ function PlanningWait({ session }: { session: InterviewSession }) {
   </div>
 }
 
-function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer, busy, answer, onAnswer, onSend, onFinish, onStop, threadRef }: {
+function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer, busy, answer, onAnswer, onSend, onFinish, onStop, threadRef, reportProgress }: {
   session: InterviewSession
   plan: InterviewSession['question_plan']
   progress: InterviewSession['progress']
@@ -436,6 +446,7 @@ function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer
   answer: string; onAnswer: (value: string) => void
   onSend: () => void; onFinish: () => void; onStop: () => void
   threadRef: React.RefObject<HTMLDivElement | null>
+  reportProgress: RunProgress
 }) {
   const total = plan?.questions.length ?? 0
   const ready = session.status === 'ready'
@@ -454,7 +465,12 @@ function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer
     </div>
     {session.status === 'planning' && <PlanningWait session={session} />}
     {session.status === 'failed' && <div className="iv-state">出题失败，删除本场后重新开一场即可。</div>}
-    {session.status === 'reporting' && <div className="iv-state">复盘生成中：逐题点评（含好差答案对比）→ 汇总维度与高危清单…<span className="spinner" /></div>}
+    {session.status === 'reporting' && <div className="iv-state">
+      {reportProgress?.stage === 'summary' ? <>逐题点评完成，正在汇总维度与高危清单…</>
+        : reportProgress ? <>逐题点评 {reportProgress.done}/{reportProgress.total}{reportProgress.topic ? ` · ${reportProgress.topic}` : ''}…</>
+        : <>复盘生成中：逐题点评（含好差答案对比）→ 汇总维度与高危清单…</>}
+      <span className="spinner" />
+    </div>}
     <div className="interview-thread" ref={threadRef}>
       {ready && plan && <div className="iv-plan">
         <p className="iv-plan-opening">{plan.opening}</p>

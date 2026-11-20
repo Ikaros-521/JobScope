@@ -546,7 +546,7 @@ export function sendInterviewTurn(id: string, answer: string) { return post<{ ru
 export function finishInterview(id: string) { return post<{ run_id: string }>(`/interview/sessions/${encodeURIComponent(id)}/finish`, {}) }
 export function deleteInterviewSession(id: string) { return api<{ ok: boolean }>(`/interview/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
 export function cancelInterviewRun(runId: string) { return post<InterviewRunStatus>(`/interview/runs/${encodeURIComponent(runId)}/cancel`) }
-const INTERVIEW_STREAM_EVENTS = ['start', 'delta', 'reasoning_delta', 'done', 'error', 'cancelled', 'end'] as const
+const INTERVIEW_STREAM_EVENTS = ['start', 'delta', 'reasoning_delta', 'progress', 'done', 'error', 'cancelled', 'end'] as const
 export function openInterviewStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
   return openStream(`/api/interview/runs/${encodeURIComponent(runId)}/stream`, INTERVIEW_STREAM_EVENTS, onEvent)
 }

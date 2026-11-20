@@ -388,14 +388,6 @@ class DimensionScore(BaseModel):
     comment: str = Field(min_length=1, max_length=500)
 
 
-class ReportSummary(BaseModel):
-    model_config = ConfigDict(extra='forbid', strict=True)
-    summary: str = Field(min_length=1, max_length=3000)
-    dimensions: list[DimensionScore] = Field(min_length=1, max_length=8)
-    risk_list: list[str] = Field(min_length=1, max_length=8)
-    actions: list[str] = Field(default_factory=list, max_length=6)
-
-
 REVIEW_SYSTEM = '''你是面试教练。根据题单元信息（题目/考察点/追问路径）和候选人的实际回答，逐题点评。
 要求：critique 以面试官视角点评这段回答（好在哪、差在哪，引用原话）；missing 列出缺失的要素（如 量化数据/我的动作/结果/背景S/任务T）；model_answer 给一段针对本题的高分示范答法（结合候选人材料改写，不是通用模板）；bad_answer_note 一句话点出典型的低分踩坑写法。
 只输出JSON：{"critique":"...","missing":["..."],"model_answer":"...","bad_answer_note":"..."}'''
@@ -428,8 +420,52 @@ def review_segment(persona, segment):
         return dict(critique='本条点评生成失败，跳过。', missing=[], model_answer='', bad_answer_note='')
 
 
-def generate_report(persona, segments, material, should_stop=None):
-    """复盘全流程：逐题并行（线程池）→ 汇总总评/维度/高危清单；取消在题间边界生效。"""
+def _coerce_summary(raw):
+    """汇总软校验：模型多给几条 risk/actions 或字段超长很常见——截断保住整份报告，别作废。
+
+    结构真不对（非对象、dimensions 全无效、summary/risk 缺失）才 ValueError 交给上层重试。
+    """
+    if not isinstance(raw, dict):
+        raise ValueError('汇总不是 JSON 对象')
+
+    def _text(value, limit):
+        return str(value or '').strip()[:limit]
+
+    def _score(value):
+        try:
+            return max(1, min(5, int(value)))
+        except (TypeError, ValueError):
+            return 3
+
+    dimensions = []
+    for item in raw.get('dimensions') or []:
+        if not isinstance(item, dict):
+            continue
+        try:
+            dimensions.append(DimensionScore.model_validate(dict(
+                name=_text(item.get('name'), 30) or '维度', score=_score(item.get('score')),
+                comment=_text(item.get('comment'), 500) or '（无点评）')).model_dump())
+        except ValidationError:
+            continue
+        if len(dimensions) >= 8:
+            break
+    if not dimensions:
+        raise ValueError('dimensions 缺失或全部无效')
+    risks = [text for text in (_text(item, 200) for item in raw.get('risk_list') or []) if text][:8]
+    actions = [text for text in (_text(item, 200) for item in raw.get('actions') or []) if text][:6]
+    summary = _text(raw.get('summary'), 3000)
+    if not summary or not risks:
+        raise ValueError('summary/risk_list 缺失')
+    return dict(summary=summary, dimensions=dimensions, risk_list=risks, actions=actions)
+
+
+def generate_report(persona, segments, material, should_stop=None, on_progress=None):
+    """复盘全流程：逐题并行（线程池）→ 汇总总评/维度/高危清单；取消在题间边界生效。
+
+    on_progress(dict) 在每条逐题点评完成与进入汇总时回调——SSE 推给前端做实时进度，
+    后台任务不再黑盒傻等（用户看不到进展就会以为卡死）。
+    """
+    from concurrent.futures import as_completed
     from .semantic import RunCancelled
     if should_stop is not None and should_stop():
         raise RunCancelled()
@@ -442,10 +478,17 @@ def generate_report(persona, segments, material, should_stop=None):
             with use_config(configs):
                 return review_segment(persona, segment)
         futures = {pool.submit(_review, segment): index for index, segment in enumerate(segments)}
-        for future, index in futures.items():
+        # as_completed：谁先点评完先报进度，不等提交顺序。
+        for done_count, future in enumerate(as_completed(list(futures)), start=1):
+            index = futures[future]
             reviews[index] = future.result()
+            if on_progress:
+                on_progress(dict(stage='review', done=done_count, total=len(segments),
+                                 topic=(segments[index].get('question') or {}).get('topic', '')))
     if should_stop is not None and should_stop():
         raise RunCancelled()
+    if on_progress:
+        on_progress(dict(stage='summary', done=len(segments), total=len(segments)))
     payload = dict(
         persona=dict(company=persona['company'], round=persona['round_label'], role=persona['role']['label']),
         reviews=[dict(topic=seg['question'].get('topic', ''), question=seg['question'].get('question', ''), review=review)
@@ -453,13 +496,16 @@ def generate_report(persona, segments, material, should_stop=None):
         evaluation_gaps=material.get('gaps') or [],
     )
     from .model_transport import complete
-    content, _ = complete(get_config(), _SUMMARY_SYSTEM, json.dumps(payload, ensure_ascii=False),
-                          temperature=.3, max_tokens=SUMMARY_MAX_TOKENS, timeout=300)
-    try:
-        summary = ReportSummary.model_validate(_parse_json(content)).model_dump()
-    except (json.JSONDecodeError, ValidationError) as exc:
-        logger.warning('复盘总评返回无效：%s', exc)
-        raise ValueError('复盘报告汇总无效，请重试') from None
+    for attempt in (1, 2):  # 软校验已兜住超长/多条；这里只剩真垃圾，自动重试一次再报错
+        content, _ = complete(get_config(), _SUMMARY_SYSTEM, json.dumps(payload, ensure_ascii=False),
+                              temperature=.3, max_tokens=SUMMARY_MAX_TOKENS, timeout=300)
+        try:
+            summary = _coerce_summary(_parse_json(content))
+            break
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning('复盘总评返回无效（第 %s 次）：%s', attempt, exc)
+            if attempt == 2:
+                raise ValueError('复盘报告汇总无效，请重试') from None
     return dict(summary=summary['summary'], dimensions=summary['dimensions'], risk_list=summary['risk_list'],
                 actions=summary['actions'], questions=[
                     dict(topic=seg['question'].get('topic', ''), question=seg['question'].get('question', ''), **review)

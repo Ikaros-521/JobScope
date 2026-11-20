@@ -277,7 +277,9 @@ class InterviewManager:
                 raise ValueError('本场还没有可复盘的问答')
             # 同出题：线程级配置必须显式挂到当前 worker（含「分析」绑定与对话模型回落）。
             with use_config(ModelSettings(self.repo).effective()):
-                report = generate_report(session['persona'], segments, session['material'], should_stop=handle.cancel.is_set)
+                report = generate_report(session['persona'], segments, session['material'],
+                                         should_stop=handle.cancel.is_set,
+                                         on_progress=lambda data: handle.push('progress', data))
             session['report'] = dict(**report, reviewed=len(segments), generated_at=now())
             session['status'] = 'done'
             session = self.repo.save_interview_session(session)

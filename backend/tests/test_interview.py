@@ -60,7 +60,7 @@ def patch_stream(monkeypatch, answers):
 
 
 def patch_report(monkeypatch):
-    monkeypatch.setattr('jobscope.interview_runs.generate_report', lambda persona, segments, material, should_stop=None: dict(
+    monkeypatch.setattr('jobscope.interview_runs.generate_report', lambda persona, segments, material, should_stop=None, on_progress=None: dict(
         summary='总评：项目有料但缺数据。', dimensions=[dict(name='数据与量化', score=2, comment='全程没有量化')],
         risk_list=['每个项目补一组前后对比数据'], actions=['改简历补结果'],
         questions=[dict(topic=seg['question'].get('topic', ''), question=seg['question'].get('question', ''),
@@ -345,3 +345,89 @@ def test_report_pool_threads_carry_config(client, monkeypatch):
     # 逐题点评（池子线程）+ 汇总（worker 线程）都拿到生效配置的完整端点，无一空 url
     assert len(recorded) == 2
     assert all(url == 'https://fixture.example/v1/chat/completions' for url in recorded), recorded
+
+
+def _session_with_two_segments(client, monkeypatch):
+    """三题题单 × 开场+两答：留下两个有回答的可复盘片段。"""
+    patch_plan(monkeypatch, fake_plan(3))
+    body = dict(persona_id='product', company_style='alibaba')
+    response = client.post('/api/interview/sessions', json=body)
+    join_run(client, response.json()['run_id'])
+    session_id = response.json()['session_id']
+    patch_stream(monkeypatch, [dict(content='开始。', advance=advance_args('next', 0)),
+                               dict(content='下一题。', advance=advance_args('next', 1)),
+                               dict(content='再下一题。', advance=advance_args('next', 2))])
+    for answer in ('', '答第一题', '答第二题'):
+        turn = client.post(f"/api/interview/sessions/{session_id}/runs", json=dict(answer=answer))
+        join_run(client, turn.json()['run_id'])
+    return session_id
+
+
+def _summary_payload(risks=2, actions=2):
+    return dict(summary='总评：有料但缺数据。', dimensions=[dict(name='结构化表达', score=3, comment='清晰')],
+                risk_list=[f'高危{i}' for i in range(risks)], actions=[f'行动{i}' for i in range(actions)])
+
+
+def test_report_coerces_oversized_summary(client, monkeypatch):
+    """回归（线上 2026-11-20）：模型多给几条 risk/actions 是常态——软裁剪保住整份报告，不再整份作废。"""
+    session_id = _session_with_two_segments(client, monkeypatch)
+
+    def fake_complete(config, system, user, **kwargs):
+        if 'evaluation_gaps' in user:
+            payload = _summary_payload(risks=9, actions=8)  # 线上实测：9 条高危 + 8 条行动
+        else:
+            payload = dict(critique='偏故事化。', missing=['量化数据'], model_answer='示范。', bad_answer_note='别讲故事。')
+        return json.dumps(payload, ensure_ascii=False), {}
+
+    monkeypatch.setattr('jobscope.model_transport.complete', fake_complete)
+    finished = client.post(f"/api/interview/sessions/{session_id}/finish", json={})
+    join_run(client, finished.json()['run_id'])
+    session = client.get(f"/api/interview/sessions/{session_id}").json()['session']
+    assert session['status'] == 'done', session
+    assert len(session['report']['risk_list']) == 8  # 截到上限，而不是整份报「汇总无效」
+    assert len(session['report']['actions']) == 6
+    assert len(session['report']['questions']) == 2
+
+
+def test_report_retries_invalid_summary_once(client, monkeypatch):
+    """真垃圾（非 JSON）自动重试一次；两次都坏才报「请重试」。"""
+    session_id = _session_with_two_segments(client, monkeypatch)
+    summary_calls = {'n': 0}
+
+    def fake_complete(config, system, user, **kwargs):
+        if 'evaluation_gaps' not in user:
+            return json.dumps(dict(critique='点评。', missing=[], model_answer='示范。', bad_answer_note='坑。'), ensure_ascii=False), {}
+        summary_calls['n'] += 1
+        if summary_calls['n'] == 1:
+            return '抱歉，我无法输出 JSON。', {}
+        return json.dumps(_summary_payload(), ensure_ascii=False), {}
+
+    monkeypatch.setattr('jobscope.model_transport.complete', fake_complete)
+    finished = client.post(f"/api/interview/sessions/{session_id}/finish", json={})
+    join_run(client, finished.json()['run_id'])
+    session = client.get(f"/api/interview/sessions/{session_id}").json()['session']
+    assert session['status'] == 'done'
+    assert summary_calls['n'] == 2  # 第一次垃圾 + 重试成功
+
+
+def test_report_emits_progress_events(client, monkeypatch):
+    """复盘不再黑盒：SSE 事件流里逐题点评 x/y 与进入汇总都有 progress 事件。"""
+    session_id = _session_with_two_segments(client, monkeypatch)
+
+    def fake_complete(config, system, user, **kwargs):
+        if 'evaluation_gaps' in user:
+            payload = _summary_payload()
+        else:
+            payload = dict(critique='点评。', missing=[], model_answer='示范。', bad_answer_note='坑。')
+        return json.dumps(payload, ensure_ascii=False), {}
+
+    monkeypatch.setattr('jobscope.model_transport.complete', fake_complete)
+    finished = client.post(f"/api/interview/sessions/{session_id}/finish", json={})
+    join_run(client, finished.json()['run_id'])
+    handle = client.app.state.interview_runs.get(finished.json()['run_id'])
+    progress = [payload for kind, payload in handle.events if kind == 'progress']
+    reviews = [item for item in progress if item['stage'] == 'review']
+    assert [item['done'] for item in reviews] == [1, 2]
+    assert all(item['total'] == 2 for item in reviews)
+    assert all(item.get('topic') == '项目深挖' for item in reviews)
+    assert progress[-1]['stage'] == 'summary'
