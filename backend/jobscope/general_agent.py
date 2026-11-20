@@ -711,7 +711,8 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                     result['text'] = result['text'].replace(secret, '[已隐藏凭证]')
         else:
             state['calls'] += 1
-            result, label = self._builtin(state, name, args), name
+            # 内置工具不塞 label：留空让前端 toolNames 映射出中文名，避免把裸工具 ID 亮给用户。
+            result, label = self._builtin(state, name, args), ''
         self._append_result(state, call, result)
         # Keep a short sanitized preview so the UI can show arguments and outcome per function call.
         self._event(state, name, started, hooks=hooks, label=label, status='error' if result.get('is_error') else 'completed',
