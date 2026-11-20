@@ -481,7 +481,10 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 button.today-stat { cursor: pointer; text-align: left; }
 .today-second-heading { margin-top: 16px; }
 .today-new-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.today-new-list li { display: flex; flex-direction: column; gap: 2px; }
+.today-new-list li { display: flex; align-items: baseline; gap: 10px; }
+.today-new-list .text-button { min-height: 22px; padding: 0; }
+.today-new-list .today-due-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.today-new-list .tiny-label { flex: none; margin-left: auto; white-space: nowrap; line-height: 1.6; }
 .today-task-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .today-task-list li { display: flex; align-items: baseline; gap: 10px; font-size: 13px; }
 .today-task-query { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
