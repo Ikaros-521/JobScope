@@ -141,6 +141,28 @@ def _normalize_zhaopin(job, snapshot):
                 job=updated, company_evidence=None)
 
 
+def read_detail_on_tab(job, tab, attempts=6, interval=1):
+    """在已持有的浏览器会话里用现有 tab 读一个岗位详情并校验归一。
+
+    collect_detail（独立补全）与 boss_import 收藏导入的顺带读取共用；tab 由调用方创建与
+    关闭，本函数不碰任何锁。导航超时不代表页面不可读，照常尝试快照（与原 collect 一致）。
+    """
+    try:
+        tab.get(job['url'], timeout=20)
+    except Exception:
+        pass
+    script = ZHAOPIN_DETAIL_SNAPSHOT if job.get('source') == 'zhaopin' else DETAIL_SNAPSHOT
+    output = None
+    for attempt in range(attempts):
+        snapshot = tab.run_js(script)
+        output = normalize_detail(job, snapshot)
+        if output['status'] != 'unavailable':
+            break
+        if attempt < attempts - 1:
+            time.sleep(interval)
+    return output
+
+
 def collect_detail(job, data_dir):
     if not valid_detail_url(job):
         return dict(status='unsupported', message='仅支持已保存的BOSS或智联原始岗位详情链接')
@@ -162,19 +184,7 @@ def collect_detail(job, data_dir):
                 return dict(status='backoff', message='其他进程正在使用项目浏览器')
             from DrissionPage import Chromium
             tab = Chromium(f'127.0.0.1:{port}').new_tab()
-            try:
-                tab.get(job['url'], timeout=20)
-            except Exception:
-                # A loaded document can still be readable after a subresource timeout.
-                pass
-            script = ZHAOPIN_DETAIL_SNAPSHOT if job.get('source') == 'zhaopin' else DETAIL_SNAPSHOT
-            for attempt in range(6):
-                snapshot = tab.run_js(script)
-                output = normalize_detail(job, snapshot)
-                if output['status'] != 'unavailable':
-                    break
-                if attempt < 5:
-                    time.sleep(1)
+            output = read_detail_on_tab(job, tab)
             # 登录/验证页要顶到前台；标签埋在堆里等于没提示（与 browser.collect 同款处理）。
             if output['status'] in ('needs_login', 'needs_verification'):
                 browser._front(tab)
@@ -192,23 +202,38 @@ def collect_detail(job, data_dir):
         browser._lock.release()
 
 
+def persist_company_statement(repo, job, evidence):
+    """详情页公司自述 → 证据落库 + 人员规模自述信号；补全详情与收藏导入入库共用同一通路。"""
+    if not evidence:
+        return None
+    stored = repo.save_evidence(evidence, job.get('source', 'boss') + '_detail')
+    # 人员情况的确定性通路（2026-11-15）：公司侧栏自述里的「1000-9999人」「10000人以上」
+    # 直接解析成一条公司口径规模自述（platform），不依赖模型转写；解析不出就不产出。
+    company_text = str(evidence.get('text') or '')
+    size = None
+    interval = re.search(r'(\d[\d,]*)\s*[-~至]\s*(\d[\d,]*)\s*人', company_text)
+    if interval:
+        low = int(interval[1].replace(',', ''))
+        size = {'size': low, 'size_max': int(interval[2].replace(',', ''))} if low > 0 else None
+    else:
+        floor = re.search(r'(\d[\d,]*)\s*人以上', company_text)
+        if floor and int(floor[1].replace(',', '')) > 0:
+            size = {'size': int(floor[1].replace(',', ''))}
+    if size and stored and str(job.get('company') or '').strip():
+        from .reliability.models import SignalInput
+        from .reliability.rubric import RULES
+        identity = repo.resolve_company(job['company'])
+        repo.save_signal(SignalInput(
+            company_id=identity['id'], dimension=RULES['team_size_statement'].dimension,
+            rule='team_size_statement', value=size, unit=RULES['team_size_statement'].unit,
+            source_class='platform', evidence_id=stored['id'],
+            observed_at='', collected_at=now()))
+    return stored
+
+
 def save_detail(repo, output):
     saved = repo.save_job(output['job'], output['job'].get('source', 'boss'))
-    if output.get('company_evidence'):
-        stored = repo.save_evidence(output['company_evidence'], output['job'].get('source', 'boss') + '_detail')
-        # 平台侧栏里确定性解析出的规模自述照常落库（人员情况维度的一条公司口径自述）；
-        # 后续「提取资料数字」聚合时按证据编号去重，不会与模型转写重复计数。
-        size = output.get('company_size')
-        if size and stored and output['job'].get('company', '').strip():
-            from .reliability.models import SignalInput
-            from .reliability.rubric import RULES
-            from .repository import now
-            identity = repo.resolve_company(output['job']['company'])
-            repo.save_signal(SignalInput(
-                company_id=identity['id'], dimension=RULES['team_size_statement'].dimension,
-                rule='team_size_statement', value=size, unit=RULES['team_size_statement'].unit,
-                source_class='platform', evidence_id=stored['id'],
-                observed_at='', collected_at=now()))
+    persist_company_statement(repo, output['job'], output.get('company_evidence'))
     return saved
 
 

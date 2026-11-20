@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         JobScope 岗位捕获
 // @namespace    jobscope.local
-// @version      1.1.0
+// @version      1.1.1
 // @description  在任意浏览器的 Boss 直聘页面上，把当前页看到的岗位一键推送到本地 JobScope 捕获篮。浏览时照常用自己的定位与筛选，看到的即可捕获。
 // @match        https://www.zhipin.com/*
 // @grant        GM_xmlhttpRequest
@@ -32,7 +32,8 @@
     }
     const grab = (root) => ({
       title: one(root, '[class*="job-name-text"]') || pick(root, /(^|[\s-])(job-name|job-title)/),
-      salary: pick(root, /salary/),
+      // 收藏卡的薪资在 p.gray 里（类名抓不到），退而取卡片文本里第一段 K 型薪资
+      salary: pick(root, /salary/) || ((root.textContent || '').match(/\d{1,4}[-–~]\d{1,4}[Kk](?:·\d{1,2}薪)?/) || [''])[0],
       company: one(root, '.company-info b') || one(root, '[class*="company-name"]') || pick(root, /company-name|company-info/),
       area: pick(root, /job-area|job-city|job-location|(^|[\s-])location/).replace(/[\[\]【】]/g, ''),
     })
@@ -44,11 +45,13 @@
       if (a.closest('[class*="sider-recommend"]')) continue
       seen.add(match[1])
       let card = a.closest('li') || a
-      for (let i = 0; i < 3; i++) {
-        const parent = card.parentElement
-        if (!parent) break
-        card = parent
-        if (/job-card|job-box|search-job|job-list/i.test(clsOf(card)) || card.tagName === 'LI') break
+      if (card === a) {
+        for (let i = 0; i < 3; i++) {
+          const parent = card.parentElement
+          if (!parent) break
+          card = parent
+          if (/job-card|job-box|search-job|job-list/i.test(clsOf(card)) || card.tagName === 'LI') break
+        }
       }
       let fields = grab(card)
       if (!fields.salary && !fields.title && card.parentElement) fields = grab(card.parentElement)

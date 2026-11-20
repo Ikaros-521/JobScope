@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from . import browser
 from .connectors import CITY_CODES, DEFAULT_DATA, loads_payload, map_boss, plain
+from .job_details import persist_company_statement, read_detail_on_tab
 from .repository import digest, now
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,9 @@ CARDS_JS = r'''return (() => {
   };
   const grab = (root) => ({
     title: one(root, '[class*="job-name-text"]') || pick(root, /(^|[\s-])(job-name|job-title)/),
-    salary: pick(root, /salary/),
+    // 收藏卡的薪资在 p.gray 里（与公司信息行同名，类名抓不到），退而取卡片文本里第一段 K 型薪资；
+    // 「1000-9999人」这类区间不带 K 不会误中。
+    salary: pick(root, /salary/) || ((root.textContent || '').match(/\d{1,4}[-–~]\d{1,4}[Kk](?:·\d{1,2}薪)?/) || [''])[0],
     company: one(root, '.company-info b') || one(root, '[class*="company-name"]') || pick(root, /company-name|company-info/),
     area: pick(root, /job-area|job-city|job-location|(^|[\s-])location/).replace(/[\[\]【】]/g, ''),
   });
@@ -61,14 +64,17 @@ CARDS_JS = r'''return (() => {
     if (!match || seen.has(match[1])) continue;
     if (a.closest('[class*="sider-recommend"]')) continue;
     seen.add(match[1]);
-    // 卡片容器：优先锚点所在 li（搜索页 li.job-card-wrapper、收藏页 li.item-boss 都适用）；
-    // 不在 li 里的异形卡片再上溯三层找容器。
+    // 卡片容器：锚点在 li 里就用该 li（搜索页 li.job-card-wrapper、收藏页 li.item-boss 都是一卡一 li），
+    // 绝不能再向上走——把列表容器当卡片会让第一张卡的字段错配给所有卡（2026-11-20 实测踩坑）；
+    // 锚点不在 li 里的异形卡片才走旧的三层上溯。
     let card = a.closest('li') || a;
-    for (let i = 0; i < 3; i++) {
-      const parent = card.parentElement;
-      if (!parent) break;
-      card = parent;
-      if (/job-card|job-box|search-job|job-list/i.test(clsOf(card)) || card.tagName === 'LI') break;
+    if (card === a) {
+      for (let i = 0; i < 3; i++) {
+        const parent = card.parentElement;
+        if (!parent) break;
+        card = parent;
+        if (/job-card|job-box|search-job|job-list/i.test(clsOf(card)) || card.tagName === 'LI') break;
+      }
     }
     let fields = grab(card);
     if (!fields.salary && !fields.title && card.parentElement) {
@@ -304,7 +310,10 @@ def _to_job(item):
 
 
 def confirm(repo, ids=None, auto_star=False):
-    """确认入库：逐条 save_job(source='boss') 幂等落库；可选中加星；入库条目移出篮子。"""
+    """确认入库：逐条 save_job(source='boss') 幂等落库；可选中加星；入库条目移出篮子。
+
+    导入时顺带读取过详情的条目带公司自述证据，入库时与「补全详情」同一通路落证据与规模信号。
+    """
     wanted = set(ids) if ids else None
     with _basket_lock:
         store = _store(repo.data_dir)
@@ -312,6 +321,8 @@ def confirm(repo, ids=None, auto_star=False):
     if not selected:
         return {'status': 'empty', 'message': '捕获篮为空或没有选中的条目。', 'imported': 0, 'jobs': []}
     saved = [repo.save_job(_to_job(entry), 'boss') for entry in selected.values()]
+    for entry, job in zip(selected.values(), saved):
+        persist_company_statement(repo, job, entry.get('company_evidence'))
     if auto_star:
         repo.update_jobs([job['id'] for job in saved], {'starred': True})
     with _basket_lock:
@@ -319,9 +330,11 @@ def confirm(repo, ids=None, auto_star=False):
         for key in selected:
             store.pop(key, None)
     _save_basket(repo.data_dir)
-    logger.info('捕获篮确认入库：%s 条（加星=%s）', len(saved), bool(auto_star))
+    complete = sum(1 for entry in selected.values() if entry.get('description_status') == 'complete')
+    logger.info('捕获篮确认入库：%s 条（加星=%s 详情完整=%s）', len(saved), bool(auto_star), complete)
+    tail = '详情已随导入读取，可直接评估' if complete else '可继续「补全详情」读取完整 JD'
     return {'status': 'ok', 'imported': len(saved), 'jobs': saved,
-            'message': f'已导入 {len(saved)} 条 Boss 岗位；重复岗位自动归并，可继续「补全详情」。'}
+            'message': f'已导入 {len(saved)} 条 Boss 岗位；重复岗位自动归并，{tail}。'}
 
 
 def list_tabs(data_dir=None):
@@ -639,11 +652,33 @@ def _page_url(url, page):
         return ''
 
 
-def import_favorites(repo, task, data_dir=None, max_pages=10):
-    """一键收藏导入：开新 tab 进收藏页（推荐中心 tab=4）→ 每页抽卡入篮 → page 参数逐页翻页
-    （2-4s 间隔，上限 10 页；URL 无 page 参数的列表页退回滚动加载）。
+def _library_detail_states(repo, external_ids):
+    """批量查岗位在库里的详情状态：返回 {job_id: (description_status, detail_transport)}。
 
-    逐页落任务进度；任何一页失败都保留已捕获内容。登录/验证墙把 tab 留在前台交人工处理。
+    去重闸的数据面：库里已有完整详情（browser_dom）的岗位，导入时整条跳过，不再入篮重读。
+    """
+    states = {}
+    wanted = [job_id_for(x) for x in external_ids]
+    if not wanted:
+        return states
+    with repo.connection() as conn:
+        for start in range(0, len(wanted), 500):
+            chunk = wanted[start:start + 500]
+            placeholders = ','.join('?' * len(chunk))
+            rows = conn.execute(f'SELECT payload FROM jobs WHERE id IN ({placeholders})', chunk)
+            for row in rows:
+                data = json.loads(row['payload'])
+                states[data['id']] = (data.get('description_status') or '', data.get('detail_transport') or '')
+    return states
+
+
+def import_favorites(repo, task, data_dir=None, max_pages=10):
+    """一键收藏导入：定位收藏页 → 逐页抽卡入篮 → page 参数翻页 → 顺带读取岗位详情。
+
+    详情顺带读取（2026-11-20）：新开 tab 逐条走 job_details 通路（校验/登录墙/下架识别同款），
+    完整 JD 与公司自述随捕获一起进篮，确认入库即落库，无需再跑「补全详情」。
+    去重两道闸：库里已有完整详情（browser_dom）的岗位整条跳过（不入篮不重读）；
+    篮子里已带完整详情的（上次中断遗留）跳过详情读取。下架岗位保留列表摘要并计数。
     """
     port = browser._connection(data_dir)
     if not port:
@@ -655,13 +690,16 @@ def import_favorites(repo, task, data_dir=None, max_pages=10):
     if not browser._lock.acquire(blocking=False):
         return {'status': 'backoff', 'message': '浏览器任务正在运行，请等待完成。'}
     tab = None
+    detail_tab = None
+    keep_detail_tab = False
     outcome = {'status': 'failed', 'message': '收藏导入未完成。'}
     try:
         with browser.session_lock(data_dir) as acquired:
             if not acquired:
                 return {'status': 'backoff', 'message': '另一个进程正在使用项目浏览器。'}
             from DrissionPage import Chromium
-            tab = Chromium(f'127.0.0.1:{port}').new_tab()
+            chromium = Chromium(f'127.0.0.1:{port}')
+            tab = chromium.new_tab()
             url = _open_favorites(tab)
             if url == 'login':
                 browser._front(tab)
@@ -672,6 +710,8 @@ def import_favorites(repo, task, data_dir=None, max_pages=10):
                            'message': f'没有找到收藏页入口：请在项目浏览器手动打开 {FAVORITE_PRIMARY}，然后用「捕获当前页」导入（收藏夹也可能是空的）。'}
                 return outcome
             seen: set[str] = set()
+            skipped = 0
+            captured: list[dict] = []
             pages = 0
             filled = 0
             stall_note = ''
@@ -684,12 +724,28 @@ def import_favorites(repo, task, data_dir=None, max_pages=10):
                                                 for card in (cards or []) if isinstance(card, dict)) if item]
                 fresh = [item for item in page_items if item['external_id'] not in seen]
                 seen.update(item['external_id'] for item in fresh)
-                basket_add(fresh, data_dir=data_dir)
-                pages += 1
                 if fresh:
+                    # 去重第一道闸：库里已有完整详情、或篮子里已带完整详情（上次中断遗留）的
+                    # 岗位整条跳过——收藏越攒越多时，重复导入不再把时间花在重复提取上。
+                    states = _library_detail_states(repo, [item['external_id'] for item in fresh])
+                    store = _store(data_dir)
+                    todo = []
+                    for item in fresh:
+                        state = states.get(job_id_for(item['external_id']))
+                        existing = store.get(item['external_id'])
+                        if ((state and state[0] == 'complete' and state[1] == 'browser_dom')
+                                or (existing and existing.get('description_status') == 'complete')):
+                            skipped += 1
+                        else:
+                            todo.append(item)
+                    basket_add(todo, data_dir=data_dir)
+                    captured.extend(todo)
                     filled += 1
-                logger.info('收藏导入进度：第 %s 页 新捕获=%s 累计=%s', pages, len(fresh), len(seen))
-                task.update(count=len(seen), message=f'收藏导入进行中：已捕获 {len(seen)} 条（第 {pages} 页）')
+                pages += 1
+                logger.info('收藏导入进度：第 %s 页 新捕获=%s 跳过已在库=%s 累计=%s',
+                            pages, len(fresh), skipped, len(seen))
+                task.update(count=len(seen) - skipped,
+                            message=f'收藏导入进行中：已捕获 {len(seen) - skipped} 条、跳过已在库 {skipped} 条（第 {pages} 页）')
                 repo.update_task(task)
                 if not fresh or pages >= max_pages or _login_wall(tab):
                     if not fresh and pages > 1:
@@ -715,26 +771,69 @@ def import_favorites(repo, task, data_dir=None, max_pages=10):
                 else:
                     outcome = {'status': 'needs_login', 'message': '收藏页要求登录；请在项目浏览器完成登录后重试。'}
                 return outcome
-            if seen:
-                outcome = {'status': 'completed',
-                           'message': f'收藏导入完成：共捕获 {len(seen)} 条（{filled} 页有新岗位）{stall_note}；请到捕获篮确认入库。'}
-            else:
+            if not seen:
                 outcome = {'status': 'failed',
                            'message': '没有解析到收藏岗位：收藏夹可能是空的，或页面结构已变化；可在收藏页手动用「捕获当前页」验证。'}
+                return outcome
+            if not captured:
+                outcome = {'status': 'completed',
+                           'message': f'收藏夹里没有新岗位：{len(seen)} 条全部已在库且详情完整，无需重复提取。'}
+                return outcome
+            # 详情顺带读取：专 tab 逐条读，逐条落篮（中断后重跑会被去重闸跳过，不重复提取）。
+            detail_tab = chromium.new_tab()
+            detailed = 0
+            unavailable = 0
+            for index, item in enumerate(captured):
+                task.update(count=len(seen) - skipped,
+                            message=f'正在读取详情 {index + 1}/{len(captured)}：{item["title"]}')
+                repo.update_task(task)
+                output = read_detail_on_tab({**item, 'source': 'boss'}, detail_tab)
+                if output['status'] == 'completed':
+                    updated = output['job']
+                    with _basket_lock:
+                        entry = _store(data_dir).get(item['external_id'])
+                        if entry:
+                            entry.update({k: updated[k] for k in ('title', 'salary', 'description', 'description_status')
+                                          if updated.get(k)})
+                            if output.get('company_evidence'):
+                                entry['company_evidence'] = output['company_evidence']
+                    _save_basket(data_dir)
+                    detailed += 1
+                elif output['status'] in ('needs_login', 'needs_verification'):
+                    keep_detail_tab = True
+                    browser._front(detail_tab)
+                    outcome = {'status': 'needs_login',
+                               'message': f'已捕获 {len(seen) - skipped} 条、读取详情 {detailed} 条后遇到登录/验证页；'
+                                          '请在项目浏览器完成登录后重新执行（已捕获内容保留在篮子，已完整的不会重读）。'}
+                    return outcome
+                else:
+                    # 下架/结构变化：保留列表摘要，如实计数。
+                    unavailable += 1
+                time.sleep(random.uniform(1.5, 2.5))
+            logger.info('收藏导入完成：捕获=%s 跳过已在库=%s 详情完整=%s 未取到=%s',
+                        len(seen) - skipped, skipped, detailed, unavailable)
+            unavailable_note = f'、{unavailable} 条未取到详情（可能已下架）' if unavailable else ''
+            outcome = {'status': 'completed',
+                       'message': f'收藏导入完成：捕获 {len(seen) - skipped} 条（跳过已在库 {skipped} 条），'
+                                  f'详情完整 {detailed} 条{unavailable_note}{stall_note}；请到捕获篮确认入库。'}
             return outcome
     except Exception:
         logger.exception('收藏导入中断')
         outcome = {'status': 'failed', 'message': '收藏导入中断；已捕获的条目保留在捕获篮。'}
         return outcome
     finally:
-        if tab is not None:
-            if outcome['status'] in ('needs_login', 'needs_verification'):
-                pass  # 留在前台等人工处理
-            else:
-                try:
-                    tab.close()
-                except Exception:
-                    pass
+        wall = outcome['status'] in ('needs_login', 'needs_verification')
+        # 详情页撞墙时把详情 tab 留在前台；列表页撞墙时沿用旧行为留列表 tab。
+        if detail_tab is not None and not (wall and keep_detail_tab):
+            try:
+                detail_tab.close()
+            except Exception:
+                pass
+        if tab is not None and not (wall and not keep_detail_tab):
+            try:
+                tab.close()
+            except Exception:
+                pass
         browser._lock.release()
 
 

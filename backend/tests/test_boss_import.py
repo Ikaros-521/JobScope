@@ -276,6 +276,39 @@ def test_open_favorites_probes_calibrated_entry_first():
     assert visited == [page_url]
 
 
+def test_library_detail_states_reads_payload_status(tmp_path):
+    # 去重闸的数据面：库里 listing 状态查得到（要补详情），未入库的查不到（全新捕获）。
+    repo = Repository(tmp_path)
+    items, _ = boss_import.parse_links('/job_detail/state000001.html')
+    boss_import.basket_add(items, data_dir=tmp_path)
+    boss_import.confirm(repo)
+    states = boss_import._library_detail_states(repo, ['state000001', 'missing000001'])
+    assert states[boss_import.job_id_for('state000001')] == ('listing', '')
+    assert boss_import.job_id_for('missing000001') not in states
+
+
+def test_confirm_persists_company_statement_from_basket(tmp_path):
+    # 详情顺带读取产出的公司自述证据随确认入库落证据表与规模自述信号（与补全详情同一通路）。
+    repo = Repository(tmp_path)
+    items, _ = boss_import.parse_links('/job_detail/statement01.html')
+    item = dict(items[0], company='某规模公司',
+                company_evidence={'title': '某规模公司 · 招聘平台公司自述', 'company': '某规模公司',
+                                  'url': items[0]['url'], 'kind': 'company_statement',
+                                  'text': '来源为招聘详情页的公司自述及平台展示，非独立核验。\n1000-9999人'})
+    boss_import.basket_add([item], data_dir=tmp_path)
+    outcome = boss_import.confirm(repo, auto_star=True)
+    assert outcome['imported'] == 1
+    with repo.connection() as conn:
+        rows = conn.execute("SELECT payload FROM evidence WHERE kind='company_statement'").fetchall()
+    assert len(rows) == 1
+    evidence = __import__('json').loads(rows[0]['payload'])
+    assert evidence['company'] == '某规模公司'
+    # 规模自述信号由证据文本确定性解析产出。
+    with repo.connection() as conn:
+        signals = conn.execute("SELECT payload FROM company_signals WHERE rule='team_size_statement'").fetchall()
+    assert len(signals) == 1
+
+
 def test_p1_endpoints_contract(client, tmp_path, monkeypatch):
     # browse 状态端点与 open 端点：无浏览器时优雅降级，绝不 500、绝不真开 Chrome。
     monkeypatch.setattr(browser, 'start', lambda data_dir=None, source='boss': {'installed': True, 'running': False, 'message': 'stub-start'})
