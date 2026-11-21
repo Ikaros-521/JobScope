@@ -2280,6 +2280,9 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .interview-subtabs button { border: 1px solid transparent; background: none; padding: 6px 12px; border-radius: 8px 8px 0 0; cursor: pointer; font-size: 13px; color: var(--muted, #777); }
 .interview-subtabs button.active { border-color: var(--line, #e3e0d8); border-bottom-color: transparent; background: var(--panel, #fff); color: var(--ink, #222); font-weight: 600; }
 .interview-subtabs button:disabled { cursor: default; opacity: .55; }
+/* 记录导出按钮组：与页签同行右对齐，两个页签都能看到 */
+.iv-subtab-row { display: flex; align-items: flex-end; gap: 8px; margin-top: 8px; }
+.iv-subtabs-actions { margin-left: auto; display: flex; gap: 6px; padding-bottom: 2px; }
 .interview-create { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding: 12px 2px; min-height: 0; }
 .iv-model-hint { padding: 8px 12px; border: 1px solid #d9a441; background: #fdf6e7; border-radius: 8px; font-size: 13px; }
 .iv-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }

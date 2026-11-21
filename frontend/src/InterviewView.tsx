@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Markdown } from './chat/Markdown'
 import { Icon } from './Icon'
+import { toast } from './toast'
 import {
-  api, cancelInterviewRun, createInterviewSession, deleteInterviewSession, finishInterview, getInterviewMessages,
+  api, cancelInterviewRun, createInterviewSession, date, deleteInterviewSession, finishInterview, getInterviewMessages,
   getInterviewSession, listInterviewPersonas, listInterviewSessions, openInterviewStream, sendInterviewTurn,
 } from './api'
 import type { InterviewMessage, InterviewPersonaCard, InterviewSession, InterviewSessionSummary, InterviewStyle } from './api'
@@ -259,6 +260,23 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   const askedCount = progress ? Math.min(progress.current_index + 1, plan?.questions.length ?? 0) : 0
   const busy = streamRef.current !== null
   const report = session?.report
+  // 场次记录导出（题单+对话实录+复盘）：数据全在前端，直接组装 Markdown，不经过后端。
+  const exportable = Boolean(session && (session.question_plan || messages.length))
+
+  async function copyRecord() {
+    if (!session) return
+    const ok = await copyText(buildInterviewMarkdown(session, messages))
+    toast(ok ? '面试记录已复制到剪贴板' : '复制失败，可改用「导出MD」', ok ? 'notice' : 'error')
+  }
+
+  function downloadRecord() {
+    if (!session) return
+    const url = URL.createObjectURL(new Blob([buildInterviewMarkdown(session, messages)], { type: 'text/markdown;charset=utf-8' }))
+    const link = document.createElement('a')
+    link.href = url; link.download = interviewFileName(session); link.click()
+    URL.revokeObjectURL(url)
+  }
+
   return <div className="interview-page">
     <aside className="interview-side">
       <div className="interview-side-head">
@@ -290,9 +308,17 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
         modelConfigured={modelConfigured} onConfigureModel={onConfigureModel}
         busy={busy || starting} onStart={() => void startSession()} starting={starting} />}
       {session && !creating && <>
-        <div className="interview-subtabs" role="tablist" aria-label="面试分区" style={{ marginTop: 8 }}>
-          <button role="tab" aria-selected={tab === 'room'} className={tab === 'room' ? 'active' : ''} onClick={() => setTab('room')}>面试间</button>
-          <button role="tab" aria-selected={tab === 'report'} className={tab === 'report' ? 'active' : ''} onClick={() => setTab('report')} disabled={!report}>复盘报告{report ? '' : '（结束后生成）'}</button>
+        <div className="iv-subtab-row">
+          <div className="interview-subtabs" role="tablist" aria-label="面试分区">
+            <button role="tab" aria-selected={tab === 'room'} className={tab === 'room' ? 'active' : ''} onClick={() => setTab('room')}>面试间</button>
+            <button role="tab" aria-selected={tab === 'report'} className={tab === 'report' ? 'active' : ''} onClick={() => setTab('report')} disabled={!report}>复盘报告{report ? '' : '（结束后生成）'}</button>
+          </div>
+          <div className="iv-subtabs-actions">
+            <button className="button secondary small" disabled={!exportable} onClick={() => void copyRecord()}
+              title="复制完整面试记录（题单+对话实录+复盘）为 Markdown，可直接粘贴给其他 AI 分析">复制记录</button>
+            <button className="button secondary small" disabled={!exportable} onClick={downloadRecord}
+              title="下载完整面试记录的 .md 文件">导出MD</button>
+          </div>
         </div>
         {tab === 'room' ? <RoomPanel
           session={session} plan={plan ?? null} progress={progress ?? { phase: 'opening', current_index: 0, rounds: 0, segments: [] }} askedCount={askedCount} messages={messages}
@@ -609,4 +635,70 @@ function AnalysisQuickList({ title, items }: { title: string; items: string[] })
   return <section className="analysis-list paper-panel"><h4>{title}</h4>
     {items?.length ? <ul>{items.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p className="muted">本轮没有特别突出的项。</p>}
   </section>
+}
+
+// ---- 记录导出：把一场面试拼成自足的 Markdown（题单 → 对话实录 → 复盘），复制或落盘给其他 AI 复用 ----
+
+async function copyText(text: string): Promise<boolean> {
+  try { await navigator.clipboard.writeText(text); return true } catch { return false }
+}
+
+function interviewFileName(session: InterviewSession): string {
+  const base = [session.company, session.job_title].filter(Boolean).join('-') || session.title
+  const d = new Date(session.created_at)
+  const stamp = Number.isNaN(d.getTime()) ? session.id
+    : `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}-${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`
+  return `面试记录-${base}-${stamp}.md`.replace(/[\\/:*?"<>|]/g, '_')
+}
+
+function buildInterviewMarkdown(session: InterviewSession, messages: InterviewMessage[]): string {
+  const persona = session.persona
+  const plan = session.question_plan
+  const report = session.report
+  const lines: string[] = []
+  const target = [session.company, session.job_title].filter(Boolean).join(' · ') || session.title
+  lines.push(`# 模拟面试记录：${target}`, '')
+  const meta = [
+    `面试官：${persona.name}（${persona.round_label} · ${persona.intensity_label}${persona.company ? ` · ${persona.company}` : ''}）`,
+    `开场时间：${date(session.created_at)}`,
+    plan ? `题单 ${plan.questions.length} 题` : '',
+  ].filter(Boolean)
+  lines.push(meta.join(' ｜ '), '')
+  if (plan) {
+    lines.push('## 题单', '')
+    plan.questions.forEach((item, index) => {
+      lines.push(`${index + 1}. 【${item.topic}】${item.question}${item.focus ? `（考察：${item.focus}）` : ''}`)
+    })
+    lines.push('')
+  }
+  if (messages.length) {
+    lines.push('## 对话实录', '')
+    for (const item of messages) {
+      lines.push(`**${item.role === 'assistant' ? '面试官' : '候选人'}：** ${item.content}`, '')
+    }
+  }
+  if (report) {
+    lines.push('## 复盘报告', '', '### 总评', '', report.summary, '')
+    if (report.dimensions.length) {
+      lines.push('### 维度评分', '')
+      for (const item of report.dimensions) {
+        lines.push(`- ${item.name}：${'★'.repeat(item.score)}${'☆'.repeat(5 - item.score)} —— ${item.comment}`)
+      }
+      lines.push('')
+    }
+    if (report.questions.length) {
+      lines.push('### 逐题点评', '')
+      report.questions.forEach((item, index) => {
+        lines.push(`#### ${index + 1}. 【${item.topic}】${item.question}`, '',
+          `**点评：** ${item.critique}`)
+        if (item.missing.length) lines.push(`**缺失要素：** ${item.missing.join('、')}`)
+        if (item.model_answer) lines.push(`**高分示范：** ${item.model_answer}`)
+        if (item.bad_answer_note) lines.push(`**踩坑提醒：** ${item.bad_answer_note}`)
+        lines.push('')
+      })
+    }
+    if (report.risk_list?.length) lines.push('### 高危清单', '', ...report.risk_list.map(item => `- ${item}`), '')
+    if (report.actions?.length) lines.push('### 行动建议', '', ...report.actions.map(item => `- ${item}`), '')
+  }
+  return lines.join('\n')
 }
