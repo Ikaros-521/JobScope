@@ -5,6 +5,8 @@ import { toast } from './toast'
 import { navigateTabs } from './tabNavigation'
 
 type Protocol = 'openai' | 'anthropic'
+// 账户 /models 里带回的每模型能力元数据（OpenAI 兼容网关才有；Anthropic 清单无此字段）。
+type DiscoveredMeta = { context_tokens?: number; max_output_tokens?: number }
 type Draft = { id?: string; name: string; channel: string; protocol: Protocol; url: string; model: string; modelsText: string; embeddingsText: string; key: string; clear_key: boolean; context_tokens: number | ''; max_output_tokens: number | '' }
 type BindingDraft = { kind: 'channel'; channel_id: string; model: string } | { kind: 'local'; local_model: string } | { kind: 'disabled' } | { kind: 'inherit' }
 type EditorAction = 'test' | 'test-embedding' | 'discover'
@@ -51,7 +53,7 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
   const [bindings, setBindings] = useState<BindingsPayload | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [draft, setDraft] = useState<Draft | null>(null)
-  const [lists, setLists] = useState<{ models: string[]; source: string } | null>(null)
+  const [lists, setLists] = useState<{ models: string[]; source: string; meta?: Record<string, DiscoveredMeta> } | null>(null)
   const [busy, setBusy] = useState('')
   const [confirmId, setConfirmId] = useState('')
   const [loadAttempt, setLoadAttempt] = useState(0)
@@ -106,7 +108,14 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
   }
 
   function chooseModel(model: string) {
-    update({ model, context_tokens: metadata[model.trim()]?.context_tokens ?? '' })
+    // 账户清单带回能力元数据时直接回填（输出上限取上游 max，不用再去服务商文档查）；
+    // 无检测值时保留现状，沿用官方参考目录的上下文回填。
+    const info = lists?.meta?.[model.trim()]
+    update({
+      model,
+      context_tokens: info?.context_tokens ?? metadata[model.trim()]?.context_tokens ?? '',
+      max_output_tokens: info?.max_output_tokens ?? draft?.max_output_tokens ?? '',
+    })
   }
 
   function draftPayload() {
@@ -132,16 +141,20 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
     setBusy(operation)
     try {
       if (operation === 'discover') {
-        const result = await post<{ models: string[]; message: string }>('/settings/models/discover', { target: 'llm' as const, channel_id: draft.id, config })
-        setLists({ models: result.models, source: 'live' })
+        const result = await post<{ models: string[]; meta?: Record<string, DiscoveredMeta>; message: string }>('/settings/models/discover', { target: 'llm' as const, channel_id: draft.id, config })
+        setLists({ models: result.models, source: 'live', meta: result.meta })
         update({ modelsText: result.models.slice(0, 200).join('\n') })
-        toast(result.models.length ? `已获取 ${result.models.length} 个模型，保存渠道后保留列表。` : '渠道返回空列表，可手动输入模型 ID。')
+        const info = result.meta?.[draft.model.trim()]
+        if (info) update({ context_tokens: info.context_tokens ?? draft.context_tokens, max_output_tokens: info.max_output_tokens ?? draft.max_output_tokens })
+        toast(result.models.length
+          ? `已获取 ${result.models.length} 个模型，保存渠道后保留列表。${info?.max_output_tokens ? `已按上游清单回填 ${draft.model} 的输出上限。` : ''}`
+          : '渠道返回空列表，可手动输入模型 ID。')
       } else {
-        const result = await post<{ duration_ms: number; dimensions: number | null }>('/settings/models/test', { target: embedding ? 'embedding' : 'llm', channel_id: draft.id, config })
+        const result = await post<{ duration_ms: number; dimensions: number | null; adjusted_max_output?: number | null }>('/settings/models/test', { target: embedding ? 'embedding' : 'llm', channel_id: draft.id, config })
         if (draft.id) await refreshChannels()
         toast(embedding
           ? `向量模型可用 · ${result.duration_ms} ms${result.dimensions ? ` · ${result.dimensions} 维` : ''}。测试未保存配置。`
-          : `连接成功 · ${result.duration_ms} ms。测试未保存配置。`)
+          : `连接成功 · ${result.duration_ms} ms。测试未保存配置。${result.adjusted_max_output ? `已按上游实测上限把渠道「最大输出」自动调整为 ${result.adjusted_max_output.toLocaleString('zh-CN')}。` : ''}`)
       }
     } catch (err) { toast((err as Error).message || '操作失败', 'error'); if (draft.id) await refreshChannels() }
     finally { inFlight.current = false; setBusy('') }
@@ -156,10 +169,10 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
     setBusy(`test-${channel.id}-${target}`)
     try {
       const config = { mode: 'remote' as const, channel: channel.channel, protocol: target === 'llm' ? channel.protocol : 'openai' as const, url: channel.url, model, key: '', clear_key: false }
-      const result = await post<{ duration_ms: number; dimensions: number | null }>('/settings/models/test', { target, channel_id: channel.id, config })
+      const result = await post<{ duration_ms: number; dimensions: number | null; adjusted_max_output?: number | null }>('/settings/models/test', { target, channel_id: channel.id, config })
       await refreshChannels()
       toast(target === 'llm'
-        ? `「${channel.name}」连接成功 · ${result.duration_ms} ms`
+        ? `「${channel.name}」连接成功 · ${result.duration_ms} ms${result.adjusted_max_output ? `；已按上游实测上限把「最大输出」自动调整为 ${result.adjusted_max_output.toLocaleString('zh-CN')}` : ''}`
         : `「${channel.name}」向量模型可用 · ${result.duration_ms} ms${result.dimensions ? ` · ${result.dimensions} 维` : ''}`)
     } catch (err) { toast((err as Error).message || '测试失败', 'error'); await refreshChannels() }
     finally { inFlight.current = false; setBusy('') }
@@ -173,7 +186,7 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
     try {
       const result = await testModelPurpose(purpose)
       await refreshChannels()
-      toast(`${PURPOSE_META[purpose].label}连接成功 · ${result.duration_ms} ms${result.dimensions ? ` · ${result.dimensions} 维` : ''}`)
+      toast(`${PURPOSE_META[purpose].label}连接成功 · ${result.duration_ms} ms${result.dimensions ? ` · ${result.dimensions} 维` : ''}${result.adjusted_max_output ? `；已按上游实测上限把「最大输出」自动调整为 ${result.adjusted_max_output.toLocaleString('zh-CN')}` : ''}`)
     } catch (err) { toast((err as Error).message || '测试失败', 'error'); await refreshChannels() }
     finally { inFlight.current = false; setBusy('') }
   }
@@ -255,6 +268,7 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
   const matches = candidates.filter(item => item.toLowerCase().includes(modelQuery.trim().toLowerCase()))
   const orderedMatches = draft?.model ? [...matches].sort((a, b) => a === draft.model ? -1 : b === draft.model ? 1 : 0) : matches
   const modelInfo = metadata[draft?.model.trim() ?? '']
+  const liveMaxOut = draft ? lists?.meta?.[draft.model.trim()]?.max_output_tokens : undefined
   const canSave = Boolean(draft?.name.trim() && draft.url.trim() && !busy && !needsKey)
 
   return <><section className="page-intro"><div><h1>模型设置</h1></div>
@@ -332,13 +346,14 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
                 <div className="channel-step-heading"><span aria-hidden="true">3</span><h3 id="models-heading">选择默认模型</h3></div>
                 <div className="model-picker-heading"><span className="body-small muted">{lists?.source === 'live' ? '账户在线清单' : lists?.source === 'saved' ? '已保存清单与官方参考' : '官方参考清单'} · {candidates.length} 个</span><button type="button" className="button secondary" disabled={!draft.url.trim() || needsKey} onClick={() => void action('discover')}>{busy === 'discover' && <span className="spinner" aria-hidden="true" />}{busy === 'discover' ? '正在获取…' : '获取账户模型'}</button></div>
                 <label className="field-label" htmlFor="channel-model-search">搜索模型</label><input id="channel-model-search" type="search" value={modelQuery} onChange={event => setModelQuery(event.target.value)} placeholder="输入关键词筛选，不改变已选模型" autoComplete="off" />
-                {orderedMatches.length > 0 ? <div className="model-options channel-model-options" role="group" aria-label="模型搜索结果">{orderedMatches.slice(0, 60).map(item => <button type="button" key={item} aria-pressed={draft.model === item} onClick={() => chooseModel(item)}><span>{item}</span><span>{metadata[item] ? `${contextLabel(metadata[item].context_tokens)} 上下文 · ` : ''}{draft.model === item ? '已选择' : '选择'}</span></button>)}</div> : <p className="channel-model-empty">{candidates.length ? '没有匹配项，可在下方直接填写模型 ID。' : '暂无模型清单。填入地址与密钥后获取，或直接填写模型 ID。'}</p>}
+                {orderedMatches.length > 0 ? <div className="model-options channel-model-options" role="group" aria-label="模型搜索结果">{orderedMatches.slice(0, 60).map(item => <button type="button" key={item} aria-pressed={draft.model === item} onClick={() => chooseModel(item)}><span>{item}</span><span>{metadata[item] ? `${contextLabel(metadata[item].context_tokens)} 上下文 · ` : ''}{lists?.meta?.[item]?.max_output_tokens ? `${contextLabel(lists.meta[item].max_output_tokens)} 输出 · ` : ''}{draft.model === item ? '已选择' : '选择'}</span></button>)}</div> : <p className="channel-model-empty">{candidates.length ? '没有匹配项，可在下方直接填写模型 ID。' : '暂无模型清单。填入地址与密钥后获取，或直接填写模型 ID。'}</p>}
                 {matches.length > 60 && <p className="field-help">显示前 60 / {matches.length} 个结果，请输入关键词缩小范围。</p>}
                 <div className="channel-grid">
                   <div><label className="field-label" htmlFor="channel-model">默认模型 ID</label><input id="channel-model" value={draft.model} onChange={event => chooseModel(event.target.value)} placeholder="点击上方模型，或直接粘贴 ID" maxLength={300} autoComplete="off" spellCheck={false} /></div>
                   <div><label className="field-label" htmlFor="channel-context">上下文窗口 <span className="muted">tokens</span></label><input id="channel-context" type="number" min={4000} max={2000000} step={1} aria-describedby="channel-context-help" aria-invalid={Boolean(formError)} value={draft.context_tokens} onChange={event => update({ context_tokens: event.target.value === '' ? '' : Number(event.target.value) })} placeholder="未填写时按 128,000 估算" /></div>
                   <div><label className="field-label" htmlFor="channel-maxout">最大输出 <span className="muted">tokens</span></label><input id="channel-maxout" type="number" min={1000} max={262144} step={1} aria-describedby="channel-context-help" value={draft.max_output_tokens} onChange={event => update({ max_output_tokens: event.target.value === '' ? '' : Number(event.target.value) })} placeholder="留空用各功能默认" /></div>
                 </div>
+                {liveMaxOut && <p className="field-help">检测到 {draft.model} 上游输出上限 {contextLabel(liveMaxOut)} tokens，已自动回填；填得更高会被上游直接拒收（400）。</p>}
                 <p id="channel-context-help" className="field-help">上下文用于对话用量估算；最大输出是单次回复 token 上限（按所配模型的真实输出能力填，如 8K/64K/128K），留空用各功能默认。超上限产出会被截断，日志可见「触达单次上限」。</p>
                 <details className="channel-help-fold">
                   <summary>什么是上下文窗口 · 模型清单说明</summary>

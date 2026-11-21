@@ -296,7 +296,7 @@ export function deleteLlmChannel(id: string) { return api<{ ok: boolean; channel
 export function activateLlmChannel(id: string) { return post<{ settings: Record<'llm' | 'embedding', ModelProvider>; bindings: BindingsPayload }>(`/settings/llm-channels/${encodeURIComponent(id)}/activate`) }
 // 按功能当前生效配置实测：服务端从绑定取渠道/模型/密钥，密钥不下发前端。
 export function testModelPurpose(purpose: ModelPurpose) {
-  return post<{ ok: boolean; dimensions: number | null; duration_ms: number; message: string }>(`/settings/models/test-purpose/${purpose}`)
+  return post<{ ok: boolean; dimensions: number | null; duration_ms: number; message: string; adjusted_max_output?: number | null }>(`/settings/models/test-purpose/${purpose}`)
 }
 export type CompressResult = { compacted_count: number; summary_message_id: string; message_count: number }
 export function compressConversation(id: string) { return post<CompressResult>(`/conversations/${encodeURIComponent(id)}/compress`) }

@@ -1,10 +1,53 @@
 """Shared OpenAI Chat Completions / Anthropic Messages transport."""
 import logging
+import re
 from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
 logger = logging.getLogger(__name__)
+
+# 上游嫌 max_tokens 超限的 400 里，真实上限写在响应体措辞中（2026-11-21 复盘 400：渠道填 256000、
+# Z.ai 真实上限 131072，报错原因全在 body 里而旧日志不带 body，排障卡壳）。
+_CAP_PATTERNS = (
+    re.compile(r'at most (\d+)'),                                # OpenAI 系：supports at most 16384 completion tokens
+    re.compile(r'限制数值范围\[1,\s*(\d+)\]'),                    # Z.ai 系：限制数值范围[1,131072]
+    re.compile(r'max(?:imum)?[ _-]?(?:output|completion)?[ _-]?tokens?[^\d]{0,40}(\d{3,})', re.I),
+)
+# complete() 钳制重试时记下的实测输出上限：(端点, 模型) -> 上限；渠道测试据此回写渠道配置。
+learned_caps = {}
+
+
+def parse_max_tokens_cap(message, requested=None):
+    """从上游错误体解析 max_tokens 数值上限；识别不出、或命中的只是我们刚发值的回显时返回 None。"""
+    if not message:
+        return None
+    for pattern in _CAP_PATTERNS:
+        for match in pattern.finditer(message):
+            value = int(match.group(1))
+            if value == requested or not 256 <= value <= 2_000_000:
+                continue
+            return value
+    return None
+
+
+def remember_cap(config, cap):
+    key = (endpoint(config['url'], config.get('protocol', 'openai')), str(config.get('model', '')))
+    learned_caps[key] = min(cap, learned_caps.get(key, cap))
+
+
+def learned_cap(config):
+    return learned_caps.get((endpoint(config['url'], config.get('protocol', 'openai')), str(config.get('model', ''))))
+
+
+def _status_detail(exc):
+    """HTTPStatusError 的响应体（截断）：400/429 的真实原因都在 body 里，日志必须带出来。"""
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            return (exc.response.text or '')[:600]
+        except Exception:
+            return ''
+    return ''
 
 
 def _log_call(config, purpose, max_tokens):
@@ -120,6 +163,10 @@ def stream_complete(config, system, user, *, max_tokens=1800, temperature=None, 
                             text += delta['content']
                             if on_delta:
                                 on_delta(delta['content'])
+    except httpx.HTTPStatusError as exc:
+        logger.error('模型调用失败[stream_complete] model=%s status=%s 响应体=%s',
+                     config.get('model'), exc.response.status_code, _status_detail(exc))
+        raise ValueError('模型请求失败，请检查服务配置后重试') from None
     except (httpx.HTTPError, json.JSONDecodeError, ValueError, KeyError, TypeError, IndexError):
         logger.exception('模型调用失败[complete] model=%s', config.get('model'))
         raise ValueError('模型请求失败，请检查服务配置后重试') from None
@@ -145,15 +192,31 @@ def complete(config, system, user, *, max_tokens=1800, temperature=None, timeout
         body['messages'].insert(0, dict(role='system', content=system))
     if temperature is not None:
         body['temperature'] = temperature
+    budget = max_tokens
     try:
         with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
-            response = client.post(validate_model_url(endpoint(config['url'], protocol)), headers=headers(config), json=body)
-            response.raise_for_status()
-            if len(response.content) > 2000000:
-                raise ValueError('模型响应超过上限')
-            data = response.json()
-    except (httpx.HTTPError, ValueError):
-        logger.exception('模型调用失败[complete] model=%s', config.get('model'))
+            for attempt in (1, 2):
+                body['max_tokens'] = budget
+                response = client.post(validate_model_url(endpoint(config['url'], protocol)), headers=headers(config), json=body)
+                if response.status_code >= 400:
+                    # 400 常带着「max_tokens 超限」实锤：按它说的上限钳制重试一次，别整条调用失败。
+                    detail = (getattr(response, 'text', '') or '')[:600]
+                    cap = parse_max_tokens_cap(detail, requested=budget)
+                    if attempt == 1 and response.status_code == 400 and cap and cap < budget:
+                        remember_cap(config, cap)
+                        logger.warning('上游拒绝 max_tokens=%s，按其上限 %s 钳制重试[model=%s]：%s',
+                                       max_tokens, cap, config.get('model'), detail)
+                        budget = cap
+                        continue
+                response.raise_for_status()
+                if len(response.content) > 2000000:
+                    raise ValueError('模型响应超过上限')
+                data = response.json()
+                break
+    except (httpx.HTTPError, ValueError) as exc:
+        detail = _status_detail(exc)
+        logger.exception('模型调用失败[complete] model=%s%s', config.get('model'),
+                         f' status={exc.response.status_code} 响应体={detail}' if detail else '')
         raise
     try:
         if protocol == 'anthropic':
@@ -236,6 +299,10 @@ def tool_turn(config, messages, tools, *, timeout=60):
             raise ValueError('模型没有返回有效回答或工具调用')
         _log_usage('agent_turn', data.get('usage') or {})
         return dict(role='assistant', content=text[:20000] or None, **({'tool_calls': calls} if calls else {})), data.get('usage', {})
+    except httpx.HTTPStatusError as exc:
+        logger.error('模型调用失败[agent_turn] model=%s status=%s 响应体=%s',
+                     config.get('model'), exc.response.status_code, _status_detail(exc))
+        raise ValueError('Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。') from None
     except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError):
         logger.exception('模型调用失败[agent_turn] model=%s', config.get('model'))
         raise ValueError('Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。') from None
@@ -382,6 +449,10 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, sh
                 finally:
                     if unregister:
                         unregister()
+    except httpx.HTTPStatusError as exc:
+        logger.error('模型调用失败[agent_stream] model=%s status=%s 响应体=%s',
+                     config.get('model'), exc.response.status_code, _status_detail(exc))
+        raise ValueError('Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。') from None
     except (httpx.HTTPError, json.JSONDecodeError, ValueError, KeyError, TypeError, IndexError):
         logger.exception('模型调用失败[agent_stream] model=%s', config.get('model'))
         raise ValueError('Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。') from None

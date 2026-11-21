@@ -27,6 +27,8 @@ class ProviderInput(BaseModel):
     clear_key: bool = False
     # 上下文窗口大小只用于前端用量估算，不参与任何请求；留空按 128000 估算。
     context_tokens: int | None = Field(default=None, ge=4000, le=2_000_000)
+    # 渠道级单次输出上限：连接测试要按它实测（见 _probe），超上限的上游 400 由 transport 钳制兜底。
+    max_output_tokens: int | None = Field(default=None, ge=1000, le=262144)
 
 
 class ModelSettingsInput(BaseModel):
@@ -275,14 +277,16 @@ class ModelSettings:
 
     def _probe(self, target, config):
         """一次连接探测：embedding 返回向量维度，llm 只要求有效回答；失败抛原始异常。"""
-        from .model_transport import complete, OutputLimitError
+        from .model_transport import complete, OutputLimitError, output_budget
         if target == 'embedding':
             from .research.providers import EmbeddingProvider
             vectors = EmbeddingProvider(config=config).embed(['连接测试'])
             if not vectors or not len(vectors[0]):
                 raise ValueError('向量服务未返回有效向量')
             return len(vectors[0])
-        complete(config, '', '请只回复 OK。这是连接测试。', max_tokens=1024, timeout=60)
+        # 按渠道登记的输出上限实测（max_tokens 只是上限不费 token）：固定 1024 会把
+        # 「渠道上限 > 模型真实上限」这类冲突瞒到复盘/出题真跑时才炸（2026-11-21 复盘 400）。
+        complete(config, '', '请只回复 OK。这是连接测试。', max_tokens=output_budget(config, 1024), timeout=60)
         return None
 
     def _probe_timed(self, target, config, record=None):
@@ -316,14 +320,51 @@ class ModelSettings:
         LlmChannelStore(self.repo).record_test(channel_id, dict(
             target=target, model=data.get('model', ''), ok=ok, duration_ms=duration_ms, at=now()))
 
+    def _apply_learned_cap(self, channel_id, config, target):
+        """complete() 触上游 max_tokens 上限后记下的实测值回写渠道：配置即自检，
+        用户不用去服务商文档查输出上限（2026-11-21 复盘 400：手填 256000 > 真实 131072）。"""
+        from .model_transport import learned_cap
+        if target != 'llm' or not channel_id:
+            return None
+        cap = learned_cap(config)
+        if not cap:
+            return None
+        store = LlmChannelStore(self.repo)
+        try:
+            channel = store.get(channel_id)
+        except ValueError:
+            return None
+        # 上限是按「这条渠道的地址+协议」实测的：编辑中换了地址的草稿不回写。
+        if channel.get('url') != config.get('url') or channel.get('protocol', 'openai') != config.get('protocol', 'openai'):
+            return None
+        current = channel.get('max_output_tokens')
+        clamped = min(int(current), cap) if current else cap
+        if current == clamped:
+            return None
+        channel['max_output_tokens'] = clamped
+        with self.repo.connection() as conn:
+            conn.execute('INSERT OR REPLACE INTO llm_channels VALUES (?,?)', (channel_id, json.dumps(channel, ensure_ascii=False)))
+        return clamped
+
     def test(self, target, value, channel_id=None):
         data = self.connection_config(target, value, channel_id)
         if data['mode'] == 'disabled':
             raise ValueError('请先选择一个模型连接方式')
+        if target == 'llm' and channel_id and data.get('max_output_tokens') is None:
+            # 渠道详情页的直测不带输出上限：补上渠道登记值，测试才按真实预算触发上限钳制。
+            try:
+                stored = LlmChannelStore(self.repo).get(channel_id)
+            except ValueError:
+                stored = None
+            if stored and stored.get('url') == data.get('url'):
+                data['max_output_tokens'] = stored.get('max_output_tokens')
         dimensions, duration_ms = self._probe_timed(
             target, data,
             None if not channel_id else lambda ok, ms: self._record_channel_test(channel_id, target, data, ok, ms))
-        return dict(ok=True, dimensions=dimensions, duration_ms=duration_ms, message='连接成功；仅验证服务与响应格式，未评估回答质量')
+        adjusted = self._apply_learned_cap(channel_id, data, target)
+        return dict(ok=True, dimensions=dimensions, duration_ms=duration_ms,
+                    message='连接成功；仅验证服务与响应格式，未评估回答质量',
+                    adjusted_max_output=adjusted)
 
     def test_purpose(self, purpose):
         """按「功能与模型」当前生效配置实测：embedding 走向量端点，其余走对话补全。"""
@@ -340,7 +381,10 @@ class ModelSettings:
             target, row,
             None if not channel_id else lambda ok, ms: LlmChannelStore(self.repo).record_test(
                 channel_id, dict(target=target, model=row.get('model', ''), ok=ok, duration_ms=ms, at=now())))
-        return dict(ok=True, dimensions=dimensions, duration_ms=duration_ms, message='连接成功；已按该功能当前生效的渠道与模型实测')
+        adjusted = self._apply_learned_cap(channel_id, row, target)
+        return dict(ok=True, dimensions=dimensions, duration_ms=duration_ms,
+                    message='连接成功；已按该功能当前生效的渠道与模型实测',
+                    adjusted_max_output=adjusted)
 
     def discover(self, target, value, channel_id=None):
         from .model_transport import endpoint, headers
@@ -348,6 +392,7 @@ class ModelSettings:
         if data['mode'] != 'remote':
             raise ValueError('在线模型列表需要 API 连接')
         models = set()
+        meta = {}
         # Anthropic lists are paginated. Bound both pages and total entries.
         url = endpoint(data['url'], data['protocol'], 'models')
         try:
@@ -368,14 +413,28 @@ class ModelSettings:
                     for row in rows[:1000]:
                         name = row.get('id') if isinstance(row, dict) else None
                         if isinstance(name, str) and name.strip() and len(name) <= 300:
-                            models.add(name.strip())
+                            name = name.strip()
+                            models.add(name)
+                            # OpenAI 兼容网关常在 /models 里带每模型能力元数据：抓回来供前端回填
+                            # 输出上限/上下文，用户不用去服务商文档查（2026-11-21 复盘 400 的教训）。
+                            info = {}
+                            for key, raw, bound in (('max_output_tokens', row.get('max_output_tokens'), (256, 2_000_000)),
+                                                    ('context_tokens', row.get('context_length', row.get('context_window')), (1000, 20_000_000))):
+                                try:
+                                    count = int(raw)
+                                except (TypeError, ValueError):
+                                    continue
+                                if bound[0] <= count <= bound[1]:
+                                    info[key] = count
+                            if info:
+                                meta.setdefault(name, {}).update(info)
                     if data['protocol'] != 'anthropic' or not result.get('has_more'):
                         break
                     next_id = result.get('last_id')
                     if not isinstance(next_id, str) or not next_id or next_id == after:
                         break
                     after = next_id
-            return dict(models=sorted(models)[:1000], source='live', message='账户返回的模型列表；具体调用权限请通过测试确认')
+            return dict(models=sorted(models)[:1000], meta=meta, source='live', message='账户返回的模型列表；具体调用权限请通过测试确认')
         except (httpx.HTTPError, ValueError, KeyError, TypeError, OSError):
             raise ConnectionError('获取模型失败，请检查渠道地址、密钥和账户权限。该渠道也可能不提供模型列表；可搜索预设或手动输入模型 ID 后测试。') from None
 

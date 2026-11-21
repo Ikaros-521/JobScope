@@ -114,6 +114,88 @@ def test_channel_test_and_discover_use_saved_credential(client, monkeypatch):
     assert captured[-1]['headers'].get('Authorization') == 'Bearer sk-saved'
 
 
+def test_discover_returns_model_metadata(client, monkeypatch):
+    saved = client.post('/api/settings/llm-channels', json=dict(
+        name='清单渠道', channel='custom', url='https://meta.example/v1', model='zai/m', key='sk-meta')).json()['channel']
+    original = httpx.Client.get
+
+    def get(self, url, **kwargs):
+        from fastapi.testclient import TestClient
+        if isinstance(self, TestClient):
+            return original(self, url, **kwargs)
+        rows = [dict(id='zai/m', max_output_tokens=131072, context_length=1000000),
+                dict(id='free/m', max_output_tokens=32000, context_length=200000),
+                dict(id='no-meta/m'),
+                dict(id='bad/m', max_output_tokens='abc')]
+        return httpx.Response(200, json={'data': rows}, request=httpx.Request('GET', url))
+
+    monkeypatch.setattr(httpx.Client, 'get', get)
+    result = client.post('/api/settings/models/discover', json=dict(
+        target='llm', channel_id=saved['id'],
+        config=dict(mode='remote', channel='custom', protocol='openai', url='https://meta.example/v1', model='zai/m'))).json()
+    assert result['models'] == ['bad/m', 'free/m', 'no-meta/m', 'zai/m']
+    # 元数据供前端回填：能力字段抓回来、无值/非法值的模型静默跳过。
+    assert result['meta']['zai/m'] == dict(max_output_tokens=131072, context_tokens=1000000)
+    assert result['meta']['free/m']['max_output_tokens'] == 32000
+    assert 'no-meta/m' not in result['meta'] and 'bad/m' not in result['meta']
+
+
+def test_complete_clamps_output_budget_on_upstream_400(client, monkeypatch):
+    from jobscope.model_transport import complete, learned_cap, learned_caps
+    learned_caps.clear()
+    calls = []
+    original = httpx.Client.post
+
+    def post(self, url, **kwargs):
+        from fastapi.testclient import TestClient
+        if isinstance(self, TestClient):
+            return original(self, url, **kwargs)
+        calls.append(json.loads(json.dumps(kwargs['json'])))
+        if len(calls) == 1:
+            return httpx.Response(400, json={'error': {'code': '1210', 'message': 'Z.ai: The max_tokens parameter is illegal.：限制数值范围[1,131072]'}},
+                                  request=httpx.Request('POST', url))
+        return httpx.Response(200, json={'choices': [{'message': {'content': 'OK'}}]}, request=httpx.Request('POST', url))
+
+    monkeypatch.setattr(httpx.Client, 'post', post)
+    config = dict(mode='remote', protocol='openai', url='http://127.0.0.1:9/v1/chat/completions', model='zai/glm-5.3-flash', key='')
+    content, _ = complete(config, 'sys', 'user', max_tokens=256000, timeout=5)
+    assert content == 'OK'
+    # 第一次按原预算发、被 400 后按响应体里的上限钳制重试；实测上限入缓存供渠道测试回写。
+    assert [body['max_tokens'] for body in calls] == [256000, 131072]
+    assert learned_cap(config) == 131072
+
+
+def test_channel_test_auto_adjusts_output_cap(client, monkeypatch):
+    from jobscope.model_transport import learned_caps
+    learned_caps.clear()
+    saved = client.post('/api/settings/llm-channels', json=dict(
+        name='限额渠道', channel='custom', url='https://cap.example/v1', model='zai/glm', key='sk-cap',
+        max_output_tokens=256000)).json()['channel']
+    calls = []
+    original = httpx.Client.post
+
+    def post(self, url, **kwargs):
+        from fastapi.testclient import TestClient
+        if isinstance(self, TestClient):
+            return original(self, url, **kwargs)
+        calls.append(json.loads(json.dumps(kwargs['json'])))
+        if len(calls) == 1:
+            return httpx.Response(400, json={'error': {'message': 'max_tokens illegal：限制数值范围[1,131072]'}},
+                                  request=httpx.Request('POST', url))
+        return httpx.Response(200, json={'choices': [{'message': {'content': 'OK'}}]}, request=httpx.Request('POST', url))
+
+    monkeypatch.setattr(httpx.Client, 'post', post)
+    # 渠道详情页直测不带 max_output_tokens：服务端补渠道登记值按真实预算实测（触发 400→钳制重试）。
+    response = client.post('/api/settings/models/test', json=dict(
+        target='llm', channel_id=saved['id'],
+        config=dict(mode='remote', channel='custom', protocol='openai', url='https://cap.example/v1/chat/completions', model='zai/glm')))
+    assert response.status_code == 200
+    assert response.json()['adjusted_max_output'] == 131072
+    assert [body['max_tokens'] for body in calls] == [256000, 131072]
+    updated = [item for item in client.get('/api/settings/llm-channels').json()['channels'] if item['id'] == saved['id']][0]
+    assert updated['max_output_tokens'] == 131072
+
+
 def test_run_uses_saved_channel_connection_and_model(client, monkeypatch):
     saved = client.post('/api/settings/llm-channels', json=dict(
         name='备份渠道', channel='custom', protocol='openai', url='https://chan-b.example/v1',
