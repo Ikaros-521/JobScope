@@ -39,34 +39,37 @@ def add_search_mcp(client, name='Tavily Search', tool_name='tavily_search', desc
     return server_id
 
 
-def test_no_search_mcp_guides_user_to_install(client):
+def test_builtin_web_tools_always_available(client):
     tools, registry, web_tools, guidance = system_prompt_of(client)
-    assert web_tools is False
-    assert '当前没有可用的联网搜索工具' in guidance
-    assert '工具市场' in guidance and 'Tavily' in guidance
-    assert '不要虚构检索过程' in guidance and '禁止输出任何 [E-…] 证据引用' in guidance
+    # 内置联网原语常驻：无需用户自装 MCP 即可联网，catalog 里有且仅有一份
+    assert web_tools is True
+    names = [item['name'] for item in tools]
+    assert names.count('web_search') == 1 and names.count('web_read') == 1
+    # 研究法引导：多角度并行查询、甄别同名多主体、并行读页、标来源 URL、不伪装证据
+    assert 'web_search' in guidance and 'web_read' in guidance
+    assert '同名多主体' in guidance
+    assert '来源URL' in guidance
+    assert '不得把搜索结果伪装成项目证据' in guidance
+    assert 'company_web_lookup' in guidance  # 分工口径保留：工商核实仍优先快查
 
 
-def test_search_mcp_triggers_proactive_guidance(client):
+def test_search_mcp_still_cataloged_as_supplement(client):
     add_search_mcp(client, tool_name='tavily-search', description='Web search for company news')
     tools, registry, web_tools, guidance = system_prompt_of(client)
     assert web_tools is True
     assert any('search' in (item['description'] or '').lower() for item in tools if item['name'].startswith('mcp_'))
-    assert '主动调用搜索类MCP工具' in guidance
-    assert '来源URL与访问时间' in guidance
-    assert '不得把搜索结果伪装成项目证据' in guidance
+    assert 'MCP' in guidance  # MCP 降级为补充来源
 
 
-def test_non_search_mcp_does_not_trigger_guidance(client):
+def test_non_search_mcp_cataloged_without_effect(client):
     add_search_mcp(client, name='Time 时间时区', tool_name='get_current_time', description='Get current time')
     tools, registry, web_tools, guidance = system_prompt_of(client)
-    assert web_tools is False
-    assert '当前没有可用的联网搜索工具' in guidance
-    # 时间工具仍在目录里，只是不触发联网引导
+    # 时间工具仍在目录里；联网引导不再依赖它
+    assert web_tools is True
     assert any(item['name'].startswith('mcp_') for item in tools)
 
 
-def test_disabled_server_does_not_trigger_guidance(client):
+def test_disabled_server_not_cataloged(client):
     action_id = add_search_mcp(client)
     repo = client.app.state.repo
     with repo.connection() as conn:
@@ -74,5 +77,4 @@ def test_disabled_server_does_not_trigger_guidance(client):
         payload['enabled'] = False
         conn.execute('UPDATE agent_mcp SET payload=? WHERE id=?', (json.dumps(payload, ensure_ascii=False), action_id))
     tools, registry, web_tools, guidance = system_prompt_of(client)
-    assert web_tools is False and not any(item['name'].startswith('mcp_') for item in tools)
-    assert '当前没有可用的联网搜索工具' in guidance
+    assert web_tools is True and not any(item['name'].startswith('mcp_') for item in tools)

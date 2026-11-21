@@ -11,7 +11,7 @@ from .analysis import parse_resume
 from .agent_scope import AgentScope, CROSS_COMPANY_RULES, resolve_scope
 from .knowledge import KnowledgeStore, READ_WINDOW_CHARS, SEARCH_TEXT_CHARS
 from .scope_expansion import ScopeExpansionStore
-from . import collect_service
+from . import browser, collect_service, web_research
 from .chat import citation, model_configured
 from .extensions import ExtensionStore, MCPClient, fingerprint, tool_alias, schema_validator
 from .model_transport import tool_turn, stream_turn
@@ -39,6 +39,7 @@ COMPACT_KEEP = 6
 READ_CLASS_BUILTINS = frozenset({
     'project_search', 'project_read', 'project_salary', 'knowledge_search', 'knowledge_read',
     'skill_read', 'skill_resource', 'company_profile', 'company_detail', 'vault_list', 'vault_read',
+    'web_search', 'web_read',
 })
 
 # 顺序显示模式下单段思维链/正文的落库封顶：与 reasoning 字段同一截断口径，防超长流撑爆会话 JSON。
@@ -103,6 +104,8 @@ BUILTINS = [
     dict(name='knowledge_read', description='按ID读取一条用户知识条目的正文窗口；超过4000字符时用offset翻页。仅用于knowledge_search返回的ID或用户明确给出的ID。', parameters=schema({'knowledge_id': dict(type='string', maxLength=100), 'offset': dict(type='integer', minimum=0, maximum=200000)}, ['knowledge_id'])),
     dict(name='skill_read', description='读取一个已启用Skill的完整指令。使用前根据名称与描述选择。只加载指令，不执行其脚本。', parameters=schema({'skill_id': dict(type='string', maxLength=100)}, ['skill_id'])),
     dict(name='skill_resource', description='读取已启用Skill的一份文本资源片段；先用skill_read获取资源清单，按path读取，超过6000字符用offset翻页。脚本文件不执行。', parameters=schema({'skill_id': dict(type='string', maxLength=100), 'path': dict(type='string', maxLength=200), 'offset': dict(type='integer', minimum=0, maximum=200000)}, ['skill_id', 'path'])),
+    dict(name='web_search', description='联网搜索公开网页（Bing/百度阶梯+无头浏览器兜底，无需任何API key）。用于项目资料与知识库都覆盖不到的外部时效事实：新闻、公告、政策、行业背景、公司官网、同名陌生主体等。一次搜索只覆盖一个角度：复杂问题应拆成多个不同角度的查询在同一轮并行发出，再从结果甄别同名多主体（记下每条的全称/属地/状态差异）。返回标题/链接/摘要；读正文用web_read。公司工商登记核实优先用company_web_lookup，不重复走搜索引擎。', parameters=schema({'query': dict(type='string', minLength=1, maxLength=300, description='一个独立完整的搜索角度'), 'count': dict(type='integer', minimum=1, maximum=15, default=8)}, ['query'])),
+    dict(name='web_read', description='打开一条公网URL并提取正文文本（http直读，被拦截或正文过短时自动降级无头浏览器兜底）。用于阅读web_search返回的来源页面或用户明确给出的链接；多条来源应在同一轮并行调用交叉印证。仅支持http/https公网地址，正文超过max_chars会截断，关键信息在被截断部分时换来源或换查询。', parameters=schema({'url': dict(type='string', minLength=1, maxLength=1000), 'max_chars': dict(type='integer', minimum=500, maximum=10000, default=8000)}, ['url'])),
     dict(name='company_profile', description='读取一家公司的档案摘要：实体与别名、参考分与各维度、可用详述分节清单。讨论具体公司时先调用；参考分是本地规则的主观参考，不是事实结论。', parameters=schema({'company': dict(type='string', minLength=1, maxLength=300)}, ['company'])),
     dict(name='company_detail', description='按需展开公司档案的一个分节：signals=最新信号明细（司龄/参保/涉诉等，含过期标记），history=历史快照差分，evidence=该公司证据索引（分页，正文用project_read按ID读取）。先用company_profile获取分节清单。', parameters=schema({'company': dict(type='string', minLength=1, maxLength=300), 'section': dict(type='string', enum=['signals', 'history', 'evidence']), 'page': dict(type='integer', minimum=1, maximum=500)}, ['company', 'section'])),
     dict(name='company_web_lookup', description='企查查/天眼查公开页公司快查：走用户已登录的项目浏览器会话，返回页面可见的有限工商字段，卡片按公司名归档为证据。核实公司主体/工商信息优先用它，不要自己开浏览器或搜索引擎。返回needs_login/needs_verification时如实转述并请用户在项目浏览器手动处理，不重试、不绕过；backoff表示项目浏览器被其他采集任务占用。', parameters=schema({'channel': dict(type='string', enum=['qcc', 'tyc']), 'company': dict(type='string', minLength=1, maxLength=120)}, ['channel', 'company'])),
@@ -157,12 +160,11 @@ class GeneralAgent:
         else:
             timeline.append(dict(kind=kind, text=piece[:TIMELINE_TEXT_CAP]))
 
-    # 命中即视为「联网搜索/网页抓取」类 MCP：覆盖市场预设（tavily/brave/fetch）与自装同类。
-    WEB_TOOL_KEYWORDS = ('search', 'fetch', 'tavily', 'brave', 'web', '网页', '搜索', '检索', '抓取', '联网')
-
     def _catalog(self):
         tools, registry = list(BUILTINS), {}
-        web_tools = False
+        # 内置 web_search/web_read 常驻可用，联网能力不再依赖用户自装搜索类 MCP；
+        # MCP 搜索类工具（Tavily/Brave 等）只是补充来源，不再影响引导开关。
+        web_tools = True
         for server in self.extensions._all('agent_mcp'):
             if not server['enabled'] or not server['tested']:
                 continue
@@ -175,28 +177,41 @@ class GeneralAgent:
                 annotations = tool.get('annotations') or {}
                 registry[alias] = dict(server_id=server['id'], tool_name=tool['name'], binding=fingerprint(server), label=f"{server['name']} / {tool['name']}",
                                        read_only=bool(annotations.get('readOnlyHint')), destructive=bool(annotations.get('destructiveHint')))
-                haystack = (server.get('name', '') + ' ' + tool.get('name', '') + ' ' + tool.get('description', '')).lower()
-                if any(keyword in haystack for keyword in self.WEB_TOOL_KEYWORDS):
-                    web_tools = True
         return tools, registry, web_tools
 
     @staticmethod
-    def _web_search_guidance(web_tools):
-        if web_tools:
-            return ('\n联网搜索：项目资料查不到、或问题涉及新闻动态/行业背景/政策/公司官网等外部时效事实时（公司主体/工商信息优先用company_web_lookup快查），先用一句话说明要查什么，再主动调用搜索类MCP工具核实，不要只凭模型知识回答或反复声明“项目内没有”。'
-                    '搜索结果必须标注来源URL与访问时间，明确区分「项目证据[E-…]」与「联网检索的外部信息」，不得把搜索结果伪装成项目证据或编造证据ID。'
-                    '搜索无结果或被拦截时如实说明；查询要一次精准命中，多轮搜索同样计入轮数与调用限额。')
-        return ('\n当前没有可用的联网搜索工具：公司工商信息仍可用company_web_lookup快查核实；新闻等其余项目外时效信息无法核实，如实说明知识截止限制；回答无法核实的问题时禁止输出任何 [E-…] 证据引用，也不要虚构检索过程。'
-                '可提示用户在「Agent 扩展 → 工具市场」接入搜索类MCP（如 Tavily / Brave / Fetch）获得联网能力。')
+    def _web_search_guidance(web_tools=True):
+        # 内置联网工具常驻后只剩一条研究法引导；web_tools 参数保留仅为调用点兼容。
+        return ('\n联网研究法（内置web_search/web_read常驻可用，无需任何API key）：'
+                '项目资料与知识库都覆盖不到的外部时效事实（新闻、公告、政策、行业背景、公司官网、陌生主体）主动联网核实，不要只凭模型知识回答或反复声明「项目内没有」。'
+                '工作法：先把问题拆成2-4个不同角度的查询（主体全称+属地、产品业务、新闻舆情、评价口碑），同一轮并行发出多条web_search；'
+                '从结果中甄别同名多主体——同名/近名公司先记下每条来源的全称、属地、成立时间等差异点，确认用户所指或分头核实；'
+                '再用web_read在同一轮并行打开2-4个最相关来源交叉印证，然后结构化作答。'
+                '每条外部事实在正文标注来源URL，明确区分「项目证据[E-…]」「知识库[K-…]」与「联网检索的外部信息」，不得把搜索结果伪装成项目证据或编造证据ID。'
+                '公司主体工商登记核实仍优先company_web_lookup/signal_collect（结构化落库），web_search用于快查覆盖不到的时效事实。'
+                '搜索被拦截或无结果时如实说明，换角度重查或换来源；工具市场已接入的搜索类MCP（Tavily/Brave等）可作为补充来源。')
 
     @staticmethod
     def _collection_guidance():
         return ('\n项目快查与采集：核实公司主体/注册资本/经营状态等工商信息优先调用company_web_lookup（走用户已登录的项目浏览器会话，比自行开浏览器或搜索引擎更快更可靠），不要用浏览器MCP自己翻企业信息网站；'
-                '搜索类MCP用于快查覆盖不到的时效信息（新闻、公告、行业背景）。工具返回needs_login/needs_verification时如实转述并请用户在项目浏览器完成登录或校验，不重试、不绕过；backoff表示项目浏览器被其他采集任务占用。'
+                'web_search用于快查覆盖不到的时效信息（新闻、公告、行业背景）。工具返回needs_login/needs_verification时如实转述并请用户在项目浏览器完成登录或校验，不重试、不绕过；backoff表示项目浏览器被其他采集任务占用。'
                 '回答「某公司在招什么岗位/薪资行情」类问题先用collect_jobs采集落库，再用project_search/project_salary检索分析。'
                 '快查卡片与采集结果只有在工具返回citable_evidence等证据ID且范围允许时才可用[E-…]引用；范围外的只能作为外部信息转述并注明来源URL，不得编造证据ID。'
                 '\n补分工作流：用户要补某公司参考分或问某维度为何不出分时，先company_profile读各维度missing缺口文案，按缺口选通路——薪资分层样本不足→collect_jobs采该公司同职类岗位（城市对照基线是跨公司统计，公司范围会话只能采本公司岗位，基线不足时如实说明缺哪一层）；完整JD不足→job_deep_read补全；司龄/参保/涉诉等信号缺口→signal_collect逐免费来源采集；材料齐→signal_extract抽取。'
                 '每轮采集/抽取后用reliability_refresh重算，如实转述新分数、与上一份快照的差分和仍缺的口径；分数一律保持「主观参考」口径，缺什么说什么，不把材料计数当成就。')
+
+    # 引用封底：正文里的来源 URL 至少要有 scheme+主机形态，避免裸 "http" 误判。
+    _SOURCE_URL_RE = re.compile(r'https?://[^\s"\'<>)]{8,}', re.I)
+
+    def _needs_source_nudge(self, state, text):
+        """引用封底（确定性，最多一次）：本轮联网工具确实返回过可用结果、而最终正文没有任何
+        来源 URL 时返回 True（并在 state 里登记已触发）。过短回答不触发——一句「没查到」不需要来源。"""
+        if state.get('source_nudged') or not state.get('web_results_ok'):
+            return False
+        if len(text or '') < 120 or self._SOURCE_URL_RE.search(text):
+            return False
+        state['source_nudged'] = True
+        return True
 
     # 会话级工具权限档位：confirm=全部逐次确认；autonomous=只读/自动执行白名单直跑（默认）；full=全部自动。
     PERMISSION_MODES = ('confirm', 'autonomous', 'full')
@@ -420,6 +435,20 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             if not text:
                 raise ValueError('正文窗口为空，请使用更小的offset')
             return dict(skill=item['name'], path=path, text=text, offset=offset, total_characters=len(resource['text']), has_more=offset + 6000 < len(resource['text']))
+        if name in ('web_search', 'web_read'):
+            # 内置联网原语：失败/拦截以 status 字段如实透传（模型可换角度重查），非法 URL 才抛错。
+            # 溯源与引用封底的状态标记：只有真的拿到过可用检索结果，封底校验才会启用。
+            state['used_web_tools'] = True
+            data_dir = self.repo.data_dir
+            if name == 'web_search':
+                result = web_research.search(args['query'], count=args.get('count', 8), browser_module=browser, data_dir=data_dir)
+                if result.get('status') == 'completed' and result.get('results'):
+                    state['web_results_ok'] = True
+                return result
+            result = web_research.read(args['url'], max_chars=args.get('max_chars', 8000), browser_module=browser, data_dir=data_dir)
+            if result.get('status') == 'completed' and (result.get('text') or '').strip():
+                state['web_results_ok'] = True
+            return result
         if name == 'company_profile':
             policy.require_company(args['company'])
             self._sync_index()
@@ -1027,7 +1056,16 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                              state['turns'], len(assistant.get('tool_calls', [])), usage)
                 calls = assistant.get('tool_calls', [])
                 if not calls:
-                    return self._result(state, assistant['content'], reasoning=reasoning)
+                    content = assistant.get('content') or ''
+                    if self._needs_source_nudge(state, content):
+                        # 确定性引用封底：联网结果进过上下文而正文无任何来源 URL，补一轮要求补齐再收尾。
+                        # 只触发一次；预算由 while 条件天然约束——无预算就按原文如实收尾，不强求。
+                        state['messages'].append(dict(role='user', content=(
+                            '<system-reminder>你已调用联网工具获取了外部信息，但当前回答正文没有任何来源 URL。'
+                            '请在最终回答里为关键外部事实补上来源 URL（检索不到可用结果的部分如实说明未核实），然后作答。</system-reminder>')))
+                        logger.info('Agent 引用封底触发 run=%s：联网结果无来源URL，补一轮', state['run']['id'])
+                        continue
+                    return self._result(state, content, reasoning=reasoning)
                 # Keep remaining calls for approval resume; never lose a tool_result.
                 state['queue'] = list(calls)
                 signal = self._drain_queue(state, hooks)

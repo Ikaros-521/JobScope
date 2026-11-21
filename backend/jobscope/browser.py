@@ -1,6 +1,7 @@
 """Project-owned Chrome session; page-driven collection for sources that refuse direct requests."""
 from __future__ import annotations
 
+import atexit
 import importlib.util
 import json
 import logging
@@ -87,14 +88,15 @@ LOOKUP_PAGES = {
 
 
 @contextmanager
-def session_lock(data_dir=None):
-    """OS lock is released on process exit, so no stale PID-file deadlock."""
+def session_lock(data_dir=None, name='session.lock'):
+    """OS lock is released on process exit, so no stale PID-file deadlock.
+    无头阅读器用独立的 reader.lock，与可见项目浏览器的 session.lock 互不干扰。"""
     root = _root(data_dir)
     root.mkdir(parents=True, exist_ok=True)
-    stream = (root / 'session.lock').open('a+b')
+    stream = (root / name).open('a+b')
     acquired = False
     try:
-        if (root / 'session.lock').stat().st_size == 0:
+        if (root / name).stat().st_size == 0:
             stream.write(b'0')
             stream.flush()
         stream.seek(0)
@@ -442,3 +444,224 @@ def collect(source='boss', query='', location='', limit=20, data_dir=None, progr
             except Exception:
                 pass
         _lock.release()
+
+
+# ---------------------------------------------------------------- 无头阅读器（Agent web_search/web_read 兜底）
+#
+# 与可见项目浏览器完全隔离：独立 profile（browser/reader/）、独立会话锁（reader.lock）、
+# 独立本地端口，互不抢资源、不弹窗。懒启动、进程单例，闲置超过 READER_IDLE_QUIT 自动退出。
+# 跨进程自愈：连接信息落在 reader/connection.json，进程重启先探活 attach；attach/启动失败
+# 清扫残留实例后重建（曾出现 --headless=new 握手 404 泄漏孤儿 Chrome 锁死 profile）。
+
+READER_IDLE_QUIT = 300.0
+
+_READER_LOCK = threading.Lock()
+_READER = None
+_READER_LAST = 0.0
+_REAPER_STARTED = False
+
+READER_READ_JS = ("return (() => { const t = document.body ? document.body.innerText : '';"
+                  " return {title: document.title || '', text: t.slice(0, arguments[0])}; })()")
+READER_SEARCH_JS = ("return (() => { const out = [];"
+                    " document.querySelectorAll('li.b_algo').forEach(li => {"
+                    "  const a = li.querySelector('h2 a') || li.querySelector('a[href]');"
+                    "  const cap = li.querySelector('.b_caption');"
+                    "  if (a && a.href) out.push({title: (a.innerText || '').trim(), url: a.href,"
+                    "   snippet: cap ? (cap.innerText || '').trim().slice(0, 400) : ''}); });"
+                    " return out; })()")
+
+
+def reader_available(data_dir=None):
+    return _has_driver() and _chrome() is not None
+
+
+def _reader_root(data_dir=None):
+    return _root(data_dir) / 'reader'
+
+
+def _reader_port(data_dir=None):
+    """读 connection.json 并探活：只有回包验证过的本地调试端口才可信。"""
+    try:
+        settings = json.loads((_reader_root(data_dir) / 'connection.json').read_text(encoding='utf-8'))
+        port = int(settings['port'])
+    except Exception:
+        return None
+    try:
+        import httpx
+        data = httpx.get(f'http://127.0.0.1:{port}/json/version', timeout=1, trust_env=False).json()
+        if str(data.get('webSocketDebuggerUrl', '')).startswith(f'ws://127.0.0.1:{port}/'):
+            return port
+    except Exception:
+        return None
+    return None
+
+
+def _sweep_reader_chrome():
+    """清扫残留的 reader 无头实例：跨进程崩溃后 profile 被孤儿锁死，清扫是重建的唯一出路。"""
+    import subprocess
+    try:
+        if os.name == 'nt':
+            script = ("Get-CimInstance Win32_Process -Filter \"Name='chrome.exe'\" | "
+                      "Where-Object { $_.CommandLine -match 'browser[\\\\/]reader' } | "
+                      "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }")
+            subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-Command', script],
+                           capture_output=True, timeout=30)
+        else:
+            subprocess.run(['pkill', '-f', 'browser/reader'], capture_output=True, timeout=10)
+    except Exception:
+        logger.warning('reader 残留实例清扫失败')
+
+
+def _reader_reaper_loop():
+    global _READER
+    while True:
+        time.sleep(60)
+        with _READER_LOCK:
+            if _READER is not None and time.time() - _READER_LAST > READER_IDLE_QUIT:
+                try:
+                    _READER.quit()
+                except Exception:
+                    pass
+                _READER = None
+
+
+def _quit_reader_instance():
+    """进程退出时回收无头实例；不加锁——退出期守护线程已停，尽力而为即可。"""
+    global _READER
+    if _READER is not None:
+        try:
+            _READER.quit()
+        except Exception:
+            pass
+        _READER = None
+
+
+def _ensure_reaper():
+    global _REAPER_STARTED
+    if _REAPER_STARTED:
+        return
+    _REAPER_STARTED = True
+    atexit.register(_quit_reader_instance)
+    threading.Thread(target=_reader_reaper_loop, name='browser-reader-reaper', daemon=True).start()
+
+
+def _reader_browser(data_dir=None):
+    """懒启动无头 Chromium：先探活 attach 已有实例，失败则清扫残留后全新启动（重试一次）。"""
+    global _READER, _READER_LAST
+    from DrissionPage import Chromium, ChromiumOptions
+    root = _reader_root(data_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    port = _reader_port(data_dir)
+    if port:
+        try:
+            browser_obj = Chromium(f'127.0.0.1:{port}')
+            _READER = browser_obj
+            _READER_LAST = time.time()
+            _ensure_reaper()
+            return browser_obj
+        except Exception:
+            logger.warning('reader 已有实例 attach 失败，转全新启动')
+    options_base = ChromiumOptions().set_browser_path(str(_chrome()))
+    # 2026-11-21 实测：--headless=new 与 DrissionPage 4.1.1.4 的 WS 握手不兼容（404），老式 --headless 正常。
+    for argument in ('--headless', '--disable-gpu', '--no-first-run', '--disable-extensions'):
+        options_base.set_argument(argument)
+    options_base.set_argument('--window-size', '1440,900')
+    for attempt in (1, 2):
+        try:
+            with socket.socket() as sock:
+                sock.bind(('127.0.0.1', 0))
+                port = sock.getsockname()[1]
+            options = options_base.set_user_data_path(str(root / 'profile')).set_local_port(port)
+            browser_obj = Chromium(options)
+            (root / 'connection.json').write_text(json.dumps({'port': port}), encoding='utf-8')
+            _READER = browser_obj
+            _READER_LAST = time.time()
+            _ensure_reaper()
+            return browser_obj
+        except Exception:
+            if attempt == 1:
+                _sweep_reader_chrome()
+                time.sleep(1.0)
+            else:
+                raise
+
+
+def _reader_call(data_dir, run):
+    """通用骨架：线程锁 + reader.lock 内执行 run(browser)。实例异常时重建，下次调用自愈。"""
+    global _READER, _READER_LAST
+    if not _READER_LOCK.acquire(timeout=120):
+        return None, '无头阅读器忙，请稍后重试'
+    try:
+        with session_lock(data_dir, name='reader.lock') as acquired:
+            if not acquired:
+                return None, '另一个进程正在使用无头阅读器，请稍后重试'
+            browser = _READER or _reader_browser(data_dir)
+            outcome = run(browser)
+            _READER_LAST = time.time()
+            return outcome, None
+    except Exception:
+        logger.warning('无头阅读器调用失败（详情不落日志，可能含页面内容），丢弃实例待重建')
+        try:
+            if _READER is not None:
+                _READER.quit()
+        except Exception:
+            pass
+        _READER = None
+        _sweep_reader_chrome()
+        return None, '无头阅读器调用失败，残留实例已清扫，请重试'
+    finally:
+        _READER_LOCK.release()
+
+
+def reader_read(url, *, timeout=30, max_chars=10000, data_dir=None):
+    """打开页面取 document.title + body.innerText；短文本时再等一轮（SPA 首帧常为空壳）。"""
+    if not reader_available():
+        return dict(status='unavailable', note='本机缺少 Chrome 或 DrissionPage，无头兜底不可用')
+
+    def run(browser):
+        tab = browser.new_tab()
+        try:
+            tab.get(url, timeout=timeout)
+            payload = tab.run_js(READER_READ_JS, max_chars) or {}
+            if not isinstance(payload, dict):
+                payload = {}
+            if len(str(payload.get('text') or '')) < 200:
+                time.sleep(1.5)
+                payload = tab.run_js(READER_READ_JS, max_chars) or payload
+            text = str(payload.get('text') or '')
+            return dict(status='completed', url=url, title=str(payload.get('title') or '')[:200],
+                        text=text, truncated=len(text) >= max_chars, engine='browser')
+        finally:
+            try:
+                tab.close()
+            except Exception:
+                pass
+
+    outcome, note = _reader_call(data_dir, run)
+    if outcome is None:
+        return dict(status='failed', note=note)
+    return outcome
+
+
+def reader_search(query, *, count=10, data_dir=None):
+    """无头浏览器里过 Bing 搜索页抽结果；http 直连搜索被拦时的兜底。返回结果列表（可为空）。
+    只支持 Bing：无头开 Baidu 会撞「百度安全验证」（2026-11-21 实测），不走该通路。"""
+    if not reader_available():
+        return []
+    url = 'https://cn.bing.com/search?' + urlencode({'q': query, 'count': str(max(count, 15)), 'mkt': 'zh-CN', 'setlang': 'zh-hans'})
+
+    def run(browser):
+        tab = browser.new_tab()
+        try:
+            tab.get(url, timeout=30)
+            time.sleep(1.2)
+            items = tab.run_js(READER_SEARCH_JS)
+            return items if isinstance(items, list) else []
+        finally:
+            try:
+                tab.close()
+            except Exception:
+                pass
+
+    outcome, _note = _reader_call(data_dir, run)
+    return outcome or []

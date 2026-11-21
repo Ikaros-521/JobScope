@@ -5,6 +5,7 @@ const toolNames: Record<string, string> = {
   index_sync: '同步资料索引', query_plan: '理解问题与范围', hybrid_search: '检索证据', supplemental_search: '补充检索',
   salary_query: '查询全部符合条件的岗位', answer: '生成并校验回答', agent_model: '模型思考 / 选择工具',
   project_search: '检索项目资料', project_read: '读取证据正文', project_salary: '查询全库岗位薪资',
+  web_search: '全网搜索', web_read: '网页阅读',
   resume_read: '读取已确认简历事实', skill_read: '加载 Skill 指令', skill_resource: '读取 Skill 资源',
   tool_approval: '等待工具确认', tool_denied: '用户拒绝调用', tool_error: '工具调用失败',
   model_retry: '模型响应异常，已自动重试', loop_warning: '重复调用告警',

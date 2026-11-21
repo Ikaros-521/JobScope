@@ -14,3 +14,5 @@ jsonschema>=4.20,<5
 colorlog>=6.8,<7
 # 真实 Chrome 持久会话及响应监听（采集/公司资料核心依赖）。
 DrissionPage==4.1.1.4
+# 联网研究原语（web_search/web_read）的搜索页与正文解析。
+beautifulsoup4>=4.12,<5
