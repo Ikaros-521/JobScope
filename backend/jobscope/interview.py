@@ -373,14 +373,6 @@ def assemble_material(job, resume, report=None, company_brief=''):
     )
 
 
-class QuestionReview(BaseModel):
-    model_config = ConfigDict(extra='forbid', strict=True)
-    critique: str = Field(min_length=1, max_length=2000)
-    missing: list[str] = Field(default_factory=list, max_length=6)
-    model_answer: str = Field(min_length=1, max_length=3000)
-    bad_answer_note: str = Field(min_length=1, max_length=1000)
-
-
 class DimensionScore(BaseModel):
     model_config = ConfigDict(extra='forbid', strict=True)
     name: str = Field(min_length=1, max_length=30)
@@ -404,6 +396,24 @@ def get_config():
     return get_purpose_config('analysis')
 
 
+def _coerce_review(raw):
+    """逐题点评软校验（同 _coerce_summary 的教训）：missing 多几条/字段超长截断保住点评，
+    模型几千 token 的好点评不该为 9>6 条缺失要素整条作废换占位。critique 真缺失才落占位。"""
+    if not isinstance(raw, dict):
+        raise ValueError('点评不是 JSON 对象')
+
+    def _text(value, limit):
+        return str(value or '').strip()[:limit]
+
+    critique = _text(raw.get('critique'), 2000)
+    if not critique:
+        raise ValueError('critique 缺失')
+    missing = [text for text in (_text(item, 40) for item in raw.get('missing') or []) if text][:6]
+    return dict(critique=critique, missing=missing,
+                model_answer=_text(raw.get('model_answer'), 3000),
+                bad_answer_note=_text(raw.get('bad_answer_note'), 1000))
+
+
 def review_segment(persona, segment):
     """阶段1单题：一个题单片段（题目+回答+追问过程）→ 逐题点评。"""
     from .model_transport import complete
@@ -414,8 +424,8 @@ def review_segment(persona, segment):
     content, _ = complete(get_config(), REVIEW_SYSTEM, json.dumps(payload, ensure_ascii=False),
                           temperature=.3, max_tokens=REVIEW_MAX_TOKENS, timeout=300)
     try:
-        return QuestionReview.model_validate(_parse_json(content)).model_dump()
-    except (json.JSONDecodeError, ValidationError) as exc:
+        return _coerce_review(_parse_json(content))
+    except (json.JSONDecodeError, ValueError) as exc:
         logger.warning('逐题点评返回无效（%s…）：%s', segment['question'].get('topic', '')[:20], exc)
         return dict(critique='本条点评生成失败，跳过。', missing=[], model_answer='', bad_answer_note='')
 

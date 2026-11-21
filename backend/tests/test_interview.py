@@ -431,3 +431,27 @@ def test_report_emits_progress_events(client, monkeypatch):
     assert all(item['total'] == 2 for item in reviews)
     assert all(item.get('topic') == '项目深挖' for item in reviews)
     assert progress[-1]['stage'] == 'summary'
+
+
+def test_review_coerces_oversized_missing(client, monkeypatch):
+    """回归（线上 2026-11-21）：逐题点评给了 9 条 missing（上限 6）被整条作废换占位——
+    模型几千 token 的点评不该为条数截掉；软校验截到 6 保住内容。"""
+    session_id = _session_with_two_segments(client, monkeypatch)
+
+    def fake_complete(config, system, user, **kwargs):
+        if 'evaluation_gaps' in user:
+            payload = _summary_payload()
+        else:
+            payload = dict(critique='真点评：讲得太浅。', missing=[f'缺要素{i}' for i in range(9)],
+                           model_answer='高分示范。', bad_answer_note='别讲故事。')
+        return json.dumps(payload, ensure_ascii=False), {}
+
+    monkeypatch.setattr('jobscope.model_transport.complete', fake_complete)
+    finished = client.post(f"/api/interview/sessions/{session_id}/finish", json={})
+    join_run(client, finished.json()['run_id'])
+    session = client.get(f"/api/interview/sessions/{session_id}").json()['session']
+    assert session['status'] == 'done'
+    for question in session['report']['questions']:
+        assert question['critique'].startswith('真点评')  # 真点评保住，不是「生成失败，跳过」占位
+        assert len(question['missing']) == 6  # 截到上限
+        assert question['model_answer'] == '高分示范。'
