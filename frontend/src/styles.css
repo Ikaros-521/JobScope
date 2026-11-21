@@ -679,6 +679,16 @@ button.today-stat { cursor: pointer; text-align: left; }
 .citation summary { font-size: 12px; color: var(--green); cursor: pointer; }
 .citation p { font-size: 13px; color: #525252; padding: 12px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .citation a { font-size: 12px; }
+/* 参考数据整组折叠：条数多时收进一张大卡（样式对齐压缩摘要卡），避免整页被单条卡刷屏。 */
+.citation-group { border: 1px dashed #c9cdc9; border-radius: 10px; background: #f7f8f7; padding: 6px 12px; margin-top: 12px; text-align: left; }
+.citation-group > summary { cursor: pointer; display: flex; align-items: center; gap: 10px; padding: 5px 0; list-style: none; }
+.citation-group > summary::-webkit-details-marker { display: none; }
+.citation-group > summary::before { content: "▸"; font-size: 11px; color: var(--muted); transition: transform .15s ease; }
+.citation-group[open] > summary::before { transform: rotate(90deg); }
+.citation-group[open] > summary { border-bottom: 1px dashed var(--line); }
+.citation-group-pill { font-size: 12px; font-weight: 600; color: #446c58; background: #e5ede8; border-radius: 999px; padding: 3px 12px; }
+.citation-group-meta { font-size: 12px; color: var(--muted); }
+.citation-group .citation { margin-top: 10px; }
 .evidence-card { border: 1px solid var(--line); border-radius: 8px; margin: 12px 0; overflow: hidden; }
 .evidence-card summary { display: flex; align-items: center; gap: 12px; padding: 16px; list-style: none; cursor: pointer; }
 .evidence-card summary::-webkit-details-marker { display: none; }
