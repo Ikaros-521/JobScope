@@ -275,7 +275,9 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
           streamAnswer={stream?.answer ?? ''} busy={busy} answer={answer} onAnswer={setAnswer}
           onSend={() => void send()} onFinish={() => void finish()} onStop={() => void stop()} threadRef={threadRef}
           reportProgress={runProgress} />
-        : <ReportPanel report={report ?? null} persona={session.persona} />}
+        : <>{session.status === 'reporting' && <ReportStatusLine progress={runProgress} />}
+          <ReportPanel report={report ?? null} persona={session.persona}
+            onRegenerate={() => void finish()} busy={busy} /></>}
       </>}
     </div>
   </div>
@@ -411,6 +413,16 @@ function JobPicker({ value, label, onSelect }: { value: string; label: string; o
   </div>
 }
 
+// 复盘进度行：首次生成与「重新生成」共用（SSE progress 实时刷新）。
+function ReportStatusLine({ progress }: { progress: RunProgress }) {
+  return <div className="iv-state">
+    {progress?.stage === 'summary' ? <>逐题点评完成，正在汇总维度与高危清单…</>
+      : progress ? <>逐题点评 {progress.done}/{progress.total}{progress.topic ? ` · ${progress.topic}` : ''}…</>
+      : <>复盘生成中：逐题点评（含好差答案对比）→ 汇总维度与高危清单…</>}
+    <span className="spinner" />
+  </div>
+}
+
 // 出题等待区（2026-11-20）：点「开始出题」立刻跳进来接管主区——材料清单 + 真实计时，
 // 表单不再原地干等。计时锚在场次 created_at 上，切场次再回来不归零。
 function PlanningWait({ session }: { session: InterviewSession }) {
@@ -465,12 +477,7 @@ function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer
     </div>
     {session.status === 'planning' && <PlanningWait session={session} />}
     {session.status === 'failed' && <div className="iv-state">出题失败，删除本场后重新开一场即可。</div>}
-    {session.status === 'reporting' && <div className="iv-state">
-      {reportProgress?.stage === 'summary' ? <>逐题点评完成，正在汇总维度与高危清单…</>
-        : reportProgress ? <>逐题点评 {reportProgress.done}/{reportProgress.total}{reportProgress.topic ? ` · ${reportProgress.topic}` : ''}…</>
-        : <>复盘生成中：逐题点评（含好差答案对比）→ 汇总维度与高危清单…</>}
-      <span className="spinner" />
-    </div>}
+    {session.status === 'reporting' && <ReportStatusLine progress={reportProgress} />}
     <div className="interview-thread" ref={threadRef}>
       {ready && plan && <div className="iv-plan">
         <p className="iv-plan-opening">{plan.opening}</p>
@@ -508,11 +515,16 @@ function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer
   </div>
 }
 
-function ReportPanel({ report, persona }: { report: InterviewSession['report']; persona: InterviewSession['persona'] }) {
+function ReportPanel({ report, persona, onRegenerate, busy }: {
+  report: InterviewSession['report']; persona: InterviewSession['persona']
+  onRegenerate: () => void; busy: boolean
+}) {
   if (!report) return <div className="iv-state">复盘还没有生成。回面试间点「结束并生成复盘」。</div>
   return <div className="interview-report">
     <section className="paper-panel">
-      <div className="section-heading"><h2>本场总评</h2><span className="tiny-label">{persona.name} · {persona.round_label} · 复盘了 {report.reviewed ?? report.questions.length} 题</span></div>
+      <div className="section-heading"><h2>本场总评</h2><span className="tiny-label">{persona.name} · {persona.round_label} · 复盘了 {report.reviewed ?? report.questions.length} 题</span>
+        <button className="button secondary small iv-regen" disabled={busy} onClick={onRegenerate} title="对同一批问答重新跑逐题点评与汇总，覆盖当前报告"><Icon name="source" size={14} />重新生成</button>
+      </div>
       <p className="iv-summary">{report.summary}</p>
       <div className="iv-dimensions">
         {report.dimensions.map(item => <div key={item.name} className="iv-dimension">

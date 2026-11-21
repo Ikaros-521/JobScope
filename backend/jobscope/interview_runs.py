@@ -271,6 +271,8 @@ class InterviewManager:
 
     def _report_execute(self, handle, session):
         started = time.time()
+        # 失败回滚目标：带旧报告的重生成回 done（面试已结束不重开），首生成分回 live。
+        restore = 'done' if session.get('report') else 'live'
         try:
             segments = [seg for seg in session['progress'].get('segments', []) if seg.get('reviewable') and seg.get('answers')]
             if not segments:
@@ -286,18 +288,18 @@ class InterviewManager:
             logger.info('模拟面试复盘完成 session=%s 题数=%s 用时=%.0fs', session['id'], len(segments), time.time() - started)
             handle.push('done', dict(kind='report', session=session))
         except RunCancelled:
-            session['status'] = 'live'
+            session['status'] = restore
             self.repo.save_interview_session(session)
             handle.push('cancelled', dict(run_id=handle.id))
         except ValueError as exc:
-            session['status'] = 'live'
+            session['status'] = restore
             self.repo.save_interview_session(session)
             logger.warning('模拟面试复盘失败 session=%s：%s', session['id'], exc)
             handle.error = str(exc)
             handle.push('error', dict(message=str(exc)))
         except Exception:
             logger.exception('模拟面试复盘异常 session=%s', session['id'])
-            session['status'] = 'live'
+            session['status'] = restore
             self.repo.save_interview_session(session)
             handle.error = '复盘生成失败，请稍后重试'
             handle.push('error', dict(message=handle.error))

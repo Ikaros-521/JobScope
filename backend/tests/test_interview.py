@@ -164,6 +164,46 @@ def test_finish_generates_report(client, monkeypatch):
     assert again.status_code == 409
 
 
+def test_regenerate_report_on_done_session(client, monkeypatch):
+    """复盘支持重新生成：done 场次再 finish 从既有片段重跑；失败回滚到 done（不重开面试）、旧报告保留。"""
+    data = create_session(client, monkeypatch)
+    patch_stream(monkeypatch, [dict(content='讲讲你的项目。', advance=advance_args('next', 0))])
+    opened = client.post(f"/api/interview/sessions/{data['session_id']}/runs", json=dict(answer=''))
+    join_run(client, opened.json()['run_id'])
+    turn = client.post(f"/api/interview/sessions/{data['session_id']}/runs", json=dict(answer='我做过会员项目，提升了 12%'))
+    join_run(client, turn.json()['run_id'])
+    patch_report(monkeypatch)
+    first = client.post(f"/api/interview/sessions/{data['session_id']}/finish", json={})
+    join_run(client, first.json()['run_id'])
+    session = client.get(f"/api/interview/sessions/{data['session_id']}").json()['session']
+    assert session['status'] == 'done'
+
+    # 重新生成：换一版报告内容
+    monkeypatch.setattr('jobscope.interview_runs.generate_report', lambda persona, segments, material, should_stop=None, on_progress=None: dict(
+        summary='总评（重跑版）：更好了。', dimensions=[dict(name='数据与量化', score=4, comment='这次有数据')],
+        risk_list=['继续补实验设计'], actions=['再改一版'],
+        questions=[dict(topic=seg['question'].get('topic', ''), question=seg['question'].get('question', ''),
+                        critique='重跑点评。', missing=[], model_answer='新版示范。', bad_answer_note='新坑。')
+                   for seg in segments]))
+    second = client.post(f"/api/interview/sessions/{data['session_id']}/finish", json={})
+    assert second.status_code == 200, second.text
+    join_run(client, second.json()['run_id'])
+    session = client.get(f"/api/interview/sessions/{data['session_id']}").json()['session']
+    assert session['status'] == 'done'
+    assert session['report']['summary'].startswith('总评（重跑版）')
+
+    # 重生成失败：回滚到 done（面试不重开），旧报告原样保留
+    def boom(*args, **kwargs):
+        raise ValueError('模型抽风')
+    monkeypatch.setattr('jobscope.interview_runs.generate_report', boom)
+    third = client.post(f"/api/interview/sessions/{data['session_id']}/finish", json={})
+    assert third.status_code == 200
+    join_run(client, third.json()['run_id'])
+    session = client.get(f"/api/interview/sessions/{data['session_id']}").json()['session']
+    assert session['status'] == 'done'  # 不是 live
+    assert session['report']['summary'].startswith('总评（重跑版）')
+
+
 def test_free_practice_without_job_or_jd(client, monkeypatch):
     data = create_session(client, monkeypatch)
     session = client.get(f"/api/interview/sessions/{data['session_id']}").json()['session']

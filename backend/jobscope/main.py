@@ -1312,7 +1312,8 @@ def create_app(data_dir=None):
     @app.post('/api/interview/sessions/{session_id}/finish')
     def finish_interview_session(session_id: str = PathParam(max_length=100)):
         session = get_session_or_404(session_id)
-        if session['status'] not in ('ready', 'live'):
+        # done 也放行：从既有片段重跑复盘（重新生成）。占位点评/弱总评不满意时无需重开一场。
+        if session['status'] not in ('ready', 'live', 'done'):
             raise HTTPException(409, '当前状态不能生成复盘（出题中或已在复盘）')
         handle = interview_runs.start_report(session)
         return dict(run_id=handle.id)
