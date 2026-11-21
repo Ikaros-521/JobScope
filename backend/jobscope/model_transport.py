@@ -14,6 +14,19 @@ def _log_call(config, purpose, max_tokens):
                  endpoint(config['url'], config.get('protocol', 'openai')), max_tokens)
 
 
+def output_budget(config, default):
+    """单次调用输出上限：渠道级用户自定义（max_output_tokens）优先，未设用调用点语义默认。
+
+    现代模型上下文普遍 1M、输出可达 64K-128K，硬编码小上限会截断长产出（JSON 断半路）。
+    用户在设置中心渠道上按所配模型的真实输出上限填写即可全局生效。
+    """
+    value = config.get('max_output_tokens')
+    try:
+        return int(value) if value else default
+    except (TypeError, ValueError):
+        return default
+
+
 def _log_usage(purpose, usage):
     """每次模型调用的 token 用量（INFO：输出额度排障要看得见）。兼容 OpenAI/Anthropic 字段名。"""
     if not usage:
@@ -152,10 +165,13 @@ def complete(config, system, user, *, max_tokens=1800, temperature=None, timeout
             content = data['choices'][0]['message']['content']
     except (KeyError, IndexError, TypeError):
         raise ValueError('模型返回结构无效') from None
+    truncated = data.get('stop_reason') == 'max_tokens' if protocol == 'anthropic' else (data.get('choices') or [{}])[0].get('finish_reason') in ('length', 'max_tokens')
+    if truncated:
+        # 截断一律可见：非空半截内容（如断在半路的 JSON）也打 WARNING——上层重试/软校验兜底，
+        # 但排障时必须一眼看到「输出=上限」的实锤（2026-11-21 线上就是静默半截 JSON）。
+        logger.warning('模型输出触达单次上限[complete] max_tokens=%s usage=%s（内容非空属截断半成品）', max_tokens, data.get('usage'))
     if not isinstance(content, str) or not content.strip():
-        truncated = data.get('stop_reason') == 'max_tokens' if protocol == 'anthropic' else data['choices'][0].get('finish_reason') == 'length'
         if truncated:
-            logger.warning('模型输出触达单次上限[complete] max_tokens=%s usage=%s', max_tokens, data.get('usage'))
             raise OutputLimitError('模型输出触达单次上限（max_tokens），未生成完整回答；与账户余额无关，可重试一次。')
         raise ValueError('模型返回格式无效')
     _log_usage('complete', data.get('usage') or {})
@@ -168,7 +184,7 @@ def tool_turn(config, messages, tools, *, timeout=60):
     _log_call(config, 'agent_turn', 4096)
     import json
     protocol = config.get('protocol', 'openai')
-    body = dict(model=config['model'], max_tokens=4096)
+    body = dict(model=config['model'], max_tokens=output_budget(config, 8000))
     if protocol == 'anthropic':
         body['system'] = '\n'.join(m['content'] for m in messages if m['role'] == 'system')
         converted = []
@@ -225,11 +241,12 @@ def tool_turn(config, messages, tools, *, timeout=60):
         raise ValueError('Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。') from None
 
 
-def _turn_body(config, messages, tools, *, stream):
+def _turn_body(config, messages, tools, *, stream, max_tokens=None):
     """Shared request body for tool turns. OpenAI messages in/out; Anthropic gets native blocks."""
     import json
     protocol = config.get('protocol', 'openai')
-    body = dict(model=config['model'], max_tokens=4096, stream=bool(stream))
+    budget = output_budget(config, 8000) if max_tokens is None else max_tokens
+    body = dict(model=config['model'], max_tokens=budget, stream=bool(stream))
     if protocol == 'anthropic':
         body['system'] = '\n'.join(m['content'] for m in messages if m['role'] == 'system')
         converted = []
@@ -284,7 +301,7 @@ def _sse_payloads(response):
             yield payload
 
 
-def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, should_stop=None, timeout=60, register_abort=None):
+def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, should_stop=None, timeout=60, register_abort=None, max_tokens=None):
     """Streaming tool_turn: content and reasoning deltas go to the callbacks as they arrive.
 
     Returns (assistant_message, usage, reasoning) with the same message shape as tool_turn.
@@ -298,7 +315,7 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, sh
     from .chat import validate_model_url
     import json
     protocol = config.get('protocol', 'openai')
-    body = _turn_body(config, messages, tools, stream=True)
+    body = _turn_body(config, messages, tools, stream=True, max_tokens=max_tokens)
     _log_call(config, 'agent_stream', 4096)
     text, reasoning, usage = '', '', {}
     calls, openai_calls = [], {}

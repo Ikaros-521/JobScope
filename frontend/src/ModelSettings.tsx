@@ -5,10 +5,10 @@ import { toast } from './toast'
 import { navigateTabs } from './tabNavigation'
 
 type Protocol = 'openai' | 'anthropic'
-type Draft = { id?: string; name: string; channel: string; protocol: Protocol; url: string; model: string; modelsText: string; embeddingsText: string; key: string; clear_key: boolean; context_tokens: number | '' }
+type Draft = { id?: string; name: string; channel: string; protocol: Protocol; url: string; model: string; modelsText: string; embeddingsText: string; key: string; clear_key: boolean; context_tokens: number | ''; max_output_tokens: number | '' }
 type BindingDraft = { kind: 'channel'; channel_id: string; model: string } | { kind: 'local'; local_model: string } | { kind: 'disabled' } | { kind: 'inherit' }
 type EditorAction = 'test' | 'test-embedding' | 'discover'
-const emptyDraft: Draft = { name: '', channel: 'custom', protocol: 'openai', url: '', model: '', modelsText: '', embeddingsText: '', key: '', clear_key: false, context_tokens: '' }
+const emptyDraft: Draft = { name: '', channel: 'custom', protocol: 'openai', url: '', model: '', modelsText: '', embeddingsText: '', key: '', clear_key: false, context_tokens: '', max_output_tokens: '' }
 
 const PURPOSE_META: Record<ModelPurpose, { label: string; description: string; allow: ('inherit' | 'channel' | 'local' | 'disabled')[] }> = {
   agent: { label: '对话 Agent', description: '岗位 / 公司 / 全局对话与上下文压缩使用的默认模型', allow: ['channel'] },
@@ -83,7 +83,7 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
 
   function edit(value: LlmChannel) {
     setSelectedId(value.id)
-    setDraft({ id: value.id, name: value.name, channel: value.channel, protocol: value.protocol, url: value.url, model: value.model, modelsText: value.models.join('\n'), embeddingsText: (value.embeddings ?? []).join('\n'), key: '', clear_key: false, context_tokens: value.context_tokens ?? '' })
+    setDraft({ id: value.id, name: value.name, channel: value.channel, protocol: value.protocol, url: value.url, model: value.model, modelsText: value.models.join('\n'), embeddingsText: (value.embeddings ?? []).join('\n'), key: '', clear_key: false, context_tokens: value.context_tokens ?? '', max_output_tokens: value.max_output_tokens ?? '' })
     setLists(value.models.length ? { models: value.models, source: 'saved' } : null)
     setModelQuery(''); setShowKey(false); setFormError(''); setConfirmId(''); setFormDirty(false); setActiveStep(1)
   }
@@ -101,7 +101,7 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
     const item = catalog.find(entry => entry.id === id)
     if (!item || !draft) return
     const previous = catalog.find(entry => entry.id === draft.channel)
-    update({ channel: id, key: '', clear_key: false, name: !draft.name || draft.name === previous?.name ? item.name : draft.name, protocol: item.protocol, url: item.url, model: '', context_tokens: '', modelsText: item.models.join('\n'), embeddingsText: (item.embeddings ?? []).join('\n') })
+    update({ channel: id, key: '', clear_key: false, name: !draft.name || draft.name === previous?.name ? item.name : draft.name, protocol: item.protocol, url: item.url, model: '', context_tokens: '', max_output_tokens: '', modelsText: item.models.join('\n'), embeddingsText: (item.embeddings ?? []).join('\n') })
     setLists(null); setModelQuery(''); setShowKey(false)
   }
 
@@ -111,7 +111,7 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
 
   function draftPayload() {
     if (!draft) return null
-    return { mode: 'remote' as const, channel: draft.channel, protocol: draft.protocol, url: draft.url.trim(), model: draft.model.trim(), key: draft.key.trim(), clear_key: draft.clear_key, context_tokens: draft.context_tokens === '' ? null : draft.context_tokens }
+    return { mode: 'remote' as const, channel: draft.channel, protocol: draft.protocol, url: draft.url.trim(), model: draft.model.trim(), key: draft.key.trim(), clear_key: draft.clear_key, context_tokens: draft.context_tokens === '' ? null : draft.context_tokens, max_output_tokens: draft.max_output_tokens === '' ? null : draft.max_output_tokens }
   }
 
   const savedChannel = channelById(draft?.id)
@@ -185,10 +185,15 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
       document.getElementById('channel-context')?.focus()
       return
     }
+    if (draft.max_output_tokens !== '' && (!Number.isInteger(draft.max_output_tokens) || draft.max_output_tokens < 1000 || draft.max_output_tokens > 262144)) {
+      setFormError('最大输出请输入 1,000 至 262,144 之间的整数。')
+      document.getElementById('channel-maxout')?.focus()
+      return
+    }
     inFlight.current = true
     setBusy('save')
     try {
-      const payload: LlmChannelDraft = { id: draft.id, name: draft.name.trim(), channel: draft.channel, protocol: draft.protocol, url: draft.url.trim(), model: draft.model.trim(), models: splitModels([draft.model.trim(), draft.modelsText].filter(Boolean).join('\n')), embeddings: splitModels(draft.embeddingsText), key: draft.key.trim(), clear_key: draft.clear_key, context_tokens: draft.context_tokens === '' ? null : draft.context_tokens }
+      const payload: LlmChannelDraft = { id: draft.id, name: draft.name.trim(), channel: draft.channel, protocol: draft.protocol, url: draft.url.trim(), model: draft.model.trim(), models: splitModels([draft.model.trim(), draft.modelsText].filter(Boolean).join('\n')), embeddings: splitModels(draft.embeddingsText), key: draft.key.trim(), clear_key: draft.clear_key, context_tokens: draft.context_tokens === '' ? null : draft.context_tokens, max_output_tokens: draft.max_output_tokens === '' ? null : draft.max_output_tokens }
       const result = await saveLlmChannel(payload)
       setChannels(result.channels)
       await refreshBindings()
@@ -332,8 +337,9 @@ export function ModelSettings({ onSaved }: { onSaved: () => Promise<void> }) {
                 <div className="channel-grid">
                   <div><label className="field-label" htmlFor="channel-model">默认模型 ID</label><input id="channel-model" value={draft.model} onChange={event => chooseModel(event.target.value)} placeholder="点击上方模型，或直接粘贴 ID" maxLength={300} autoComplete="off" spellCheck={false} /></div>
                   <div><label className="field-label" htmlFor="channel-context">上下文窗口 <span className="muted">tokens</span></label><input id="channel-context" type="number" min={4000} max={2000000} step={1} aria-describedby="channel-context-help" aria-invalid={Boolean(formError)} value={draft.context_tokens} onChange={event => update({ context_tokens: event.target.value === '' ? '' : Number(event.target.value) })} placeholder="未填写时按 128,000 估算" /></div>
+                  <div><label className="field-label" htmlFor="channel-maxout">最大输出 <span className="muted">tokens</span></label><input id="channel-maxout" type="number" min={1000} max={262144} step={1} aria-describedby="channel-context-help" value={draft.max_output_tokens} onChange={event => update({ max_output_tokens: event.target.value === '' ? '' : Number(event.target.value) })} placeholder="留空用各功能默认" /></div>
                 </div>
-                <p id="channel-context-help" className="field-help">上下文用于对话用量估算，不是单次输出上限；未填写时按 128,000 估算。</p>
+                <p id="channel-context-help" className="field-help">上下文用于对话用量估算；最大输出是单次回复 token 上限（按所配模型的真实输出能力填，如 8K/64K/128K），留空用各功能默认。超上限产出会被截断，日志可见「触达单次上限」。</p>
                 <details className="channel-help-fold">
                   <summary>什么是上下文窗口 · 模型清单说明</summary>
                   <div className="channel-help-body">

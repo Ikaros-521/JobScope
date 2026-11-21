@@ -13,6 +13,7 @@ import uuid
 
 from .chat_runs import RunHandle, sse_frame
 from .interview import ADVANCE_TOOL, build_interviewer_system, build_persona, build_question_plan, generate_report
+from .model_transport import output_budget
 from .repository import now
 from .semantic import RunCancelled
 from .model_transport import stream_turn
@@ -168,14 +169,16 @@ class InterviewManager:
             if not messages[-1]['role'] == 'user':
                 # 开场轮：对话历史为空，给一句只有本轮可见的触发语，不落库。
                 messages.append(dict(role='user', content='（候选人已就座，请开始面试）'))
-            from .interview import get_config
+            from .interview import TURN_MAX_TOKENS, get_config
             # 同出题：线程级配置必须显式挂到当前 worker（含「分析」绑定与对话模型回落）。
             with use_config(ModelSettings(self.repo).effective()):
+                config = get_config()
                 assistant, _usage, reasoning = stream_turn(
-                    get_config(), messages, [ADVANCE_TOOL],
+                    config, messages, [ADVANCE_TOOL],
                     on_delta=lambda piece: handle.push('delta', dict(text=piece)),
                     on_reasoning=lambda piece: handle.push('reasoning_delta', dict(text=piece)),
-                    should_stop=handle.cancel.is_set, register_abort=handle.add_abort, timeout=120)
+                    should_stop=handle.cancel.is_set, register_abort=handle.add_abort, timeout=120,
+                    max_tokens=output_budget(config, TURN_MAX_TOKENS))
             verdict = self._apply_verdict(session, assistant)
             entry = dict(role='assistant', content=assistant.get('content') or '')
             if reasoning:

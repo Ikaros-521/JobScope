@@ -79,13 +79,13 @@ export type ChatRunStart = { run_id: string; conversation_id: string; user_messa
 export type AnalyzeRunStart = { run_id: string; reused: boolean; report?: Analysis }
 export type ReportSummary = { id: string; created_at: string; method: string; score: number | null }
 export type JobReports = { reports: ReportSummary[]; latest: Analysis | null }
-export type ModelProvider = { mode: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model: string; key_set: boolean; source: string; context_tokens?: number | null; saved_channel_id?: string }
+export type ModelProvider = { mode: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model: string; key_set: boolean; source: string; context_tokens?: number | null; max_output_tokens?: number | null; saved_channel_id?: string }
 export type Channel = { id: string; name: string; url: string; protocol: 'openai' | 'anthropic'; models: string[]; embeddings: string[] | null; note?: string }
 export type ModelMetadata = { context_tokens: number; source: string; checked_at: string }
 // 已保存的对话渠道：每条自带地址/密钥/默认模型/模型列表，可激活为全局默认
 export type ChannelTestRecord = { target: 'llm' | 'embedding'; model: string; ok: boolean; duration_ms: number; at: string }
-export type LlmChannel = { id: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models: string[]; embeddings?: string[]; context_tokens: number | null; key_set: boolean; last_test?: ChannelTestRecord | null }
-export type LlmChannelDraft = { id?: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models?: string[]; embeddings?: string[]; key?: string; clear_key?: boolean; context_tokens?: number | null }
+export type LlmChannel = { id: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models: string[]; embeddings?: string[]; context_tokens: number | null; max_output_tokens?: number | null; key_set: boolean; last_test?: ChannelTestRecord | null }
+export type LlmChannelDraft = { id?: string; name: string; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; models?: string[]; embeddings?: string[]; key?: string; clear_key?: boolean; context_tokens?: number | null; max_output_tokens?: number | null }
 // 已保存渠道的测试/拉列表：带上 channel_id，后端才能用该渠道已保存的密钥而不是全局配置。
 export type ModelConnectionInput = { target: 'llm' | 'embedding'; channel_id?: string; config: { mode: 'disabled' | 'remote' | 'local'; channel: string; protocol: 'openai' | 'anthropic'; url: string; model: string; local_model?: string; key?: string; clear_key?: boolean; context_tokens?: number | null } }
 export type RunEvent = { event: string; data: Record<string, unknown> }

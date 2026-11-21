@@ -74,6 +74,7 @@ class LlmChannelInput(BaseModel):
     key: str = Field(default='', max_length=4000)
     clear_key: bool = False
     context_tokens: int | None = Field(default=None, ge=4000, le=2_000_000)
+    max_output_tokens: int | None = Field(default=None, ge=1000, le=262144)
 
 
 def environment():
@@ -179,6 +180,7 @@ class ModelSettings:
             return dict(mode='remote', channel=payload.get('channel', 'custom'), protocol=protocol, url=url,
                         model=binding.get('model') or payload.get('model', ''), key=payload.get('key', ''),
                         local_model='', context_tokens=payload.get('context_tokens'),
+                        max_output_tokens=payload.get('max_output_tokens'),
                         saved_channel_id=payload['id'], source='binding')
 
         agent = resolve('agent')
@@ -436,7 +438,7 @@ class LlmChannelStore:
             embeddings = old.get('embeddings') or list(channel.get('embeddings') or [])[:200]
         payload = dict(id=channel_id, name=data.name.strip()[:100], channel=data.channel, protocol=data.protocol,
                        url=url, model=data.model.strip()[:300], models=models, embeddings=embeddings,
-                       context_tokens=data.context_tokens,
+                       context_tokens=data.context_tokens, max_output_tokens=data.max_output_tokens,
                        created_at=old.get('created_at') or now(), updated_at=now())
         if data.clear_key:
             payload['key'] = ''

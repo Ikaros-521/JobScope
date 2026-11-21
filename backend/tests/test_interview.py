@@ -47,7 +47,7 @@ def patch_stream(monkeypatch, answers):
     """按次序回放面试官轮次：content + advance 调度。"""
     calls = {'n': 0}
 
-    def fake_stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, should_stop=None, register_abort=None, timeout=60):
+    def fake_stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, should_stop=None, register_abort=None, timeout=60, max_tokens=None):
         reply = answers[min(calls['n'], len(answers) - 1)]
         calls['n'] += 1
         if on_delta:
@@ -544,3 +544,26 @@ def test_plan_retries_invalid_json_once(client, monkeypatch):
     session = client.get(f"/api/interview/sessions/{response.json()['session_id']}").json()['session']
     assert session['status'] == 'ready'
     assert calls['n'] == 2
+
+
+def test_interview_respects_channel_output_budget(client, monkeypatch):
+    """渠道级 max_output_tokens 用户自定义优先于调用点默认：超限问题用户自己可调，不被硬编码卡死。"""
+    monkeypatch.delenv("JOBSCOPE_LLM_URL", raising=False)
+    channel = client.post('/api/settings/llm-channels', json=dict(
+        name='预算渠道', channel='custom', protocol='openai', url='https://budget.example/v1',
+        model='budget-model', key='sk-x', max_output_tokens=5000)).json()['channel']
+    assert channel['max_output_tokens'] == 5000
+    assert client.put('/api/settings/bindings', json=dict(
+        purpose='analysis', kind='channel', channel_id=channel['id'], model='budget-model')).status_code == 200
+    budgets = []
+
+    def fake_complete(config, system, user, **kwargs):
+        budgets.append(kwargs.get('max_tokens'))
+        return json.dumps(fake_plan(), ensure_ascii=False), {}
+
+    monkeypatch.setattr('jobscope.model_transport.complete', fake_complete)
+    response = client.post('/api/interview/sessions', json=dict(persona_id='product'))
+    join_run(client, response.json()['run_id'])
+    session = client.get(f"/api/interview/sessions/{response.json()['session_id']}").json()['session']
+    assert session['status'] == 'ready'
+    assert budgets == [5000]  # 渠道自定义生效，而非默认 PLAN_MAX_TOKENS=32000

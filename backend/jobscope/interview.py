@@ -15,16 +15,18 @@ from concurrent.futures import ThreadPoolExecutor
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from .model_transport import output_budget
 from .settings import get_active_configs, use_config
 
 logger = logging.getLogger(__name__)
 
 # 面试官每轮回复的输出预算：思考 token 与输出共用（GLM 语义），低于 2000 会被思考吃穿。
-# REVIEW 4000 实测不够用（2026-11-21 线上：输出=4000 精确触顶 → JSON 截断「Unterminated string」）。
-TURN_MAX_TOKENS = 8000
-PLAN_MAX_TOKENS = 16000
-REVIEW_MAX_TOKENS = 12000
-SUMMARY_MAX_TOKENS = 10000
+# 渠道级 max_output_tokens（设置中心）优先于这些默认值——模型输出能力各异（8K~128K），
+# 用户可按所配模型自定义；默认值按现代模型给足（2026-11-21 前 4000 截断过点评 JSON）。
+TURN_MAX_TOKENS = 16000
+PLAN_MAX_TOKENS = 32000
+REVIEW_MAX_TOKENS = 16000
+SUMMARY_MAX_TOKENS = 12000
 
 # ---- 面试官画像：三层叠加（公司风格 × 岗位类型 × 轮次）编译成三段式人设 ----
 # 借鉴 WorkBuddy「专家」与 interview-skills 的公司画像思路，但内容由本仓库沉淀：
@@ -326,8 +328,9 @@ def build_question_plan(persona, material, *, question_count=8):
         company_brief=material.get('company_brief') or '',
     )
     for attempt in (1, 2):
-        content, _ = complete(get_config(), _PLAN_SYSTEM, json.dumps(payload, ensure_ascii=False),
-                              temperature=.3, max_tokens=PLAN_MAX_TOKENS, timeout=300)
+        config = get_config()
+        content, _ = complete(config, _PLAN_SYSTEM, json.dumps(payload, ensure_ascii=False),
+                              temperature=.3, max_tokens=output_budget(config, PLAN_MAX_TOKENS), timeout=300)
         try:
             plan = QuestionPlan.model_validate(_parse_json(content))
             break
@@ -432,8 +435,9 @@ def review_segment(persona, segment):
                    focus=segment['question'].get('focus', ''), followups=segment['question'].get('followups', []),
                    answers=segment['answers'], interviewer_notes=segment.get('notes', []))
     for attempt in (1, 2):
-        content, _ = complete(get_config(), REVIEW_SYSTEM, json.dumps(payload, ensure_ascii=False),
-                              temperature=.3, max_tokens=REVIEW_MAX_TOKENS, timeout=300)
+        config = get_config()
+        content, _ = complete(config, REVIEW_SYSTEM, json.dumps(payload, ensure_ascii=False),
+                              temperature=.3, max_tokens=output_budget(config, REVIEW_MAX_TOKENS), timeout=300)
         try:
             return _coerce_review(_parse_json(content))
         except (json.JSONDecodeError, ValueError) as exc:
@@ -526,7 +530,7 @@ def generate_report(persona, segments, material, should_stop=None, on_progress=N
     from .model_transport import complete
     for attempt in (1, 2):  # 软校验已兜住超长/多条；这里只剩真垃圾，自动重试一次再报错
         content, _ = complete(get_config(), _SUMMARY_SYSTEM, json.dumps(payload, ensure_ascii=False),
-                              temperature=.3, max_tokens=SUMMARY_MAX_TOKENS, timeout=300)
+                              temperature=.3, max_tokens=output_budget(get_config(), SUMMARY_MAX_TOKENS), timeout=300)
         try:
             summary = _coerce_summary(_parse_json(content))
             break
