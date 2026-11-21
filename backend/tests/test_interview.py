@@ -499,3 +499,48 @@ def test_review_coerces_oversized_missing(client, monkeypatch):
         assert question['critique'].startswith('真点评')  # 真点评保住，不是「生成失败，跳过」占位
         assert len(question['missing']) == 6  # 截到上限
         assert question['model_answer'] == '高分示范。'
+
+
+def test_review_retries_truncated_json_once(client, monkeypatch):
+    """回归（线上 2026-11-21）：输出=4000 精确触顶 → JSON 截断「Unterminated string」。
+    逐题点评截断/垃圾自动重试一次，两次都坏才落占位。"""
+    session_id = _session_with_two_segments(client, monkeypatch)
+    review_calls = {'n': 0}
+
+    def fake_complete(config, system, user, **kwargs):
+        if 'evaluation_gaps' in user:
+            payload = _summary_payload()
+        else:
+            review_calls['n'] += 1
+            if review_calls['n'] == 1:
+                return '{"critique": "截断在半路', {}  # 线上实录：max_tokens 截断的半截 JSON
+            payload = dict(critique='重试后的真点评。', missing=['量化数据'], model_answer='示范。', bad_answer_note='坑。')
+        return json.dumps(payload, ensure_ascii=False), {}
+
+    monkeypatch.setattr('jobscope.model_transport.complete', fake_complete)
+    finished = client.post(f"/api/interview/sessions/{session_id}/finish", json={})
+    join_run(client, finished.json()['run_id'])
+    session = client.get(f"/api/interview/sessions/{session_id}").json()['session']
+    assert session['status'] == 'done'
+    critiques = [question['critique'] for question in session['report']['questions']]
+    assert critiques == ['重试后的真点评。', '重试后的真点评。']  # 无一占位
+    assert review_calls['n'] == 3  # 2 题 + 1 次重试
+
+
+def test_plan_retries_invalid_json_once(client, monkeypatch):
+    """出题截断/垃圾自动重试一次：出题失败=整场判死，一次抽风不该让用户删场重开。"""
+    calls = {'n': 0}
+
+    def fake_complete(config, system, user, **kwargs):
+        calls['n'] += 1
+        if calls['n'] == 1:
+            return '{"opening": "截断', {}
+        return json.dumps(fake_plan(), ensure_ascii=False), {}
+
+    monkeypatch.setattr('jobscope.model_transport.complete', fake_complete)
+    response = client.post('/api/interview/sessions', json=dict(persona_id='product', company_style='generic'))
+    assert response.status_code == 200
+    join_run(client, response.json()['run_id'])
+    session = client.get(f"/api/interview/sessions/{response.json()['session_id']}").json()['session']
+    assert session['status'] == 'ready'
+    assert calls['n'] == 2

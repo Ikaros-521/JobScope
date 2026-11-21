@@ -20,10 +20,11 @@ from .settings import get_active_configs, use_config
 logger = logging.getLogger(__name__)
 
 # 面试官每轮回复的输出预算：思考 token 与输出共用（GLM 语义），低于 2000 会被思考吃穿。
+# REVIEW 4000 实测不够用（2026-11-21 线上：输出=4000 精确触顶 → JSON 截断「Unterminated string」）。
 TURN_MAX_TOKENS = 8000
 PLAN_MAX_TOKENS = 16000
-REVIEW_MAX_TOKENS = 4000
-SUMMARY_MAX_TOKENS = 6000
+REVIEW_MAX_TOKENS = 12000
+SUMMARY_MAX_TOKENS = 10000
 
 # ---- 面试官画像：三层叠加（公司风格 × 岗位类型 × 轮次）编译成三段式人设 ----
 # 借鉴 WorkBuddy「专家」与 interview-skills 的公司画像思路，但内容由本仓库沉淀：
@@ -308,7 +309,10 @@ def _parse_json(content):
 
 
 def build_question_plan(persona, material, *, question_count=8):
-    """出题：一次非流式大预算调用（分析绑定），Pydantic 校验失败直接报错给前端。"""
+    """出题：一次非流式大预算调用（分析绑定）；截断/垃圾自动重试一次，两次都坏才报错。
+
+    出题失败=整场判死（用户须删场重开），一次模型抽风不值得让用户买单。
+    """
     from .model_transport import complete
     payload = dict(
         persona=dict(company=persona['company'], round=persona['round_label'], role=persona['role_label'],
@@ -321,13 +325,16 @@ def build_question_plan(persona, material, *, question_count=8):
         resume=material.get('resume_digest') or '',
         company_brief=material.get('company_brief') or '',
     )
-    content, _ = complete(get_config(), _PLAN_SYSTEM, json.dumps(payload, ensure_ascii=False),
-                          temperature=.3, max_tokens=PLAN_MAX_TOKENS, timeout=300)
-    try:
-        plan = QuestionPlan.model_validate(_parse_json(content))
-    except (json.JSONDecodeError, ValidationError) as exc:
-        logger.warning('模拟面试出题返回无效：%s', exc)
-        raise ValueError('出题结果无效，请重试') from None
+    for attempt in (1, 2):
+        content, _ = complete(get_config(), _PLAN_SYSTEM, json.dumps(payload, ensure_ascii=False),
+                              temperature=.3, max_tokens=PLAN_MAX_TOKENS, timeout=300)
+        try:
+            plan = QuestionPlan.model_validate(_parse_json(content))
+            break
+        except (json.JSONDecodeError, ValidationError) as exc:
+            logger.warning('模拟面试出题返回无效（第 %s 次）：%s', attempt, exc)
+            if attempt == 2:
+                raise ValueError('出题结果无效，请重试') from None
     result = plan.model_dump()
     result['questions'] = result['questions'][:question_count]
     return result
@@ -415,19 +422,23 @@ def _coerce_review(raw):
 
 
 def review_segment(persona, segment):
-    """阶段1单题：一个题单片段（题目+回答+追问过程）→ 逐题点评。"""
+    """阶段1单题：一个题单片段（题目+回答+追问过程）→ 逐题点评。
+
+    截断/垃圾自动重试一次（同汇总语义）：单题点评不该一次抽风就静默降级成占位。
+    """
     from .model_transport import complete
     payload = dict(persona=dict(company=persona['company'], round=persona['round_label'], role=persona['role']['label']),
                    topic=segment['question'].get('topic', ''), question=segment['question'].get('question', ''),
                    focus=segment['question'].get('focus', ''), followups=segment['question'].get('followups', []),
                    answers=segment['answers'], interviewer_notes=segment.get('notes', []))
-    content, _ = complete(get_config(), REVIEW_SYSTEM, json.dumps(payload, ensure_ascii=False),
-                          temperature=.3, max_tokens=REVIEW_MAX_TOKENS, timeout=300)
-    try:
-        return _coerce_review(_parse_json(content))
-    except (json.JSONDecodeError, ValueError) as exc:
-        logger.warning('逐题点评返回无效（%s…）：%s', segment['question'].get('topic', '')[:20], exc)
-        return dict(critique='本条点评生成失败，跳过。', missing=[], model_answer='', bad_answer_note='')
+    for attempt in (1, 2):
+        content, _ = complete(get_config(), REVIEW_SYSTEM, json.dumps(payload, ensure_ascii=False),
+                              temperature=.3, max_tokens=REVIEW_MAX_TOKENS, timeout=300)
+        try:
+            return _coerce_review(_parse_json(content))
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning('逐题点评返回无效（第 %s 次，%s…）：%s', attempt, segment['question'].get('topic', '')[:20], exc)
+    return dict(critique='本条点评生成失败，跳过。', missing=[], model_answer='', bad_answer_note='')
 
 
 def _coerce_summary(raw):
