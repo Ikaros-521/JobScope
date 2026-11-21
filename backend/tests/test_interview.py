@@ -451,7 +451,7 @@ def test_report_retries_invalid_summary_once(client, monkeypatch):
 
 
 def test_report_emits_progress_events(client, monkeypatch):
-    """复盘不再黑盒：SSE 事件流里逐题点评 x/y 与进入汇总都有 progress 事件。"""
+    """复盘渐进流：start 带全部题目清单（铺骨架），每条 review 带完整点评内容（原位填充），summary 收尾。"""
     session_id = _session_with_two_segments(client, monkeypatch)
 
     def fake_complete(config, system, user, **kwargs):
@@ -466,10 +466,14 @@ def test_report_emits_progress_events(client, monkeypatch):
     join_run(client, finished.json()['run_id'])
     handle = client.app.state.interview_runs.get(finished.json()['run_id'])
     progress = [payload for kind, payload in handle.events if kind == 'progress']
+    manifest = progress[0]
+    assert manifest['stage'] == 'start' and manifest['total'] == 2
+    assert [item['index'] for item in manifest['items']] == [0, 1]
+    assert all(item['topic'] == '项目深挖' and item['question'] for item in manifest['items'])
     reviews = [item for item in progress if item['stage'] == 'review']
+    assert sorted(item['index'] for item in reviews) == [0, 1]
     assert [item['done'] for item in reviews] == [1, 2]
-    assert all(item['total'] == 2 for item in reviews)
-    assert all(item.get('topic') == '项目深挖' for item in reviews)
+    assert all(item['review']['critique'] == '点评。' and item['review']['model_answer'] == '示范。' for item in reviews)
     assert progress[-1]['stage'] == 'summary'
 
 

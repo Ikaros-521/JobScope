@@ -16,6 +16,9 @@ export type InterviewDeepLink = { jobId: string; token: number } | null
 type StreamState = { runId: string; answer: string } | null
 // 复盘等后台 run 的实时进度（SSE progress 事件）：stage=review 逐题点评 done/total，summary=汇总中。
 type RunProgress = { stage: 'review' | 'summary'; done: number; total: number; topic?: string } | null
+// 渐进式复盘 feed：start 事件铺全部题卡骨架，review 事件按题号原位填充内容，done 换终版报告。
+type ReportFeedItem = { index: number; topic: string; question: string; review?: { critique: string; missing: string[]; model_answer: string; bad_answer_note: string } }
+type ReportFeed = { items: ReportFeedItem[]; done: number; total: number; stage: 'review' | 'summary' } | null
 
 const STATUS_NAMES: Record<string, string> = { planning: '出题中', ready: '待开始', live: '面试中', reporting: '复盘生成中', done: '已复盘', failed: '出题失败' }
 const INTENSITY_NAMES: Record<string, string> = { gentle: '温和', standard: '标准', stress: '压力面' }
@@ -31,6 +34,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   const [messages, setMessages] = useState<InterviewMessage[]>([])
   const [stream, setStream] = useState<StreamState>(null)
   const [runProgress, setRunProgress] = useState<RunProgress>(null)
+  const [reportFeed, setReportFeed] = useState<ReportFeed>(null)
   const [error, setError] = useState('')
   const [tab, setTab] = useState<'room' | 'report'>('room')
   // 新建面板：卡片=岗位专家（细分到岗位类型），公司风格是独立开关；目标岗位三模式：
@@ -60,7 +64,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
     try { setSessions((await listInterviewSessions()).sessions) } catch { /* 列表失败不阻塞面试间 */ }
   }, [])
 
-  const closeStream = useCallback(() => { streamRef.current?.close(); streamRef.current = null; setStream(null); setRunProgress(null) }, [])
+  const closeStream = useCallback(() => { streamRef.current?.close(); streamRef.current = null; setStream(null); setRunProgress(null); setReportFeed(null) }, [])
 
   // 待首装场次的 id：新建后先拉 planning 态场次当等待区；若 SSE done 抢先换装了题单，
   // 迟到的 GET 结果不得拿旧 planning 态把就绪场覆盖回去（否则等待区永远卡住）。
@@ -95,7 +99,22 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
         return
       }
       if (event === 'progress') {
-        // 复盘等后台 run 的实时进度：逐题点评 x/y（带题名）/汇总中，事件流重连会从 0 重放取到最新。
+        // 复盘渐进事件三段：start 铺骨架 → review 原位填充 → summary 汇总中。
+        // 事件流重连会从 0 重放，按题号折叠天然幂等。
+        if (data.stage === 'start' && Array.isArray(data.items)) {
+          setReportFeed({ items: (data.items as Record<string, unknown>[]).map(item => ({
+            index: Number(item.index ?? 0), topic: String(item.topic ?? ''), question: String(item.question ?? ''),
+          })), done: 0, total: Number(data.total ?? (data.items as unknown[]).length), stage: 'review' })
+        } else if (data.stage === 'review' && data.index != null) {
+          const index = Number(data.index)
+          setReportFeed(current => current ? {
+            ...current, done: Number(data.done ?? current.done), stage: 'review',
+            items: current.items.map(item => item.index === index
+              ? { ...item, review: data.review as ReportFeedItem['review'] } : item),
+          } : current)
+        } else if (data.stage === 'summary') {
+          setReportFeed(current => current ? { ...current, stage: 'summary' } : current)
+        }
         setRunProgress({ stage: data.stage === 'summary' ? 'summary' : 'review',
                          done: Number(data.done ?? 0), total: Number(data.total ?? 0), topic: data.topic ? String(data.topic) : undefined })
         return
@@ -213,7 +232,12 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
     if (!session || streamRef.current) return
     try {
       const started = await finishInterview(session.id)
+      // 乐观置 reporting：finish 只返回 run_id，不置的话客户端 session 停在 ready/done，
+      // 渐进复盘视图永远不亮（done 事件会用服务端权威状态覆盖）。
+      setSession(current => current ? { ...current, status: 'reporting' } : current)
       attach(started.run_id)
+      // 点结束即进复盘页签看渐进生成（骨架→逐题填充→汇总→终版），不在面试间干等进度条。
+      setTab('report')
     } catch (err) { setError((err as Error).message) }
   }
 
@@ -275,9 +299,10 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
           streamAnswer={stream?.answer ?? ''} busy={busy} answer={answer} onAnswer={setAnswer}
           onSend={() => void send()} onFinish={() => void finish()} onStop={() => void stop()} threadRef={threadRef}
           reportProgress={runProgress} />
-        : <>{session.status === 'reporting' && <ReportStatusLine progress={runProgress} />}
-          <ReportPanel report={report ?? null} persona={session.persona}
-            onRegenerate={() => void finish()} busy={busy} /></>}
+        : session.status === 'reporting'
+          ? <ProgressiveReport feed={reportFeed} />
+          : <ReportPanel report={report ?? null} persona={session.persona}
+              onRegenerate={() => void finish()} busy={busy} />}
       </>}
     </div>
   </div>
@@ -512,6 +537,33 @@ function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer
         <button className="button primary" disabled={busy || !answer.trim()} onClick={onSend}>提交回答</button>
       </div>
     </div>}
+  </div>
+}
+
+// 渐进式复盘：start 事件铺全部题卡（shimmer 骨架），review 事件按题号原位填充真内容，
+// summary 阶段顶部提示汇总中；done 事件无缝替换为终版报告。等待变成提前阅读。
+function ProgressiveReport({ feed }: { feed: ReportFeed }) {
+  return <div className="interview-report iv-report-live">
+    <div className="iv-live-head">
+      <span className="spinner" />
+      <strong>复盘生成中</strong>
+      {feed && <span className="iv-progress">{feed.done}/{feed.total}</span>}
+      <span className="tiny-label">{feed?.stage === 'summary' ? '汇总总评与高危清单…' : '逐题点评完成即展示，可先读起来'}</span>
+    </div>
+    {feed?.items.map(item => item.review
+      ? <details key={item.index} open className="iv-review filled">
+          <summary><span className="iv-topic">{item.topic}</span>{item.question}</summary>
+          <p className="iv-critique"><Markdown content={item.review.critique} /></p>
+          {item.review.missing?.length > 0 && <p className="iv-missing">缺失要素：{item.review.missing.join('、')}</p>}
+          {item.review.model_answer && <div className="iv-model-answer"><strong>高分示范</strong><Markdown content={item.review.model_answer} /></div>}
+          {item.review.bad_answer_note && <p className="iv-bad-answer"><strong>踩坑提醒</strong>{item.review.bad_answer_note}</p>}
+        </details>
+      : <div key={item.index} className="iv-review pending">
+          <summary><span className="iv-topic">{item.topic}</span>{item.question}</summary>
+          <p className="iv-pending-note">点评生成中…</p>
+          <span className="iv-skeleton"><i /><i /><i /></span>
+        </div>)}
+    {!feed && <ReportStatusLine progress={null} />}
   </div>
 }
 

@@ -2316,6 +2316,20 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .iv-wrapup-bar + .interview-composer { border-top: 0; }
 /* 复盘页签「重新生成」：挤到标题行右端 */
 .iv-regen { margin-left: auto; align-self: flex-start; }
+/* 渐进式复盘：头行 + 骨架卡 shimmer + 完成卡 fade-in（等待变提前阅读） */
+.iv-live-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid var(--line, #e3e0d8); border-radius: 10px; background: var(--panel, #fff); font-size: 13px; }
+.iv-live-head .spinner { width: 13px; height: 13px; border-width: 2px; color: var(--accent, #8a6d3b); }
+.iv-live-head .iv-progress { font-weight: 700; color: var(--accent, #8a6d3b); }
+.iv-review.pending summary { color: var(--muted, #888); }
+.iv-review.pending summary .iv-topic { color: var(--muted, #888); background: var(--chip, #f1efe8); }
+.iv-pending-note { font-size: 12px; color: var(--muted, #999); margin: 6px 0 10px; }
+.iv-skeleton { display: flex; flex-direction: column; gap: 8px; }
+.iv-skeleton i { display: block; height: 11px; border-radius: 6px; background: linear-gradient(90deg, #ede8db 25%, #f8f5ed 50%, #ede8db 75%); background-size: 200% 100%; animation: iv-shimmer 1.3s linear infinite; }
+.iv-skeleton i:nth-child(2) { width: 78%; }
+.iv-skeleton i:nth-child(3) { width: 52%; }
+@keyframes iv-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+.iv-review.filled { animation: iv-fade .35s ease; border-color: #dfd4b8; }
+@keyframes iv-fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 .interview-composer textarea { width: 100%; resize: vertical; font: inherit; font-size: 13.5px; padding: 9px 11px; border: 1px solid var(--line, #d8d4c8); border-radius: 8px; }
 .iv-composer-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 /* 题单预览（待开始态） */

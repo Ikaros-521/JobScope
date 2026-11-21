@@ -472,8 +472,9 @@ def _coerce_summary(raw):
 def generate_report(persona, segments, material, should_stop=None, on_progress=None):
     """复盘全流程：逐题并行（线程池）→ 汇总总评/维度/高危清单；取消在题间边界生效。
 
-    on_progress(dict) 在每条逐题点评完成与进入汇总时回调——SSE 推给前端做实时进度，
-    后台任务不再黑盒傻等（用户看不到进展就会以为卡死）。
+    on_progress 三段事件（SSE → 前端渐进式复盘）：
+    start（全部题目清单，前端先铺骨架卡）→ review×N（每条点评完成，带完整内容原位填充）
+    → summary（汇总中）。done 事件带最终报告，替换渐进视图。
     """
     from concurrent.futures import as_completed
     from .semantic import RunCancelled
@@ -481,6 +482,11 @@ def generate_report(persona, segments, material, should_stop=None, on_progress=N
         raise RunCancelled()
     configs = get_active_configs()
     reviews = [None] * len(segments)
+    if on_progress:
+        on_progress(dict(stage='start', total=len(segments),
+                         items=[dict(index=index, topic=(seg.get('question') or {}).get('topic', ''),
+                                     question=(seg.get('question') or {}).get('question', ''))
+                                for index, seg in enumerate(segments)]))
     with ThreadPoolExecutor(max_workers=3) as pool:
         # contextvar 不跨线程：逐题点评跑在池子线程，use_config 挂在复盘 worker 上取不到，
         # 必须把生效全典显式带进任务重新挂（挂单 purpose 会让池内 get_purpose_config KeyError）。
@@ -488,13 +494,14 @@ def generate_report(persona, segments, material, should_stop=None, on_progress=N
             with use_config(configs):
                 return review_segment(persona, segment)
         futures = {pool.submit(_review, segment): index for index, segment in enumerate(segments)}
-        # as_completed：谁先点评完先报进度，不等提交顺序。
+        # as_completed：谁先点评完先报进度，不等提交顺序；事件按完成序推，前端按题号原位填充。
         for done_count, future in enumerate(as_completed(list(futures)), start=1):
             index = futures[future]
             reviews[index] = future.result()
             if on_progress:
-                on_progress(dict(stage='review', done=done_count, total=len(segments),
-                                 topic=(segments[index].get('question') or {}).get('topic', '')))
+                on_progress(dict(stage='review', done=done_count, total=len(segments), index=index,
+                                 topic=(segments[index].get('question') or {}).get('topic', ''),
+                                 review=reviews[index]))
     if should_stop is not None and should_stop():
         raise RunCancelled()
     if on_progress:
