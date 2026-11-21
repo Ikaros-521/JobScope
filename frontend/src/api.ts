@@ -552,3 +552,41 @@ const INTERVIEW_STREAM_EVENTS = ['start', 'delta', 'reasoning_delta', 'progress'
 export function openInterviewStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
   return openStream(`/api/interview/runs/${encodeURIComponent(runId)}/stream`, INTERVIEW_STREAM_EVENTS, onEvent)
 }
+
+// ---- 真实面试复盘：外部 ASR 逐字稿导入 → 模型初标说话人 + 人工核对 → 结合 JD 的复盘报告 ----
+// 说话人取值与后端归一化一致：me=候选人，interviewer_N=第 N 位面试官（1..5）。
+export type TranscriptSegment = { index: number; speaker: string; text: string }
+export type TranscriptQaReview = { question: string; critique: string; good: string[]; bad: string[]; suggestion: string }
+export type TranscriptReport = {
+  overall_score: number; summary: string; strengths: string[]; problems: string[]
+  jd_match: { fit_score: number; evidence: string[]; gaps: string[] }
+  actions: string[]; questions: TranscriptQaReview[]
+  limitations?: string[]; reviewed?: number; generated_at?: string
+}
+export type Transcript = {
+  id: string; job_id: string; job_title: string; company: string; raw_text: string
+  status: 'imported' | 'labeling' | 'labeled' | 'reporting' | 'done' | 'failed'
+  error: string; segments: TranscriptSegment[]; report: TranscriptReport | null
+  labeling_meta: { labeled_at: string; segment_count: number } | null
+  created_at: string; updated_at: string
+}
+export type TranscriptSummary = { id: string; job_id: string; job_title: string; company: string; status: Transcript['status']; segment_count: number; has_report: boolean; created_at: string; updated_at: string }
+export type TranscriptRunStatus = { run_id: string; transcript_id: string; done: boolean; cancelled: boolean }
+export function listInterviewTranscripts() { return api<{ transcripts: TranscriptSummary[] }>('/interview/transcripts') }
+export function getInterviewTranscript(id: string) {
+  return api<{ transcript: Transcript; active_run: TranscriptRunStatus | null }>(`/interview/transcripts/${encodeURIComponent(id)}`)
+}
+export function importInterviewTranscript(jobId: string, text: string) {
+  return post<{ transcript_id: string; run_id: string }>('/interview/transcripts', { job_id: jobId, text })
+}
+export function saveTranscriptSegments(id: string, segments: { speaker: string; text: string }[]) {
+  return api<{ transcript: Transcript }>(`/interview/transcripts/${encodeURIComponent(id)}/segments`, { method: 'PATCH', body: JSON.stringify({ segments }) })
+}
+export function generateTranscriptReport(id: string) { return post<{ run_id: string }>(`/interview/transcripts/${encodeURIComponent(id)}/report`, {}) }
+export function relabelInterviewTranscript(id: string) { return post<{ run_id: string }>(`/interview/transcripts/${encodeURIComponent(id)}/relabel`, {}) }
+export function deleteInterviewTranscript(id: string) { return api<{ ok: boolean }>(`/interview/transcripts/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
+export function cancelTranscriptRun(runId: string) { return post<TranscriptRunStatus>(`/interview/transcript-runs/${encodeURIComponent(runId)}/cancel`) }
+const TRANSCRIPT_STREAM_EVENTS = ['start', 'progress', 'done', 'error', 'cancelled', 'end'] as const
+export function openTranscriptRunStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
+  return openStream(`/api/interview/transcript-runs/${encodeURIComponent(runId)}/stream`, TRANSCRIPT_STREAM_EVENTS, onEvent)
+}

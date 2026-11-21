@@ -2403,3 +2403,43 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .iv-waiting-sources em { font-style: normal; font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--chip, #f1efe8); color: var(--accent, #8a6d3b); }
 .iv-waiting-note { margin: 0; font-size: 12px; color: var(--muted, #888); line-height: 1.6; }
 .iv-create-actions .spinner { width: 14px; height: 14px; border-width: 2px; margin-right: 6px; }
+
+/* ---- 真实复盘：ASR 逐字稿导入 → 说话人核对 → 结合 JD 的复盘报告（2026-11-21） ---- */
+/* 侧栏模式切换：模拟 / 真实 两套工作区并列 */
+.iv-side-modes { display: flex; gap: 4px; padding: 2px 2px 8px; }
+.iv-side-modes button { flex: 1; border: 1px solid var(--line, #d8d4c8); background: var(--panel, #fff); padding: 6px 0; border-radius: 8px; cursor: pointer; font-size: 12.5px; color: var(--muted, #666); }
+.iv-side-modes button.active { border-color: var(--accent, #8a6d3b); color: var(--accent, #8a6d3b); font-weight: 600; background: var(--accent-soft, #f3ecdb); }
+/* 逐字稿状态徽章补色（.iv-status 默认灰已覆盖 待核对/待标注） */
+.iv-status.labeling, .iv-status.reporting { color: var(--accent, #8a6d3b); font-weight: 600; }
+/* 导入面板：居中窄容器，逐字稿文本框高一些 */
+.iv-import { align-self: center; width: min(760px, 100%); }
+.iv-import-intro { margin: 0; font-size: 13px; color: var(--muted, #666); line-height: 1.7; }
+.iv-import .iv-picker { max-width: none; }
+.iv-transcript-text { min-height: 220px; line-height: 1.7; }
+/* 逐字稿工作台壳：真实模式主区的唯一直子，必须自己接住弹性链（.interview-main 同款） */
+.iv-real { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 0 2px; }
+.iv-label-panel { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 12px 2px; min-height: 0; }
+.iv-label-toolbar { display: flex; align-items: center; gap: 10px; }
+.iv-label-toolbar .tiny-label { flex: 1; }
+.iv-label-actions { display: flex; gap: 8px; align-items: center; }
+.iv-label-note { margin: 0; }
+/* 段落编辑器：角色下拉 + 原文文本框；候选人段暖底色与面试官段区分 */
+.iv-segments { display: flex; flex-direction: column; gap: 8px; }
+.iv-segment { display: flex; gap: 8px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line, #e8e5da); border-radius: 10px; background: var(--panel, #fff); }
+.iv-segment select { flex: none; width: 110px; font: inherit; font-size: 12.5px; padding: 6px; border: 1px solid var(--line, #d8d4c8); border-radius: 8px; background: var(--panel, #fff); }
+.iv-segment textarea { flex: 1; min-width: 0; resize: vertical; font: inherit; font-size: 13px; line-height: 1.7; padding: 6px 9px; border: 1px solid transparent; border-radius: 8px; background: transparent; }
+.iv-segment textarea:focus { border-color: var(--accent, #8a6d3b); background: var(--panel, #fff); outline: none; }
+.iv-segment.me { border-color: #dfd4b8; background: var(--accent-soft, #f3ecdb); }
+/* 复盘报告里的亮点行（.iv-missing 红色是问题行，配一个绿色亮点行） */
+.iv-good { font-size: 12px; color: #2e7d32; }
+/* 标注流式实况：段落逐条 fade-in 点亮，贴底滚动，尾部 shimmer 表示仍在生成 */
+.iv-labeling-live { width: 100%; }
+.iv-live-labels { max-height: 320px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 2px; }
+.iv-live-empty { max-height: 72px; }
+.iv-live-seg { display: flex; gap: 8px; align-items: baseline; padding: 7px 10px; border: 1px solid var(--line, #e8e5da); border-radius: 9px; background: var(--panel, #fff); animation: iv-fade .3s ease; }
+.iv-live-seg em { flex: none; font-style: normal; font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--chip, #f1efe8); color: var(--muted, #666); }
+.iv-live-seg.me { border-color: #dfd4b8; background: var(--accent-soft, #f3ecdb); }
+.iv-live-seg.me em { background: var(--accent, #8a6d3b); color: #fff; }
+.iv-live-seg p { margin: 0; font-size: 13px; line-height: 1.65; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
+.iv-live-tail .iv-skeleton { padding: 4px 2px; }
+.iv-live-tail .iv-skeleton i { height: 9px; width: 60%; }

@@ -158,6 +158,27 @@ class InterviewTurnInput(RequestModel):
     answer: str = Field(default='', max_length=8000)  # 空=开场（面试官自我介绍+第一题）
 
 
+class TranscriptImportInput(RequestModel):
+    """真实面试逐字稿导入：外部 ASR 工具转写的纯文本，必选绑定岗位库岗位。"""
+    job_id: str = Field(min_length=1, max_length=100)
+    text: str = Field(min_length=1, max_length=40000)
+
+
+class TranscriptSegmentInput(RequestModel):
+    """人工核对后的一段：说话人归一化取值 me / interviewer_1..interviewer_5。
+
+    text 允许空串（全局 str_strip_whitespace 会把纯空白剥成空）：服务端丢弃空段，
+    不让用户清空某段时吃 422。
+    """
+    speaker: str = Field(min_length=1, max_length=20)
+    text: str = Field(default='', max_length=4000)
+
+
+class TranscriptSegmentsInput(RequestModel):
+    """人工核对保存：全量段落按序替换（index 由服务端按顺序重编）。"""
+    segments: list[TranscriptSegmentInput] = Field(min_length=1, max_length=400)
+
+
 class ModelBindingInput(RequestModel):
     """功能级模型绑定：channel 指向已存渠道+模型；embedding 另有 local；抽取/分析可 disabled/inherit。"""
     purpose: Literal["agent", "embedding", "extraction", "analysis"]

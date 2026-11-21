@@ -43,6 +43,7 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS profile_entries (id TEXT PRIMARY KEY, category TEXT NOT NULL, title TEXT NOT NULL, org TEXT NOT NULL DEFAULT '', period TEXT NOT NULL DEFAULT '', content TEXT NOT NULL, tags TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS requirement_overrides (job_id TEXT NOT NULL REFERENCES jobs(id), quote_digest TEXT NOT NULL, status TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY(job_id, quote_digest));
                 CREATE TABLE IF NOT EXISTS interview_sessions (id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS interview_transcripts (id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
             """)
             self._migrate_conversations(conn)
             # profile_entries.source 记录条目来源（笔记库导入的「规范化库根::相对路径」锚点），幂等重导靠它原位更新。
@@ -465,6 +466,38 @@ class Repository:
     def delete_interview_session(self, session_id):
         with self.connection() as conn:
             return conn.execute('DELETE FROM interview_sessions WHERE id=?', (session_id,)).rowcount > 0
+
+    # ---- 真实面试逐字稿：导入 → 标注 → 复盘（payload JSON 快照，interview_sessions 同款模式） ----
+
+    def save_interview_transcript(self, transcript):
+        transcript = {**transcript, 'updated_at': now()}
+        with self.connection() as conn:
+            conn.execute('INSERT INTO interview_transcripts (id,payload,updated_at) VALUES (?,?,?) '
+                         'ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at',
+                         (transcript['id'], json.dumps(transcript, ensure_ascii=False), transcript['updated_at']))
+        return transcript
+
+    def interview_transcripts(self, limit=100):
+        """逐字稿摘要（新→旧）：列表页只要岗位锚点与状态，不解析完整 payload 的段落与报告。"""
+        with self.connection() as conn:
+            rows = conn.execute('SELECT id, payload FROM interview_transcripts ORDER BY updated_at DESC LIMIT ?', (limit,)).fetchall()
+        result = []
+        for row in rows:
+            payload = json.loads(row['payload'])
+            result.append(dict(id=row['id'], job_id=payload.get('job_id', ''), job_title=payload.get('job_title', ''),
+                               company=payload.get('company', ''), status=payload.get('status', 'imported'),
+                               segment_count=len(payload.get('segments') or []), has_report=bool(payload.get('report')),
+                               created_at=payload.get('created_at', ''), updated_at=payload.get('updated_at', '')))
+        return result
+
+    def get_interview_transcript(self, transcript_id):
+        with self.connection() as conn:
+            row = conn.execute('SELECT payload FROM interview_transcripts WHERE id=?', (transcript_id,)).fetchone()
+        return json.loads(row['payload']) if row else None
+
+    def delete_interview_transcript(self, transcript_id):
+        with self.connection() as conn:
+            return conn.execute('DELETE FROM interview_transcripts WHERE id=?', (transcript_id,)).rowcount > 0
 
     def save_report(self, report):
         with self.connection() as conn:

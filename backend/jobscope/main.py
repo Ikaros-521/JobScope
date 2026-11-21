@@ -28,9 +28,10 @@ from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
 from .interview import assemble_material, company_brief_from, persona_cards
 from .interview_runs import InterviewManager, interview_scope, new_session
+from .transcript_runs import TranscriptManager, new_transcript
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput
+from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput, TranscriptImportInput, TranscriptSegmentsInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -103,6 +104,7 @@ def create_app(data_dir=None):
     runs = RunManager(repo)
     analyze_runs = AnalyzeManager(repo)
     interview_runs = InterviewManager(repo)
+    transcript_runs = TranscriptManager(repo)
     scope_expansions = ScopeExpansionStore(repo)
     knowledge = KnowledgeStore(repo)
     knowledge_imports = KnowledgeImportManager(knowledge, repo)
@@ -110,6 +112,7 @@ def create_app(data_dir=None):
     app.state.runs = runs  # exposed for tests: join worker threads to avoid cross-test leaks
     app.state.analyze_runs = analyze_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     app.state.interview_runs = interview_runs  # exposed for tests: join worker threads to avoid cross-test leaks
+    app.state.transcript_runs = transcript_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
     # 数据备份（2026-11-18）：`.data/` 是生产数据，备份/恢复能力是一等公民而非运维纪律。
@@ -1352,6 +1355,115 @@ def create_app(data_dir=None):
     def cancel_interview_run(run_id: str = PathParam(max_length=100)):
         try:
             return interview_runs.cancel(run_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+
+    # ---- 真实面试复盘：ASR 逐字稿导入 → 说话人标注（模型初标+人工核对）→ 复盘报告 ----
+
+    @app.post('/api/interview/transcripts')
+    def import_interview_transcript(data: TranscriptImportInput):
+        if not purpose_configured('analysis'):
+            raise HTTPException(400, '导入复盘需要先在设置中心绑定分析模型')
+        text = data.text.strip()
+        if len(text) < 50:
+            raise HTTPException(400, '逐字稿太短（至少 50 字），请确认粘贴的是面试转写文本')
+        job = get_job(data.job_id)
+        transcript = repo.save_interview_transcript(new_transcript(
+            job_id=job['id'], job_title=job.get('title', ''), company=job.get('company', ''), text=text[:40000]))
+        try:
+            handle = transcript_runs.start_label(transcript)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return dict(transcript_id=transcript['id'], run_id=handle.id)
+
+    @app.get('/api/interview/transcripts')
+    def list_interview_transcripts():
+        return dict(transcripts=repo.interview_transcripts())
+
+    def get_transcript_or_404(transcript_id):
+        transcript = repo.get_interview_transcript(transcript_id)
+        if transcript is None:
+            raise HTTPException(404, '逐字稿不存在')
+        return transcript
+
+    @app.get('/api/interview/transcripts/{transcript_id}')
+    def read_interview_transcript(transcript_id: str = PathParam(max_length=100)):
+        transcript = get_transcript_or_404(transcript_id)
+        handle = transcript_runs.active_for_transcript(transcript_id)
+        return dict(transcript=transcript, active_run=handle.snapshot() if handle else None)
+
+    @app.patch('/api/interview/transcripts/{transcript_id}/segments')
+    def save_transcript_segments(data: TranscriptSegmentsInput, transcript_id: str = PathParam(max_length=100)):
+        transcript = get_transcript_or_404(transcript_id)
+        if transcript_runs.active_for_transcript(transcript_id):
+            raise HTTPException(409, '逐字稿正在生成中，请等待完成后再修改')
+        if transcript['status'] not in ('labeled', 'done'):
+            raise HTTPException(409, '当前状态不能修改标注')
+        # 全量按序替换：index 服务端重编，防止跳号/重复；done 上改段落后报告视为过期（回 labeled 促使重生成）。
+        segments = []
+        for item in data.segments:
+            text = item.text.strip()
+            if text:
+                segments.append(dict(index=len(segments), speaker=item.speaker, text=text[:4000]))
+        if not segments:
+            raise HTTPException(400, '至少保留一个非空段落')
+        transcript['segments'] = segments
+        transcript['status'] = 'labeled'
+        transcript = repo.save_interview_transcript(transcript)
+        return dict(transcript=transcript)
+
+    @app.post('/api/interview/transcripts/{transcript_id}/report')
+    def generate_transcript_report(transcript_id: str = PathParam(max_length=100)):
+        transcript = get_transcript_or_404(transcript_id)
+        # done 也放行：从既有段落重跑复盘（重新生成）。报告不满意或改过标注时无需重新导入。
+        if transcript['status'] not in ('labeled', 'done') or not (transcript.get('segments') or []):
+            raise HTTPException(409, '当前状态不能生成复盘（标注中或还没有标注段落）')
+        try:
+            handle = transcript_runs.start_report(transcript)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return dict(run_id=handle.id)
+
+    @app.post('/api/interview/transcripts/{transcript_id}/relabel')
+    def relabel_interview_transcript(transcript_id: str = PathParam(max_length=100)):
+        transcript = get_transcript_or_404(transcript_id)
+        if transcript['status'] not in ('imported', 'labeled', 'failed'):
+            raise HTTPException(409, '当前状态不能重新标注')
+        try:
+            handle = transcript_runs.start_label(transcript)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from None
+        return dict(run_id=handle.id)
+
+    @app.delete('/api/interview/transcripts/{transcript_id}')
+    def delete_interview_transcript(transcript_id: str = PathParam(max_length=100)):
+        get_transcript_or_404(transcript_id)
+        handle = transcript_runs.active_for_transcript(transcript_id)
+        if handle:
+            raise HTTPException(409, '逐字稿正在生成中，请先停止再删除')
+        repo.delete_interview_transcript(transcript_id)
+        return dict(ok=True)
+
+    @app.get('/api/interview/transcript-runs/{run_id}')
+    def transcript_run_status(run_id: str = PathParam(max_length=100)):
+        handle = transcript_runs.get(run_id)
+        if handle is None:
+            raise HTTPException(404, '运行不存在或已结束')
+        return handle.snapshot()
+
+    @app.get('/api/interview/transcript-runs/{run_id}/stream')
+    def transcript_run_stream(run_id: str = PathParam(max_length=100)):
+        try:
+            generator = transcript_runs.stream(run_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return StreamingResponse(generator(), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+    @app.post('/api/interview/transcript-runs/{run_id}/cancel')
+    def cancel_transcript_run(run_id: str = PathParam(max_length=100)):
+        try:
+            return transcript_runs.cancel(run_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
 
