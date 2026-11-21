@@ -1412,6 +1412,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .chat-bubble.assistant .message-content { color: #333; overflow-wrap: anywhere; }
 .message-author { font-size: 12px; color: var(--muted); }
 .interrupted-chip { font-size: 11px; color: #755622; background: #f8f2e5; border-radius: 999px; padding: 2px 10px; }
+.failed-chip { font-size: 11px; color: #8c3a3a; background: #faeceb; border-radius: 999px; padding: 2px 10px; }
 /* 操作按钮常驻气泡下方：用户消息右对齐、助手消息左对齐，避免 hover 藏在头部难以发现。 */
 .msg-actions { display: flex; gap: 2px; margin-top: 2px; flex-wrap: wrap; }
 .chat-bubble.user .msg-actions { justify-content: flex-end; }
@@ -1447,6 +1448,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .tool-step-dot.ok { background: #446c58; }
 .tool-step-dot.error { background: #8c3a2a; }
 .tool-step-dot.waiting { background: #d4a545; animation: chat-pulse 1.2s ease-in-out infinite; }
+.tool-step-dot.warning { background: #d4a545; }
 .tool-step-name { color: #404040; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool-step-meta { margin-left: auto; font-size: 11px; color: #a3a3a3; flex: none; }
 .tool-step-body { padding: 2px 10px 10px 26px; display: grid; gap: 8px; font-size: 11px; }

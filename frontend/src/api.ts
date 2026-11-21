@@ -52,6 +52,8 @@ export type PermissionMode = 'confirm' | 'autonomous' | 'full'
 export type StoredMessage = {
   id: string; ts: string; role: 'user' | 'assistant'; content: string;
   reasoning?: string; mode?: string; interrupted?: boolean;
+  // failed/failure：生成失败的回复也落库保留（执行过程可复查），failure 是对外失败原因
+  failed?: boolean; failure?: string;
   // kind='compaction' 是压缩检查点；compacted 表示该消息已被压缩折叠（仅 UI 呈现，不进模型上下文）
   kind?: string; compacted_count?: number; compacted?: boolean;
   citations?: Citation[]; trace?: ResearchRun; metrics?: SalaryMetrics | null; actions?: ScopeExpansion[]

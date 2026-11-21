@@ -67,6 +67,7 @@ export function ChatMessageItem({ message, live, showReasoning, editing, canMuta
       <span className="message-author">{author}</span>
       {message.compacted && <span className="archived-chip">已折叠 · 不进模型上下文</span>}
       {message.interrupted && <span className="interrupted-chip">已手动停止</span>}
+      {message.failed && <span className="failed-chip">生成失败</span>}
     </div>
 
     {editing ? <div className="msg-editing">

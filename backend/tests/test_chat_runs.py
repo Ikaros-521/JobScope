@@ -634,3 +634,132 @@ def test_branch_failure_or_cancel_keeps_original(client, monkeypatch, outcome):
     assert len(branch) == 1 and branch[0]['content'] == 'q1 revised'
     with repo.connection() as conn:
         assert conn.execute('SELECT 1 FROM agent_private_conversations WHERE id=?', (run['conversation_id'],)).fetchone()
+
+
+def stream_parallel_tool_calls(count, base_id='batch'):
+    """一轮并行返回 count 个 tool_calls：补分工作流逐来源采集的正常批量形态。"""
+    calls = [{'index': i, 'id': f'{base_id}{i}', 'type': 'function',
+              'function': {'name': 'project_search', 'arguments': json.dumps({'query': f'岗位{i}'}, ensure_ascii=False)}}
+             for i in range(count)]
+    return [sse_chunk({'delta': {'tool_calls': calls}}), 'data: [DONE]']
+
+
+def test_parallel_tool_calls_beyond_four_no_longer_abort_the_run(client, monkeypatch):
+    configure(client)
+    streams = [stream_parallel_tool_calls(6), stream_final('并行采集完成。')]
+    stream_scripted(monkeypatch, streams)
+    run = client.post('/api/chat/runs', json={'message': '并行采集', 'agent_mode': 'general'}).json()
+    status = await_run(client, run['run_id'])
+    assert not status.get('awaiting_approval')
+    stored = stored_messages(client, run['conversation_id'])
+    assert stored[1]['role'] == 'assistant' and stored[1]['content'] == '并行采集完成。'
+    assert not stored[1].get('failed')
+    searches = [event for event in stored[1]['trace']['events'] if event['tool'] == 'project_search']
+    assert len(searches) == 6
+
+
+def test_bad_model_turn_is_retried_once_and_then_completes(client, monkeypatch):
+    configure(client)
+    bad = [sse_chunk({'delta': {'tool_calls': [{'index': 0, 'id': 'bad1', 'type': 'function',
+                                                'function': {'name': 'project_search', 'arguments': '{broken json'}}]}}), 'data: [DONE]']
+    streams = [bad, stream_tool('project_search', {'query': 'Python'}), stream_final('重试后完成。')]
+    stream_scripted(monkeypatch, streams)
+    run = client.post('/api/chat/runs', json={'message': '响应异常重试', 'agent_mode': 'general'}).json()
+    await_run(client, run['run_id'])
+    stored = stored_messages(client, run['conversation_id'])
+    assert stored[1]['role'] == 'assistant' and stored[1]['content'] == '重试后完成。'
+    retries = [event for event in stored[1]['trace']['events'] if event['tool'] == 'model_retry']
+    assert retries and retries[0]['status'] == 'error' and retries[0]['note']
+    searches = [event for event in stored[1]['trace']['events'] if event['tool'] == 'project_search']
+    assert len(searches) == 1
+
+
+def test_failed_run_persists_trace_and_timeline(client, monkeypatch):
+    configure(client)
+    bad = [sse_chunk({'delta': {'tool_calls': [{'index': 0, 'id': 'bad1', 'type': 'function',
+                                                'function': {'name': 'project_search', 'arguments': '{broken json'}}]}}), 'data: [DONE]']
+    # 先成功执行一次工具，再让模型轮次连续两次异常（含重试）：失败后执行过程必须可复查。
+    streams = [stream_tool('project_search', {'query': 'Python'}), bad, bad]
+    stream_scripted(monkeypatch, streams)
+    run = client.post('/api/chat/runs', json={'message': '失败落库', 'agent_mode': 'general'}).json()
+    status = await_run(client, run['run_id'])
+    frames = read_stream(client, run['run_id'])
+    kinds = [kind for kind, _ in frames]
+    assert 'error' in kinds and 'done' not in kinds and kinds[-1] == 'end'
+    assert dict(frames)['error']['message']
+    stored = stored_messages(client, run['conversation_id'])
+    assert len(stored) == 2 and stored[1]['role'] == 'assistant'
+    assert stored[1]['failed'] is True and stored[1]['failure']
+    assert '本轮生成失败' in stored[1]['content']
+    searches = [event for event in stored[1]['trace']['events'] if event['tool'] == 'project_search']
+    assert len(searches) == 1 and stored[1]['trace']['status'] == 'failed'
+    assert any(segment.get('kind') == 'step' for segment in stored[1]['timeline'])
+    retries = [event for event in stored[1]['trace']['events'] if event['tool'] == 'model_retry']
+    assert len(retries) == 1
+
+
+def test_fan_out_beyond_parse_layer_is_unbounded_and_parallel_merged_in_order(client, monkeypatch):
+    configure(client)
+    # 14 个并行 project_search：解析层不再截断，调度器宽度 10 排队执行，合并保持模型产生顺序。
+    streams = [stream_parallel_tool_calls(14), stream_final('全部并行采集完成。')]
+    stream_scripted(monkeypatch, streams)
+    run = client.post('/api/chat/runs', json={'message': '并行检索', 'agent_mode': 'general'}).json()
+    await_run(client, run['run_id'])
+    stored = stored_messages(client, run['conversation_id'])
+    assert stored[1]['role'] == 'assistant' and stored[1]['content'] == '全部并行采集完成。'
+    searches = [event for event in stored[1]['trace']['events'] if event['tool'] == 'project_search']
+    assert [event['arguments']['query'] for event in searches] == [f'岗位{i}' for i in range(14)]
+
+
+def test_identical_call_streak_warns_visibly_without_aborting(client, monkeypatch):
+    configure(client)
+    same = lambda: stream_tool('project_search', {'query': 'Python'})
+    streams = [same(), same(), same(), stream_final('基于已有结果回答。')]
+    calls = stream_scripted(monkeypatch, streams)
+    run = client.post('/api/chat/runs', json={'message': '签名熔断', 'agent_mode': 'general'}).json()
+    await_run(client, run['run_id'])
+    stored = stored_messages(client, run['conversation_id'])
+    assert stored[1]['role'] == 'assistant' and stored[1]['content'] == '基于已有结果回答。'
+    warnings = [event for event in stored[1]['trace']['events'] if event['tool'] == 'loop_warning']
+    assert len(warnings) == 1 and warnings[0]['status'] == 'warning' and '3 次' in warnings[0]['note']
+    # 警告只注入到下一次模型请求（第 4 次），且只报工具名与次数，不回显参数。
+    reminder = [m for m in calls[3]['messages'] if m.get('role') == 'user' and '<system-reminder>' in m.get('content', '')]
+    assert reminder and 'project_search' in reminder[0]['content'] and '连续 3 次' in reminder[0]['content']
+    assert not [m for m in calls[2]['messages'] if '<system-reminder>' in str(m.get('content', ''))]
+
+
+def test_differing_args_reset_streak_so_legal_fan_out_never_warns(client, monkeypatch):
+    configure(client)
+    queries = ['Python', 'Python', 'Java', 'Python', 'Python']
+    streams = [stream_tool('project_search', {'query': q}) for q in queries] + [stream_final('完成。')]
+    stream_scripted(monkeypatch, streams)
+    run = client.post('/api/chat/runs', json={'message': '合法重复', 'agent_mode': 'general'}).json()
+    await_run(client, run['run_id'])
+    stored = stored_messages(client, run['conversation_id'])
+    assert stored[1]['content'] == '完成。'
+    assert not [event for event in stored[1]['trace']['events'] if event['tool'] == 'loop_warning']
+
+
+def test_context_budget_compacts_old_tool_results_and_continues(client, monkeypatch):
+    configure(client)
+    assert client.put('/api/settings/system', json={'chat_display_mode': 'merged', 'show_reasoning': True,
+                                                    'agent_limits': {'max_model_calls': 60, 'max_tool_calls': 50,
+                                                                     'context_characters': 10000, 'max_seconds': 900}}).status_code == 200
+    client.post('/api/import/job', json=dict(title='Agent工程师', company='甲', salary='20-30K',
+                                             description='Python 后端岗位。' + '职责包括编写服务、维护接口与优化性能、跟进评审与上线。' * 80))
+    # 8 个并行检索，查询各异（同参会触发签名熔断告警）且都能命中证据，让单条结果足够撑爆预算。
+    queries = ['Python 编写服务', 'Python 维护接口', 'Python 优化性能', 'Python 跟进评审',
+               'Python 上线流程', 'Python 接口维护', 'Python 性能优化', 'Python 服务编写']
+    calls_def = [{'index': i, 'id': f'bulk{i}', 'type': 'function',
+                  'function': {'name': 'project_search', 'arguments': json.dumps({'query': q}, ensure_ascii=False)}}
+                 for i, q in enumerate(queries)]
+    streams = [[sse_chunk({'delta': {'tool_calls': calls_def}}), 'data: [DONE]'], stream_final('压缩后继续完成。')]
+    calls = stream_scripted(monkeypatch, streams)
+    run = client.post('/api/chat/runs', json={'message': '上下文压缩', 'agent_mode': 'general'}).json()
+    await_run(client, run['run_id'])
+    stored = stored_messages(client, run['conversation_id'])
+    assert stored[1]['content'] == '压缩后继续完成。'
+    assert any('已压缩最早工具结果' in item for item in stored[1]['trace']['degraded'])
+    # 第二次模型请求里，最早的工具结果已被改写为诚实短桩，配对仍在。
+    compacted = [m for m in calls[1]['messages'] if m.get('role') == 'tool' and m.get('content', '').startswith('[已压缩]')]
+    assert compacted

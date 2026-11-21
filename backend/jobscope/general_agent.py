@@ -2,8 +2,10 @@
 import json
 import logging
 import re
+import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 from .analysis import parse_resume
 from .agent_scope import AgentScope, CROSS_COMPANY_RULES, resolve_scope
@@ -23,13 +25,21 @@ from .research.tools import salary_query
 
 logger = logging.getLogger(__name__)
 
-# 多步浏览器等有状态 MCP 任务动辄几十次调用；轮数/时长/上下文与调用上限同比例放宽，
-# 否则只会换个上限提前中断。每条工具结果仍截 12000 字符，上下文上限按 128k 窗口预留。
-# 实际限额以系统设置（SystemSettingsStore）为准，这里只保留默认值供引用与文档。
-MAX_STEPS = AGENT_LIMIT_DEFAULTS['max_model_calls']
-MAX_CALLS = AGENT_LIMIT_DEFAULTS['max_tool_calls']
-MAX_CONTEXT = AGENT_LIMIT_DEFAULTS['context_characters']
-MAX_SECONDS = AGENT_LIMIT_DEFAULTS['max_seconds']
+# 调度与边界设计（对齐 ZCode）：数量上限只存在于 run 级资源边界（轮数/调用数/上下文/时长，
+# 用户可配置），解析层不做单轮数量截断；合法 fan-out 无上限。
+# - 执行宽度由调度器控制：读类内置工具连段并行（宽度 MAX_PARALLEL_WIDTH，超出排队而非丢弃），
+#   副作用类内置工具与全部 MCP 串行（外部会话与审批语义）。
+# - 失控检测用签名熔断：同名同参连续 LOOP_STREAK_LIMIT 次只发可见警告并注入 system-reminder，
+#   不抛错、不禁用工具、不结束本轮——纠偏判断交还模型。
+# - 上下文触达预算先做响应式压缩（改写最早工具结果为短桩，配对与 ID 不动），压缩成功就继续；
+#   硬停止只留给取消、权限、审批、不可恢复溢出与 run 级预算。
+MAX_PARALLEL_WIDTH = 10
+LOOP_STREAK_LIMIT = 3
+COMPACT_KEEP = 6
+READ_CLASS_BUILTINS = frozenset({
+    'project_search', 'project_read', 'project_salary', 'knowledge_search', 'knowledge_read',
+    'skill_read', 'skill_resource', 'company_profile', 'company_detail', 'vault_list', 'vault_read',
+})
 
 # 顺序显示模式下单段思维链/正文的落库封顶：与 reasoning 字段同一截断口径，防超长流撑爆会话 JSON。
 TIMELINE_TEXT_CAP = 8000
@@ -113,6 +123,13 @@ class GeneralAgent:
         self.extensions = ExtensionStore(repo)
         self.index = ResearchIndex(repo)
         self.knowledge = KnowledgeStore(repo)
+        # 读批并行时保护共享可变状态（证据登记/metrics/索引同步）；锁挂在实例上，不进可序列化 state。
+        self._state_lock = threading.RLock()
+
+    def _sync_index(self):
+        """索引同步有 BEGIN IMMEDIATE 写事务，并行读批里必须串行化，避免 busy 争用。"""
+        with self._state_lock:
+            self.index.sync()
 
     def _save(self, run):
         with self.repo.connection() as conn:
@@ -252,23 +269,25 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
 
     def _remember(self, state, evidence):
         scope = self._scope(state)
-        for item in evidence:
-            if not scope.allows_evidence(self.repo, item):
-                continue
-            if len(state['evidence']) >= 24 and item['id'] not in state['evidence']:
-                continue
-            state['evidence'][item['id']] = item
+        with self._state_lock:
+            for item in evidence:
+                if not scope.allows_evidence(self.repo, item):
+                    continue
+                if len(state['evidence']) >= 24 and item['id'] not in state['evidence']:
+                    continue
+                state['evidence'][item['id']] = item
 
     def _remember_knowledge(self, state, items):
         """知识条目是用户自有材料（与 resume_read 同级）：跳过项目范围闸门登记进可引用集合，
         让 [K-…] 走与 [E-…] 相同的引用校验与引用卡。单独计数，不占用项目证据的 24 条上限。"""
-        known = state.setdefault('knowledge_ids', [])
-        for item in items:
-            if item['id'] not in state['evidence'] and len(known) >= 12:
-                continue
-            if item['id'] not in known:
-                known.append(item['id'])
-            state['evidence'][item['id']] = item
+        with self._state_lock:
+            known = state.setdefault('knowledge_ids', [])
+            for item in items:
+                if item['id'] not in state['evidence'] and len(known) >= 12:
+                    continue
+                if item['id'] not in known:
+                    known.append(item['id'])
+                state['evidence'][item['id']] = item
 
     def _register_citable(self, state, policy, evidence_ids):
         """补分工具保存的信号证据按会话范围登记进可引用集合，返回允许引用的清单。
@@ -294,7 +313,7 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             state['actions'].append(action)
             return dict(action=action, note='扩展申请已保存，请点击卡片在新会话继续；当前会话范围未改变，尚未执行扩展查询。')
         if name in {'project_search', 'project_salary'}:
-            self.index.sync()
+            self._sync_index()
             with self.repo.connection() as conn:
                 names = [row[0] for row in conn.execute('SELECT DISTINCT company FROM research_docs')]
             # Tool rewrites cannot cancel or replace the user's persistent filters.
@@ -315,7 +334,8 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                 return dict(evidence=evidence, strategy=result['strategy'], limitation='检索结果非穷尽审阅',
                             **({'note': policy.boundary_message()} if len(evidence) != len(result['evidence']) else {}))
             result = salary_query(self.index, plan, scope)
-            state['metrics'] = result
+            with self._state_lock:
+                state['metrics'] = result
             for sample in result['samples']:
                 evidence = self.repo.get_evidence(sample['evidence_id'])
                 if evidence:
@@ -325,7 +345,7 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             item = self.repo.get_evidence(args['evidence_id'])
             if not item:
                 raise ValueError('证据不存在，请先检索获取真实ID')
-            self.index.sync()
+            self._sync_index()
             policy.require_evidence(self.repo, item)
             offset = args.get('offset', 0)
             text = item['text'][offset:offset + 6000]
@@ -402,7 +422,7 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             return dict(skill=item['name'], path=path, text=text, offset=offset, total_characters=len(resource['text']), has_more=offset + 6000 < len(resource['text']))
         if name == 'company_profile':
             policy.require_company(args['company'])
-            self.index.sync()
+            self._sync_index()
             company = self.repo.find_company(args['company'])
             if company is None:
                 return dict(found=False, note='公司资料库没有这个主体。如实说明没有档案，不得编造；需要时改用project_search检索证据原文')
@@ -434,7 +454,7 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                              + (policy.boundary_message() if report and reference is None else ''))
         if name == 'company_detail':
             policy.require_company(args['company'])
-            self.index.sync()
+            self._sync_index()
             company = self.repo.find_company(args['company'])
             if company is None:
                 raise ValueError('公司不存在；请用company_profile确认主体名称后重试')
@@ -662,7 +682,8 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
         state['context_chars'] += len(text)
         state['messages'].append(dict(role='tool', tool_call_id=call['id'], content=text or '工具上下文额度已用完，请总结已得到的结果。'))
 
-    def _execute(self, state, call, approved=False, hooks=None):
+    def _prepare(self, state, call):
+        """主线程侧校验：范围、结构 schema、MCP 绑定指纹。返回 (name, args, binding)。"""
         self._scope(state)
         name = call['function']['name']
         args = json.loads(call['function']['arguments'])
@@ -672,12 +693,21 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             raise ValueError('工具不存在或未被启用')
         if list(schema_validator(spec['parameters']).iter_errors(args)):
             raise ValueError('工具参数未通过结构校验，请按工具定义修正')
-        started = time.perf_counter()
         binding = state['registry'].get(name)
         if binding:
             server = self.extensions.mcp(binding['server_id'])
             if not server or fingerprint(server) != binding['binding'] or not server['enabled'] or binding['tool_name'] not in server['allowed_tools']:
                 raise ValueError('MCP配置或权限已改变，请重新提问')
+        return name, args, binding
+
+    def _execute(self, state, call, approved=False, hooks=None):
+        """校验并调用一个工具（不合并结果）。返回 dict(kind='pending') 或
+        dict(kind='done', args=..., result=..., label=..., started=...)；
+        失败以异常抛出——结果合并、事件与签名熔断由调用方统一处理，串行与并行批共用同一套合并。"""
+        name, args, binding = self._prepare(state, call)
+        started = time.perf_counter()
+        if binding:
+            server = self.extensions.mcp(binding['server_id'])
             # 优先级：简历红线 > 会话内授权 > 权限档位。授权是用户在审批卡上显式授予的，confirm 档也认。
             mode = state.get('permission_mode', 'autonomous')
             granted = self.extensions.has_grant(state['conversation_id'], binding['server_id'], binding['tool_name'])
@@ -701,26 +731,180 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                 state['paused_at'] = time.time()
                 self._event(state, 'tool_approval', started, hooks=hooks, label=binding['label'], status='waiting', arguments=args)
                 self.extensions.pending(state['run']['id'], state)
-                return False
-            state['calls'] += 1
+                return dict(kind='pending')
             result = MCPClient.call(server, binding['tool_name'], args,
                                     should_stop=hooks.should_stop if hooks else None)
-            label = binding['label']
             for secret in [server.get('token', ''), *server.get('env', {}).values()]:
                 if len(secret) >= 4:
                     result['text'] = result['text'].replace(secret, '[已隐藏凭证]')
+            return dict(kind='done', args=args, result=result, label=binding['label'], started=started)
+        # 内置工具不塞 label：留空让前端 toolNames 映射出中文名，避免把裸工具 ID 亮给用户。
+        return dict(kind='done', args=args, result=self._builtin(state, name, args), label='', started=started)
+
+    @staticmethod
+    def _stable_args_key(args):
+        """签名熔断的比较键材料：参数规范化为稳定 JSON（键排序、紧凑分隔符）；
+        解析失败时退回原始字符串——同一份输入两次总得到同一个键。"""
+        if isinstance(args, dict):
+            return json.dumps(args, sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+        return str(args)
+
+    def _bump_loop_streak(self, state, call, hooks, args=None):
+        """签名熔断（对齐 ZCode）：按模型产生顺序逐个比较 toolName+稳定参数键，
+        只有与上一个完全相同才累加，否则重置为 1；工具结果等 runtime 注入不打断计数。
+        达到阈值发一条可见警告事件，并在下一次模型请求前注入 system-reminder——
+        只报工具名与重复次数，不回显参数原文。不抛错、不禁用工具、不结束本轮。"""
+        name = call['function']['name']
+        key = name + '\x1f' + self._stable_args_key(args if args is not None else call['function']['arguments'])
+        if state.get('loop_key') == key:
+            state['loop_streak'] = state.get('loop_streak', 1) + 1
         else:
-            state['calls'] += 1
-            # 内置工具不塞 label：留空让前端 toolNames 映射出中文名，避免把裸工具 ID 亮给用户。
-            result, label = self._builtin(state, name, args), ''
+            state['loop_key'], state['loop_streak'] = key, 1
+        if state['loop_streak'] != LOOP_STREAK_LIMIT:
+            return
+        self._event(state, 'loop_warning', time.perf_counter(), hooks=hooks, status='warning',
+                    note=f'连续 {LOOP_STREAK_LIMIT} 次以完全相同参数调用 {name}')
+        state['messages'].append(dict(role='user', content=(
+            f'<system-reminder>检测到你已连续 {LOOP_STREAK_LIMIT} 次调用同一工具 {name}，且参数完全相同。'
+            '系统不会阻止工具执行；但重复调用不会带来新信息：请调整参数、改用其他工具或通路，或基于已有结果直接作答。</system-reminder>')))
+        logger.warning('Agent 签名熔断告警 run=%s tool=%s streak=%s（只警告不阻断）', state['run']['id'], name, state['loop_streak'])
+
+    def _merge_success(self, state, call, args, result, label, started, hooks):
+        state['calls'] += 1
         self._append_result(state, call, result)
         # Keep a short sanitized preview so the UI can show arguments and outcome per function call.
-        self._event(state, name, started, hooks=hooks, label=label, status='error' if result.get('is_error') else 'completed',
+        self._event(state, call['function']['name'], started, hooks=hooks, label=label,
+                    status='error' if result.get('is_error') else 'completed',
                     arguments=args, result_preview=json.dumps(result, ensure_ascii=False, default=str)[:500],
-                    **({'action': result['action']} if name == 'request_scope_expansion' else {}))
+                    **({'action': result['action']} if call['function']['name'] == 'request_scope_expansion' else {}))
+        self._bump_loop_streak(state, call, hooks, args)
+
+    def _merge_error(self, state, call, hooks, exc, counted=False):
+        """把一次失败调用合并进结果流：异常原文可能含凭证，只透传 ValueError 的消息。"""
+        if counted:
+            state['calls'] += 1
+        if isinstance(exc, ValueError):
+            logger.warning('Agent 工具调用失败 run=%s tool=%s：%s', state['run']['id'], call['function']['name'], exc)
+        else:
+            logger.warning('Agent 工具调用失败 run=%s tool=%s type=%s（详情不落日志，可能含凭证）',
+                           state['run']['id'], call['function']['name'], type(exc).__name__)
+        state['run']['degraded'].append('一次工具调用失败，模型可根据错误继续调整')
+        self._append_result(state, call, dict(error=str(exc) if isinstance(exc, ValueError) else '工具执行失败，未自动重试'))
+        self._event(state, 'tool_error', time.perf_counter(), hooks=hooks, label=call['function']['name'], status='error')
+        self._bump_loop_streak(state, call, hooks)
+
+    def _compact_tool_results(self, state):
+        """响应式上下文压缩（对齐 ZCode）：预算触顶时把最早的工具结果正文改写为短桩再继续，
+        tool_call/tool_result 配对与 ID 保持不动；短桩是模型可见的诚实占位，不是静默丢弃。
+        返回是否释放了空间；不可恢复时返回 False，由调用方按硬边界优雅收尾。"""
+        tool_messages = [m for m in state['messages'] if m.get('role') == 'tool']
+        if len(tool_messages) <= COMPACT_KEEP:
+            return False
+        freed = 0
+        for message in tool_messages[:-COMPACT_KEEP]:
+            content = message.get('content') or ''
+            if content.startswith('[已压缩'):
+                continue
+            freed += len(content)
+            message['content'] = '[已压缩] 早期工具结果正文已收进执行过程记录；需要原文时用检索/读取类工具重新获取。'
+        if not freed:
+            return False
+        state['context_chars'] = sum(len(m.get('content') or '') for m in state['messages'] if m.get('role') == 'tool')
+        logger.info('Agent 响应式压缩 run=%s 释放=%s字符', state['run']['id'], freed)
         return True
 
-    def _result(self, state, answer, *, pending=False, reasoning=None, interrupted=False):
+    def _invoke_read(self, state, name, args):
+        """读类内置工具的线程工作体：只读仓库 + 锁保护的共享状态写；返回 (result, started)。"""
+        started = time.perf_counter()
+        return self._builtin(state, name, args), started
+
+    def _take_read_batch(self, state, limits):
+        """从队首取一段连续的读类内置工具（≤并行宽度、≤剩余额度）供并行执行；
+        副作用类、MCP 与额度耗尽处的调用留在队里走串行路径——超出宽度的排队而非丢弃。"""
+        queue = state['queue']
+        if not queue or state['calls'] >= limits['max_tool_calls'] or queue[0]['function']['name'] not in READ_CLASS_BUILTINS:
+            return []
+        take = 0
+        while (take < MAX_PARALLEL_WIDTH and take < len(queue)
+               and state['calls'] + take < limits['max_tool_calls']
+               and queue[take]['function']['name'] in READ_CLASS_BUILTINS):
+            take += 1
+        return [queue.pop(0) for _ in range(take)] if take >= 2 else []
+
+    def _run_batch(self, state, batch, hooks):
+        """读类内置工具并行执行：主线程校验与合并，工作线程只跑调用体，按模型产生顺序合并。
+        共享状态写（证据登记/metrics/索引同步）由 _state_lock 保护；批内不出现审批与范围扩展。"""
+        jobs = []
+        for call in batch:
+            try:
+                _name, args, _binding = self._prepare(state, call)
+                jobs.append((call, args, None))
+            except Exception as exc:
+                jobs.append((call, None, exc))
+        results, errors = {}, {}
+        runnable = [job for job in jobs if job[2] is None]
+        if runnable:
+            with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL_WIDTH, len(runnable))) as pool:
+                waits = {call['id']: pool.submit(self._invoke_read, state, call['function']['name'], args)
+                         for call, args, _error in runnable}
+            for call_id, future in waits.items():
+                try:
+                    results[call_id] = future.result()
+                except Exception as exc:
+                    errors[call_id] = exc
+        for call, args, error in jobs:
+            if error is not None:
+                self._merge_error(state, call, hooks, error)
+            elif call['id'] in errors:
+                self._merge_error(state, call, hooks, errors[call['id']], counted=True)
+            else:
+                result, started = results[call['id']]
+                self._merge_success(state, call, args, result, '', started, hooks)
+
+    def _serial_call(self, state, call, hooks):
+        """串行执行一个调用：预算桩、审批暂停、副作用工具与 MCP 全在这条路径。
+        返回 None 继续；'pending' 审批暂停；'expansion' 范围扩展收尾。"""
+        limits = state['limits']
+        if state['calls'] >= limits['max_tool_calls'] or state['context_chars'] >= limits['context_characters']:
+            self._append_result(state, call, dict(error='执行额度已用完，工具未执行'))
+            self._bump_loop_streak(state, call, hooks)
+            return None
+        try:
+            outcome = self._execute(state, call, hooks=hooks)
+        except Exception as exc:
+            self._merge_error(state, call, hooks, exc)
+            return None
+        if outcome['kind'] == 'pending':
+            return 'pending'
+        self._merge_success(state, call, outcome['args'], outcome['result'], outcome['label'], outcome['started'], hooks)
+        if state['actions']:
+            return 'expansion'
+        return None
+
+    def _drain_queue(self, state, hooks):
+        """按模型产生顺序执行本轮排队的工具调用（ZCode 对齐的调度规则）。
+
+        读类内置工具连段并行（宽度 MAX_PARALLEL_WIDTH，超出排队而非丢弃），
+        副作用类内置工具与全部 MCP 串行；签名熔断只警告不阻断；
+        硬停止只留给预算、取消、审批与范围扩展。
+        返回 None 继续；'pending'/'expansion'/'interrupted' 交由调用方收尾。"""
+        limits = state['limits']
+        while state['queue']:
+            if hooks and hooks.should_stop and hooks.should_stop():
+                return 'interrupted'
+            # 上下文触达预算：先压缩再判桩，压缩释放了空间就继续执行，不提前收尾。
+            if state['context_chars'] >= limits['context_characters'] and self._compact_tool_results(state):
+                state['run']['degraded'].append('上下文触达预算，已压缩最早工具结果后继续')
+            batch = self._take_read_batch(state, limits)
+            if batch:
+                self._run_batch(state, batch, hooks)
+                continue
+            signal = self._serial_call(state, state['queue'].pop(0), hooks)
+            if signal:
+                return signal
+        return None
+
+    def _result(self, state, answer, *, pending=False, reasoning=None, interrupted=False, failure=None):
         run = state['run']
         # Cite only sources actually read by a tool in this run.
         # [E-…] 是项目证据，[K-…] 是用户知识条目：两者共用同一套读取校验与引用卡。
@@ -737,7 +921,10 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                       ' 不是本轮工具实际读取的资料编号，已就地标注；相关结论请对照工具过程核实，其余内容照常展示。\n\n' + answer)
             run['degraded'].append('回答含未读取引用：' + '、'.join(invalid))
             ids = [eid for eid in ids if eid not in invalid]
-        status = 'awaiting_approval' if pending else 'interrupted' if interrupted else 'completed'
+        # 失败收尾与中断同权：trace/timeline 照常产出并落库，执行过程不因失败被清空。
+        status = 'awaiting_approval' if pending else 'failed' if failure else 'interrupted' if interrupted else 'completed'
+        if failure:
+            run['degraded'].append('生成失败：' + failure)
         run.update(status=status, duration_ms=round((time.time() - state['started']) * 1000), context_characters=state['context_chars'], citation_ids=ids)
         self._save(run)
         logger.info('Agent 结束 run=%s 状态=%s 轮数=%s 工具调用=%s 时长=%sms', run['id'], status,
@@ -745,6 +932,9 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
         if not pending:
             self.extensions.finish_pending(run['id'])
         result = dict(answer=answer, mode='agent', citations=[citation(state['evidence'][eid]) for eid in ids], trace=run, metrics=state['metrics'], conversation_id=state['conversation_id'], pending_approval=run.get('pending') if pending else None, actions=list(state['actions']))
+        if failure:
+            result['failed'] = True
+            result['failure'] = failure
         if interrupted:
             result['interrupted'] = True
         if reasoning:
@@ -791,21 +981,36 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
 
         try:
             while (state['turns'] < limits['max_model_calls'] and state['calls'] < limits['max_tool_calls']
-                   and state['context_chars'] < limits['context_characters'] and time.time() - state['started'] < limits['max_seconds']):
+                   and time.time() - state['started'] < limits['max_seconds']):
                 if hooks and hooks.should_stop and hooks.should_stop():
                     return self._interrupt(state)
+                # 上下文管理替代回合预算（ZCode 对齐）：触顶先响应式压缩，压缩成功就继续；不可恢复才收尾。
+                if state['context_chars'] >= limits['context_characters']:
+                    if not self._compact_tool_results(state):
+                        break
+                    state['run']['degraded'].append('上下文触达预算，已压缩最早工具结果后继续')
                 started = time.perf_counter()
                 reasoning = ''
-                if hooks and (hooks.on_delta or hooks.on_reasoning):
-                    state['partial'] = ''
-                    assistant, usage, reasoning = stream_turn(get_model_config(), state['messages'], state['tools'],
-                                                              on_delta=on_delta, on_reasoning=on_reasoning,
-                                                              should_stop=hooks.should_stop,
-                                                              register_abort=hooks.register_abort)
-                else:
-                    assistant, usage = tool_turn(get_model_config(), state['messages'], state['tools'])
-                    # 非流式路径没有增量回调：整轮正文一次性记为一段，保证 timeline 完整。
-                    self._timeline_text(state, 'text', assistant.get('content') or '')
+                # 模型单轮响应异常（格式/截断/断流）有界重试一次：调用无副作用，属幂等；
+                # 已流出的增量照实保留，重试步骤单独可见，不静默吞掉首次响应。
+                for attempt in (1, 2):
+                    try:
+                        if hooks and (hooks.on_delta or hooks.on_reasoning):
+                            state['partial'] = ''
+                            assistant, usage, reasoning = stream_turn(get_model_config(), state['messages'], state['tools'],
+                                                                      on_delta=on_delta, on_reasoning=on_reasoning,
+                                                                      should_stop=hooks.should_stop,
+                                                                      register_abort=hooks.register_abort)
+                        else:
+                            assistant, usage = tool_turn(get_model_config(), state['messages'], state['tools'])
+                            # 非流式路径没有增量回调：整轮正文一次性记为一段，保证 timeline 完整。
+                            self._timeline_text(state, 'text', assistant.get('content') or '')
+                        break
+                    except ValueError as exc:
+                        if attempt == 2 or (hooks and hooks.should_stop and hooks.should_stop()):
+                            raise
+                        logger.warning('Agent 模型轮次失败 run=%s：%s（自动重试）', state['run']['id'], exc)
+                        self._event(state, 'model_retry', time.perf_counter(), hooks=hooks, status='error', note=str(exc))
                 state['turns'] += 1
                 state['messages'].append(assistant)
                 self._event(state, 'agent_model', started, hooks=hooks, usage=usage, calls=len(assistant.get('tool_calls', [])))
@@ -816,28 +1021,13 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                     return self._result(state, assistant['content'], reasoning=reasoning)
                 # Keep remaining calls for approval resume; never lose a tool_result.
                 state['queue'] = list(calls)
-                while state['queue']:
-                    if hooks and hooks.should_stop and hooks.should_stop():
-                        return self._interrupt(state)
-                    call = state['queue'].pop(0)
-                    if state['calls'] >= limits['max_tool_calls'] or state['context_chars'] >= limits['context_characters']:
-                        self._append_result(state, call, dict(error='执行额度已用完，工具未执行'))
-                        continue
-                    try:
-                        if not self._execute(state, call, hooks=hooks):
-                            return self._result(state, '此工具需要你的确认。请检查工具名称与参数，确认后继续执行。', pending=True)
-                        if state['actions']:
-                            return self._expansion_result(state)
-                    except Exception as exc:
-                        # Tool exceptions may contain credentials; never echo their text.
-                        if isinstance(exc, ValueError):
-                            logger.warning('Agent 工具调用失败 run=%s tool=%s：%s', state['run']['id'], call['function']['name'], exc)
-                        else:
-                            logger.warning('Agent 工具调用失败 run=%s tool=%s type=%s（详情不落日志，可能含凭证）',
-                                           state['run']['id'], call['function']['name'], type(exc).__name__)
-                        state['run']['degraded'].append('一次工具调用失败，模型可根据错误继续调整')
-                        self._append_result(state, call, dict(error=str(exc) if isinstance(exc, ValueError) else '工具执行失败，未自动重试'))
-                        self._event(state, 'tool_error', time.perf_counter(), hooks=hooks, label=call['function']['name'], status='error')
+                signal = self._drain_queue(state, hooks)
+                if signal == 'pending':
+                    return self._result(state, '此工具需要你的确认。请检查工具名称与参数，确认后继续执行。', pending=True)
+                if signal == 'expansion':
+                    return self._expansion_result(state)
+                if signal == 'interrupted':
+                    return self._interrupt(state)
             state['run']['degraded'].append('达到轮数、工具次数、上下文或时间上限')
             logger.info('Agent 达到执行上限 run=%s turns=%s calls=%s 时长=%.0fs', state['run']['id'],
                         state['turns'], state['calls'], time.time() - state['started'])
@@ -847,10 +1037,17 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                 # 取消线程关闭了模型流/MCP 会话，把断流异常按中断收尾而不是失败落库。
                 return self._interrupt(state)
             logger.warning('Agent 运行失败 run=%s：%s', state['run']['id'], exc)
-            state['run']['status'] = 'failed'
-            self._save(state['run'])
-            self.extensions.finish_pending(state['run']['id'])
-            raise ValueError(str(exc)) from None
+            # 失败不再裸抛：产出带 trace/timeline 的失败结果，执行过程照常落库可查。
+            return self._result(state, '本轮生成失败：' + str(exc) +
+                                ' 已执行的工具步骤保留在下方执行过程里，可点「重试本轮问题」重跑。',
+                                failure=str(exc))
+        except Exception:
+            if hooks and hooks.should_stop and hooks.should_stop():
+                return self._interrupt(state)
+            logger.exception('Agent 运行失败 run=%s', state['run']['id'])
+            # 非预期异常的详情可能含凭证，对外只给通用文案。
+            return self._result(state, '本轮生成失败，请稍后重试。已执行的工具步骤保留在下方执行过程里。',
+                                failure='生成失败，请稍后重试')
 
     def resume(self, run_id, approved, approval_id, hooks=None, grant=False):
         state = self.extensions.claim(run_id, approval_id)
@@ -878,34 +1075,31 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                 self.extensions.grant_tool(state['conversation_id'], grant_binding['server_id'], grant_binding['tool_name'])
             if approved:
                 try:
-                    self._execute(state, call, approved=True, hooks=hooks)
+                    outcome = self._execute(state, call, approved=True, hooks=hooks)
                 except Exception as exc:
                     logger.warning('已确认工具执行失败 run=%s tool=%s：%s', run_id, call['function']['name'],
                                    exc if isinstance(exc, ValueError) else type(exc).__name__)
+                    state['calls'] += 1
                     self._append_result(state, call, dict(error='已确认的工具执行失败或权限改变；未自动重试，可根据已有结果继续'))
                     self._event(state, 'tool_error', time.perf_counter(), hooks=hooks, label=call['function']['name'], status='error')
                     state['run']['degraded'].append('已确认工具执行失败，未自动重试')
+                    self._bump_loop_streak(state, call, hooks)
+                else:
+                    if outcome['kind'] != 'done':
+                        raise ValueError('工具确认状态已失效，请重新提问')
+                    self._merge_success(state, call, outcome['args'], outcome['result'], outcome['label'], outcome['started'], hooks)
             else:
                 self._append_result(state, call, dict(error='用户拒绝执行本次调用，不得再次尝试同一动作'))
                 self._event(state, 'tool_denied', time.perf_counter(), hooks=hooks, status='denied')
+                self._bump_loop_streak(state, call, hooks)
             # Complete calls from the same model turn before requesting another.
-            while state.get('queue'):
-                if hooks and hooks.should_stop and hooks.should_stop():
-                    return self._interrupt(state)
-                next_call = state['queue'].pop(0)
-                if state['calls'] >= state['limits']['max_tool_calls']:
-                    self._append_result(state, next_call, dict(error='工具执行额度用完'))
-                else:
-                    try:
-                        if not self._execute(state, next_call, hooks=hooks):
-                            return self._result(state, '下一项工具调用需要确认，请检查参数后继续。', pending=True)
-                        if state['actions']:
-                            return self._expansion_result(state)
-                    except Exception as exc:
-                        logger.warning('队列工具调用失败 run=%s tool=%s：%s', run_id, next_call['function']['name'],
-                                       exc if isinstance(exc, ValueError) else type(exc).__name__)
-                        self._append_result(state, next_call, dict(error='工具调用失败或权限改变，未自动重试'))
-                        self._event(state, 'tool_error', time.perf_counter(), hooks=hooks, label=next_call['function']['name'], status='error')
+            signal = self._drain_queue(state, hooks)
+            if signal == 'pending':
+                return self._result(state, '下一项工具调用需要确认，请检查参数后继续。', pending=True)
+            if signal == 'expansion':
+                return self._expansion_result(state)
+            if signal == 'interrupted':
+                return self._interrupt(state)
             return self._loop(state, hooks)
         except Exception:
             self.extensions.finish_pending(run_id)

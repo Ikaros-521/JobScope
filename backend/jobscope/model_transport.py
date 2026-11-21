@@ -287,18 +287,9 @@ def tool_turn(config, messages, tools, *, timeout=60):
             message = data['choices'][0]['message']
             text = message.get('content') or ''
             calls = message.get('tool_calls') or []
-        if not isinstance(text, str) or not isinstance(calls, list) or len(calls) > 4:
-            raise ValueError('响应格式无效或工具调用过多')
-        for call in calls:
-            if not isinstance(call['id'], str) or len(call['id']) > 200 or not isinstance(call['function']['name'], str):
-                raise ValueError('工具调用结构无效')
-            args = call['function']['arguments']
-            if not isinstance(args, str) or len(args) > 12000 or not isinstance(json.loads(args), dict):
-                raise ValueError('工具参数无效或过大')
-        if len({c['id'] for c in calls}) != len(calls) or (not calls and not text.strip()):
-            raise ValueError('模型没有返回有效回答或工具调用')
-        _log_usage('agent_turn', data.get('usage') or {})
-        return dict(role='assistant', content=text[:20000] or None, **({'tool_calls': calls} if calls else {})), data.get('usage', {})
+        assistant, usage = _validate_turn(calls, text, data.get('usage', {}))
+        _log_usage('agent_turn', usage)
+        return assistant, usage
     except httpx.HTTPStatusError as exc:
         logger.error('模型调用失败[agent_turn] model=%s status=%s 响应体=%s',
                      config.get('model'), exc.response.status_code, _status_detail(exc))
@@ -339,9 +330,11 @@ def _turn_body(config, messages, tools, *, stream, max_tokens=None):
 
 
 def _validate_turn(calls, text, usage):
+    """解析层只做格式与 schema 校验（ZCode 对齐）：数量不在这里截断——合法 fan-out 无上限，
+    失控检测由 Agent 循环的签名熔断（同名同参连续重复）负责，硬停止只留给资源与安全边界。"""
     import json
-    if not isinstance(text, str) or not isinstance(calls, list) or len(calls) > 4:
-        raise ValueError('响应格式无效或工具调用过多')
+    if not isinstance(text, str) or not isinstance(calls, list):
+        raise ValueError('响应格式无效')
     for call in calls:
         if not isinstance(call['id'], str) or len(call['id']) > 200 or not isinstance(call['function']['name'], str):
             raise ValueError('工具调用结构无效')

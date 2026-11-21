@@ -386,6 +386,14 @@ class RunManager:
                 handle.push('approval_required', handle.pending_payload)
                 return
             stored = self._persist(handle, result)[0]
+            if result.get('failed'):
+                # 先落库再广播 error：前端收到 error 即重载会话，落库后的失败消息（含执行过程）才能顶上来。
+                message = result.get('failure') or '生成失败，请稍后重试'
+                handle.error = message
+                handle.push('error', dict(message=message, message_id=stored['id']))
+                handle.finish()
+                logger.warning('对话生成失败已落库 run=%s conv=%s：%s', handle.id, handle.conversation_id, message)
+                return
             handle.push('done', dict(message_id=stored['id'], answer=result['answer'], mode=result.get('mode', 'agent'),
                                      interrupted=result.get('interrupted', False)))
             handle.finish()
@@ -396,6 +404,10 @@ class RunManager:
 
     def _persist(self, handle, result):
         entry = dict(role='assistant', content=result['answer'], mode=result.get('mode', 'agent'))
+        if result.get('failed'):
+            # 失败的回复也落库：执行过程（trace/timeline）必须能在历史里复查，而不是随 error 事件被清空。
+            entry['failed'] = True
+            entry['failure'] = result.get('failure', '')
         if result.get('reasoning'):
             entry['reasoning'] = result['reasoning']
         if result.get('citations'):
