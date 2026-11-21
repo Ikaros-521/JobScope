@@ -341,8 +341,10 @@ def test_signal_collect_passes_collector_status_through(agent, monkeypatch, stat
 def test_signal_collect_persists_signals_and_registers_citable_evidence(agent, monkeypatch):
     evidence = agent.repo.save_evidence(dict(title='甲公司 参保人数', company='甲公司', kind='disclosure',
                                              text='2024 年报：参保 120 人', url=''), 'aiqicha_web')
-    signal = types.SimpleNamespace(rule='insured_headcount_trend', value={'after': 120, 'before': 100},
-                                   evidence_id=evidence['id'])
+    # 管线真实契约：save_signal 落库后的 dict（model_dump 形态），不是对象——
+    # 旧桩用 SimpleNamespace 编码了错误契约，掩盖了线上信号一落库就 AttributeError 的 bug。
+    signal = dict(rule='insured_headcount_trend', value={'after': 120, 'before': 100},
+                  evidence_id=evidence['id'])
     task = agent.repo.create_task('signal_aiqicha_web', '甲公司')
     calls = stub_collect_source(monkeypatch, dict(status='completed', message='已保存 1 条信号。',
                                                   signals=[signal], task=task))
@@ -448,8 +450,8 @@ def test_signal_extract_refused_in_job_scope_without_task(agent, job, monkeypatc
 def test_signal_extract_returns_signals_and_citable_evidence(agent, job, monkeypatch):
     evidence = agent.repo.save_evidence(dict(title='甲公司 年报', company='甲公司', kind='disclosure',
                                              text='本期营业收入 1.2 亿，上年 1.0 亿', url=''), 'user_import')
-    signal = types.SimpleNamespace(rule='disclosure_revenue_trend', value={'current': 120000000, 'previous': 100000000},
-                                   evidence_id=evidence['id'])
+    signal = dict(rule='disclosure_revenue_trend', value={'current': 120000000, 'previous': 100000000},
+                  evidence_id=evidence['id'])
     task = agent.repo.create_task('reliability_extract', '甲公司')
     calls = stub_run_extract(monkeypatch, dict(status='completed', message='抽取 1 条。', accepted=1, evidence=1,
                                                signals=[signal], task=task, identity=None))
@@ -513,3 +515,35 @@ def test_chat_loop_executes_reliability_refresh_tool(client, monkeypatch):
     assert any(event['tool'] == 'reliability_refresh' and event['status'] == 'completed' for event in events)
     tool_message = json.loads(calls[1]['messages'][-1]['content'])
     assert tool_message['status'] == 'completed' and tool_message['dimensions']
+
+
+def test_signal_collect_reads_pipeline_signals_as_dicts(agent, monkeypatch):
+    # reliability 管线返回的 signals 是 save_signal 落库后的 dict（model_dump 形态）：
+    # 曾按 RawSignal 属性访问，信号一落库就 AttributeError（2026-11-21 线上五连炸的根因）。
+    saved_signal = dict(id='S-x', company_id='C-1', dimension='stability', rule='salary_quote_coverage',
+                        value={'median': 20}, unit='k', source_class='derived', evidence_id='E-fake1',
+                        observed_at='', collected_at='')
+    monkeypatch.setattr('jobscope.reliability.collection.collect_source',
+                        lambda repo, data_dir, company, source, credit_code='': dict(
+                            status='completed', message='采集完成', signals=[saved_signal], task=dict(id='T-1')))
+    state = state_for(agent, scope_for('global'))
+    result = agent._builtin(state, 'signal_collect', dict(company='甲公司', source='jobscope_jobs'))
+    assert result['status'] == 'completed' and result['task_id'] == 'T-1'
+    assert result['signals'] == [dict(rule='salary_quote_coverage', value={'median': 20})]
+    # 信号引用的证据不存在时不编造可引用清单，但工具本身不再炸
+    assert result['citable_evidence'] == []
+
+
+def test_signal_extract_reads_pipeline_signals_as_dicts(agent, monkeypatch):
+    saved_signal = dict(id='S-y', company_id='C-1', dimension='stability', rule='team_size_statement',
+                        value={'size': 50}, unit='人', source_class='user_material', evidence_id='E-fake2',
+                        observed_at='', collected_at='')
+    monkeypatch.setattr('jobscope.reliability.service.run_signal_extract',
+                        lambda repo, company, credit_code='', limit=12, max_tokens=1200: dict(
+                            status='completed', message='抽取完成', accepted=1, evidence=3,
+                            signals=[saved_signal], task=dict(id='T-2')))
+    state = state_for(agent, scope_for('global'))
+    result = agent._builtin(state, 'signal_extract', dict(company='甲公司'))
+    assert result['status'] == 'completed' and result['accepted'] == 1 and result['task_id'] == 'T-2'
+    assert result['signals'] == [dict(rule='team_size_statement', value={'size': 50})]
+    assert result['citable_evidence'] == []

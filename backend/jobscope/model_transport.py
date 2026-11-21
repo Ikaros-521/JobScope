@@ -208,6 +208,16 @@ def complete(config, system, user, *, max_tokens=1800, temperature=None, timeout
                                        max_tokens, cap, config.get('model'), detail)
                         budget = cap
                         continue
+                    # 思考模型把预算全花在推理上、正文为空，被上游包成 5xx（Z.ai "empty reply …
+                    # whole output spent on reasoning"，2026-11-21 抽取管线实测）：同参数重试必然再炸，
+                    # 提升预算重试一次；真实网关故障的 5xx 不带这个特征，照旧快速失败。
+                    if attempt == 1 and response.status_code >= 500 and 'empty reply' in detail.lower():
+                        lifted = min(max(budget * 4, 8192), output_budget(config, 32768))
+                        if lifted > budget:
+                            logger.warning('上游 5xx 空回复（思考耗尽预算），max_tokens %s→%s 重试一次[model=%s]：%s',
+                                           budget, lifted, config.get('model'), detail)
+                            budget = lifted
+                            continue
                 response.raise_for_status()
                 if len(response.content) > 2000000:
                     raise ValueError('模型响应超过上限')

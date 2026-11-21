@@ -165,6 +165,53 @@ def test_complete_clamps_output_budget_on_upstream_400(client, monkeypatch):
     assert learned_cap(config) == 131072
 
 
+def test_complete_retries_5xx_empty_reply_with_lifted_budget(monkeypatch):
+    # 思考模型把预算全花在推理上、正文为空，被上游包成 5xx（Z.ai empty reply）：
+    # 同参数重试必然再炸，complete 应提升预算重试一次；真实网关故障不重试。
+    import jobscope.model_transport as mt
+    mt.learned_caps.clear()
+    calls = []
+    original = httpx.Client.post
+
+    def post(self, url, **kwargs):
+        from fastapi.testclient import TestClient
+        if isinstance(self, TestClient):
+            return original(self, url, **kwargs)
+        calls.append(json.loads(json.dumps(kwargs['json'])))
+        if len(calls) == 1:
+            return httpx.Response(502, json={'error': {'message': 'Z.ai: an empty reply (the model answered nothing; '
+                                                       'try again) — cut at its length, the whole output spent on '
+                                                       "reasoning (the request's limit was 1200 tokens)"}},
+                                  request=httpx.Request('POST', url))
+        return httpx.Response(200, json={'choices': [{'message': {'content': '判断完成'}}]}, request=httpx.Request('POST', url))
+
+    monkeypatch.setattr(httpx.Client, 'post', post)
+    config = dict(mode='remote', protocol='openai', url='http://127.0.0.1:9/v1/chat/completions', model='zai/glm-5.3-flash', key='')
+    content, _ = mt.complete(config, 'sys', 'user', max_tokens=1200, timeout=5)
+    assert content == '判断完成'
+    assert [body['max_tokens'] for body in calls] == [1200, 8192]
+
+
+def test_complete_plain_5xx_fails_fast_without_retry(monkeypatch):
+    import jobscope.model_transport as mt
+    mt.learned_caps.clear()
+    calls = []
+    original = httpx.Client.post
+
+    def post(self, url, **kwargs):
+        from fastapi.testclient import TestClient
+        if isinstance(self, TestClient):
+            return original(self, url, **kwargs)
+        calls.append(1)
+        return httpx.Response(502, json={'error': {'message': 'bad gateway'}}, request=httpx.Request('POST', url))
+
+    monkeypatch.setattr(httpx.Client, 'post', post)
+    config = dict(mode='remote', protocol='openai', url='http://127.0.0.1:9/v1/chat/completions', model='fixture', key='')
+    with pytest.raises(httpx.HTTPStatusError):
+        mt.complete(config, 'sys', 'user', max_tokens=1200, timeout=5)
+    assert len(calls) == 1
+
+
 def test_channel_test_auto_adjusts_output_cap(client, monkeypatch):
     from jobscope.model_transport import learned_caps
     learned_caps.clear()

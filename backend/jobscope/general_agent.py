@@ -562,9 +562,12 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                             note='来源当前不可用（停用/挂起/未配置），如实向用户转述该说明。')
             except ValueError as exc:
                 return dict(status='failed', message=str(exc), task_id=None, signals=[], citable_evidence=[])
-            citable = self._register_citable(state, policy, [item.evidence_id for item in outcome.get('signals') or []])
+            # collect_source/run_signal_extract 返回的 signals 是 save_signal 落库后的 dict
+            # （model_dump 形态），不是 RawSignal 对象——曾按属性访问，信号一落库就 AttributeError。
+            signals = outcome.get('signals') or []
+            citable = self._register_citable(state, policy, [item['evidence_id'] for item in signals if item.get('evidence_id')])
             return dict(status=outcome['status'], message=outcome['message'], task_id=outcome['task']['id'],
-                        signals=[dict(rule=item.rule, value=item.value) for item in outcome.get('signals') or []],
+                        signals=[dict(rule=item['rule'], value=item['value']) for item in signals],
                         citable_evidence=[dict(id=item['id'], title=item['title']) for item in citable],
                         note='信号已落库；needs_login/needs_verification/backoff 时如实转述并请用户在项目浏览器处理后重试，不重试不绕过。分数更新需调用reliability_refresh。')
         if name == 'job_deep_read':
@@ -616,10 +619,12 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             except ValueError as exc:
                 return dict(status='failed', message=str(exc), accepted=0, evidence=0, task_id=None,
                             signals=[], citable_evidence=[])
-            citable = self._register_citable(state, policy, [item.evidence_id for item in outcome['signals']])
+            # 同 signal_collect：run_signal_extract 返回的 signals 是落库后的 dict，不是 RawSignal 对象。
+            signals = outcome['signals'] or []
+            citable = self._register_citable(state, policy, [item['evidence_id'] for item in signals if item.get('evidence_id')])
             return dict(status=outcome['status'], message=outcome['message'], accepted=outcome['accepted'],
                         evidence=outcome['evidence'], task_id=outcome['task']['id'],
-                        signals=[dict(rule=item.rule, value=item.value) for item in outcome['signals']],
+                        signals=[dict(rule=item['rule'], value=item['value']) for item in signals],
                         citable_evidence=[dict(id=item['id'], title=item['title']) for item in citable],
                         note='抽取出的信号已落库；分数更新需调用reliability_refresh。')
         if name == 'reliability_refresh':
@@ -779,8 +784,9 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                     **({'action': result['action']} if call['function']['name'] == 'request_scope_expansion' else {}))
         self._bump_loop_streak(state, call, hooks, args)
 
-    def _merge_error(self, state, call, hooks, exc, counted=False):
-        """把一次失败调用合并进结果流：异常原文可能含凭证，只透传 ValueError 的消息。"""
+    def _merge_error(self, state, call, hooks, exc, counted=False, started=None):
+        """把一次失败调用合并进结果流：异常原文可能含凭证，只透传 ValueError 的消息。
+        started 传调用起点：tool_error 事件要显示真实耗时（曾经把当下时间当起点，恒显 <1ms）。"""
         if counted:
             state['calls'] += 1
         if isinstance(exc, ValueError):
@@ -790,7 +796,8 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                            state['run']['id'], call['function']['name'], type(exc).__name__)
         state['run']['degraded'].append('一次工具调用失败，模型可根据错误继续调整')
         self._append_result(state, call, dict(error=str(exc) if isinstance(exc, ValueError) else '工具执行失败，未自动重试'))
-        self._event(state, 'tool_error', time.perf_counter(), hooks=hooks, label=call['function']['name'], status='error')
+        self._event(state, 'tool_error', started if started is not None else time.perf_counter(), hooks=hooks,
+                    label=call['function']['name'], status='error')
         self._bump_loop_streak(state, call, hooks)
 
     def _compact_tool_results(self, state):
@@ -834,6 +841,7 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
     def _run_batch(self, state, batch, hooks):
         """读类内置工具并行执行：主线程校验与合并，工作线程只跑调用体，按模型产生顺序合并。
         共享状态写（证据登记/metrics/索引同步）由 _state_lock 保护；批内不出现审批与范围扩展。"""
+        batch_started = time.perf_counter()
         jobs = []
         for call in batch:
             try:
@@ -854,9 +862,9 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                     errors[call_id] = exc
         for call, args, error in jobs:
             if error is not None:
-                self._merge_error(state, call, hooks, error)
+                self._merge_error(state, call, hooks, error, started=batch_started)
             elif call['id'] in errors:
-                self._merge_error(state, call, hooks, errors[call['id']], counted=True)
+                self._merge_error(state, call, hooks, errors[call['id']], counted=True, started=batch_started)
             else:
                 result, started = results[call['id']]
                 self._merge_success(state, call, args, result, '', started, hooks)
@@ -870,9 +878,10 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             self._bump_loop_streak(state, call, hooks)
             return None
         try:
+            started = time.perf_counter()
             outcome = self._execute(state, call, hooks=hooks)
         except Exception as exc:
-            self._merge_error(state, call, hooks, exc)
+            self._merge_error(state, call, hooks, exc, started=started)
             return None
         if outcome['kind'] == 'pending':
             return 'pending'
@@ -1074,6 +1083,7 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             if approved and grant and grant_binding:
                 self.extensions.grant_tool(state['conversation_id'], grant_binding['server_id'], grant_binding['tool_name'])
             if approved:
+                approved_started = time.perf_counter()
                 try:
                     outcome = self._execute(state, call, approved=True, hooks=hooks)
                 except Exception as exc:
@@ -1081,7 +1091,7 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                                    exc if isinstance(exc, ValueError) else type(exc).__name__)
                     state['calls'] += 1
                     self._append_result(state, call, dict(error='已确认的工具执行失败或权限改变；未自动重试，可根据已有结果继续'))
-                    self._event(state, 'tool_error', time.perf_counter(), hooks=hooks, label=call['function']['name'], status='error')
+                    self._event(state, 'tool_error', approved_started, hooks=hooks, label=call['function']['name'], status='error')
                     state['run']['degraded'].append('已确认工具执行失败，未自动重试')
                     self._bump_loop_streak(state, call, hooks)
                 else:
