@@ -25,7 +25,7 @@ const STICK_THRESHOLD = 80
 // 上下文估算基数：system 提示 + 工具声明，不随会话变化。
 const CONTEXT_BASE_TOKENS = 600
 
-export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onConfigureModel, onOpenKnowledge, navigation, onNavigateConversation, onOpened, prefill }: {
+export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onConfigureModel, onOpenKnowledge, navigation, onNavigateConversation, onOpened, prefill, onPrefillConsumed }: {
   scope: ChatScope; modelConfigured: boolean; onManageExtensions?: () => void
   onConfigureModel?: () => void
   onOpenKnowledge?: () => void
@@ -33,8 +33,11 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCo
   onNavigateConversation?: (navigation: ConversationNavigation) => void
   onOpened?: (requestId: string) => void
   // 外部（如求职参考的「让 Agent 协同补齐」按钮）带来的预填指令：token 变化时写入输入框一次，
-  // 不覆盖用户随后手动改动；只在输入框为空时应用，避免打断正在编辑的内容。
-  prefill?: { text: string; token: string } | null
+  // 不覆盖用户随后手动改动；只在输入框为空时应用，避免打断正在编辑的内容。应用后回调消费，
+  // 避免之后每次进入工作区都被同一段指令顶出来；newSession 的入口先落到全新会话再预填——
+  // 否则指令会写进用户上次停留的旧会话，看起来像功能失灵。
+  prefill?: { text: string; token: string; newSession?: boolean } | null
+  onPrefillConsumed?: () => void
 }) {
   const isGlobal = scope.kind === 'global'
   const isJob = scope.kind === 'job'
@@ -60,15 +63,31 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCo
   }, [draftKey, opening])
   // 预填指令：同一 token 只应用一次；用户已开始输入（输入框非空）就不打扰。
   const prefillSeen = useRef('')
+  // newSession 入口的指令先挂起，等 openConversation(null) 的会话重置与草稿恢复落定后再写入，
+  // 否则预填会被空草稿的恢复清掉；应用后即清空（幂等）。
+  const [pendingPrompt, setPendingPrompt] = useState('')
   useEffect(() => {
     if (!prefill || prefill.token === prefillSeen.current) return
     prefillSeen.current = prefill.token
-    setInputState(current => {
-      if (current.trim()) return current
-      sessionStorage.setItem(draftKeyRef.current, prefill.text)
-      return prefill.text
-    })
+    if (prefill.newSession) {
+      // 协同补齐等任务入口要落在全新会话：与「＋ 新对话」同一动作，旧会话照常留在会话列表里。
+      setPendingPrompt(prefill.text)
+      void openConversation(null)
+    } else {
+      setInputState(current => {
+        if (current.trim()) return current
+        sessionStorage.setItem(draftKeyRef.current, prefill.text)
+        return prefill.text
+      })
+    }
+    onPrefillConsumed?.()
   }, [prefill])
+  // 挂起的预填在工作区空闲（不在打开会话）时应用；声明在草稿恢复之后，同一次提交里后跑、覆盖空草稿。
+  useEffect(() => {
+    if (!pendingPrompt || opening) return
+    setInput(pendingPrompt)
+    setPendingPrompt('')
+  }, [pendingPrompt, opening])
   const [editing, setEditing] = useState<EditingTarget>(null)
   const [sessionsCollapsed, setSessionsCollapsed] = useState(isJob)
   const [globalModels, setGlobalModels] = useState<string[]>([])

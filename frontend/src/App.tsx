@@ -109,10 +109,12 @@ export default function App() {
   const compareSelected = useCompareSelection()
   const [navigationOpen, setNavigationOpen] = useState(false)
   const [chatNavigation, setChatNavigation] = useState<ConversationNavigation | null>(null)
-  // 全局对话的预填指令（如求职参考的「让 Agent 协同补齐」）：token 保证同一段指令可重复触发。
-  const [chatPrompt, setChatPrompt] = useState<{ text: string; token: string } | null>(null)
+  // 全局对话的预填指令（如求职参考的「让 Agent 协同补齐」、资料库导入）：token 保证同一段指令可
+  // 重复触发；newSession 让这类任务入口先落到全新会话，不混进用户上次停留的旧会话。工作区应用后
+  // 回调置空，避免用户之后每次进入全局对话都被这段旧指令重新打断。
+  const [chatPrompt, setChatPrompt] = useState<{ text: string; token: string; newSession?: boolean } | null>(null)
   const openGlobalAgent = useCallback((prompt: string) => {
-    setChatPrompt({ text: prompt, token: `${Date.now()}-${Math.random().toString(36).slice(2)}` })
+    setChatPrompt({ text: prompt, token: `${Date.now()}-${Math.random().toString(36).slice(2)}`, newSession: true })
     setView('global')
   }, [])
   const navigateConversation = useCallback((request: ConversationNavigation) => {
@@ -305,7 +307,7 @@ export default function App() {
 
       {view === 'knowledge' && <KnowledgeView onCountChange={setKnowledgeTotal} />}
 
-      {view === 'global' && <><h1 className="sr-only">全局对话</h1><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onManageExtensions={() => openSettings('extensions')} onOpenKnowledge={() => setView('knowledge')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} prefill={chatPrompt} /></>}
+      {view === 'global' && <><h1 className="sr-only">全局对话</h1><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onManageExtensions={() => openSettings('extensions')} onOpenKnowledge={() => setView('knowledge')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} prefill={chatPrompt} onPrefillConsumed={() => setChatPrompt(null)} /></>}
 
       {view === 'compare' && <CompanyCompare />}
 
