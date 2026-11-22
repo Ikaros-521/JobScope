@@ -388,6 +388,18 @@ class RunwayInput(RequestModel):
     notes: str = Field(default='', max_length=500)
 
 
+class JdAssessmentResponse(RequestModel):
+    """反向JD测评单题作答：trial_id 对应题库序列，rt_ms 反应时（过快判无效，进质检）。"""
+    trial_id: str = Field(min_length=1, max_length=10)
+    choice: Literal['a', 'b']
+    rt_ms: int = Field(default=0, ge=0, le=600000)
+
+
+class JdAssessmentInput(RequestModel):
+    """反向JD测评提交：全量作答一次落库，服务端确定性计分并生成报告（无 LLM）。"""
+    responses: list[JdAssessmentResponse] = Field(min_length=1, max_length=120)
+
+
 class ManualDescriptionInput(RequestModel):
     description: str = Field(min_length=1, max_length=100000)
     source_note: str = Field(min_length=1, max_length=1000)

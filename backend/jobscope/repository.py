@@ -65,6 +65,7 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS outreach_versions (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), kind TEXT NOT NULL, text TEXT NOT NULL, origin TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, used_at TEXT NOT NULL DEFAULT '');
                 CREATE TABLE IF NOT EXISTS gap_narratives (id TEXT PRIMARY KEY, origin TEXT NOT NULL DEFAULT '', job_id TEXT NOT NULL DEFAULT '', job_title TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runway_profile (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS jd_assessments (id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL);
             """)
             self._migrate_conversations(conn)
             # profile_entries.source 记录条目来源（笔记库导入的「规范化库根::相对路径」锚点），幂等重导靠它原位更新。
@@ -1140,6 +1141,31 @@ class Repository:
         # id 是随机数不是时间序：排序锚 created_at + rowid，同秒内后生成的排前面。
         with self.connection() as conn:
             rows = conn.execute('SELECT id,origin,job_id,job_title,payload,created_at FROM gap_narratives '
+                                'ORDER BY created_at DESC, rowid DESC LIMIT ?', (limit,)).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item['payload'] = json.loads(item['payload'] or '{}')
+            items.append(item)
+        return items
+
+    # ── 反向JD测评（2026-11-22）：48 题作答 + 确定性报告，只留最近 5 份供回看。 ──
+
+    def save_jd_assessment(self, payload):
+        """每次完整作答落一份版本；payload = {responses, report}，报告在提交时确定性算好。"""
+        item = {'id': 'JD-' + uuid.uuid4().hex[:20], 'payload': payload, 'created_at': now()}
+        with self.connection() as conn:
+            # INSERT 一律显式列名（迁移教训：位置式插入在追加列后静默错位）。
+            conn.execute('INSERT INTO jd_assessments (id,payload,created_at) VALUES (?,?,?)',
+                         (item['id'], json.dumps(payload, ensure_ascii=False), item['created_at']))
+            stale = conn.execute('SELECT id FROM jd_assessments ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET 5').fetchall()
+            for row in stale:
+                conn.execute('DELETE FROM jd_assessments WHERE id=?', (row['id'],))
+        return item
+
+    def jd_assessments(self, limit=5):
+        with self.connection() as conn:
+            rows = conn.execute('SELECT id,payload,created_at FROM jd_assessments '
                                 'ORDER BY created_at DESC, rowid DESC LIMIT ?', (limit,)).fetchall()
         items = []
         for row in rows:
