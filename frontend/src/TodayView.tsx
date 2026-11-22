@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createBackup, date, getDashboard, relativeDays } from './api'
-import type { Dashboard, DashboardDue } from './api'
+import type { Dashboard, DashboardDue, PipelineWeeklyWeek } from './api'
 import { toast } from './toast'
 import { Icon } from './Icon'
 import { sourceNames } from './JobCard'
@@ -55,7 +55,7 @@ export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJob
     <div className="loading-state"><span className="spinner" />正在读取本机数据…</div>
   </section>
 
-  const { counts, pipeline, due, new_jobs: newJobs, backup, recent_tasks: recentTasks } = data
+  const { counts, pipeline, due, weekly, new_jobs: newJobs, backup, recent_tasks: recentTasks } = data
   const backupStale = backup.days_since === null || backup.days_since > BACKUP_REMIND_DAYS
   const staleFollowUps = pipeline.follow_ups
 
@@ -100,6 +100,8 @@ export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJob
             <div className="today-stat"><b>{counts.companies.toLocaleString()}</b><span>公司主体</span></div>
             <div className="today-stat"><b>{counts.evidence.toLocaleString()}</b><span>证据资料</span></div>
           </div>
+          <div className="section-heading today-second-heading"><div><h2>本周节奏</h2><p className="body-small muted">按周聚合管线推进，环比上周——节奏比单日爆发更可靠。</p></div></div>
+          {weekly && <WeeklyRhythm weeks={weekly.weeks} onOpenFavorites={onOpenFavorites} />}
           <div className="section-heading today-second-heading"><div><h2>近 7 天新入库</h2></div></div>
           {newJobs.length === 0 ? <div className="inline-empty">近 7 天没有新岗位入库。</div>
             : <ul className="today-new-list">
@@ -135,4 +137,32 @@ function DueRow({ item, onOpen }: { item: DashboardDue; onOpen: (id: string) => 
       {PIPELINE_NAMES[item.status] || item.status}{item.note ? ` · ${item.note}` : ''}
     </span>
   </li>
+}
+
+// 本周节奏（2026-11-22 P1）：末两周环比。只陈述数字与变化，不做好坏评价；
+// 全 0 时是「这周还没动」的事实提醒，不是催办。
+function WeeklyRhythm({ weeks, onOpenFavorites }: { weeks: PipelineWeeklyWeek[]; onOpenFavorites: () => void }) {
+  if (weeks.length === 0) return null
+  const [current, previous] = [weeks[weeks.length - 1], weeks[weeks.length - 2] || null]
+  const metrics = [
+    { key: 'applied', label: '投递' },
+    { key: 'interviewing', label: '约面' },
+    { key: 'offer', label: 'Offer' },
+    { key: 'new_favorites', label: '新收藏' },
+  ] as const
+  return <div className="today-weekly">
+    {metrics.map(metric => {
+      const now = current[metric.key]
+      const before = previous ? previous[metric.key] : null
+      const delta = before === null ? '' : now === before ? '持平' : now > before ? `+${now - before}` : `${now - before}`
+      return <div key={metric.key} className="today-weekly-stat" title={before === null ? undefined : `上周 ${before}`}>
+        <b>{now}</b>
+        <span>{metric.label}</span>
+        {delta && <em className={delta.startsWith('+') ? 'up' : delta === '持平' ? '' : 'down'}>{delta}</em>}
+      </div>
+    })}
+    {current.applied === 0 && current.new_favorites === 0
+      ? <span className="tiny-label">这周还没有推进——去收藏夹挑两家投出去。</span>
+      : <button type="button" className="text-button" onClick={onOpenFavorites}>去推进<Icon name="arrow" size={12} /></button>}
+  </div>
 }

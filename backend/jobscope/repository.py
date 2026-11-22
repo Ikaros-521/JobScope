@@ -19,6 +19,23 @@ def digest(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+def iso_week_start(value):
+    """ISO 周锚点：该时刻所在周的周一 00:00。事件戳统一 UTC，周界也按 UTC 切
+    （与跟进截止日按本地日历日的口径不同：周报是统计聚合，差 8 小时只影响跨周零点附近的归属）。"""
+    from datetime import datetime, timedelta, timezone
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    start = value - timedelta(days=value.weekday())
+    return start.replace(hour=0, minute=0, second=0, microsecond=0)
+
+
 class Repository:
     def __init__(self, data_dir):
         self.data_dir = Path(data_dir)
@@ -1017,6 +1034,91 @@ class Repository:
             cursor = conn.execute("UPDATE outreach_versions SET used_at=? WHERE id=? AND job_id=? AND used_at=''",
                                   (now(), version_id, job_id))
             return cursor.rowcount > 0
+
+    # ── 每周节奏与 Offer 对比（2026-11-22，P1）：周报是心态锚点，offer 对比是收口决策。 ──
+
+    def pipeline_weekly(self, weeks=4):
+        """按 ISO 周聚合最近 N 周（含当前周）的管线推进与新收藏，旧→新排列。
+
+        投递/约面/Offer/归档 = 对应 to_status 事件数（事件流上线前的历史无数据，如实为 0）；
+        新收藏 = starred_at 落在该周。前端取末两周做环比，本机数据不出「目标催办」类结论。"""
+        from datetime import timedelta
+        starts = [iso_week_start(now()) - timedelta(weeks=i) for i in range(weeks - 1, -1, -1)]
+        buckets = {start: {'week_start': start.date().isoformat(), 'applied': 0, 'interviewing': 0,
+                           'offer': 0, 'archived': 0, 'new_favorites': 0} for start in starts}
+        with self.connection() as conn:
+            for row in conn.execute('SELECT to_status, created_at FROM job_pipeline_events'):
+                start = iso_week_start(row['created_at'])
+                if start in buckets and row['to_status'] in ('applied', 'interviewing', 'offer', 'archived'):
+                    buckets[start][row['to_status']] += 1
+            for row in conn.execute("SELECT json_extract(payload,'$.starred_at') AS starred_at FROM jobs "
+                                    "WHERE json_extract(payload,'$.starred')=1"):
+                start = iso_week_start(row['starred_at'])
+                if start in buckets:
+                    buckets[start]['new_favorites'] += 1
+        return {'weeks': [buckets[start] for start in starts]}
+
+    @staticmethod
+    def _match_wage_baseline(baselines, job):
+        """岗位 ↔ 薪资基线匹配：城市前缀命中 location 且角色关键词互含才可比。
+
+        只在城市+角色同时命中时给参考值（同城不同岗的基线没有参考意义）；同键多条取
+        最新年份、多条教育取均值，note 写明口径。返回 (median, note) 或 (None, '')。"""
+        location = str(job.get('location') or '').strip()
+        title = str(job.get('title') or '').replace(' ', '').casefold()
+        if not location or not title:
+            return None, ''
+        matched = {}
+        for row in baselines:
+            city, role = str(row['city']).strip(), str(row['role']).strip()
+            if not city or not role:
+                continue
+            if city not in location and not location.startswith(city):
+                continue
+            role_key = role.replace(' ', '').casefold()
+            if role_key not in title and title not in role_key:
+                continue
+            key = (city, role_key)
+            known = matched.get(key)
+            if known is None or str(row['year']) > known[0]['year']:
+                matched[key] = [row]
+            elif str(row['year']) == known[0]['year']:
+                known.append(row)
+        if not matched:
+            return None, ''
+        rows = max(matched.values(), key=lambda group: group[0]['year'])
+        year = rows[0]['year']
+        median = round(sum(float(r['monthly_median']) for r in rows) / len(rows))
+        return median, f'{rows[0]["city"]}·{rows[0]["role"]}·{year}年基线'
+
+    def offer_comparison(self):
+        """Offer 状态岗位的并排决策表：薪资数字、可靠度分带、与本地薪资基线的差值。
+
+        全部只读本库；基线差值只对「城市+角色可比」的岗位计算，中位值口径如实标注，
+        差值是参考不是该不该去的结论。"""
+        items = []
+        with self.connection() as conn:
+            jobs = [json.loads(row['payload']) for row in conn.execute(
+                "SELECT payload FROM jobs WHERE json_extract(payload,'$.pipeline_status')='offer' "
+                "AND json_extract(payload,'$.duplicate_of') IS NULL")]
+            baselines = [dict(row) for row in conn.execute('SELECT city, role, education, year, monthly_median FROM wage_baselines')]
+            reliability = self._reliability_score_index(conn)
+        for job in jobs:
+            score = reliability.get(str(job.get('company') or '').strip())
+            baseline_median, baseline_note = self._match_wage_baseline(baselines, job)
+            salary_min, salary_max = job.get('salary_monthly_min'), job.get('salary_monthly_max')
+            delta = None
+            if baseline_median and salary_min and salary_max:
+                mid = (salary_min + salary_max) / 2
+                delta = round((mid - baseline_median) / baseline_median, 3)
+            items.append({'id': job['id'], 'title': job.get('title', ''), 'company': job.get('company', ''),
+                          'location': job.get('location', ''), 'salary': job.get('salary', ''),
+                          'salary_monthly_min': salary_min, 'salary_monthly_max': salary_max,
+                          'source': job.get('source', ''), 'starred_at': job.get('starred_at', ''),
+                          'reliability_score': score,
+                          'reliability_band': self._reliability_band(score) if score is not None else None,
+                          'baseline_median': baseline_median, 'baseline_note': baseline_note, 'baseline_delta': delta})
+        return items
 
     # ── 岗位去重（2026-11-19）：同一岗位多平台/多次采集各存一条时，标记主次而不是删除。 ──
     # 重复项默认不进列表与统计（_job_filters / jobs()），详情按 id 仍可读；拆开即恢复独立身份。

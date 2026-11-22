@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, date, getPipelineReview, patchJobs, post, startDetailBatch } from './api'
-import type { Job, PageInfo, PipelineFunnel, PipelineFunnelBucket, PipelineReview, Task } from './api'
+import type { Job, OfferComparison, PageInfo, PipelineFunnel, PipelineFunnelBucket, PipelineReview, Task } from './api'
 import { emptyPage, Pagination } from './Pagination'
 import { toast } from './toast'
 import { addCompareCompany } from './compareSelectionStore'
@@ -67,6 +67,31 @@ function FunnelPanel({ funnel }: { funnel: PipelineFunnel }) {
       </div>)}
     </div>
   </>
+}
+
+// Offer 对比（2026-11-22 P1）：Offer 状态岗位并排——薪资、可靠度分带、与本地薪资基线的差值。
+// 基线差值只对「城市+角色可比」的岗位有值，是参考不是该不该去的结论。
+function OffersPanel({ offers, onOpenJob }: { offers: OfferComparison[]; onOpenJob: (id: string) => void }) {
+  const salaryText = (item: OfferComparison) =>
+    item.salary_monthly_min && item.salary_monthly_max
+      ? `${Math.round(item.salary_monthly_min / 1000)}–${Math.round(item.salary_monthly_max / 1000)}K`
+      : (item.salary || '—')
+  return <div className="pipeline-offers">
+    <h4 title="Offer 状态的岗位并排；基线差值只对城市+角色可比的岗位计算，是参考不是结论">Offer 对比</h4>
+    <table>
+      <thead><tr><th>岗位</th><th>月薪</th><th>可靠度</th><th>vs 薪资基线</th></tr></thead>
+      <tbody>{offers.map(item => {
+        const delta = item.baseline_delta === null || item.baseline_delta === undefined ? null
+          : `${item.baseline_delta >= 0 ? '+' : ''}${Math.round(item.baseline_delta * 100)}%`
+        return <tr key={item.id}>
+          <td><button type="button" className="text-button" onClick={() => onOpenJob(item.id)}>{item.title} · {item.company}</button></td>
+          <td>{salaryText(item)}</td>
+          <td>{item.reliability_band || '未评估'}</td>
+          <td><b title={item.baseline_note ? `${item.baseline_note}（中位 ${item.baseline_median}）` : undefined}>{delta || '—'}</b></td>
+        </tr>
+      })}</tbody>
+    </table>
+  </div>
 }
 
 // 收藏夹：标星岗位的集中视图。只做轻列表（筛选/勾选/批量反查/横评/取消收藏），
@@ -216,6 +241,7 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
           {PIPELINE_ORDER.map(status => <span key={status} className="pipeline-chip-stat"><b>{review.totals[status] || 0}</b>{PIPELINE_NAMES[status]}</span>)}
         </div>
         {review.funnel && <FunnelPanel funnel={review.funnel} />}
+        {review.offers && review.offers.length > 0 && <OffersPanel offers={review.offers} onOpenJob={onOpenJob} />}
         {review.follow_ups.length > 0 ? <div className="pipeline-followups">
           <strong>超 {review.stale_days} 天未跟进</strong>
           <ul>{review.follow_ups.map(item => <li key={item.id}>

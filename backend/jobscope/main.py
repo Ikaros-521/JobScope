@@ -658,7 +658,9 @@ def create_app(data_dir=None):
                 'recent_changes': [strip(item) for item in recent_changes],
                 'follow_ups': [strip(item) for item in follow_ups],
                 # 漏斗转化与归因（2026-11-22）：曾到达口径 + 来源/定制简历/可靠度分带切片。
-                'funnel': repo.pipeline_funnel()}
+                'funnel': repo.pipeline_funnel(),
+                # Offer 对比（2026-11-22 P1）：Offer 状态岗位并排，基线差值只对可比岗位计算。
+                'offers': repo.offer_comparison()}
 
     @app.get('/api/jobs/pipeline/review')
     def pipeline_review():
@@ -713,6 +715,8 @@ def create_app(data_dir=None):
             'counts': repo.overview_counts(),
             'pipeline': _pipeline_review_payload(),
             'due': repo.pipeline_due_items(),
+            # 本周节奏（2026-11-22 P1）：按 ISO 周聚合事件流与新收藏，末两周环比在前端算。
+            'weekly': repo.pipeline_weekly(),
             'new_jobs': repo.recent_first_seen(),
             'backup': backups.status(),
             'recent_tasks': repo.tasks()[:5],

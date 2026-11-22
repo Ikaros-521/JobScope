@@ -26,6 +26,7 @@ export type PipelineReview = {
   recent_changes: { id: string; title: string; company: string; status: string; changed_at: string; starred_at: string }[]
   follow_ups: { id: string; title: string; company: string; status: string; changed_at: string; starred_at: string }[]
   funnel?: PipelineFunnel
+  offers?: OfferComparison[]
 }
 export function getPipelineReview() { return api<PipelineReview>('/jobs/pipeline/review') }
 // 触达话术（2026-11-22）：生成即落版本，A/B 靠 used_at 使用标记；平台发送由用户在招聘站手动完成。
@@ -191,11 +192,22 @@ export function restoreBackup(file: File) { return upload<{ restored: boolean; s
 // ---- 今日概览（2026-11-18）：打开工作区的第一屏，全部只读本库 ----
 export type DashboardDue = { id: string; title: string; company: string; status: string; due: string; overdue: boolean; note: string; changed_at: string }
 export type DashboardNewJob = { id: string; title: string; company: string; source: string; salary: string; location: string; starred: boolean; first_seen_at: string }
+// 本周节奏（2026-11-22 P1）：按 ISO 周聚合事件流与新收藏，末两周环比在前端算。
+export type PipelineWeeklyWeek = { week_start: string; applied: number; interviewing: number; offer: number; archived: number; new_favorites: number }
+export type PipelineWeekly = { weeks: PipelineWeeklyWeek[] }
+// Offer 对比（2026-11-22 P1）：Offer 状态岗位并排；基线差值只对城市+角色可比的岗位有值。
+export type OfferComparison = {
+  id: string; title: string; company: string; location: string; salary: string; source: string; starred_at: string
+  salary_monthly_min: number | null; salary_monthly_max: number | null
+  reliability_score: number | null; reliability_band: string | null
+  baseline_median: number | null; baseline_note: string; baseline_delta: number | null
+}
 export type Dashboard = {
   date: string
   counts: { jobs: number; evidence: number; companies: number; favorites: number; tracked: number }
   pipeline: PipelineReview
   due: DashboardDue[]
+  weekly?: PipelineWeekly
   new_jobs: DashboardNewJob[]
   backup: BackupStatus
   recent_tasks: Task[]

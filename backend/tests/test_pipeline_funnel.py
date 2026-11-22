@@ -29,8 +29,8 @@ def client(tmp_path, monkeypatch):
         yield client
 
 
-def make_job(title='Python工程师', company='甲公司', source='boss', **extra):
-    return dict(title=title, company=company, description='岗位原文', salary='20-30K', **extra)
+def make_job(title='Python工程师', company='甲公司', source='boss', salary='20-30K', location='北京', **extra):
+    return dict(title=title, company=company, description='岗位原文', salary=salary, location=location, **extra)
 
 
 def patch_pipeline(repo, job_id, status):
@@ -173,3 +173,56 @@ def test_agent_pipeline_funnel_tool_reads_real_data(tmp_path):
     result = agent._builtin(state, 'pipeline_funnel', {})
     counts = {item['status']: item['count'] for item in result['stages']}
     assert counts['applied'] == 1 and 'note' in result
+
+
+# ── 每周节奏与 Offer 对比（P1） ──
+
+def test_pipeline_weekly_buckets_iso_weeks(repo):
+    from datetime import datetime, timedelta, timezone
+    from jobscope.repository import iso_week_start
+    job1 = repo.save_job(make_job(external_id='a'), 'boss')
+    job2 = repo.save_job(make_job(external_id='b'), 'boss')
+    this_monday = iso_week_start(datetime.now(timezone.utc))
+    stamps = {
+        job1['id']: (this_monday + timedelta(days=1)).isoformat(),   # 本周投递
+        job2['id']: (this_monday - timedelta(days=6)).isoformat(),   # 上周投递（上周日）
+    }
+    with repo.connection() as conn:
+        for job_id, stamp in stamps.items():
+            conn.execute('INSERT INTO job_pipeline_events (job_id,from_status,to_status,created_at) VALUES (?,?,?,?)',
+                         (job_id, '', 'applied', stamp))
+    repo.update_jobs([job1['id']], {'starred': True})  # 新收藏落本周
+    weekly = repo.pipeline_weekly()
+    assert len(weekly['weeks']) == 4
+    assert weekly['weeks'][-1]['applied'] == 1 and weekly['weeks'][-1]['new_favorites'] == 1
+    assert weekly['weeks'][-2]['applied'] == 1
+
+
+def test_offer_comparison_bands_and_baseline(repo):
+    offer1 = repo.save_job(make_job(title='Python 工程师', company='甲公司', location='杭州', salary='20-30K', external_id='a'), 'boss')
+    repo.update_jobs([offer1['id']], {'pipeline_status': 'offer'})
+    offer2 = repo.save_job(make_job(title='运维工程师', company='乙公司', location='北京', salary='15-20K', external_id='b'), 'boss')
+    repo.update_jobs([offer2['id']], {'pipeline_status': 'offer'})
+    repo.save_wage_baselines([{'city': '杭州', 'role': 'Python', 'education': '本科', 'year': '2025', 'monthly_median': 20000.0}])
+    with repo.connection() as conn:
+        conn.execute("INSERT INTO company_reliability (company_id,input_hash,created_at,payload) "
+                     "SELECT id,'h','2026-11-22T00:00:00+00:00','{\"score\": 8.5}' FROM companies WHERE name='甲公司'")
+    offers = {item['id']: item for item in repo.offer_comparison()}
+    one, two = offers[offer1['id']], offers[offer2['id']]
+    assert one['reliability_band'] == '8+'
+    assert one['baseline_median'] == 20000 and one['baseline_note'].startswith('杭州·Python')
+    assert one['baseline_delta'] == 0.25  # (25000-20000)/20000
+    # 城市+角色都不可比的岗位不给基线差值，不硬凑。
+    assert two['baseline_median'] is None and two['baseline_delta'] is None
+    assert two['reliability_band'] is None
+
+
+def test_offer_comparison_api_and_dashboard_weekly(client):
+    repo = client.app.state.repo
+    job = repo.save_job(make_job(salary='20-30K'), 'boss')
+    client.patch('/api/jobs', json={'ids': [job['id']], 'pipeline_status': 'offer'})
+    review = client.get('/api/jobs/pipeline/review').json()
+    assert [item['id'] for item in review['offers']] == [job['id']]
+    dashboard = client.get('/api/dashboard').json()
+    assert len(dashboard['weekly']['weeks']) == 4
+    assert dashboard['weekly']['weeks'][-1]['new_favorites'] >= 1

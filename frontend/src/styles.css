@@ -462,11 +462,12 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .funnel-step { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .funnel-step b { color: var(--text); font-variant-numeric: tabular-nums; }
 .pipeline-attribution { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 10px 28px; border-top: 1px dashed var(--line); padding-top: 6px; }
-.pipeline-attribution h4 { margin: 0 0 2px; font-size: 12px; font-weight: 500; color: var(--muted); cursor: help; }
-.pipeline-attribution table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
-.pipeline-attribution th { font-weight: normal; color: var(--muted); padding: 0 10px 0 0; text-align: left; }
-.pipeline-attribution td { padding: 1px 10px 1px 0; text-align: left; color: var(--muted); }
-.pipeline-attribution td b { color: var(--text); }
+.pipeline-offers { flex-basis: 100%; border-top: 1px dashed var(--line); padding-top: 6px; }
+.pipeline-attribution h4, .pipeline-offers h4 { margin: 0 0 2px; font-size: 12px; font-weight: 500; color: var(--muted); cursor: help; }
+.pipeline-attribution table, .pipeline-offers table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.pipeline-attribution th, .pipeline-offers th { font-weight: normal; color: var(--muted); padding: 0 10px 0 0; text-align: left; }
+.pipeline-attribution td, .pipeline-offers td { padding: 1px 10px 1px 0; text-align: left; color: var(--muted); }
+.pipeline-attribution td b, .pipeline-offers td b { color: var(--text); }
 /* ── 触达话术面板（2026-11-22）：生成/复制/标记已用的版本列表。 ── */
 .outreach-editor { width: min(560px, 92vw); }
 .outreach-kinds { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 10px; }
@@ -494,6 +495,14 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .today-due-item { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .today-due-item.overdue { border-color: #e8c9a8; background: #fdf6ec; }
 .today-due-item.stale { border-style: dashed; }
+/* ── 本周节奏（2026-11-22 P1）：周聚合统计一行流，delta 只标方向不评判。 ── */
+.today-weekly { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: baseline; }
+.today-weekly-stat { display: inline-flex; gap: 6px; align-items: baseline; font-size: 12px; color: var(--muted); }
+.today-weekly-stat b { font-size: 15px; color: var(--text); font-variant-numeric: tabular-nums; }
+.today-weekly-stat em { font-style: normal; font-size: 11px; font-variant-numeric: tabular-nums; }
+.today-weekly-stat em.up { color: var(--green); }
+.today-weekly-stat em.down { color: #a2541a; }
+.today-weekly > .text-button { font-size: 12px; min-height: 22px; padding: 0; display: inline-flex; gap: 4px; align-items: center; }
 .today-due-title { font-weight: 600; text-align: left; }
 .today-backup-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 20px; border: 1px solid #e8c9a8; border-radius: 10px; background: #fdf6ec; color: #a2541a; font-size: 13px; }
 .today-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: 8px; }
@@ -2132,8 +2141,9 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .job-card-star.starred svg { fill: currentColor; }
 .job-card-extra { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
 .job-card-extra:empty { display: none; }
-.job-card-actions { display: inline-flex; align-items: center; gap: 2px; }
-.job-card-actions .text-button { font-size: 12px; }
+.job-card-actions { display: inline-flex; align-items: center; gap: 10px; }
+.job-card-actions .text-button { font-size: 12px; padding: 0 2px; }
+.job-card-actions .pipeline-select { margin-right: 4px; }
 /* 档案筛选行的「只看收藏」开关 */
 .archive-starred { min-height: 32px; margin: 0 2px 0 10px; cursor: pointer; }
 /* 收藏夹视图 */
