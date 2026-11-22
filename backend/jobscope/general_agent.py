@@ -39,7 +39,7 @@ COMPACT_KEEP = 6
 READ_CLASS_BUILTINS = frozenset({
     'project_search', 'project_read', 'project_salary', 'knowledge_search', 'knowledge_read',
     'skill_read', 'skill_resource', 'company_profile', 'company_detail', 'vault_list', 'vault_read',
-    'web_search', 'web_read',
+    'web_search', 'web_read', 'pipeline_funnel',
 })
 
 # 顺序显示模式下单段思维链/正文的落库封顶：与 reasoning 字段同一截断口径，防超长流撑爆会话 JSON。
@@ -114,6 +114,7 @@ BUILTINS = [
     dict(name='job_deep_read', description='把该公司的岗位补全为完整JD（重读详情页后落库），专业性与团队规模自述的评分都需要完整JD。同步执行小批量（limit默认5、上限8），更大批量请用数据采集页；项目浏览器被批量补采占用时返回backoff，需登录时如实转述。完成后用signal_extract抽取、reliability_refresh重算。', parameters=schema({'company': dict(type='string', minLength=1, maxLength=300), 'limit': dict(type='integer', minimum=1, maximum=8, default=5)}, ['company'])),
     dict(name='signal_extract', description='把该公司已存材料（非岗位材料+完整JD）喂给抽取器生成规则信号（团队规模自述、公告营收/人数同比等），与信号抽取页面同一条管线；消耗抽取模型调用，材料为空时返回skipped。抽取后用reliability_refresh重算分数。', parameters=schema({'company': dict(type='string', minLength=1, maxLength=300), 'limit': dict(type='integer', minimum=1, maximum=40, default=12), 'max_tokens': dict(type='integer', minimum=256, maximum=4000, default=1200), 'credit_code': dict(type='string', maxLength=40)}, ['company'])),
     dict(name='reliability_refresh', description='重算该公司参考分（连带刷新本地统计源），返回各维度新分数、缺口文案与上一份快照的差分。补分流程的最后一步：company_profile看缺口→采集/抽取→本工具重算→如实转述新分数与仍缺的口径。分数只能按「主观参考」口径转述。', parameters=schema({'company': dict(type='string', minLength=1, maxLength=300), 'credit_code': dict(type='string', maxLength=40)}, ['company'])),
+    dict(name='pipeline_funnel', description='读取本机机会管线的漏斗转化与归因统计：各阶段累计到达数、各段转化率与平均推进天数、按来源/是否定制简历/公司可靠度分带的约面率切片。投递复盘、求职策略、回复率类问题先调用它取真实数据，绝不让用户手工报数；只读，无参数。', parameters=schema({})),
     dict(name='vault_list', description='列出用户指定的本地笔记目录（Obsidian 库或任意 markdown 目录）内的 .md 笔记清单（相对路径+大小），用于把已有笔记导入个人资料库。只读，跳过隐藏目录与超限文件；目录路径必须由用户提供。导入工作法：vault_list 拿清单 → 挑与个人经历相关的笔记 vault_read 逐篇读取 → 提炼为资料条目并向用户展示要点 → profile_import_write 写入。', parameters=schema({'path': dict(type='string', minLength=2, maxLength=500, description='笔记库根目录的完整路径，由用户提供')}, ['path'])),
     dict(name='vault_read', description='读取笔记库内单篇 .md 笔记正文（UTF-8；超过8000字符用offset翻页）。rel_path 用 vault_list 返回的相对路径；只读不修改。', parameters=schema({'path': dict(type='string', minLength=2, maxLength=500), 'rel_path': dict(type='string', minLength=1, maxLength=400), 'offset': dict(type='integer', minimum=0, maximum=200000)}, ['path', 'rel_path'])),
     dict(name='profile_import_write', description='把从笔记提炼出的条目批量写入个人资料库。entries 每条带 rel_path（该笔记在库内的相对路径，作幂等锚点：同一文件重导原位更新）与结构化字段；content 是提炼后的完整条目内容，title/org/period 从笔记原文归纳，没有就留空。写入前先向用户展示提炼要点；一次最多50条，更多分批调用。', parameters=schema({'path': dict(type='string', minLength=2, maxLength=500, description='笔记库根目录，须与vault_list/vault_read用的同一目录'), 'entries': dict(type='array', minItems=1, maxItems=50, items=schema({'rel_path': dict(type='string', minLength=1, maxLength=400), 'category': dict(type='string', enum=['project', 'work', 'education', 'skill', 'cert', 'award', 'preference', 'other'], description='条目类别'), 'title': dict(type='string', minLength=1, maxLength=200), 'org': dict(type='string', maxLength=200), 'period': dict(type='string', maxLength=100), 'content': dict(type='string', minLength=1, maxLength=20000), 'tags': dict(type='array', items=dict(type='string', minLength=1, maxLength=50), maxItems=20), 'enabled': dict(type='boolean')}, ['rel_path', 'category', 'title', 'content']))}, ['path', 'entries'])),
@@ -327,6 +328,11 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             action = ScopeExpansionStore(self.repo).propose(state['conversation_id'], args['target'], args['reason'])
             state['actions'].append(action)
             return dict(action=action, note='扩展申请已保存，请点击卡片在新会话继续；当前会话范围未改变，尚未执行扩展查询。')
+        if name == 'pipeline_funnel':
+            # 投递复盘取数工具（2026-11-22）：漏斗与归因是用户自己的管线数据，与检索范围无关。
+            return {**self.repo.pipeline_funnel(),
+                    'note': '口径为「曾到达」（事件流∪当前状态）；分母为 0 的转化率如实标注数据不足，'
+                            '不做因果推断。可靠度分带的约面率若明显偏离分数高低序，提示评分规则可能失准。'}
         if name in {'project_search', 'project_salary'}:
             self._sync_index()
             with self.repo.connection() as conn:

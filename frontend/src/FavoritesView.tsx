@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, date, getPipelineReview, patchJobs, post, startDetailBatch } from './api'
-import type { Job, PageInfo, PipelineReview, Task } from './api'
+import type { Job, PageInfo, PipelineFunnel, PipelineFunnelBucket, PipelineReview, Task } from './api'
 import { emptyPage, Pagination } from './Pagination'
 import { toast } from './toast'
 import { addCompareCompany } from './compareSelectionStore'
 import { JobCard } from './JobCard'
 import { Icon } from './Icon'
 import { PipelineFollowEditor } from './PipelineFollowEditor'
+import { OutreachEditor } from './OutreachEditor'
 
 // 任务状态中文名（局部子集即可；档案页的完整表随来源注册表动态组装，这里不必复用）。
 const taskStatusNames: Record<string, string> = {
@@ -35,6 +36,39 @@ const PIPELINE_FILTERS: { id: PipelineFilter; label: string }[] = [
   ...PIPELINE_ORDER.map(status => ({ id: status as PipelineFilter, label: PIPELINE_NAMES[status] })),
 ]
 
+// 漏斗转化与归因（2026-11-22）：曾到达口径的转化率一行 + 三组归因切片。
+// 这里只呈现数据不给结论——卡点解读交给「投递复盘」卡（Agent 用 pipeline_funnel 工具取同一份数据）。
+function FunnelPanel({ funnel }: { funnel: PipelineFunnel }) {
+  if (!funnel.steps.some(step => step.rate !== null)) return null
+  const groups: { title: string; hint: string; buckets: PipelineFunnelBucket[] }[] = [
+    { title: '按来源', hint: '各渠道岗位的约面率对比', buckets: funnel.attribution.by_source },
+    { title: '按简历', hint: '定制简历与通用简历的约面率对比', buckets: funnel.attribution.by_resume },
+    { title: '按可靠度分带', hint: '约面率与分数高低序明显相悖时，评分规则该调了', buckets: funnel.attribution.by_reliability },
+  ]
+  return <>
+    <div className="pipeline-funnel">
+      {funnel.steps.map(step => <span key={step.to} className="funnel-step"
+        title={`累计到达口径（事件流∪当前状态）；${step.cycle_n ? `按 ${step.cycle_n} 条推进样本计算` : '尚无可算周期的样本'}`}>
+        {PIPELINE_NAMES[step.from]}→{PIPELINE_NAMES[step.to]} <b>{step.rate === null ? '数据不足' : `${Math.round(step.rate * 100)}%`}</b>
+        {step.cycle_days !== null && <span className="tiny-label"> · 平均 {step.cycle_days} 天</span>}
+      </span>)}
+      {funnel.archived_untracked > 0 && <span className="tiny-label" title="事件流上线前的归档岗位没有历史，不计入转化分母">{funnel.archived_untracked} 条归档无历史</span>}
+    </div>
+    <div className="pipeline-attribution">
+      {groups.filter(group => group.buckets.some(item => item.applied > 0)).map(group => <div key={group.title} className="attribution-group">
+        <h4 title={group.hint}>{group.title}</h4>
+        <table>
+          <thead><tr><th>分组</th><th>已投</th><th>约面</th><th>约面率</th></tr></thead>
+          <tbody>{group.buckets.filter(item => item.applied > 0).map(item => <tr key={item.key}>
+            <td>{item.label}</td><td>{item.applied}</td><td>{item.interviewing}</td>
+            <td><b>{item.interview_rate === null ? '—' : `${Math.round(item.interview_rate * 100)}%`}</b></td>
+          </tr>)}</tbody>
+        </table>
+      </div>)}
+    </div>
+  </>
+}
+
 // 收藏夹：标星岗位的集中视图。只做轻列表（筛选/勾选/批量反查/横评/取消收藏），
 // 点卡片跳回岗位研究看完整详情——详情工作台（求职参考、评估适配）不在这里重复。
 // 反查走既有详情采集管道：单条同步接口，多条走批量任务+轮询；未登录/需验证原样透出。
@@ -59,6 +93,8 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
   const [review, setReview] = useState<PipelineReview | null>(null)
   // 跟进编辑弹窗的目标岗位（2026-11-18）：下一步行动 + 截止日。
   const [followJob, setFollowJob] = useState<Job | null>(null)
+  // 触达话术弹窗的目标岗位（2026-11-22）：打招呼/跟进消息生成与版本 A/B。
+  const [outreachJob, setOutreachJob] = useState<Job | null>(null)
 
   const load = useCallback(async (next = filters.current, page = 1) => {
     if (next.q !== filters.current.q || next.source !== filters.current.source || next.pipeline !== filters.current.pipeline) {
@@ -179,6 +215,7 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
         <div className="pipeline-review-totals">
           {PIPELINE_ORDER.map(status => <span key={status} className="pipeline-chip-stat"><b>{review.totals[status] || 0}</b>{PIPELINE_NAMES[status]}</span>)}
         </div>
+        {review.funnel && <FunnelPanel funnel={review.funnel} />}
         {review.follow_ups.length > 0 ? <div className="pipeline-followups">
           <strong>超 {review.stale_days} 天未跟进</strong>
           <ul>{review.follow_ups.map(item => <li key={item.id}>
@@ -229,6 +266,7 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
               {PIPELINE_ORDER.map(status => <option key={status} value={status}>{PIPELINE_NAMES[status]}</option>)}
             </select>
             <button className="text-button" disabled={Boolean(busy)} title="设置下一步行动与截止日；到期的会出现在「今日概览」待办" onClick={() => setFollowJob(item)}>{item.pipeline_due ? '改跟进' : '跟进'}</button>
+            <button className="text-button" disabled={Boolean(busy)} title="生成打招呼/跟进话术并记录版本；发送仍在招聘站手动完成" onClick={() => setOutreachJob(item)}>话术</button>
             <button className="text-button" disabled={Boolean(busy)} title="重读源站原帖，刷新薪资与完整JD" onClick={() => void recheckOne(item)}>反查</button>
             <button className="text-button" onClick={() => joinCompare(item)}>加入横评</button>
           </span>}
@@ -240,6 +278,7 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
       <Pagination info={info} label="收藏夹" busy={Boolean(busy)} onPage={page => run('page', async () => { await load(undefined, page) })} />
       {followJob && <PipelineFollowEditor job={followJob} onClose={() => setFollowJob(null)}
         onSaved={() => { void run('follow', async () => { await load() }) }} />}
+      {outreachJob && <OutreachEditor job={outreachJob} onClose={() => setOutreachJob(null)} />}
     </section>
   </section>
 }

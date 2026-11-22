@@ -457,6 +457,27 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .pipeline-followups .text-button { font-size: 12px; min-height: 22px; padding: 0; }
 .pipeline-select { font-size: 12px; min-height: 26px; padding: 0 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--muted); max-width: 88px; }
 .pipeline-select:focus { outline: 2px solid var(--green); outline-offset: 1px; }
+/* ── 漏斗转化与归因（2026-11-22）：收藏篮回顾里的转化率行与归因切片表。 ── */
+.pipeline-funnel { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: baseline; border-top: 1px dashed var(--line); margin-top: 2px; padding-top: 6px; }
+.funnel-step { font-size: 12px; color: var(--muted); white-space: nowrap; }
+.funnel-step b { color: var(--text); font-variant-numeric: tabular-nums; }
+.pipeline-attribution { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 10px 28px; border-top: 1px dashed var(--line); padding-top: 6px; }
+.pipeline-attribution h4 { margin: 0 0 2px; font-size: 12px; font-weight: 500; color: var(--muted); cursor: help; }
+.pipeline-attribution table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
+.pipeline-attribution th { font-weight: normal; color: var(--muted); padding: 0 10px 0 0; text-align: left; }
+.pipeline-attribution td { padding: 1px 10px 1px 0; text-align: left; color: var(--muted); }
+.pipeline-attribution td b { color: var(--text); }
+/* ── 触达话术面板（2026-11-22）：生成/复制/标记已用的版本列表。 ── */
+.outreach-editor { width: min(560px, 92vw); }
+.outreach-kinds { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 10px; }
+.outreach-generate { margin-left: auto; }
+.outreach-empty { margin: 0; }
+.outreach-versions { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.outreach-versions li { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.outreach-versions li.used { opacity: .62; }
+.outreach-text { margin: 0; font-size: 13px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.outreach-meta { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; justify-content: space-between; margin-top: 6px; }
+.outreach-meta .outreach-actions { display: inline-flex; gap: 10px; }
 /* 数据新鲜度：只陈述「较旧」这一事实与补法（悬浮可见），不给警示色、不拦截任何操作。 */
 .stale-hint { display: inline-flex; align-items: center; font-size: 11px; line-height: 1.6; padding: 0 6px; border-radius: 999px; border: 1px dashed var(--line); color: var(--muted); white-space: nowrap; cursor: help; }
 /* ── 跟进信息（2026-11-18）：截止日/下一步行动的展示。逾期是事实提醒：暖色、不拦截。 ── */

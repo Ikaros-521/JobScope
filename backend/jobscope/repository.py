@@ -44,6 +44,8 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS requirement_overrides (job_id TEXT NOT NULL REFERENCES jobs(id), quote_digest TEXT NOT NULL, status TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', updated_at TEXT NOT NULL, PRIMARY KEY(job_id, quote_digest));
                 CREATE TABLE IF NOT EXISTS interview_sessions (id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS interview_transcripts (id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS job_pipeline_events (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL REFERENCES jobs(id), from_status TEXT NOT NULL DEFAULT '', to_status TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS outreach_versions (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), kind TEXT NOT NULL, text TEXT NOT NULL, origin TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, used_at TEXT NOT NULL DEFAULT '');
             """)
             self._migrate_conversations(conn)
             # profile_entries.source 记录条目来源（笔记库导入的「规范化库根::相对路径」锚点），幂等重导靠它原位更新。
@@ -621,6 +623,8 @@ class Repository:
                 item = json.loads(row['payload']) if row else None
                 if item is None:
                     continue
+                # 事件流锚点：先记旧状态再动 payload——下面的 update 顺序里 pipeline_status 会被先行覆盖。
+                previous_status = str(item.get('pipeline_status') or '')
                 if 'tags' in fields:
                     item.setdefault('platform_tags', [])
                     item['personal_tags'] = list(dict.fromkeys(fields['tags']))
@@ -656,6 +660,12 @@ class Repository:
                 item['evidence_ids'] = []
                 item['updated_at'] = now()
                 conn.execute('UPDATE jobs SET payload=?, updated_at=? WHERE id=?', (json.dumps(item, ensure_ascii=False), item['updated_at'], job_id))
+                # 状态事件流（2026-11-22）：任何路径造成的状态变化（换状态、显式移出、取消收藏连带清状态）
+                # 都落一条事件，漏斗转化率与推进周期只认事件；to_status='' 表示离开管线。
+                final_status = str(item.get('pipeline_status') or '')
+                if final_status != previous_status:
+                    conn.execute('INSERT INTO job_pipeline_events (job_id,from_status,to_status,created_at) VALUES (?,?,?,?)',
+                                 (job_id, previous_status, final_status, now()))
                 updated += 1
         return updated
 
@@ -856,6 +866,157 @@ class Repository:
             if len(items) >= limit:
                 break
         return items
+
+    # ── 漏斗转化与归因（2026-11-22）：管线从「状态计数」升级为「转化率 + 归因切片」。 ──
+    PIPELINE_STAGES = ('interested', 'applied', 'interviewing', 'offer', 'archived')
+    PIPELINE_STEPS = (('interested', 'applied'), ('applied', 'interviewing'), ('interviewing', 'offer'))
+    RELIABILITY_BANDS = ((8.0, '8+'), (6.0, '6-7'), (4.0, '4-5'), (0.0, '<4'))
+
+    def _reliability_score_index(self, conn):
+        """公司名 → 最新可靠度分。company_reliability 按 (company_id, input_hash) 可有多份，
+        取 created_at 最新的一份；公司名经 companies 表本体名+别名解析，未登记或未评分的
+        一律落 unassessed 分带，不猜分。"""
+        latest: dict[str, tuple[str, float]] = {}
+        for row in conn.execute("SELECT company_id, created_at, json_extract(payload,'$.score') AS score FROM company_reliability"):
+            if row['score'] is None:
+                continue
+            known = latest.get(row['company_id'])
+            if known is None or (row['created_at'] or '') > known[0]:
+                latest[row['company_id']] = (row['created_at'] or '', float(row['score']))
+        index: dict[str, float] = {}
+        for row in conn.execute('SELECT id, name, aliases FROM companies'):
+            for name in [row['name'], *json.loads(row['aliases'] or '[]')]:
+                name = str(name).strip()
+                if name and name not in index and row['id'] in latest:
+                    index[name] = latest[row['id']][1]
+        return index
+
+    @staticmethod
+    def _reliability_band(score):
+        for floor, label in Repository.RELIABILITY_BANDS:
+            if score >= floor:
+                return label
+        return 'unassessed'
+
+    def pipeline_funnel(self):
+        """漏斗转化率、推进周期与归因切片。
+
+        口径是「曾到达」：事件流（job_pipeline_events）∪ 当前状态——事件流上线前的老数据
+        只有当前状态，归档且全程无事件的岗位历史未知，不计入转化分母（数量单列如实呈现，
+        不冒充零转化）。归因三组：来源、是否定制简历（resume_versions.job_id 关联）、
+        公司可靠度分带——分带组同时就是「评分 vs 实际结果」的校准报告：约面率明显偏离
+        分数高低序时，规则该调了。"""
+        from datetime import datetime
+        with self.connection() as conn:
+            jobs = [json.loads(row['payload']) for row in
+                    conn.execute("SELECT payload FROM jobs WHERE json_extract(payload,'$.pipeline_status') IS NOT NULL")]
+            events: dict[str, dict[str, str]] = {}
+            for row in conn.execute('SELECT job_id, to_status, created_at FROM job_pipeline_events ORDER BY job_id, id'):
+                per_job = events.setdefault(row['job_id'], {})
+                # 同一段多次往返取最早到达时间：转化计数用集合，周期用首次时间戳。
+                if row['to_status'] and row['to_status'] not in per_job:
+                    per_job[row['to_status']] = row['created_at']
+            custom_jobs = {row['job_id'] for row in conn.execute("SELECT DISTINCT job_id FROM resume_versions WHERE job_id!=''")}
+            reliability = self._reliability_score_index(conn)
+
+        # 曾到达集合：当前状态本身算到达（事件流上线前的老数据唯一线索），事件补历史。
+        def stages_of(job):
+            stages = set()
+            current = str(job.get('pipeline_status') or '')
+            if current:
+                stages.add(current)
+            stages.update(events.get(job.get('id'), {}).keys())
+            return stages
+
+        def first_ts(job, stage):
+            return events.get(job.get('id'), {}).get(stage)
+
+        ever = {stage: 0 for stage in self.PIPELINE_STAGES}
+        archived_untracked = 0
+        for job in jobs:
+            stages = stages_of(job)
+            if not events.get(job.get('id')) and job.get('pipeline_status') == 'archived':
+                archived_untracked += 1
+            for stage in stages & set(self.PIPELINE_STAGES):
+                ever[stage] += 1
+
+        steps = []
+        for source, target in self.PIPELINE_STEPS:
+            rate = round(ever[target] / ever[source], 3) if ever[source] else None
+            cycle_n = 0
+            cycle_total = 0.0
+            for job in jobs:
+                start, end = first_ts(job, source), first_ts(job, target)
+                if not start or not end:
+                    continue
+                try:
+                    seconds = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
+                except (TypeError, ValueError):
+                    continue
+                if seconds >= 0:
+                    cycle_total += seconds / 86400
+                    cycle_n += 1
+            steps.append({'from': source, 'to': target, 'rate': rate,
+                          'cycle_days': round(cycle_total / cycle_n, 1) if cycle_n else None, 'cycle_n': cycle_n})
+
+        def bucket_slices(keyfn, labelfn):
+            buckets: dict[str, dict] = {}
+            for job in jobs:
+                stages = stages_of(job)
+                applied = bool(stages & {'applied', 'interviewing', 'offer'})
+                interviewing = bool(stages & {'interviewing', 'offer'})
+                offer = 'offer' in stages
+                key = keyfn(job)
+                bucket = buckets.setdefault(key, {'key': key, 'label': labelfn(key), 'applied': 0,
+                                                  'interviewing': 0, 'offer': 0})
+                bucket['applied'] += applied
+                bucket['interviewing'] += interviewing
+                bucket['offer'] += offer
+            result = []
+            for bucket in buckets.values():
+                bucket['interview_rate'] = round(bucket['interviewing'] / bucket['applied'], 3) if bucket['applied'] else None
+                result.append(bucket)
+            return sorted(result, key=lambda item: -item['applied'])
+
+        def band_label(key):
+            return f'可靠度{key}' if key != 'unassessed' else '未评估'
+
+        def reliability_key(job):
+            score = reliability.get(str(job.get('company') or '').strip())
+            return self._reliability_band(score) if score is not None else 'unassessed'
+
+        attribution = {
+            'by_source': bucket_slices(lambda job: str(job.get('source') or 'unknown'), lambda key: key),
+            'by_resume': bucket_slices(lambda job: 'custom' if job.get('id') in custom_jobs else 'general',
+                                       lambda key: '定制简历' if key == 'custom' else '通用简历'),
+            'by_reliability': bucket_slices(reliability_key, band_label),
+        }
+        return {'stages': [{'status': stage, 'count': ever[stage]} for stage in self.PIPELINE_STAGES],
+                'steps': steps, 'attribution': attribution, 'archived_untracked': archived_untracked}
+
+    # ── 触达版本（2026-11-22）：打招呼/跟进话术的生成记录与 A/B 使用标记。 ──
+
+    def save_outreach_version(self, job_id, kind, text, origin):
+        item = {'id': 'O-' + digest(json.dumps([job_id, kind, text, now()], ensure_ascii=False))[:24],
+                'job_id': job_id, 'kind': kind, 'text': text, 'origin': origin,
+                'created_at': now(), 'used_at': ''}
+        with self.connection() as conn:
+            # INSERT 一律显式列名（迁移教训：位置式插入在追加列后静默错位）。
+            conn.execute('INSERT OR IGNORE INTO outreach_versions (id,job_id,kind,text,origin,created_at,used_at) VALUES (?,?,?,?,?,?,?)',
+                         (item['id'], item['job_id'], item['kind'], item['text'], item['origin'], item['created_at'], ''))
+        return item
+
+    def outreach_versions(self, job_id):
+        # id 是内容摘要不是时间序：排序锚 created_at + rowid，同秒内后生成的排前面。
+        with self.connection() as conn:
+            rows = conn.execute('SELECT id,job_id,kind,text,origin,created_at,used_at FROM outreach_versions WHERE job_id=? ORDER BY created_at DESC, rowid DESC', (job_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def mark_outreach_used(self, job_id, version_id):
+        with self.connection() as conn:
+            cursor = conn.execute("UPDATE outreach_versions SET used_at=? WHERE id=? AND job_id=? AND used_at=''",
+                                  (now(), version_id, job_id))
+            return cursor.rowcount > 0
 
     # ── 岗位去重（2026-11-19）：同一岗位多平台/多次采集各存一条时，标记主次而不是删除。 ──
     # 重复项默认不进列表与统计（_job_filters / jobs()），详情按 id 仍可读；拆开即恢复独立身份。

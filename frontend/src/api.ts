@@ -10,14 +10,29 @@ export type Job = {
   pipeline_note?: string // 跟进备注（2026-11-18）：下一步行动；'' 清空
   pipeline_due?: string // 截止日 YYYY-MM-DD：今日概览据此生成待办
 }
+// 漏斗转化与归因（2026-11-22）：曾到达口径（事件流∪当前状态），分母不足时 rate 为 null。
+export type PipelineFunnelStep = { from: string; to: string; rate: number | null; cycle_days: number | null; cycle_n: number }
+export type PipelineFunnelBucket = { key: string; label: string; applied: number; interviewing: number; offer: number; interview_rate: number | null }
+export type PipelineFunnel = {
+  stages: { status: string; count: number }[]
+  steps: PipelineFunnelStep[]
+  attribution: { by_source: PipelineFunnelBucket[]; by_resume: PipelineFunnelBucket[]; by_reliability: PipelineFunnelBucket[] }
+  archived_untracked: number
+}
 // 机会管线回顾（收藏夹顶部）：纯本地统计，各列表截前 8 条。
 export type PipelineReview = {
   totals: Record<string, number>; stale_days: number
   new_favorites: { id: string; title: string; company: string; status: string; changed_at: string; starred_at: string }[]
   recent_changes: { id: string; title: string; company: string; status: string; changed_at: string; starred_at: string }[]
   follow_ups: { id: string; title: string; company: string; status: string; changed_at: string; starred_at: string }[]
+  funnel?: PipelineFunnel
 }
 export function getPipelineReview() { return api<PipelineReview>('/jobs/pipeline/review') }
+// 触达话术（2026-11-22）：生成即落版本，A/B 靠 used_at 使用标记；平台发送由用户在招聘站手动完成。
+export type OutreachVersion = { id: string; job_id: string; kind: 'greeting' | 'followup'; text: string; origin: string; created_at: string; used_at: string }
+export function getOutreachVersions(jobId: string) { return api<{ versions: OutreachVersion[] }>(`/jobs/${encodeURIComponent(jobId)}/outreach`) }
+export function generateOutreach(jobId: string, kind: 'greeting' | 'followup') { return post<OutreachVersion>(`/jobs/${encodeURIComponent(jobId)}/outreach`, { kind }) }
+export function markOutreachUsed(jobId: string, versionId: string) { return post<{ marked: boolean }>(`/jobs/${encodeURIComponent(jobId)}/outreach/${encodeURIComponent(versionId)}/used`) }
 // 列表端点的 text 可能被裁剪（text_truncated），text_hit 是搜索命中处的全文摘要窗口。
 export type Evidence = { id: string; title: string; url: string; source: string; kind: string; company: string; text: string; collected_at: string; published_at: string | null; content_hash: string; text_truncated?: boolean; text_hit?: string }
 export type Source = { id: string; name: string; kind: string; transport_mode: string; status: string; description: string; login?: string; cities: string[]; hot: string[]; browser_collectable?: boolean }

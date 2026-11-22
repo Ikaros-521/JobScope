@@ -219,6 +219,11 @@ class JobBatchDelete(RequestModel):
     ids: list[str] = Field(min_length=1, max_length=1000)
 
 
+class OutreachInput(RequestModel):
+    """触达话术生成（2026-11-22）：greeting=BOSS 首条打招呼，followup=投后跟进催进展。"""
+    kind: Literal['greeting', 'followup'] = 'greeting'
+
+
 class JobDedupMark(RequestModel):
     """岗位去重标记（2026-11-19）：primary_id 是保留的主记录，其余标记为其重复项。
 

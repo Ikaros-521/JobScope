@@ -32,7 +32,7 @@ from .transcript import parse_labeled_transcript
 from .transcript_runs import TranscriptManager, new_transcript
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput, TranscriptImportInput, TranscriptSegmentsInput
+from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput, TranscriptImportInput, TranscriptSegmentsInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -656,11 +656,33 @@ def create_app(data_dir=None):
         return {'totals': totals, 'stale_days': PIPELINE_REVIEW_STALE_DAYS,
                 'new_favorites': [strip(item) for item in new_favorites],
                 'recent_changes': [strip(item) for item in recent_changes],
-                'follow_ups': [strip(item) for item in follow_ups]}
+                'follow_ups': [strip(item) for item in follow_ups],
+                # 漏斗转化与归因（2026-11-22）：曾到达口径 + 来源/定制简历/可靠度分带切片。
+                'funnel': repo.pipeline_funnel()}
 
     @app.get('/api/jobs/pipeline/review')
     def pipeline_review():
         return _pipeline_review_payload()
+
+    # ── 触达生成器（2026-11-22）：打招呼/跟进话术。模型不可用走规则兜底，生成即落版本。 ──
+
+    @app.post('/api/jobs/{job_id}/outreach')
+    def generate_outreach(job_id: str, data: OutreachInput):
+        from .outreach import generate
+        try:
+            return generate(repo, job_id, data.kind)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+
+    @app.get('/api/jobs/{job_id}/outreach')
+    def outreach_versions(job_id: str):
+        return {'versions': repo.outreach_versions(job_id)}
+
+    @app.post('/api/jobs/{job_id}/outreach/{version_id}/used')
+    def outreach_used(job_id: str, version_id: str):
+        if not repo.mark_outreach_used(job_id, version_id):
+            raise HTTPException(404, '话术版本不存在或已标记过')
+        return {'marked': True}
 
     # ── 岗位去重（2026-11-19）：同公司+标题归一匹配置信候选，人工确认标记主次，统计不再双算。 ──
 
