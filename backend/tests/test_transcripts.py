@@ -35,6 +35,16 @@ def bare_client(tmp_path, monkeypatch):
 
 SAMPLE_TEXT = '面试官：请先自我介绍，再讲一个最有代表性的项目。' * 6  # ≥50 字
 
+# 标准格式样稿：每行带语义化说话人前缀 → 导入端直读切分，不走模型标注
+FORMAT_TEXT = '\n'.join([
+    '面试官：你好，请先简单介绍一下自己。',
+    '候选人：好的，我做后端开发五年，主要技术栈是 Python 和 Go。',
+    '面试官1：讲讲你最有代表性的项目，你负责哪部分？',
+    '候选人：会员增长项目里我负责链路设计，把下单转化率提升了 12%。',
+    '面试官1：这个 12% 的口径是怎么统计的？',
+    '候选人：A/B 实验，实验组和对照组各跑 30 天得出的。',
+])
+
 FAKE_SEGMENTS = [
     dict(speaker='interviewer_1', text='请讲讲你最有代表性的项目。'),
     dict(speaker='me', text='我做过会员增长项目，把下单转化率提升了 12%。'),
@@ -119,6 +129,63 @@ def test_import_unknown_job_404(client):
 def test_import_rejects_short_text(client):
     job = make_job(client.app.state.repo)
     assert client.post('/api/interview/transcripts', json=dict(job_id=job['id'], text='太短了')).status_code == 400
+
+
+# ---- 标准格式直读：自带「候选人/面试官」前缀免模型标注 ----
+
+def test_format_direct_import_skips_model(bare_client):
+    """标准格式直读：无模型也能导入（不发起标注 run），status 直接 labeled 可核对。"""
+    job = make_job(bare_client.app.state.repo)
+    response = bare_client.post('/api/interview/transcripts', json=dict(job_id=job['id'], text=FORMAT_TEXT))
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data['run_id'] == '' and data['direct'] is True
+    transcript = bare_client.get(f"/api/interview/transcripts/{data['transcript_id']}").json()['transcript']
+    assert transcript['status'] == 'labeled'
+    assert transcript['labeling_meta']['method'] == 'format'
+    assert transcript['labeling_meta']['segment_count'] == 6
+    assert [seg['index'] for seg in transcript['segments']] == list(range(6))
+    assert [seg['speaker'] for seg in transcript['segments']] == ['interviewer_1', 'me', 'interviewer_1', 'me', 'interviewer_1', 'me']
+    assert transcript['segments'][0]['text'] == '你好，请先简单介绍一下自己。'  # 前缀剥掉，原话逐字保留
+    assert transcript['segments'][1]['text'] == '好的，我做后端开发五年，主要技术栈是 Python 和 Go。'
+    # 摘要列表同款可查
+    summary = next(item for item in bare_client.get('/api/interview/transcripts').json()['transcripts']
+                   if item['id'] == data['transcript_id'])
+    assert summary['status'] == 'labeled' and summary['segment_count'] == 6
+
+
+def test_format_direct_import_then_report(client, monkeypatch):
+    """直读导入的逐字稿核对后可直接出复盘报告（整链路免标注调用）。"""
+    job = make_job(client.app.state.repo)
+    started = client.post('/api/interview/transcripts', json=dict(job_id=job['id'], text=FORMAT_TEXT))
+    assert started.json()['direct'] is True
+    patch_report(monkeypatch)
+    report = client.post(f"/api/interview/transcripts/{started.json()['transcript_id']}/report")
+    assert report.status_code == 200, report.text
+    join_run(client, report.json()['run_id'])
+    transcript = client.get(f"/api/interview/transcripts/{started.json()['transcript_id']}").json()['transcript']
+    assert transcript['status'] == 'done' and transcript['report']['overall_score'] == 4
+
+
+def test_format_without_candidate_falls_back_to_model(bare_client):
+    """只有「面试官：」前缀认不出候选人：不直读，走模型标注——无模型绑定则导入被拦。"""
+    job = make_job(bare_client.app.state.repo)
+    assert bare_client.post('/api/interview/transcripts', json=dict(job_id=job['id'], text=SAMPLE_TEXT)).status_code == 400
+
+
+def test_speaker_number_prefix_falls_back_to_model(client, monkeypatch):
+    """「说话人1/2」类无语义前缀（占比再高也认不出谁是候选人）仍走模型标注 run。"""
+    job = make_job(client.app.state.repo)
+    patch_label(monkeypatch)
+    text = '\n'.join(['说话人1：请先自我介绍，说说你最近做的项目。', '说话人2：好的，我做后端五年。',
+                      '说话人1：讲讲项目难点。', '说话人2：链路设计这块。'])
+    response = client.post('/api/interview/transcripts', json=dict(job_id=job['id'], text=text))
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data['run_id'] and not data.get('direct')
+    join_run(client, data['run_id'])
+    transcript = client.get(f"/api/interview/transcripts/{data['transcript_id']}").json()['transcript']
+    assert transcript['status'] == 'labeled'  # FAKE_SEGMENTS 打桩结果，证明走了模型标注
 
 
 def test_import_labels_and_persists(client, monkeypatch):
@@ -415,6 +482,63 @@ def test_norm_speaker_mapping():
     assert _norm_speaker('考官A', seen) == 'interviewer_1'     # 无编号按出场顺序分配
     assert _norm_speaker('考官B', seen) == 'interviewer_2'
     assert _norm_speaker('考官A', seen) == 'interviewer_1'     # 同称呼同编号
+
+
+# ---- 标准格式直读解析器（纯单元） ----
+
+def test_parse_labeled_transcript_merges_and_strips_timestamps():
+    """连续同人合并成段、时间戳与前缀剥离、无前缀行并入上一段（与模型标注同契约）。"""
+    from jobscope.transcript import parse_labeled_transcript
+    text = ('[00:01:30] 面试官：你好，请先自我介绍。\n'
+            '面试官：顺便讲讲你最有代表性的项目。\n'
+            '候选人：好的，我做后端开发五年。\n'
+            '最近一年在做会员增长项目。')
+    assert parse_labeled_transcript(text) == [
+        dict(speaker='interviewer_1', text='你好，请先自我介绍。\n顺便讲讲你最有代表性的项目。'),
+        dict(speaker='me', text='好的，我做后端开发五年。\n最近一年在做会员增长项目。'),
+    ]
+
+
+def test_parse_labeled_transcript_requires_candidate_label():
+    """全篇「面试官：」认不出候选人（哪怕占比 100%）→ 交模型判断。"""
+    from jobscope.transcript import parse_labeled_transcript
+    assert parse_labeled_transcript('面试官：你好。\n面试官：请介绍一下项目经历。\n面试官：好的。') == []
+
+
+def test_parse_labeled_transcript_ratio_guard():
+    """前缀行占比 <60% 不直读（散行文案不误判）；有候选人但结构太散同样拒绝。"""
+    from jobscope.transcript import parse_labeled_transcript
+    lines = ['候选人：你好。', '面试官：请介绍一下你的项目经历。'] + ['无前缀普通段落文本。'] * 3
+    assert parse_labeled_transcript('\n'.join(lines)) == []          # 占比 2/5 且前缀行 <3
+    lines = ['候选人：你好。', '面试官：请介绍一下项目。', '候选人：好的。'] + ['无前缀续行。'] * 3
+    assert parse_labeled_transcript('\n'.join(lines)) == []          # 前缀行够 3 但占比 3/6
+
+
+def test_parse_labeled_transcript_unknown_speaker_numbering():
+    """无编号称呼（考官A/B）跨段共享编号，同 _norm_speaker 语义。"""
+    from jobscope.transcript import parse_labeled_transcript
+    text = '考官A：你好。\n候选人：你好。\n考官B：请讲项目。\n候选人：好的。'
+    segments = parse_labeled_transcript(text)
+    assert [seg['speaker'] for seg in segments] == ['interviewer_1', 'me', 'interviewer_2', 'me']
+
+
+def test_parse_labeled_transcript_drops_leading_junk():
+    """首段前的标题/日期杂讯丢弃（首段无归属无从并入），占比仍在阈值内。"""
+    from jobscope.transcript import parse_labeled_transcript
+    text = '2026年11月22日 下午 面试记录\n候选人：你好。\n面试官：请介绍一下你最近的项目经历。\n候选人：好的，我讲会员增长项目。'
+    segments = parse_labeled_transcript(text)
+    assert [seg['speaker'] for seg in segments] == ['me', 'interviewer_1', 'me']
+    assert segments[0]['text'] == '你好。'
+
+
+def test_parse_labeled_transcript_caps_segments():
+    """段落封顶 MAX_SEGMENTS 软截断（同流式解析器），超长稿不炸。"""
+    from jobscope.transcript import MAX_SEGMENTS, parse_labeled_transcript
+    lines = []
+    for i in range(250):
+        lines += [f'面试官：第{i}个问题。', f'候选人：第{i}个回答。']
+    segments = parse_labeled_transcript('\n'.join(lines))
+    assert len(segments) == MAX_SEGMENTS
 
 
 def test_stream_label_parser_normalizes_and_truncates():

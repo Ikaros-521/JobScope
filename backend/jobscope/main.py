@@ -28,6 +28,7 @@ from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
 from .interview import assemble_material, company_brief_from, persona_cards
 from .interview_runs import InterviewManager, interview_scope, new_session
+from .transcript import parse_labeled_transcript
 from .transcript_runs import TranscriptManager, new_transcript
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
@@ -1362,14 +1363,26 @@ def create_app(data_dir=None):
 
     @app.post('/api/interview/transcripts')
     def import_interview_transcript(data: TranscriptImportInput):
-        if not purpose_configured('analysis'):
-            raise HTTPException(400, '导入复盘需要先在设置中心绑定分析模型')
         text = data.text.strip()
         if len(text) < 50:
             raise HTTPException(400, '逐字稿太短（至少 50 字），请确认粘贴的是面试转写文本')
+        text = text[:40000]
+        # 标准格式直读：自带「候选人/面试官」前缀的逐字稿本地切分直接入库，免模型标注（降本增效）。
+        # 只有需要模型标注的稿子才要求绑定分析模型；岗位锚点两条路径都要校验。
+        segments = parse_labeled_transcript(text)
+        if not segments and not purpose_configured('analysis'):
+            raise HTTPException(400, '导入复盘需要先在设置中心绑定分析模型')
         job = get_job(data.job_id)
+        if segments:
+            transcript = new_transcript(
+                job_id=job['id'], job_title=job.get('title', ''), company=job.get('company', ''), text=text)
+            transcript['segments'] = [dict(index=index, **seg) for index, seg in enumerate(segments)]
+            transcript['status'] = 'labeled'
+            transcript['labeling_meta'] = dict(labeled_at=now(), segment_count=len(segments), method='format')
+            transcript = repo.save_interview_transcript(transcript)
+            return dict(transcript_id=transcript['id'], run_id='', direct=True)
         transcript = repo.save_interview_transcript(new_transcript(
-            job_id=job['id'], job_title=job.get('title', ''), company=job.get('company', ''), text=text[:40000]))
+            job_id=job['id'], job_title=job.get('title', ''), company=job.get('company', ''), text=text))
         try:
             handle = transcript_runs.start_label(transcript)
         except ValueError as exc:

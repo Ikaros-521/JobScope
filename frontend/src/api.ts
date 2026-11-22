@@ -567,7 +567,7 @@ export type Transcript = {
   id: string; job_id: string; job_title: string; company: string; raw_text: string
   status: 'imported' | 'labeling' | 'labeled' | 'reporting' | 'done' | 'failed'
   error: string; segments: TranscriptSegment[]; report: TranscriptReport | null
-  labeling_meta: { labeled_at: string; segment_count: number } | null
+  labeling_meta: { labeled_at: string; segment_count: number; method?: string } | null
   created_at: string; updated_at: string
 }
 export type TranscriptSummary = { id: string; job_id: string; job_title: string; company: string; status: Transcript['status']; segment_count: number; has_report: boolean; created_at: string; updated_at: string }
@@ -577,7 +577,7 @@ export function getInterviewTranscript(id: string) {
   return api<{ transcript: Transcript; active_run: TranscriptRunStatus | null }>(`/interview/transcripts/${encodeURIComponent(id)}`)
 }
 export function importInterviewTranscript(jobId: string, text: string) {
-  return post<{ transcript_id: string; run_id: string }>('/interview/transcripts', { job_id: jobId, text })
+  return post<{ transcript_id: string; run_id: string; direct?: boolean }>('/interview/transcripts', { job_id: jobId, text })
 }
 export function saveTranscriptSegments(id: string, segments: { speaker: string; text: string }[]) {
   return api<{ transcript: Transcript }>(`/interview/transcripts/${encodeURIComponent(id)}/segments`, { method: 'PATCH', body: JSON.stringify({ segments }) })

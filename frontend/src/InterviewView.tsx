@@ -695,6 +695,15 @@ function AnalysisQuickList({ title, items }: { title: string; items: string[] })
 // → 用户逐条核对修正（PATCH 全量按序替换）→ 确认后生成结合 JD 的复盘报告。
 // 流式与编辑态全部自管，切换选中逐字稿即整体重置。
 
+// 标准格式示例：逐字稿自带「说话人：原话」前缀时导入端直读切分、跳过模型标注（降本增效）。
+// 「说话人1/2」类无语义前缀认不出谁是候选人，仍走模型标注——示例刻意用候选人/面试官称呼。
+const FORMAT_EXAMPLE = `面试官：你好，请先简单介绍一下自己。
+候选人：好的，我做后端开发五年，主要技术栈是 Python 和 Go。
+面试官1：讲讲你最有代表性的项目，你负责哪部分？
+候选人：会员增长项目里我负责链路设计，把下单转化率提升了 12%。
+面试官1：这个 12% 的口径是怎么统计的？
+候选人：A/B 实验，实验组和对照组各跑 30 天得出的。`
+
 type TranscriptFeedItem = { index: number; question: string; review?: { critique: string; good: string[]; bad: string[]; suggestion: string } }
 // 渐进式复盘 feed：start 铺题卡骨架，review 原位填充，done 换终版报告（同模拟面试复盘 feed）。
 type TranscriptReportFeed = { items: TranscriptFeedItem[]; done: number; total: number; stage: 'review' | 'summary' } | null
@@ -828,13 +837,19 @@ function RealWorkspace({ transcriptId, modelConfigured, onConfigureModel, onCrea
       const started = await importInterviewTranscript(jobId, payload)
       setText(''); setJobId(''); setJobLabel('')
       onCreated(started.transcript_id)
-      attach(started.run_id)
-      // 立刻把标注中状态拉进来当等待区（done 事件兜底换装）。
-      pendingRef.current = started.transcript_id
-      try {
-        const detail = await getInterviewTranscript(started.transcript_id)
-        if (pendingRef.current === started.transcript_id) { setTranscript(detail.transcript); setSegments(detail.transcript.segments); setDirty(false) }
-      } catch { /* 拉取失败不打断：SSE done 兜底 */ }
+      onChanged()
+      if (started.run_id) {
+        attach(started.run_id)
+        // 立刻把标注中状态拉进来当等待区（done 事件兜底换装）。
+        pendingRef.current = started.transcript_id
+        try {
+          const detail = await getInterviewTranscript(started.transcript_id)
+          if (pendingRef.current === started.transcript_id) { setTranscript(detail.transcript); setSegments(detail.transcript.segments); setDirty(false) }
+        } catch { /* 拉取失败不打断：SSE done 兜底 */ }
+      } else {
+        // 标准格式直读：无标注 run，切选中后 useEffect 拉详情直接进核对页签。
+        toast('已按标准格式直接导入（未调用模型），请核对说话人', 'notice')
+      }
     } catch (err) { setError((err as Error).message) }
     finally { setImporting(false) }
   }
@@ -888,18 +903,24 @@ function RealWorkspace({ transcriptId, modelConfigured, onConfigureModel, onCrea
   if (!transcriptId) {
     return <section className="interview-create iv-import">
       <h2 className="sr-only">导入真实面试逐字稿</h2>
-      {!modelConfigured && <div className="iv-model-hint">导入复盘需要先绑定分析模型。<button className="inline-button" onClick={onConfigureModel}>去设置中心</button></div>}
-      <p className="iv-import-intro">把外部 ASR 工具（通义听悟、飞书妙记、讯飞等）转写的面试逐字稿粘进来：模型先按段标注说话人（候选人 / 多位面试官，原文逐字保留），逐条核对修正后生成结合岗位 JD 的复盘报告。</p>
+      {!modelConfigured && <div className="iv-model-hint">未绑定分析模型：标准格式逐字稿（带候选人/面试官前缀）可直接导入，生成复盘报告前需绑定。<button className="inline-button" onClick={onConfigureModel}>去设置中心</button></div>}
+      <p className="iv-import-intro">把外部 ASR 工具（通义听悟、飞书妙记、讯飞等）转写的面试逐字稿粘进来：自带「候选人 / 面试官」前缀的标准格式直接切分入库（免模型标注），其余格式由模型按段标注说话人，逐条核对修正后生成结合岗位 JD 的复盘报告。</p>
       <JobPicker value={jobId} label={jobLabel} onSelect={(id, label) => { setJobId(id); setJobLabel(label) }} />
       {!jobId && <span className="tiny-label">必选：先选这次面试对应的岗位，复盘报告会结合 JD 评估回答匹配度</span>}
+      <details className="iv-format-example">
+        <summary>标准格式示例（按此格式粘贴可跳过模型标注，直接导入）</summary>
+        <pre>{FORMAT_EXAMPLE}</pre>
+        <p className="tiny-label">一行一句：「我/候选人/求职者：」是你，「面试官/考官/面试官N：」是面试官，允许时间戳前缀。非匹配行并入上一段；「说话人1/2」这类认不出谁是候选人的格式仍走模型标注。</p>
+        <button className="inline-button" onClick={() => setText(FORMAT_EXAMPLE)}>插入示例文本试一试</button>
+      </details>
       <textarea className="iv-jd iv-transcript-text" value={text} rows={10} maxLength={40000}
-        placeholder="粘贴面试逐字稿纯文本（支持带「说话人N：」前缀或时间戳的格式）。导入后模型按段标注说话人，原文不改写不删字。"
+        placeholder="粘贴面试逐字稿。每行带「候选人：/面试官：」前缀（见格式示例）可直接导入；无前缀或「说话人N」格式由模型标注，原文不改写不删字。"
         onChange={event => setText(event.target.value)} aria-label="逐字稿文本" />
       <div className="iv-create-actions">
-        <button className="button primary" disabled={!jobId || text.trim().length < 50 || importing || !modelConfigured} onClick={() => void doImport()}>
+        <button className="button primary" disabled={!jobId || text.trim().length < 50 || importing} onClick={() => void doImport()}>
           {importing ? <span className="spinner" /> : <Icon name="resume" size={16} />}导入并标注说话人
         </button>
-        <span className="tiny-label">{text.length}/40000 · 标注约 1-2 分钟，完成后先核对说话人再出报告</span>
+        <span className="tiny-label">{text.length}/40000 · {modelConfigured ? '标准格式直接导入，其余由模型标注（约 1-2 分钟）' : '标准格式直接导入无需模型'}</span>
       </div>
     </section>
   }
@@ -959,6 +980,7 @@ function LabelReviewPanel({ transcript, segments, live, dirty, saving, busy, onS
           <button className="button primary small" disabled={busy || !canReport} onClick={onReport}><Icon name="chart" size={14} />生成复盘报告</button>
         </div>
       </div>
+      {transcript.labeling_meta?.method === 'format' && <p className="tiny-label iv-label-note">本稿按标准格式直接导入（未调用模型），说话人取自原文前缀，核对无误即可生成报告。</p>}
       <div className="iv-segments">
         {segments.map(item => <div key={item.index} className={`iv-segment ${item.speaker === 'me' ? 'me' : 'other'}`}>
           <select value={item.speaker} aria-label={`第 ${item.index + 1} 段说话人`} disabled={busy}

@@ -1,9 +1,10 @@
 """真实面试复盘：ASR 逐字稿导入 → 说话人标注（模型初标 + 人工核对）→ 复盘报告。
 
 与模拟面试（interview.py）互补：那边是「AI 面试官生成对话」，这边是「真实对话的
-沉淀」——外部 ASR 工具转写的纯文本进来，先按说话人切分标注（模型初标，用户逐条
-核对修正后再入库），再基于确认过的逐字稿生成结合 JD 的复盘：问答拆解 → 逐题并行
-点评 → 汇总（总体评分/岗位匹配/优点问题/下次行动）。模型配置复用「分析」功能绑定。
+沉淀」——外部 ASR 工具转写的纯文本进来，先按说话人切分标注（自带「候选人/面试官」
+前缀的标准格式直接本地切分，否则模型初标，用户逐条核对修正后再入库），再基于确认
+过的逐字稿生成结合 JD 的复盘：问答拆解 → 逐题并行点评 → 汇总（总体评分/岗位匹配/
+优点问题/下次行动）。模型配置复用「分析」功能绑定。
 """
 import json
 import logging
@@ -54,6 +55,49 @@ def _norm_speaker(value, seen):
     if text not in seen:
         seen[text] = f'interviewer_{min(len(seen) + 1, 5)}'
     return seen[text]
+
+
+# ---- 标准格式直读：逐字稿自带「候选人/面试官」前缀时免模型标注，导入即切分（降本增效） ----
+
+# 一行 = [可选时间戳] [可选分隔符] 说话人：原话；说话人 ≤24 字且不含冒号，防把长句子误当称呼。
+_LINE_RE = re.compile(
+    r'^\s*(?:\[[^\[\]]{1,16}\]|\([^\(\)]{1,16}\)|\d{1,2}:\d{2}(?::\d{2})?)?\s*'
+    r'(?:[-—–]\s*)?([^:：]{1,24}?)\s*[:：]\s*(.*)$')
+
+
+def parse_labeled_transcript(text):
+    """标准格式直读：逐行解析「说话人：原话」，连续同人合并成段（与模型标注同契约）。
+
+    整篇足够「格式化」才直读：≥3 行带前缀、占比 ≥60%、能认出候选人（me）且说话人
+    ≥2——「说话人1/2」这类无语义前缀认不出谁是候选人，返回 [] 交模型判断。非匹配行
+    视作上一段说话人的续行并入（首段前的标题/日期杂讯丢弃）；不达标返回 []。
+    """
+    groups, matched, total = [], 0, 0
+    seen = {}
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        total += 1
+        m = _LINE_RE.match(line)
+        if m is None:
+            if groups:
+                groups[-1][1].append(line.strip())
+            continue
+        matched += 1
+        speaker = _norm_speaker(m.group(1), seen)
+        if not groups or groups[-1][0] != speaker:
+            if len(groups) >= MAX_SEGMENTS:  # 软校验截断（同流式解析器），不整条作废
+                break
+            groups.append([speaker, []])
+        piece = m.group(2).strip()
+        if piece:
+            groups[-1][1].append(piece)
+    if (matched < 3 or total == 0 or matched * 10 < total * 6
+            or not any(speaker == SPEAKER_ME for speaker, _parts in groups)
+            or len({speaker for speaker, _parts in groups}) < 2):
+        return []
+    return [dict(speaker=speaker, text='\n'.join(parts)[:MAX_SEGMENT_CHARS])
+            for speaker, parts in groups if parts]
 
 
 class _StreamLabelParser:

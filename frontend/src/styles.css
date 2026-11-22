@@ -2416,6 +2416,12 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .iv-import-intro { margin: 0; font-size: 13px; color: var(--muted, #666); line-height: 1.7; }
 .iv-import .iv-picker { max-width: none; }
 .iv-transcript-text { min-height: 220px; line-height: 1.7; }
+/* 标准格式示例折叠块：默认收起不占屏，展开看案例/规则/一键填入 */
+.iv-format-example { margin: 0; border: 1px solid var(--line, #e8e5da); border-radius: 10px; background: var(--panel, #fff); padding: 8px 12px; }
+.iv-format-example summary { cursor: pointer; font-size: 12.5px; color: var(--accent, #8a6d3b); user-select: none; }
+.iv-format-example pre { margin: 8px 0 4px; font: inherit; font-size: 12.5px; line-height: 1.7; white-space: pre-wrap; word-break: break-all; color: var(--ink, #222); background: var(--chip, #f1efe8); border-radius: 8px; padding: 8px 12px; }
+.iv-format-example .tiny-label { margin: 4px 0 8px; }
+.iv-format-example .inline-button { font-size: 12px; }
 /* 逐字稿工作台壳：真实模式主区的唯一直子，必须自己接住弹性链（.interview-main 同款） */
 .iv-real { flex: 1; display: flex; flex-direction: column; min-height: 0; padding: 0 2px; }
 .iv-label-panel { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding: 12px 2px; min-height: 0; }
