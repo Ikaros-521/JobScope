@@ -915,6 +915,25 @@ class Repository:
                 return label
         return 'unassessed'
 
+    @staticmethod
+    def _percentiles(samples):
+        """样本的 P25/中位/P75（线性插值）。1 条样本就计算——数字本身无门槛，
+        参考价值由调用方随样本量 n 如实标注，不由这里「等数据」。"""
+        if not samples:
+            return None, None, None, 0
+        values = sorted(samples)
+
+        def pct(fraction):
+            if len(values) == 1:
+                return round(values[0], 1)
+            pos = (len(values) - 1) * fraction
+            low = int(pos)
+            high = min(low + 1, len(values) - 1)
+            frac = pos - low
+            return round(values[low] * (1 - frac) + values[high] * frac, 1)
+
+        return pct(0.25), pct(0.5), pct(0.75), len(values)
+
     def pipeline_funnel(self):
         """漏斗转化率、推进周期与归因切片。
 
@@ -960,8 +979,7 @@ class Repository:
         steps = []
         for source, target in self.PIPELINE_STEPS:
             rate = round(ever[target] / ever[source], 3) if ever[source] else None
-            cycle_n = 0
-            cycle_total = 0.0
+            samples = []
             for job in jobs:
                 start, end = first_ts(job, source), first_ts(job, target)
                 if not start or not end:
@@ -971,10 +989,11 @@ class Repository:
                 except (TypeError, ValueError):
                     continue
                 if seconds >= 0:
-                    cycle_total += seconds / 86400
-                    cycle_n += 1
+                    samples.append(seconds / 86400)
+            p25, median, p75, count = self._percentiles(samples)
             steps.append({'from': source, 'to': target, 'rate': rate,
-                          'cycle_days': round(cycle_total / cycle_n, 1) if cycle_n else None, 'cycle_n': cycle_n})
+                          'cycle_days': round(sum(samples) / count, 1) if count else None, 'cycle_n': count,
+                          'median_days': median, 'p25_days': p25, 'p75_days': p75})
 
         def bucket_slices(keyfn, labelfn):
             buckets: dict[str, dict] = {}
@@ -1008,8 +1027,46 @@ class Repository:
                                        lambda key: '定制简历' if key == 'custom' else '通用简历'),
             'by_reliability': bucket_slices(reliability_key, band_label),
         }
+
+        # 投递批次 cohort（P2）：每批 = 同一 ISO 周内「首次投递」的岗位集合，追踪这批累计
+        # 走到 约面/Offer 的数量与仍在推进的存量。批次只列有投递事件的周，新→旧，最多 6 批。
+        first_applied: dict[str, str] = {}
+        for job_id, per_job in events.items():
+            if per_job.get('applied'):
+                first_applied[job_id] = per_job['applied']
+        stage_sets = {job.get('id'): stages_of(job) for job in jobs}
+        current_status = {job.get('id'): str(job.get('pipeline_status') or '') for job in jobs}
+        cohort_groups: dict[str, list] = {}
+        for job_id, stamp in first_applied.items():
+            start = iso_week_start(stamp)
+            if start:
+                cohort_groups.setdefault(start.date().isoformat(), []).append(job_id)
+        cohorts = []
+        for week_start, ids in sorted(cohort_groups.items(), reverse=True)[:6]:
+            sets = [stage_sets.get(job_id, set()) for job_id in ids]
+            cohorts.append({'week_start': week_start, 'applied': len(ids),
+                            'interviewing': sum(1 for stages in sets if stages & {'interviewing', 'offer'}),
+                            'offer': sum(1 for stages in sets if 'offer' in stages),
+                            'active': sum(1 for job_id in ids if current_status.get(job_id) in ('applied', 'interviewing'))})
+
+        # 周几投递（P2）：按首次投递的星期几统计约面率。1 条样本就算，n 小由前端标注参考有限。
+        weekday_stats = {day: {'weekday': day, 'applied': 0, 'interviewing': 0} for day in range(1, 8)}
+        for job_id, stamp in first_applied.items():
+            try:
+                weekday = datetime.fromisoformat(stamp).isoweekday()
+            except (TypeError, ValueError):
+                continue
+            weekday_stats[weekday]['applied'] += 1
+            if stage_sets.get(job_id, set()) & {'interviewing', 'offer'}:
+                weekday_stats[weekday]['interviewing'] += 1
+        by_weekday = []
+        for item in weekday_stats.values():
+            item['rate'] = round(item['interviewing'] / item['applied'], 3) if item['applied'] else None
+            by_weekday.append(item)
+
         return {'stages': [{'status': stage, 'count': ever[stage]} for stage in self.PIPELINE_STAGES],
-                'steps': steps, 'attribution': attribution, 'archived_untracked': archived_untracked}
+                'steps': steps, 'attribution': attribution, 'archived_untracked': archived_untracked,
+                'cohorts': cohorts, 'by_weekday': by_weekday}
 
     # ── 触达版本（2026-11-22）：打招呼/跟进话术的生成记录与 A/B 使用标记。 ──
 

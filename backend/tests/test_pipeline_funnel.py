@@ -78,9 +78,11 @@ def test_funnel_ever_reached_counts_and_rates(repo):
     assert steps[('interested', 'applied')]['rate'] == pytest.approx(0.667)
     assert steps[('applied', 'interviewing')]['rate'] == pytest.approx(0.5)
     assert steps[('interviewing', 'offer')]['rate'] == pytest.approx(1.0)
-    # 推进周期只对同时有两段事件戳的岗位可算：job1 一条样本。
+    # 推进周期：中位/四分位 1 条样本也算，均值随行（P2：小样本标注由前端做）。
     assert steps[('applied', 'interviewing')]['cycle_n'] == 1
     assert steps[('interviewing', 'offer')]['cycle_days'] is not None
+    assert steps[('interviewing', 'offer')]['median_days'] is not None
+    assert steps[('interviewing', 'offer')]['p25_days'] is not None
 
 
 def test_funnel_attribution_slices(repo):
@@ -176,6 +178,47 @@ def test_agent_pipeline_funnel_tool_reads_real_data(tmp_path):
 
 
 # ── 每周节奏与 Offer 对比（P1） ──
+
+
+def test_percentiles_compute_from_single_sample(repo):
+    # P2 的立场：1 条样本就计算，参考价值靠 n 标注，不由统计层「等数据」。
+    assert Repository._percentiles([]) == (None, None, None, 0)
+    assert Repository._percentiles([5.0]) == (5.0, 5.0, 5.0, 1)
+    # 极端值只污染 P75，中位数稳：[2,3,4,40] → P25=2.8 中位=3.5 P75=13.0。
+    assert Repository._percentiles([2.0, 3.0, 4.0, 40.0]) == (2.8, 3.5, 13.0, 4)
+
+
+def test_funnel_cohorts_and_weekday(repo):
+    from datetime import datetime, timedelta, timezone
+    from jobscope.repository import iso_week_start
+    monday = iso_week_start(datetime.now(timezone.utc))
+    job1 = repo.save_job(make_job(external_id='a'), 'boss')
+    job2 = repo.save_job(make_job(external_id='b'), 'boss')
+    # 直插事件+直接落 payload（不经 update_jobs，避免 now() 事件戳混入）：
+    # job1 周二投、周四进面试；job2 上周日投。星期几断言与运行日期无关且互不碰撞。
+    with repo.connection() as conn:
+        for job_id, status in ((job1['id'], 'interviewing'), (job2['id'], 'applied')):
+            item = json.loads(conn.execute('SELECT payload FROM jobs WHERE id=?', (job_id,)).fetchone()['payload'])
+            item['pipeline_status'] = status
+            conn.execute('UPDATE jobs SET payload=? WHERE id=?', (json.dumps(item, ensure_ascii=False), job_id))
+        stamps = [
+            (job1['id'], '', 'applied', (monday + timedelta(days=1, hours=10)).isoformat()),            # 本周二
+            (job1['id'], 'applied', 'interviewing', (monday + timedelta(days=3, hours=10)).isoformat()),  # 本周四
+            (job2['id'], '', 'applied', (monday - timedelta(days=1)).isoformat()),                       # 上周日
+        ]
+        for job_id, from_status, to_status, stamp in stamps:
+            conn.execute('INSERT INTO job_pipeline_events (job_id,from_status,to_status,created_at) VALUES (?,?,?,?)',
+                         (job_id, from_status, to_status, stamp))
+
+    funnel = repo.pipeline_funnel()
+    cohorts = {item['week_start']: item for item in funnel['cohorts']}
+    this_week, last_week = monday.date().isoformat(), (monday - timedelta(weeks=1)).date().isoformat()
+    assert cohorts[this_week]['applied'] == 1 and cohorts[this_week]['interviewing'] == 1 and cohorts[this_week]['active'] == 1
+    assert cohorts[last_week]['applied'] == 1 and cohorts[last_week]['interviewing'] == 0 and cohorts[last_week]['active'] == 1
+    by_weekday = {item['weekday']: item for item in funnel['by_weekday']}
+    assert by_weekday[2]['applied'] == 1 and by_weekday[2]['interviewing'] == 1
+    assert by_weekday[7]['applied'] == 1 and by_weekday[7]['interviewing'] == 0 and by_weekday[7]['rate'] == 0.0
+
 
 def test_pipeline_weekly_buckets_iso_weeks(repo):
     from datetime import datetime, timedelta, timezone

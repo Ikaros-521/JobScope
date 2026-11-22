@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, date, getPipelineReview, patchJobs, post, startDetailBatch } from './api'
-import type { Job, OfferComparison, PageInfo, PipelineFunnel, PipelineFunnelBucket, PipelineReview, Task } from './api'
+import type { Job, OfferComparison, PageInfo, PipelineFunnel, PipelineFunnelBucket, PipelineFunnelCohort, PipelineFunnelStep, PipelineFunnelWeekday, PipelineReview, Task } from './api'
 import { emptyPage, Pagination } from './Pagination'
 import { toast } from './toast'
 import { addCompareCompany } from './compareSelectionStore'
@@ -36,8 +36,17 @@ const PIPELINE_FILTERS: { id: PipelineFilter; label: string }[] = [
   ...PIPELINE_ORDER.map(status => ({ id: status as PipelineFilter, label: PIPELINE_NAMES[status] })),
 ]
 
-// 漏斗转化与归因（2026-11-22）：曾到达口径的转化率一行 + 三组归因切片。
-// 这里只呈现数据不给结论——卡点解读交给「投递复盘」卡（Agent 用 pipeline_funnel 工具取同一份数据）。
+// 漏斗转化与归因（2026-11-22）：曾到达口径的转化率一行 + 归因/批次/周几几组切片。
+// 样本量如实随行：n≥1 就计算展示，n<10 在悬浮提示里标注「参考有限」——数字无门槛，价值随样本说明。
+const WEEKDAY_NAMES = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日']
+const smallSampleNote = (n: number) => n < 10 ? `（仅 ${n} 条，参考有限）` : ''
+
+function cycleTitle(step: PipelineFunnelStep) {
+  if (step.cycle_n === 0) return '尚无可算周期的样本'
+  const base = `样本 ${step.cycle_n} 条 · 平均 ${step.cycle_days} 天 · 半数在 ${step.p25_days}–${step.p75_days} 天内推进`
+  return base + smallSampleNote(step.cycle_n)
+}
+
 function FunnelPanel({ funnel }: { funnel: PipelineFunnel }) {
   if (!funnel.steps.some(step => step.rate !== null)) return null
   const groups: { title: string; hint: string; buckets: PipelineFunnelBucket[] }[] = [
@@ -48,9 +57,9 @@ function FunnelPanel({ funnel }: { funnel: PipelineFunnel }) {
   return <>
     <div className="pipeline-funnel">
       {funnel.steps.map(step => <span key={step.to} className="funnel-step"
-        title={`累计到达口径（事件流∪当前状态）；${step.cycle_n ? `按 ${step.cycle_n} 条推进样本计算` : '尚无可算周期的样本'}`}>
+        title={`累计到达口径（事件流∪当前状态）。${cycleTitle(step)}`}>
         {PIPELINE_NAMES[step.from]}→{PIPELINE_NAMES[step.to]} <b>{step.rate === null ? '数据不足' : `${Math.round(step.rate * 100)}%`}</b>
-        {step.cycle_days !== null && <span className="tiny-label"> · 平均 {step.cycle_days} 天</span>}
+        {step.median_days !== null && <span className="tiny-label"> · 中位 {step.median_days} 天</span>}
       </span>)}
       {funnel.archived_untracked > 0 && <span className="tiny-label" title="事件流上线前的归档岗位没有历史，不计入转化分母">{funnel.archived_untracked} 条归档无历史</span>}
     </div>
@@ -65,8 +74,41 @@ function FunnelPanel({ funnel }: { funnel: PipelineFunnel }) {
           </tr>)}</tbody>
         </table>
       </div>)}
+      {funnel.cohorts && funnel.cohorts.length > 0 && <CohortPanel cohorts={funnel.cohorts} />}
+      {funnel.by_weekday && funnel.by_weekday.some(day => day.applied > 0) && <WeekdayPanel weekdays={funnel.by_weekday.filter(day => day.applied > 0)} />}
     </div>
   </>
+}
+
+// 投递批次（P2）：同一周首次投递的岗位为一批，看这批累计走到约面/Offer 的比例与仍在推进的存量。
+// 「仍在推进」是当前状态还活跃（已投/面试中）的岗位数；已移出管线的不在其中。
+function CohortPanel({ cohorts }: { cohorts: PipelineFunnelCohort[] }) {
+  return <div className="attribution-group">
+    <h4 title="按首次投递周分批，追踪这批岗位累计走到约面/Offer 的比例。样本量小的批次参考有限；批次随事件流积累逐周变准。">按投递批次</h4>
+    <table>
+      <thead><tr><th>投递周</th><th>投递</th><th>约面</th><th>Offer</th><th>仍在推进</th></tr></thead>
+      <tbody>{cohorts.map(item => <tr key={item.week_start}>
+        <td>{item.week_start.slice(5)}</td><td>{item.applied}</td><td>{item.interviewing}</td><td>{item.offer}</td>
+        <td><b>{item.active}</b></td>
+      </tr>)}</tbody>
+    </table>
+  </div>
+}
+
+// 周几投递（P2）：按首次投递的星期几看约面率。差异小或样本少都不下结论，数字自己说话。
+function WeekdayPanel({ weekdays }: { weekdays: PipelineFunnelWeekday[] }) {
+  return <div className="attribution-group">
+    <h4 title="按首次投递的星期几统计约面率；样本少时参考有限，不构成「哪天投更好」的结论。">周几投递</h4>
+    <table>
+      <thead><tr><th>周几</th><th>投递</th><th>约面率</th></tr></thead>
+      <tbody>{weekdays.map(day => <tr key={day.weekday}>
+        <td>{WEEKDAY_NAMES[day.weekday]}</td><td>{day.applied}</td>
+        <td><b title={smallSampleNote(day.applied) || undefined}>
+          {day.rate === null ? '—' : `${Math.round(day.rate * 100)}%${smallSampleNote(day.applied) ? ' *' : ''}`}
+        </b></td>
+      </tr>)}</tbody>
+    </table>
+  </div>
 }
 
 // Offer 对比（2026-11-22 P1）：Offer 状态岗位并排——薪资、可靠度分带、与本地薪资基线的差值。
@@ -275,7 +317,7 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
       {rechecking && <p className="batch-message" role="status"><span className="spinner" /> {recheckTask?.message}{recheckTask?.total ? ` · 已处理 ${recheckTask.processed || 0}/${recheckTask.total}` : ''}</p>}
       {loading ? <div className="loading-state"><span className="spinner" />正在读取收藏…</div>
         : jobs.length === 0 ? <div className="empty"><div className="empty-icon"><Icon name="star" /></div><h3>{draft.q || filters.current.q ? '收藏中没有符合条件的岗位' : '还没有收藏的岗位'}</h3><p>在岗位档案列表点卡片右侧的星标，或岗位详情页点「收藏」。收藏不会因为重新采集而丢失。</p></div>
-        : <div className={`job-list${busy === 'filter' ? ' refreshing' : ''}`}>{jobs.map(item => <JobCard key={item.id} item={item} selected={false} checked={selectedIds.has(item.id)}
+        : <div className={`job-list${busy === 'filter' ? ' refreshing' : ''}`}>{jobs.map(item => <JobCard key={item.id} item={item} compact selected={false} checked={selectedIds.has(item.id)}
           busy={busy.startsWith(`star-${item.id}`) || busy.startsWith(`recheck-${item.id}`)}
           onToggleSelection={id => { if (!busy) toggleSelection(id) }} onOpen={onOpenJob} onToggleStar={toggleStar}
           actions={<span className="job-card-actions">

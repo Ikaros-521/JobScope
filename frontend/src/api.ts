@@ -11,13 +11,24 @@ export type Job = {
   pipeline_due?: string // 截止日 YYYY-MM-DD：今日概览据此生成待办
 }
 // 漏斗转化与归因（2026-11-22）：曾到达口径（事件流∪当前状态），分母不足时 rate 为 null。
-export type PipelineFunnelStep = { from: string; to: string; rate: number | null; cycle_days: number | null; cycle_n: number }
+// 推进天数给中位+四分位；1 条样本就算，n<10 时前端标注「参考有限」。
+export type PipelineFunnelStep = {
+  from: string; to: string; rate: number | null
+  cycle_days: number | null; cycle_n: number
+  median_days: number | null; p25_days: number | null; p75_days: number | null
+}
 export type PipelineFunnelBucket = { key: string; label: string; applied: number; interviewing: number; offer: number; interview_rate: number | null }
+// 投递批次 cohort（P2）：同一 ISO 周首次投递的岗位为一批，累计追踪其走向。
+export type PipelineFunnelCohort = { week_start: string; applied: number; interviewing: number; offer: number; active: number }
+// 周几投递（P2）：weekday 取 1=周一 … 7=周日（UTC 事件戳口径）。
+export type PipelineFunnelWeekday = { weekday: number; applied: number; interviewing: number; rate: number | null }
 export type PipelineFunnel = {
   stages: { status: string; count: number }[]
   steps: PipelineFunnelStep[]
   attribution: { by_source: PipelineFunnelBucket[]; by_resume: PipelineFunnelBucket[]; by_reliability: PipelineFunnelBucket[] }
   archived_untracked: number
+  cohorts?: PipelineFunnelCohort[]
+  by_weekday?: PipelineFunnelWeekday[]
 }
 // 机会管线回顾（收藏夹顶部）：纯本地统计，各列表截前 8 条。
 export type PipelineReview = {
