@@ -24,6 +24,7 @@ const DIM_COLORS: Record<string, string> = {
 }
 
 type Phase = 'loading' | 'intro' | 'test' | 'submitting' | 'report'
+type JdAnswer = { trial_id: string; choice: 'a' | 'b'; rt_ms: number }
 
 function percent(value: number) { return `${Math.round(value * 100)}%` }
 
@@ -35,7 +36,9 @@ export function JdAssessmentView() {
   const [trials, setTrials] = useState<JdTrial[]>([])
   const [latest, setLatest] = useState<JdAssessmentItem | null>(null)
   const [index, setIndex] = useState(0)
-  const [answers, setAnswers] = useState<{ trial_id: string; choice: 'a' | 'b'; rt_ms: number }[]>([])
+  // 按题序存全量作答（初始顺序作答逐步填满）；返回修改只改对应槽位，反应时按最终选择的重看时间重计，
+  // 误触后回改不会被 800ms 质检闸门误杀。
+  const [answers, setAnswers] = useState<(JdAnswer | null)[]>([])
   const trialShownAt = useRef(0)
 
   const load = useCallback(async () => {
@@ -48,22 +51,36 @@ export function JdAssessmentView() {
   }, [])
   useEffect(() => { void load() }, [load])
 
-  // 作答：记录反应时后立即进下一题；最后一题提交（一次落库，服务端计分）。
+  const answeredCount = answers.filter(Boolean).length
+  const allDone = trials.length > 0 && answeredCount === trials.length
+  const currentAnswer = answers[index] || null
+
+  // 作答/修改：记录反应时后写入当前题并前进一格；最后一题答完停留，由底部「交卷」收口。
   function choose(choice: 'a' | 'b') {
     if (phase !== 'test') return
-    const trial = trials[index]
     const rt = Math.max(0, Math.round(performance.now() - trialShownAt.current))
-    const next = [...answers, { trial_id: trial.id, choice, rt_ms: rt }]
-    setAnswers(next)
+    setAnswers(prev => {
+      const next = [...prev]
+      next[index] = { trial_id: trials[index].id, choice, rt_ms: rt }
+      return next
+    })
     if (index + 1 < trials.length) {
       setIndex(index + 1)
       trialShownAt.current = performance.now()
-      return
     }
+  }
+  function goPrev() {
+    if (index > 0 && phase === 'test') { setIndex(index - 1); trialShownAt.current = performance.now() }
+  }
+  function goNext() {
+    if (index + 1 < trials.length && phase === 'test' && answers[index]) { setIndex(index + 1); trialShownAt.current = performance.now() }
+  }
+  function submit() {
+    if (phase !== 'test' || !allDone) return
     setPhase('submitting')
-    submitJdAssessment(next)
+    submitJdAssessment(answers.filter(Boolean) as JdAnswer[])
       .then(item => { setLatest(item); setPhase('report'); toast('测评完成，报告已保存在本机', 'notice') })
-      .catch((err: Error) => { toast(err.message, 'error'); setPhase('intro') })
+      .catch((err: Error) => { toast(err.message, 'error'); setPhase('test') })
   }
 
   // 键盘作答（←/→ 或 A/B）：按 jsPsych 惯例给键盘通路，但以点击为主通路。
@@ -88,7 +105,6 @@ export function JdAssessmentView() {
   if (phase === 'loading') return null
   const report = latest?.payload.report
   const trial = trials[index]
-  const progress = trials.length ? Math.round((index / trials.length) * 100) : 0
 
   return <section className="jd-wrap" aria-label="反向JD测评">
     <section className="page-intro compact"><h1 className="sr-only">反向JD测评</h1>
@@ -99,7 +115,7 @@ export function JdAssessmentView() {
         <p className="body-small muted">每题给你两张由真实 JD 片段拼成的岗位卡，选一张更愿意投的。做完立刻得到一份「隐性筛选条件报告」：不是人格标签，而是每一类片段的选中率差异，和下一轮投递直接能用的筛选/回避关键词。</p></div></div>
       <ul className="jd-intro-list">
         <li><b>{trials.length} 题</b>，约 5 分钟，凭直觉选，不用想太久——直觉才是要测的东西。</li>
-        <li>没有对错，也不可回退改答案；中途离开即作废。</li>
+        <li>没有对错；点错随时「← 上一题」改，全部答完还能从头检查一遍再交卷。中途离开即作废。</li>
         <li>卷内含注意力校验与重复校验题：质检不过的报告会如实标注可信度。</li>
       </ul>
       <div className="jd-intro-actions">
@@ -109,17 +125,29 @@ export function JdAssessmentView() {
     </section>}
 
     {(phase === 'test' || phase === 'submitting') && trial && <section className="paper-panel jd-panel">
-      <div className="jd-progress-row"><span className="jd-count">{index + 1} / {trials.length}</span>
-        <div className="jd-progress" role="progressbar" aria-valuenow={progress} aria-valuemin={0} aria-valuemax={100}><i style={{ width: `${progress}%` }} /></div>
-        <span className="jd-hint">← / → 键也可作答</span></div>
+      <div className="jd-progress-row"><span className="jd-count">{answeredCount} / {trials.length}</span>
+        <div className="jd-progress" role="progressbar" aria-valuenow={answeredCount} aria-valuemin={0} aria-valuemax={trials.length}><i style={{ width: `${trials.length ? (answeredCount / trials.length) * 100 : 0}%` }} /></div>
+        <span className="jd-hint">← / → 选卡 · 可返回修改</span></div>
       <div className="jd-stage">
-        {(['a', 'b'] as const).map(side => <button key={side} type="button" className="jd-card" disabled={phase === 'submitting'}
+        {(['a', 'b'] as const).map(side => <button key={side} type="button"
+          className={`jd-card${currentAnswer?.choice === side ? ' jd-card-picked' : ''}`} disabled={phase === 'submitting'}
           onClick={() => choose(side)}>
-          <span className={`jd-card-side jd-side-${side}`}>{side === 'a' ? '岗位 A' : '岗位 B'}</span>
+          <span className={`jd-card-side jd-side-${side}`}>{side === 'a' ? '岗位 A' : '岗位 B'}{currentAnswer?.choice === side && <i className="jd-picked-tag">已选</i>}</span>
           <ul>{trial[side].map((phrase, i) => <li key={i}>{phrase}</li>)}</ul>
         </button>)}
       </div>
-      <p className="jd-hint jd-hint-center">哪张更愿意投？凭直觉，点它。</p>
+      <div className="jd-nav-row">
+        <button className="button secondary" disabled={index === 0 || phase === 'submitting'} onClick={goPrev}>← 上一题</button>
+        {index + 1 < trials.length && <button className="button secondary" disabled={!currentAnswer || phase === 'submitting'} onClick={goNext}>下一题 →</button>}
+        {index + 1 === trials.length && currentAnswer && <>
+          <span className="jd-nav-note">{allDone ? '全部答完，可返回检查' : '本题已答，还有未答题'}</span>
+          <button className="button secondary" disabled={phase === 'submitting'} onClick={() => { setIndex(0); trialShownAt.current = performance.now() }}>从头检查</button>
+          <Button className="button primary" busy={phase === 'submitting'} disabled={!allDone || phase === 'submitting'} onClick={submit}>交卷</Button>
+        </>}
+      </div>
+      <p className="jd-hint jd-hint-center">{currentAnswer
+        ? `当前已选岗位 ${currentAnswer.choice.toUpperCase()}，点卡片即修改`
+        : '哪张更愿意投？凭直觉，点它。'}</p>
     </section>}
 
     {phase === 'report' && report && <section className="paper-panel jd-panel">

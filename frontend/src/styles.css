@@ -2624,3 +2624,8 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .runway-guide-body { padding: 2px 14px 12px; display: flex; flex-direction: column; gap: 6px; }
 .runway-guide-body h4 { margin: 4px 0 0; font-size: 12.5px; }
 .runway-guide-body ul, .runway-guide-body ol { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.75; color: var(--ink, #222); display: flex; flex-direction: column; gap: 2px; }
+/* 返回修改：已选卡高亮 + 底部导航条 */
+.jd-card-picked { border-color: var(--green); background: var(--selected); }
+.jd-picked-tag { margin-left: 7px; background: rgba(255, 255, 255, .3); border-radius: 4px; padding: 1px 7px; font-weight: 500; font-style: normal; }
+.jd-nav-row { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+.jd-nav-note { font-size: 12px; color: var(--muted); }
