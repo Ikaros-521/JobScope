@@ -473,7 +473,9 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .funnel-step b { color: var(--text); font-variant-numeric: tabular-nums; }
 .pipeline-attribution { flex-basis: 100%; display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 10px 36px; border-top: 1px dashed var(--line); padding-top: 6px; }
 .pipeline-offers { flex-basis: 100%; border-top: 1px dashed var(--line); padding-top: 6px; }
-.pipeline-attribution h4, .pipeline-offers h4 { margin: 0 0 2px; font-size: 12px; font-weight: 500; color: var(--muted); cursor: help; }
+.pipeline-offers h4 { margin: 0 0 2px; font-size: 12px; font-weight: 500; color: var(--muted); cursor: help; }
+/* 归因组标题已并入表头首格（不再有 h4），悬浮提示沿用 help 光标。 */
+.pipeline-attribution th[title] { cursor: help; }
 .pipeline-attribution table, .pipeline-offers table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
 .pipeline-attribution th, .pipeline-offers th { font-weight: normal; color: var(--muted); padding: 0 10px 0 0; text-align: left; }
 .pipeline-attribution td, .pipeline-offers td { padding: 1px 10px 1px 0; text-align: left; color: var(--muted); }

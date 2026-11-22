@@ -65,9 +65,9 @@ function FunnelPanel({ funnel }: { funnel: PipelineFunnel }) {
     </div>
     <div className="pipeline-attribution">
       {groups.filter(group => group.buckets.some(item => item.applied > 0)).map(group => <div key={group.title} className="attribution-group">
-        <h4 title={group.hint}>{group.title}</h4>
+        {/* 组标题并入表头首格——不再单独占一行（2026-11-22 用户反馈：左上角第一个头不该自己换行）。 */}
         <table>
-          <thead><tr><th>分组</th><th>已投</th><th>约面</th><th>约面率</th></tr></thead>
+          <thead><tr><th title={group.hint}>{group.title}</th><th>已投</th><th>约面</th><th>约面率</th></tr></thead>
           <tbody>{group.buckets.filter(item => item.applied > 0).map(item => <tr key={item.key}>
             <td>{item.label}</td><td>{item.applied}</td><td>{item.interviewing}</td>
             <td><b>{item.interview_rate === null ? '—' : `${Math.round(item.interview_rate * 100)}%`}</b></td>
@@ -84,9 +84,8 @@ function FunnelPanel({ funnel }: { funnel: PipelineFunnel }) {
 // 「仍在推进」是当前状态还活跃（已投/面试中）的岗位数；已移出管线的不在其中。
 function CohortPanel({ cohorts }: { cohorts: PipelineFunnelCohort[] }) {
   return <div className="attribution-group">
-    <h4 title="按首次投递周分批，追踪这批岗位累计走到约面/Offer 的比例。样本量小的批次参考有限；批次随事件流积累逐周变准。">按投递批次</h4>
     <table>
-      <thead><tr><th>投递周</th><th>投递</th><th>约面</th><th>Offer</th><th>仍在推进</th></tr></thead>
+      <thead><tr><th title="按首次投递周分批，追踪这批岗位累计走到约面/Offer 的比例。样本量小的批次参考有限；批次随事件流积累逐周变准。">按投递批次</th><th>投递</th><th>约面</th><th>Offer</th><th>仍在推进</th></tr></thead>
       <tbody>{cohorts.map(item => <tr key={item.week_start}>
         <td>{item.week_start.slice(5)}</td><td>{item.applied}</td><td>{item.interviewing}</td><td>{item.offer}</td>
         <td><b>{item.active}</b></td>
@@ -98,9 +97,8 @@ function CohortPanel({ cohorts }: { cohorts: PipelineFunnelCohort[] }) {
 // 周几投递（P2）：按首次投递的星期几看约面率。差异小或样本少都不下结论，数字自己说话。
 function WeekdayPanel({ weekdays }: { weekdays: PipelineFunnelWeekday[] }) {
   return <div className="attribution-group">
-    <h4 title="按首次投递的星期几统计约面率；样本少时参考有限，不构成「哪天投更好」的结论。">周几投递</h4>
     <table>
-      <thead><tr><th>周几</th><th>投递</th><th>约面率</th></tr></thead>
+      <thead><tr><th title="按首次投递的星期几统计约面率；样本少时参考有限，不构成「哪天投更好」的结论。">周几投递</th><th>投递</th><th>约面率</th></tr></thead>
       <tbody>{weekdays.map(day => <tr key={day.weekday}>
         <td>{WEEKDAY_NAMES[day.weekday]}</td><td>{day.applied}</td>
         <td><b title={smallSampleNote(day.applied) || undefined}>
