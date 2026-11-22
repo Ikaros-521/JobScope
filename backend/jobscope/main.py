@@ -32,7 +32,7 @@ from .transcript import parse_labeled_transcript
 from .transcript_runs import TranscriptManager, new_transcript
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput, TranscriptImportInput, TranscriptSegmentsInput
+from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput, TranscriptImportInput, TranscriptSegmentsInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -623,6 +623,7 @@ def create_app(data_dir=None):
         跟进口径只看本项目已存数据：活跃状态（意向/已投递/面试中）距最近一次状态变化超过
         14 天就提醒看一眼进展；offer 与归档不算待跟进。列表各截前 8 条，按时间排序。"""
         from datetime import datetime, timezone
+        from .prescription import build as build_prescriptions
         reference = datetime.now(timezone.utc)
         items = []
         for job in repo.jobs():
@@ -660,11 +661,20 @@ def create_app(data_dir=None):
                 # 漏斗转化与归因（2026-11-22）：曾到达口径 + 来源/定制简历/可靠度分带切片。
                 'funnel': repo.pipeline_funnel(),
                 # Offer 对比（2026-11-22 P1）：Offer 状态岗位并排，基线差值只对可比岗位计算。
-                'offers': repo.offer_comparison()}
+                'offers': repo.offer_comparison(),
+                # 行动处方（2026-11-22 P0）：漏斗数据 → 处方卡，收藏页回顾区直接消费。
+                'prescriptions': build_prescriptions(repo)}
 
     @app.get('/api/jobs/pipeline/review')
     def pipeline_review():
         return _pipeline_review_payload()
+
+    # ── 行动处方引擎（2026-11-22）：漏斗数据 → 可执行动作，规则版无 LLM、确定性可测。 ──
+
+    @app.get('/api/jobs/pipeline/prescriptions')
+    def pipeline_prescriptions():
+        from .prescription import build
+        return build(repo)
 
     # ── 触达生成器（2026-11-22）：打招呼/跟进话术。模型不可用走规则兜底，生成即落版本。 ──
 
@@ -710,6 +720,7 @@ def create_app(data_dir=None):
 
         全部只读本库与本地备份目录，不发起联网采集；各区块的详细操作仍落在对应工作区
         （收藏/管线在收藏夹，采集在数据与采集，备份在设置中心）。"""
+        from .prescription import build as build_prescriptions
         return {
             'date': now()[:10],
             'counts': repo.overview_counts(),
@@ -717,6 +728,8 @@ def create_app(data_dir=None):
             'due': repo.pipeline_due_items(),
             # 本周节奏（2026-11-22 P1）：按 ISO 周聚合事件流与新收藏，末两周环比在前端算。
             'weekly': repo.pipeline_weekly(),
+            # 行动处方（2026-11-22）：漏斗数据 → 今日行动清单 + 处方卡，今日页直接消费。
+            'prescriptions': build_prescriptions(repo),
             'new_jobs': repo.recent_first_seen(),
             'backup': backups.status(),
             'recent_tasks': repo.tasks()[:5],
@@ -1280,12 +1293,18 @@ def create_app(data_dir=None):
             else:
                 resume = repo.resume()
             _summaries, report = repo.list_reports(data.job_id)
-            return assemble_material(job, resume, report, company_brief=company_brief_from(repo, job['company']))
-        if data.jd_text.strip():
-            return assemble_material(dict(id='', company=data.company.strip(), title=data.job_title.strip() or '自定义 JD',
-                                          description=data.jd_text.strip(), source='user_import'),
-                                     repo.resume(), company_brief=company_brief_from(repo, data.company))
-        return assemble_material(None, repo.resume(), company_brief=company_brief_from(repo, data.company))
+            material = assemble_material(job, resume, report, company_brief=company_brief_from(repo, job['company']))
+        elif data.jd_text.strip():
+            material = assemble_material(dict(id='', company=data.company.strip(), title=data.job_title.strip() or '自定义 JD',
+                                              description=data.jd_text.strip(), source='user_import'),
+                                         repo.resume(), company_brief=company_brief_from(repo, data.company))
+        else:
+            material = assemble_material(None, repo.resume(), company_brief=company_brief_from(repo, data.company))
+        if data.persona_id == 'gap':
+            # 空窗期专题卡：把资料库启用的空窗经历条目注入材料，出题与面试官都以它为核实基准。
+            from .gap_narrative import entries_block
+            material['gap_digest'] = entries_block(repo)
+        return material
 
     @app.post('/api/interview/sessions')
     def create_interview_session(data: InterviewCreateInput):
@@ -1582,8 +1601,8 @@ def create_app(data_dir=None):
     # preference 类（求职偏好）注入方向不同：启用即进评估事实池（见 preference_statements），
     # 不作工坊扩写素材。
 
-    PROFILE_CATEGORIES = ('project', 'work', 'education', 'skill', 'cert', 'award', 'preference', 'other')
-    PROFILE_CATEGORIES_HEADER = {'project': '项目经历', 'work': '工作经历', 'education': '教育背景',
+    PROFILE_CATEGORIES = ('project', 'work', 'gap', 'education', 'skill', 'cert', 'award', 'preference', 'other')
+    PROFILE_CATEGORIES_HEADER = {'project': '项目经历', 'work': '工作经历', 'gap': '空窗经历', 'education': '教育背景',
                                  'skill': '专业技能', 'cert': '证书', 'award': '奖项荣誉',
                                  'preference': '求职偏好', 'other': '其他材料'}
 
@@ -1634,6 +1653,20 @@ def create_app(data_dir=None):
         if not repo.delete_profile_entry(entry_id):
             raise HTTPException(404, '资料条目不存在')
         return {'deleted': entry_id}
+
+    # ── 空窗期叙事（2026-11-22）：gap 条目 → 简历段落/面试应答/电梯陈述。模型不可用退规则骨架。 ──
+
+    @app.post('/api/profile/gap-narrative')
+    def generate_gap_narrative(data: GapNarrativeInput):
+        from .gap_narrative import generate
+        try:
+            return generate(repo, job_id=data.job_id, jd_text=data.jd_text, job_title=data.job_title)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+
+    @app.get('/api/profile/gap-narratives')
+    def list_gap_narratives():
+        return {'narratives': repo.gap_narratives()}
 
     @app.post("/api/resume-versions/optimize")
     def optimize_resume_version(data: OptimizeResumeInput):

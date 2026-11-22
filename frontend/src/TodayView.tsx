@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createBackup, date, getDashboard, relativeDays } from './api'
-import type { Dashboard, DashboardDue, PipelineWeeklyWeek } from './api'
+import type { Dashboard, DashboardDue, PipelinePrescription, PipelineWeeklyWeek, TodayPlan } from './api'
 import { toast } from './toast'
 import { Icon } from './Icon'
 import { sourceNames } from './JobCard'
@@ -18,12 +18,14 @@ const TASK_STATUS_NAMES: Record<string, string> = {
 }
 const BACKUP_REMIND_DAYS = 7
 
-export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJobs, onOpenSettings }: {
+export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJobs, onOpenSettings,
+  onPrescriptionNavigate }: {
   onOpenJob: (jobId: string) => void
   onOpenFavorites: () => void
   onOpenSources: () => void
   onOpenJobs: () => void
   onOpenSettings: () => void
+  onPrescriptionNavigate?: (target: PipelinePrescription['target']) => void
 }) {
   const [data, setData] = useState<Dashboard | null>(null)
   const [error, setError] = useState('')
@@ -55,7 +57,7 @@ export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJob
     <div className="loading-state"><span className="spinner" />正在读取本机数据…</div>
   </section>
 
-  const { counts, pipeline, due, weekly, new_jobs: newJobs, backup, recent_tasks: recentTasks } = data
+  const { counts, pipeline, due, weekly, prescriptions, new_jobs: newJobs, backup, recent_tasks: recentTasks } = data
   const backupStale = backup.days_since === null || backup.days_since > BACKUP_REMIND_DAYS
   const staleFollowUps = pipeline.follow_ups
 
@@ -75,6 +77,11 @@ export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJob
         <button className="button secondary small" disabled={busy} onClick={backupNow}>{busy ? '正在备份…' : '立即备份'}</button>
         <button className="text-button" onClick={onOpenSettings}>管理备份</button>
       </div>}
+
+      {/* 今日行动（2026-11-22）：投递目标 + 处方卡（最多 3 条，全量在收藏页漏斗区）。 */}
+      {prescriptions && (prescriptions.prescriptions.length > 0 || prescriptions.today_plan) &&
+        <ActionBoard plan={prescriptions.today_plan} items={prescriptions.prescriptions.slice(0, 3)}
+          total={prescriptions.prescriptions.length} onNavigate={onPrescriptionNavigate} />}
 
       <div className="today-grid">
         <section className="paper-panel today-panel today-todo" aria-label="待跟进">
@@ -137,6 +144,34 @@ function DueRow({ item, onOpen }: { item: DashboardDue; onOpen: (id: string) => 
       {PIPELINE_NAMES[item.status] || item.status}{item.note ? ` · ${item.note}` : ''}
     </span>
   </li>
+}
+
+// 今日行动（2026-11-22）：行动处方引擎的今日页入口。目标数字与已投数并排，
+// 处方卡只取前 3 条（全量在收藏页漏斗区）——今日页管「现在做什么」，不堆全部诊断。
+function ActionBoard({ plan, items, total, onNavigate }: {
+  plan: TodayPlan
+  items: PipelinePrescription[]
+  total: number
+  onNavigate?: (target: PipelinePrescription['target']) => void
+}) {
+  return <section className="paper-panel today-panel today-action" aria-label="今日行动">
+    <div className="section-heading"><div><h2>今日行动</h2>
+      <p className="body-small muted">目标按你近一周的节奏定，处方由本地漏斗数据自动生成——指路不施压。</p></div>
+      {plan.follow_ups > 0 && <span className="tiny-label">逾期跟进 {plan.follow_ups} 条</span>}</div>
+    <div className="today-action-row">
+      <span className="today-action-target"><b className={plan.done.apply >= plan.targets.apply ? 'done' : ''}>{plan.done.apply}</b>
+        <span className="today-action-divider">/ {plan.targets.apply}</span>今日已投</span>
+      <span className="tiny-label">{plan.targets.apply_basis}</span>
+    </div>
+    {items.length > 0 && <ul className="prescription-list">
+      {items.map(item => <li key={item.id} className={`prescription-item ${item.level}`}>
+        <div className="prescription-head"><b>{item.title}</b>
+          {onNavigate && <button type="button" className="text-button" onClick={() => onNavigate(item.target)}>{item.cta}<Icon name="arrow" size={12} /></button>}</div>
+        <p className="prescription-action">{item.action}</p>
+      </li>)}
+    </ul>}
+    {total > items.length && <span className="tiny-label">还有 {total - items.length} 条处方，在收藏页的漏斗区。</span>}
+  </section>
 }
 
 // 本周节奏（2026-11-22 P1）：末两周环比。只陈述数字与变化，不做好坏评价；

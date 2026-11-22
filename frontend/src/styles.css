@@ -2495,3 +2495,32 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .iv-live-seg p { margin: 0; font-size: 13px; line-height: 1.65; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
 .iv-live-tail .iv-skeleton { padding: 4px 2px; }
 .iv-live-tail .iv-skeleton i { height: 9px; width: 60%; }
+
+/* ── 行动处方与今日行动（2026-11-22）：漏斗数据 → 可执行动作 ── */
+.pipeline-prescriptions { flex-basis: 100%; margin-top: 4px; padding-top: 10px; border-top: 1px dashed var(--line, #e8e5da); }
+.pipeline-prescriptions h4 { margin: 0 0 6px; font-size: 13px; }
+.prescription-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.prescription-item { border: 1px solid var(--line, #e8e5da); border-radius: 10px; padding: 8px 12px; background: var(--panel, #fff); }
+.prescription-item.warn { border-color: #e3c4a8; background: var(--accent-soft, #f8efe3); }
+.prescription-head { display: flex; align-items: baseline; gap: 10px; }
+.prescription-head b { font-size: 13px; }
+.prescription-head .text-button { margin-left: auto; flex: none; }
+.prescription-item .tiny-label { display: block; margin-top: 2px; }
+.prescription-action { margin: 4px 0 0; font-size: 12.5px; line-height: 1.6; }
+.today-action { margin-bottom: 12px; }
+.today-action-row { display: flex; align-items: baseline; gap: 10px; margin: 2px 0 10px; }
+.today-action-target { font-size: 12.5px; color: var(--muted, #666); }
+.today-action-target b { font-size: 20px; color: var(--ink, #222); }
+.today-action-target b.done { color: #2e7d32; }
+.today-action-divider { color: var(--muted, #999); margin: 0 2px; }
+/* ── 空窗期叙事弹窗（2026-11-22）：三段产物 + 历史版本 ── */
+.gap-editor { width: min(640px, 92vw); max-height: 86vh; overflow-y: auto; }
+.gap-target-input { flex: 1; min-width: 160px; font: inherit; font-size: 13px; padding: 7px 10px; border: 1px solid var(--line, #d8d4c8); border-radius: 8px; background: var(--panel, #fff); }
+.gap-latest { display: flex; flex-direction: column; gap: 10px; }
+.gap-block { border: 1px solid var(--line, #e8e5da); border-radius: 10px; padding: 8px 12px; background: var(--panel, #fff); }
+.gap-block-head { display: flex; align-items: baseline; gap: 8px; }
+.gap-block-head b { font-size: 13px; }
+.gap-block-head .text-button { margin-left: auto; flex: none; }
+.gap-block-text { margin: 6px 0 0; font-size: 13px; line-height: 1.7; white-space: pre-wrap; word-break: break-word; }
+.gap-history { margin-top: 10px; }
+.gap-history-item { margin-top: 6px; padding: 6px 8px; border-top: 1px dashed var(--line, #e8e5da); }

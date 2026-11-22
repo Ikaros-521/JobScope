@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, date, getPipelineReview, patchJobs, post, startDetailBatch } from './api'
-import type { Job, OfferComparison, PageInfo, PipelineFunnel, PipelineFunnelBucket, PipelineFunnelCohort, PipelineFunnelStep, PipelineFunnelWeekday, PipelineReview, Task } from './api'
+import type { Job, OfferComparison, PageInfo, PipelineFunnel, PipelineFunnelBucket, PipelineFunnelCohort, PipelineFunnelStep, PipelineFunnelWeekday, PipelinePrescription, PipelineReview, Task } from './api'
 import { emptyPage, Pagination } from './Pagination'
 import { toast } from './toast'
 import { addCompareCompany } from './compareSelectionStore'
@@ -134,13 +134,33 @@ function OffersPanel({ offers, onOpenJob }: { offers: OfferComparison[]; onOpenJ
   </div>
 }
 
+// 行动处方（2026-11-22）：漏斗数据 → 可执行动作。规则版确定性结论，每卡 = 现象+依据+动作+跳转；
+// 指路不施压——数字只是排序与事实，语气同收藏页回顾（不评分不排名）。
+function PrescriptionPanel({ items, onNavigate }: { items: PipelinePrescription[]; onNavigate: (target: PipelinePrescription['target']) => void }) {
+  if (items.length === 0) return null
+  return <div className="pipeline-prescriptions">
+    <h4 title="按本地漏斗数据自动生成的行动建议；样本不足时只提示积累数据，不硬编结论">行动处方</h4>
+    <ul className="prescription-list">
+      {items.map(item => <li key={item.id} className={`prescription-item ${item.level}`}>
+        <div className="prescription-head">
+          <b>{item.title}</b>
+          <button type="button" className="text-button" onClick={() => onNavigate(item.target)}>{item.cta}<Icon name="arrow" size={12} /></button>
+        </div>
+        <span className="tiny-label">{item.evidence}</span>
+        <p className="prescription-action">{item.action}</p>
+      </li>)}
+    </ul>
+  </div>
+}
+
 // 收藏夹：标星岗位的集中视图。只做轻列表（筛选/勾选/批量反查/横评/取消收藏），
 // 点卡片跳回岗位研究看完整详情——详情工作台（求职参考、评估适配）不在这里重复。
 // 反查走既有详情采集管道：单条同步接口，多条走批量任务+轮询；未登录/需验证原样透出。
-export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
+export function FavoritesView({ onOpenJob, onOpenCompare, onChange, onPrescriptionNavigate }: {
   onOpenJob: (jobId: string) => void
   onOpenCompare: () => void
   onChange: () => void
+  onPrescriptionNavigate?: (target: PipelinePrescription['target']) => void
 }) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [info, setInfo] = useState<PageInfo>(emptyPage)
@@ -280,6 +300,8 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange }: {
         <div className="pipeline-review-totals">
           {PIPELINE_ORDER.map(status => <span key={status} className="pipeline-chip-stat"><b>{review.totals[status] || 0}</b>{PIPELINE_NAMES[status]}</span>)}
         </div>
+        {review.prescriptions && onPrescriptionNavigate
+          && <PrescriptionPanel items={review.prescriptions.prescriptions} onNavigate={onPrescriptionNavigate} />}
         {review.funnel && <FunnelPanel funnel={review.funnel} />}
         {review.offers && review.offers.length > 0 && <OffersPanel offers={review.offers} onOpenJob={onOpenJob} />}
         {review.follow_ups.length > 0 ? <div className="pipeline-followups">

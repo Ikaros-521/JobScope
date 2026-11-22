@@ -347,8 +347,9 @@ class OptimizeResumeInput(RequestModel):
 
 
 class ProfileEntryInput(RequestModel):
-    """个人资料库条目：完整版个人材料 + 求职偏好申报（preference 类，启用即注入评估事实池）。"""
-    category: Literal['project', 'work', 'education', 'skill', 'cert', 'award', 'preference', 'other'] = 'project'
+    """个人资料库条目：完整版个人材料 + 求职偏好申报（preference 类，启用即注入评估事实池）
+    + 空窗经历（gap 类，启用即进入空窗期叙事/面试专题的素材池）。"""
+    category: Literal['project', 'work', 'gap', 'education', 'skill', 'cert', 'award', 'preference', 'other'] = 'project'
     title: str = Field(min_length=1, max_length=200)
     org: str = Field(default='', max_length=200)
     period: str = Field(default='', max_length=100)
@@ -359,13 +360,20 @@ class ProfileEntryInput(RequestModel):
 
 class ProfileEntryPatch(RequestModel):
     """部分更新：启停开关、内容微调；缺省字段保持不变。"""
-    category: Literal['project', 'work', 'education', 'skill', 'cert', 'award', 'preference', 'other'] | None = None
+    category: Literal['project', 'work', 'gap', 'education', 'skill', 'cert', 'award', 'preference', 'other'] | None = None
     title: str | None = Field(default=None, min_length=1, max_length=200)
     org: str | None = Field(default=None, max_length=200)
     period: str | None = Field(default=None, max_length=100)
     content: str | None = Field(default=None, min_length=1, max_length=20000)
     tags: list[Annotated[str, Field(min_length=1, max_length=50)]] | None = Field(default=None, max_length=20)
     enabled: bool | None = None
+
+
+class GapNarrativeInput(RequestModel):
+    """空窗期叙事生成：素材固定取资料库启用的 gap 条目；目标岗位可选（对齐 JD 用语与措辞）。"""
+    job_id: str = Field(default='', max_length=100)
+    jd_text: str = Field(default='', max_length=20000)
+    job_title: str = Field(default='', max_length=300)
 
 
 class ManualDescriptionInput(RequestModel):

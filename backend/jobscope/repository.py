@@ -63,6 +63,7 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS interview_transcripts (id TEXT PRIMARY KEY, payload TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS job_pipeline_events (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL REFERENCES jobs(id), from_status TEXT NOT NULL DEFAULT '', to_status TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS outreach_versions (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), kind TEXT NOT NULL, text TEXT NOT NULL, origin TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, used_at TEXT NOT NULL DEFAULT '');
+                CREATE TABLE IF NOT EXISTS gap_narratives (id TEXT PRIMARY KEY, origin TEXT NOT NULL DEFAULT '', job_id TEXT NOT NULL DEFAULT '', job_title TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL, created_at TEXT NOT NULL);
             """)
             self._migrate_conversations(conn)
             # profile_entries.source 记录条目来源（笔记库导入的「规范化库根::相对路径」锚点），幂等重导靠它原位更新。
@@ -1091,6 +1092,51 @@ class Repository:
             cursor = conn.execute("UPDATE outreach_versions SET used_at=? WHERE id=? AND job_id=? AND used_at=''",
                                   (now(), version_id, job_id))
             return cursor.rowcount > 0
+
+    # ── 空窗期叙事版本（2026-11-22）：资料库 gap 条目 → 简历段落/面试应答的生成记录。 ──
+
+    def save_gap_narrative(self, data):
+        """每次生成落一条版本；叙事是「当前口径」的打磨物，只留最近 8 版供回看。"""
+        item = {**dict(origin='rules', job_id='', job_title='', payload={}), **data,
+                'id': 'G-' + uuid.uuid4().hex[:20], 'created_at': now()}
+        with self.connection() as conn:
+            # INSERT 一律显式列名（迁移教训：位置式插入在追加列后静默错位）。
+            conn.execute('INSERT INTO gap_narratives (id,origin,job_id,job_title,payload,created_at) VALUES (?,?,?,?,?,?)',
+                         (item['id'], item['origin'], item['job_id'], item['job_title'],
+                          json.dumps(item['payload'], ensure_ascii=False), item['created_at']))
+            stale = conn.execute('SELECT id FROM gap_narratives ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET 8').fetchall()
+            for row in stale:
+                conn.execute('DELETE FROM gap_narratives WHERE id=?', (row['id'],))
+        return self.gap_narrative(item['id'])
+
+    def gap_narrative(self, narrative_id):
+        with self.connection() as conn:
+            row = conn.execute('SELECT * FROM gap_narratives WHERE id=?', (narrative_id,)).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item['payload'] = json.loads(item.get('payload') or '{}')
+        return item
+
+    def gap_narratives(self, limit=8):
+        # id 是随机数不是时间序：排序锚 created_at + rowid，同秒内后生成的排前面。
+        with self.connection() as conn:
+            rows = conn.execute('SELECT id,origin,job_id,job_title,payload,created_at FROM gap_narratives '
+                                'ORDER BY created_at DESC, rowid DESC LIMIT ?', (limit,)).fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item['payload'] = json.loads(item['payload'] or '{}')
+            items.append(item)
+        return items
+
+    def pipeline_today_counts(self):
+        """当日管线事件计数（按 to_status）：今日行动清单的「已投」进度。"""
+        today = now()[:10]
+        with self.connection() as conn:
+            rows = conn.execute('SELECT to_status, COUNT(*) AS n FROM job_pipeline_events '
+                                'WHERE substr(created_at,1,10)=? GROUP BY to_status', (today,)).fetchall()
+        return {row['to_status']: row['n'] for row in rows}
 
     # ── 每周节奏与 Offer 对比（2026-11-22，P1）：周报是心态锚点，offer 对比是收口决策。 ──
 

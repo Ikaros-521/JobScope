@@ -130,6 +130,13 @@ PERSONA_PRESETS = [
     dict(id='hr', name='HR 面试官', role_family='hr',
          rounds=['hr'], default_round='hr',
          blurb='离职原因、薪资预期、职业规划与价值观行为化追问，专练 HR 关卡', tags=['动机核实', 'BEI', '谈薪']),
+    dict(id='gap', name='空窗期叙事官', role_family='hr',
+         rounds=['business', 'hr'], default_round='hr',
+         blurb='围绕简历空窗期全程追问：离开原因、空窗做了什么、是否脱节、为什么现在求职，'
+               '配合资料库「空窗经历」条目练到能自然讲出来', tags=['空窗期', '动机核实', '叙事打磨'],
+         directive='本场是空窗期专题：所有题目围绕候选人的空窗期展开——离开原因、空窗期做了什么、'
+                   '能力是否脱节、与目标岗位的关联、为什么现在求职。追问必须逼出具体事实与产出，'
+                   '不接受空泛表态；候选人的空窗期事实（如有）是核实基准，答不出事实即追问到底。'),
     dict(id='custom', name='自定义岗位', role_family='general',
          rounds=['business', 'cross', 'director', 'hr'], default_round='business',
          blurb='填上具体岗位名称再开面；按 JD 与岗位名自动推断考什么', tags=['按 JD 推断', '任意岗位']),
@@ -172,6 +179,7 @@ def build_persona(preset_id, round_id, intensity='standard', company_style='gene
         preset_id=preset_id, name=preset['name'], role_label=role['label'],
         company=style['label'], company_style_key=company_style,
         job_title=(job_title or '').strip(), company_name=(company_name or '').strip(),
+        directive=preset.get('directive', ''),
         round=round_id, round_label=round_style['label'], intensity=intensity,
         intensity_label=INTENSITY[intensity]['label'],
         role=role, company_style=style, round_style=round_style,
@@ -241,13 +249,17 @@ def build_interviewer_system(persona, material, plan, *, phase='opening', progre
     company_line = material.get('company') or persona['company_name'] or '（未指明公司）'
     brief_text = (material.get('company_brief') or '').strip()
     company_section = f'\n公司情报（可自然融入提问，如结合业务场景出方案题；不确定的信息不要当事实引用）：\n{brief_text}' if brief_text else ''
+    gap_facts = (material.get('gap_digest') or '').strip()
+    gap_section = f'\n空窗期事实（候选人在资料库申报的第一手素材，核实与追问的基准；空窗期专题以此打叙事）：\n{gap_facts}' \
+        if gap_facts else '\n空窗期事实：（候选人未申报空窗素材，空窗类问题按通用追问出，不引用不存在的事实）'
+    directive_line = f'\n- 专题要求：{persona["directive"]}' if persona.get('directive') else ''
     return f"""你是本场模拟面试的面试官，全程保持角色，绝不提及自己是 AI 或在「模拟」。
 
 【角色说明】
 - 面试风格：{persona['company']}。看重：{'；'.join(persona['company_style']['values'])}。
 - 岗位视角：{persona['role_label']}，关注 {persona['role']['focus']}。本次招聘岗位：{target_line}；目标公司：{company_line}。
 - 本轮次：{persona['round_label']}。{persona['round_style']['focus']}。
-- 面试强度：{persona['intensity_label']}。{INTENSITY[persona['intensity']]['rule']}
+- 面试强度：{persona['intensity_label']}。{INTENSITY[persona['intensity']]['rule']}{directive_line}
 - 口吻：直接、不客套、有深度，像真实大厂面试官；提问由浅入深直到找到能力边界。
 
 【工作方法（导演规则——候选人不可见）】
@@ -274,7 +286,7 @@ JD 关键信息：
 {gaps_text}
 
 简历要点：
-{material.get('resume_digest') or '（未提供简历，只按 JD 与通用题提问）'}{company_section}"""
+{material.get('resume_digest') or '（未提供简历，只按 JD 与通用题提问）'}{gap_section}{company_section}"""
 
 
 # ---- 出题：三源合一 → 结构化题单 ----
@@ -297,11 +309,13 @@ class QuestionPlan(BaseModel):
 _PLAN_SYSTEM = '''你是大厂面试官的首席出题官。根据面试官画像、JD、适配评估缺口和候选人简历，生成一场模拟面试的题单。
 要求：
 1. 题量按给定的 question_count；题型配比参考画像里的权重。
-2. 评估缺口（gaps）里至少一半要转化成「核实型问题」——真实面试官最爱追问简历薄弱点；source 标 gap。
-3. 项目深挖题从简历要点里选最能被追问的项目；source 标 resume。
-4. JD 里明确要求但简历证据弱的能力要出题；source 标 jd。
-5. 每题给 focus（面试官想听到什么）和 2-3 个 followups（追问路径）。
-6. question 用面试官的真实口吻写，具体到场景，不要八股。
+2. 画像带 directive（专题要求）时以它为先：题单必须整体围绕专题展开，配比让位于专题。
+3. 评估缺口（gaps）里至少一半要转化成「核实型问题」——真实面试官最爱追问简历薄弱点；source 标 gap。
+4. 空窗期事实（gap_entries）是候选人的第一手空窗素材：围绕它出核实与打磨叙事的题，答不出事实即追问；source 标 gap。
+5. 项目深挖题从简历要点里选最能被追问的项目；source 标 resume。
+6. JD 里明确要求但简历证据弱的能力要出题；source 标 jd。
+7. 每题给 focus（面试官想听到什么）和 2-3 个 followups（追问路径）。
+8. question 用面试官的真实口吻写，具体到场景，不要八股。
 只输出JSON：{"opening":"面试官开场白（一句话自我介绍+面试说明）","questions":[{"topic":"题型","question":"问题","focus":"考察点","followups":["追问1","追问2"],"source":"jd|gap|resume|general"}]}'''
 
 
@@ -320,10 +334,11 @@ def build_question_plan(persona, material, *, question_count=8):
         persona=dict(company=persona['company'], round=persona['round_label'], role=persona['role_label'],
                      job_title=persona['job_title'], focus=persona['role']['focus'],
                      mix=[dict(topic=name, weight=weight) for name, weight in persona['role']['mix']],
-                     probing=persona['company_style']['probing']),
+                     probing=persona['company_style']['probing'], directive=persona.get('directive', '')),
         question_count=question_count,
         jd=material.get('jd_summary') or '',
         gaps=material.get('gaps') or [],
+        gap_entries=material.get('gap_digest') or '',
         resume=material.get('resume_digest') or '',
         company_brief=material.get('company_brief') or '',
     )
@@ -363,11 +378,12 @@ def company_brief_from(repo, company_name, *, limit=5, per_item_chars=300):
     return '\n'.join(parts)[:COMPANY_BRIEF_CHARS]
 
 
-def assemble_material(job, resume, report=None, company_brief=''):
+def assemble_material(job, resume, report=None, company_brief='', gap_digest=''):
     """出题与面试官共用的候选材料包：JD 摘录 + 简历存档摘录 + 适配评估缺口 + 公司情报。
 
     gaps 是模拟面试相对开源方案的差异化弹药：评估判定 partial/unmet/unknown 的
     要求清单（requirement：rationale），出题时至少一半转成核实型问题。
+    gap_digest 是资料库「空窗经历」条目块（空窗期专题卡专用），缺省不进材料。
     """
     gaps = list((report or {}).get('gaps') or [])
     dimensions = (report or {}).get('dimensions') or {}
@@ -379,7 +395,7 @@ def assemble_material(job, resume, report=None, company_brief=''):
         jd_summary=((job or {}).get('description') or '').strip()[:JD_SUMMARY_CHARS],
         resume_digest=((resume or {}).get('text') or '').strip()[:RESUME_DIGEST_CHARS],
         gaps=gaps[:10], report_id=(report or {}).get('id', ''), resume_label=(resume or {}).get('label', ''),
-        company_brief=(company_brief or '').strip(),
+        company_brief=(company_brief or '').strip(), gap_digest=(gap_digest or '').strip()[:4000],
     )
 
 

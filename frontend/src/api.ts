@@ -38,8 +38,31 @@ export type PipelineReview = {
   follow_ups: { id: string; title: string; company: string; status: string; changed_at: string; starred_at: string }[]
   funnel?: PipelineFunnel
   offers?: OfferComparison[]
+  prescriptions?: Prescriptions
 }
 export function getPipelineReview() { return api<PipelineReview>('/jobs/pipeline/review') }
+// 行动处方（2026-11-22）：漏斗数据 → 可执行动作。规则版确定性结论；target 是建议前往的视图。
+export type PipelinePrescription = {
+  id: string; level: 'info' | 'warn'; title: string; evidence: string; action: string
+  target: 'favorites' | 'workshop' | 'interview' | 'profile' | 'jobs'; cta: string
+}
+export type TodayPlan = {
+  date: string
+  targets: { apply: number; apply_basis: string }
+  done: { apply: number }
+  follow_ups: number
+}
+export type Prescriptions = { prescriptions: PipelinePrescription[]; today_plan: TodayPlan; generated_at: string }
+export function getPrescriptions() { return api<Prescriptions>('/jobs/pipeline/prescriptions') }
+// 空窗期叙事（2026-11-22）：资料库 gap 条目 → 简历段落/面试应答/电梯陈述，生成即落版本。
+export type GapNarrative = {
+  id: string; origin: string; job_id: string; job_title: string; created_at: string
+  payload: { pitch: string; resume_block: string; interview_block: string; entry_ids: string[]; entry_titles: string[] }
+}
+export function generateGapNarrative(payload: { job_id?: string; jd_text?: string; job_title?: string }) {
+  return post<GapNarrative>('/profile/gap-narrative', payload)
+}
+export function listGapNarratives() { return api<{ narratives: GapNarrative[] }>('/profile/gap-narratives') }
 // 触达话术（2026-11-22）：生成即落版本，A/B 靠 used_at 使用标记；平台发送由用户在招聘站手动完成。
 export type OutreachVersion = { id: string; job_id: string; kind: 'greeting' | 'followup'; text: string; origin: string; created_at: string; used_at: string }
 export function getOutreachVersions(jobId: string) { return api<{ versions: OutreachVersion[] }>(`/jobs/${encodeURIComponent(jobId)}/outreach`) }
@@ -219,6 +242,7 @@ export type Dashboard = {
   pipeline: PipelineReview
   due: DashboardDue[]
   weekly?: PipelineWeekly
+  prescriptions?: Prescriptions
   new_jobs: DashboardNewJob[]
   backup: BackupStatus
   recent_tasks: Task[]
@@ -466,9 +490,9 @@ export function optimizeResume(payload: { resume_text?: string; job_id?: string;
 // 简历工坊优化时勾选条目取材，扩写充实阉割版内容。
 // preference 类（2026-11-18 并入，原求职偏好独立页退役）：硬性条件提前申报，
 // 启用条目评估适配时自动注入事实池；不进工坊取材。
-export type ProfileCategory = 'project' | 'work' | 'education' | 'skill' | 'cert' | 'award' | 'preference' | 'other'
+export type ProfileCategory = 'project' | 'work' | 'gap' | 'education' | 'skill' | 'cert' | 'award' | 'preference' | 'other'
 export const PROFILE_CATEGORY_NAMES: Record<ProfileCategory, string> = {
-  project: '项目经历', work: '工作经历', education: '教育背景', skill: '专业技能',
+  project: '项目经历', work: '工作经历', gap: '空窗经历', education: '教育背景', skill: '专业技能',
   cert: '证书', award: '奖项荣誉', preference: '求职偏好', other: '其他材料',
 }
 export type ProfileEntry = {

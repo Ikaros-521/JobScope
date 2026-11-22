@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { api, getSourceHealth } from './api'
-import type { BrowserStatus, ConversationNavigation, PageInfo, Source, SourceHealth, Task } from './api'
+import type { BrowserStatus, ConversationNavigation, PageInfo, PipelinePrescription, Source, SourceHealth, Task } from './api'
 import { signalTaskNames } from './SignalSources'
 import { toast } from './toast'
 import { emptyPage } from './Pagination'
@@ -138,6 +138,14 @@ export default function App() {
   // token 保证同一目标可重复触发。
   const [jobOpenRequest, setJobOpenRequest] = useState<JobOpenRequest | null>(null)
   function openJobFrom(id: string) { setJobOpenRequest({ kind: 'job', id, token: Date.now() }); setView('jobs') }
+  // 行动处方（2026-11-22）的跳转目标 → 视图切换：今日页与收藏页共用同一份映射。
+  function openPrescriptionTarget(target: PipelinePrescription['target']) {
+    if (target === 'workshop') setView('workshop')
+    else if (target === 'interview') openInterview()
+    else if (target === 'profile') setView('profile')
+    else if (target === 'jobs') { setJobOpenRequest({ kind: 'list', token: Date.now() }); setView('jobs') }
+    else setView('favorites')
+  }
   // 收藏变动 / 顶栏刷新：计数器信号由 JobResearch 消费（前者仅在「只看收藏」过滤时重刷列表）。
   const [favoritesTick, setFavoritesTick] = useState(0)
   const [refreshTick, setRefreshTick] = useState(0)
@@ -303,7 +311,8 @@ export default function App() {
         onOpenFavorites={() => setView('favorites')}
         onOpenSources={() => { setSourcesTab('collect'); setView('sources') }}
         onOpenJobs={() => { setJobOpenRequest({ kind: 'list', token: Date.now() }); setView('jobs') }}
-        onOpenSettings={() => openSettings('system')} />}
+        onOpenSettings={() => openSettings('system')}
+        onPrescriptionNavigate={openPrescriptionTarget} />}
 
       {view === 'knowledge' && <KnowledgeView onCountChange={setKnowledgeTotal} />}
 
@@ -313,7 +322,7 @@ export default function App() {
 
       {view === 'interview' && <InterviewView deepLink={interviewRequest} modelConfigured={modelConfigured} onConfigureModel={configureModel} />}
 
-      {view === 'favorites' && <FavoritesView onOpenJob={openJobFrom} onOpenCompare={() => setView('compare')} onChange={() => {
+      {view === 'favorites' && <FavoritesView onOpenJob={openJobFrom} onOpenCompare={() => setView('compare')} onPrescriptionNavigate={openPrescriptionTarget} onChange={() => {
         // 收藏变动：刷新角标并通知岗位研究（后者仅在「只看收藏」过滤时重刷列表）。
         void refreshFavCount()
         setFavoritesTick(tick => tick + 1)

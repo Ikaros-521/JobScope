@@ -3,11 +3,13 @@ import { PROFILE_CATEGORY_NAMES, createProfileEntry, deleteProfileEntry, listPro
 import type { ProfileCategory, ProfileEntry } from './api'
 import { toast } from './toast'
 import { Icon } from './Icon'
+import { GapNarrativeEditor } from './GapNarrativeEditor'
 
 // 个人资料库（2026-11-17）：完整版个人材料。与「我的简历」分离——简历因匹配度与篇幅
 // 常是阉割版；这里存完整的项目经历等工作事实，简历工坊优化时勾选取材扩写充实。
 // preference 类（2026-11-18 并入，原「求职偏好」独立页退役）注入方向不同：
 // 启用条目评估适配时自动进事实池判上，不进工坊取材。
+// gap 类（2026-11-22）：空窗经历第一手事实，供空窗期叙事生成与模拟面试空窗专题取材。
 // 本视图只做手写材料的增删改查，不抓取、不联网、不打分。笔记导入（2026-11-18 改版）走
 // 全局对话 Agent：本页只收路径并跳转（预填指令），由 Agent 的 vault_list/vault_read/
 // profile_import_write 工具完成提炼与幂等写入——无模型的本地规则解析已退役。
@@ -31,6 +33,8 @@ export function ProfileView({ onImportViaChat }: { onImportViaChat?: (prompt: st
   // 笔记导入：路径记在 localStorage（本机库路径，换机器无意义）；导入动作发生在全局对话。
   const [obsidianOpen, setObsidianOpen] = useState(false)
   const [vaultPath, setVaultPath] = useState(() => { try { return localStorage.getItem('jobscope-obsidian-path') || '' } catch { return '' } })
+  // 空窗期叙事弹窗（2026-11-22）：gap 条目 → 简历段落/面试应答/电梯陈述。
+  const [gapOpen, setGapOpen] = useState(false)
 
   const load = useCallback(async () => {
     try { setEntries((await listProfileEntries()).entries) }
@@ -66,7 +70,10 @@ export function ProfileView({ onImportViaChat }: { onImportViaChat?: (prompt: st
     run('save', async () => {
       if (editingId) await replaceProfileEntry(editingId, body)
       else await createProfileEntry(body)
-      toast(editingId ? '条目已更新。' : draft.category === 'preference' ? '偏好已保存，启用状态下评估适配会自动判上。' : '条目已保存，可在简历工坊勾选取材。')
+      toast(editingId ? '条目已更新。'
+        : draft.category === 'preference' ? '偏好已保存，启用状态下评估适配会自动判上。'
+        : draft.category === 'gap' ? '空窗经历已保存，启用条目即进入空窗期叙事与面试专题的素材池。'
+        : '条目已保存，可在简历工坊勾选取材。')
       setDraft(null); setEditingId(null)
       await load()
     })
@@ -97,6 +104,7 @@ export function ProfileView({ onImportViaChat }: { onImportViaChat?: (prompt: st
           {CATEGORIES.map(category => <button key={category} type="button" className={`pipeline-filter-chip${filter === category ? ' active' : ''}`} onClick={() => setFilter(category)}>{PROFILE_CATEGORY_NAMES[category]}</button>)}
         </div>
         <div className="profile-toolbar-actions">
+          <button type="button" className="button secondary small" title="把启用的空窗经历条目生成简历段落与面试应答（空窗期最常被追问，答案在这里备好）" onClick={() => setGapOpen(true)}>空窗期叙事</button>
           <button type="button" className="button secondary small" onClick={() => setObsidianOpen(value => !value)}>从笔记导入</button>
           <button type="button" className="button primary small" onClick={startCreate} disabled={Boolean(draft)}><Icon name="plus" size={14} />新增条目</button>
         </div>
@@ -122,7 +130,15 @@ export function ProfileView({ onImportViaChat }: { onImportViaChat?: (prompt: st
           <label>组织 / 公司（可选）<input value={draft.org} onChange={event => setDraft({ ...draft, org: event.target.value })} maxLength={200} placeholder="如：甲科技 · 平台架构组" /></label>
           <label>时间段（可选）<input value={draft.period} onChange={event => setDraft({ ...draft, period: event.target.value })} maxLength={100} placeholder="如：2023-2024" /></label>
         </div>
-        <label>{draft.category === 'preference' ? '申报内容 *（写清你的硬性答案：到岗方式、排班作息、薪资期望、学历门槛等——启用后评估适配会作为已确认事实自动判上）' : '完整内容 *（写清背景、你做了什么、怎么做的、结果与数字——工坊优化时会从中取材）'}<textarea value={draft.content} onChange={event => setDraft({ ...draft, content: event.target.value })} rows={8} maxLength={20000} placeholder={draft.category === 'preference' ? '例：接受做六休一，周日固定休息；期望薪资 18k×15；可接受短期出差。' : '例：负责网关限流与灰度方案设计；推导容量模型并落地三级限流；大促峰值 4.2 万 QPS 零故障；沉淀为公司级组件，3 个团队复用。'} spellCheck={false} /></label>
+        <label>{draft.category === 'preference'
+          ? '申报内容 *（写清你的硬性答案：到岗方式、排班作息、薪资期望、学历门槛等——启用后评估适配会作为已确认事实自动判上）'
+          : draft.category === 'gap'
+            ? '空窗经历事实 *（写清时间段、做了什么、有什么产出与证据——生成简历段落与面试话术时只使用这里的事实，不编造）'
+            : '完整内容 *（写清背景、你做了什么、怎么做的、结果与数字——工坊优化时会从中取材）'}<textarea value={draft.content} onChange={event => setDraft({ ...draft, content: event.target.value })} rows={8} maxLength={20000} placeholder={draft.category === 'preference'
+          ? '例：接受做六休一，周日固定休息；期望薪资 18k×15；可接受短期出差。'
+          : draft.category === 'gap'
+            ? '例：系统备考并取得 PMP 认证；接了两个小程序外包项目，从需求到上线完整交付；每周 3 次运动恢复节奏。'
+            : '例：负责网关限流与灰度方案设计；推导容量模型并落地三级限流；大促峰值 4.2 万 QPS 零故障；沉淀为公司级组件，3 个团队复用。'} spellCheck={false} /></label>
         <label>个人标签（逗号分隔，可选）<input value={draft.tags} onChange={event => setDraft({ ...draft, tags: event.target.value })} maxLength={500} placeholder="后端, 高并发, 网关" /></label>
         <div className="modal-actions">
           <button type="button" className="button secondary" onClick={() => { setDraft(null); setEditingId(null) }} disabled={busy === 'save'}>取消</button>
@@ -140,7 +156,9 @@ export function ProfileView({ onImportViaChat }: { onImportViaChat?: (prompt: st
               <div className="profile-entry-head">
                 <div><strong>{item.title}</strong><span className="tiny-label">{[item.org, item.period].filter(Boolean).join(' · ')}</span></div>
                 <div className="profile-entry-actions">
-                  <label className="agent-checkbox" title={item.category === 'preference' ? '停用的偏好不参与评估适配的自动判上' : '停用的条目不会出现在简历工坊的取材列表里'}>
+                  <label className="agent-checkbox" title={item.category === 'preference' ? '停用的偏好不参与评估适配的自动判上'
+                    : item.category === 'gap' ? '停用的空窗经历不参与空窗期叙事生成与面试专题取材'
+                    : '停用的条目不会出现在简历工坊的取材列表里'}>
                     <input type="checkbox" checked={item.enabled} disabled={busy === `toggle-${item.id}`} onChange={() => void toggleEnabled(item)} />启用
                   </label>
                   <button type="button" className="text-button" onClick={() => startEdit(item)}>编辑</button>
@@ -152,5 +170,6 @@ export function ProfileView({ onImportViaChat }: { onImportViaChat?: (prompt: st
             </article>)}
           </div>)}
     </section>
+    {gapOpen && <GapNarrativeEditor onClose={() => setGapOpen(false)} />}
   </section>
 }
