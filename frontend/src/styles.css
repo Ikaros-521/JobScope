@@ -2547,3 +2547,9 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .runway-footer .button { flex: none; }
 .runway-link { margin: 8px 0 0; }
 @media (max-width: 1000px) { .runway-form { grid-template-columns: 1fr; } .runway-figures { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); } }
+
+.runway-guide summary { padding: 9px 12px; cursor: pointer; font-size: 12.5px; color: var(--muted); user-select: none; }
+.runway-guide summary:hover { color: var(--ink, #222); }
+.runway-guide-body { padding: 2px 14px 12px; display: flex; flex-direction: column; gap: 6px; }
+.runway-guide-body h4 { margin: 4px 0 0; font-size: 12.5px; }
+.runway-guide-body ul, .runway-guide-body ol { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.75; color: var(--ink, #222); display: flex; flex-direction: column; gap: 2px; }

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
-import { date, getRunway, saveRunway } from './api'
+import { date, getRunway, safeUrl, saveRunway } from './api'
 import type { RunwayClaim, RunwayPayload } from './api'
 import { toast } from './toast'
 import { Button } from './ui'
@@ -17,6 +17,35 @@ const CLAIM_LABELS: Record<string, string> = { '': '没填', not_claimed: '未�
 const CLAIM_OPTIONS = Object.entries(CLAIM_LABELS).map(([value, label]) => ({ value: value as RunwayClaim, label }))
 
 const EMPTY_DRAFT = { monthly_expense: '', savings: '', social_security_last_month: '', unemployment_claim: '' as RunwayClaim, notes: '' }
+
+// 失业金申领指引（2026-11-22）：静态通用口径——只写社会保险法框架内稳定的事实
+// （缴费满 1 年 / 最长 24 个月 / 官方渠道），城市差异全部收口到「以参保地口径为准」。
+// 纯前端常量：不进模型素材池、不做城市专属 URL 硬编（会过期），只给稳定官方入口。
+const SI_PLATFORM_URL = 'https://si.12333.gov.cn'
+const CLAIM_GUIDE = {
+  conditions: [
+    '失业前用人单位和本人已缴纳失业保险费满 1 年（含视同缴费年限）',
+    '非因本人意愿中断就业：合同期满、被单位解除/裁员都算；主动辞职一般不符合——但因单位拖欠工资、未缴社保等原因被迫解除劳动合同的属例外（劳动合同法第 38 条）',
+    '已办理失业登记，并有求职要求',
+  ],
+  steps: [
+    '办失业登记：线上可在「掌上 12333」/电子社保卡/当地人社平台办理，也可去街道（乡镇）服务大厅',
+    '提交申领：任选下面任一渠道，按提示选参保地、填收款账户（一般是社保卡金融账户——先确认金融功能已激活）',
+    '等审核：经办机构审核通过后按月发放',
+    '按月认证：领取期间按当地要求做月度资格认证；重新就业/恢复参保要如实申报，否则可能追回',
+  ],
+  channels: [
+    { label: '国家社会保险公共服务平台', url: SI_PLATFORM_URL },
+    { label: '「掌上 12333」APP（手机应用商店）', url: '' },
+    { label: '电子社保卡（微信 / 支付宝小程序）', url: '' },
+    { label: '线下：参保地社保经办机构或街道（乡镇）服务大厅', url: '' },
+  ],
+  notes: [
+    '领取期限按累计缴费年限确定（最长 24 个月），金额与当地最低工资等挂钩——具体以参保地人社部门口径为准',
+    '有申领时限，失业后越早办越稳；停缴的月份不补缴，已算好的年限不受影响',
+    '「非因本人意愿中断就业」是审核重点：离职证明 / 解除劳动合同证明务必留好',
+  ],
+}
 
 function monthsText(months: number | null) {
   if (months === null) return null
@@ -84,6 +113,22 @@ export function RunwayView() {
             <b>{CLAIM_LABELS[profile.unemployment_claim] || '没填'}</b><span>失业金状态</span></div>
         </div>
         {hints.length > 0 && <div className="runway-hints">{hints.map(hint => <p key={hint}>{hint}</p>)}</div>}
+        <details className="runway-guide">
+          <summary>失业金怎么领：通用申领指引（点开看）</summary>
+          <div className="runway-guide-body">
+            <h4>三个条件</h4>
+            <ul>{CLAIM_GUIDE.conditions.map(item => <li key={item}>{item}</li>)}</ul>
+            <h4>四步流程</h4>
+            <ol>{CLAIM_GUIDE.steps.map(item => <li key={item}>{item}</li>)}</ol>
+            <h4>申领渠道（任选其一）</h4>
+            <ul>{CLAIM_GUIDE.channels.map(item => <li key={item.label}>
+              {item.url && safeUrl(item.url)
+                ? <>「{item.label}」：<a href={safeUrl(item.url)} target="_blank" rel="noreferrer">{safeUrl(item.url)?.replace(/^https?:\/\//, '')}</a></>
+                : item.label}</li>)}</ul>
+            <h4>几个坑</h4>
+            <ul>{CLAIM_GUIDE.notes.map(item => <li key={item}>{item}</li>)}</ul>
+          </div>
+        </details>
         {profile.notes && <p className="tiny-label runway-note">备注：{profile.notes}</p>}
         <p className="tiny-label runway-disclaimer">政策类提示均为通用口径，以当地人社部门为准。</p>
       </> : <div className="inline-empty">填一下下面的参数，这里会算出跑道与社保状态。</div>}
