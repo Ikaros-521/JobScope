@@ -128,7 +128,8 @@ function WeekdayPanel({ weekdays }: { weekdays: PipelineFunnelWeekday[] }) {
 
 // Offer 对比（2026-11-22 P1）：Offer 状态岗位并排——薪资、可靠度分带、与本地薪资基线的差值。
 // 基线差值只对「城市+角色可比」的岗位有值，是参考不是该不该去的结论。
-function OffersPanel({ offers, onOpenJob }: { offers: OfferComparison[]; onOpenJob: (id: string) => void }) {
+// 跑道链接（P2）：金额原值永远不出「生存跑道」页，这里只放一行跳转提示。
+function OffersPanel({ offers, onOpenJob, onOpenRunway }: { offers: OfferComparison[]; onOpenJob: (id: string) => void; onOpenRunway?: () => void }) {
   const salaryText = (item: OfferComparison) =>
     item.salary_monthly_min && item.salary_monthly_max
       ? `${Math.round(item.salary_monthly_min / 1000)}–${Math.round(item.salary_monthly_max / 1000)}K`
@@ -148,6 +149,8 @@ function OffersPanel({ offers, onOpenJob }: { offers: OfferComparison[]; onOpenJ
         </tr>
       })}</tbody>
     </table>
+    {onOpenRunway && <p className="tiny-label runway-link">纠结能不能接时，先看生存跑道：
+      <button type="button" className="text-button" onClick={onOpenRunway}>去生存跑道<Icon name="arrow" size={12} /></button></p>}
   </div>
 }
 
@@ -173,11 +176,12 @@ function PrescriptionPanel({ items, onNavigate }: { items: PipelinePrescription[
 // 收藏夹：标星岗位的集中视图。只做轻列表（筛选/勾选/批量反查/横评/取消收藏），
 // 点卡片跳回岗位研究看完整详情——详情工作台（求职参考、评估适配）不在这里重复。
 // 反查走既有详情采集管道：单条同步接口，多条走批量任务+轮询；未登录/需验证原样透出。
-export function FavoritesView({ onOpenJob, onOpenCompare, onChange, onPrescriptionNavigate }: {
+export function FavoritesView({ onOpenJob, onOpenCompare, onChange, onPrescriptionNavigate, onOpenRunway }: {
   onOpenJob: (jobId: string) => void
   onOpenCompare: () => void
   onChange: () => void
   onPrescriptionNavigate?: (target: PipelinePrescription['target']) => void
+  onOpenRunway?: () => void
 }) {
   const [jobs, setJobs] = useState<Job[]>([])
   const [info, setInfo] = useState<PageInfo>(emptyPage)
@@ -320,7 +324,7 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange, onPrescripti
         {review.prescriptions && onPrescriptionNavigate
           && <PrescriptionPanel items={review.prescriptions.prescriptions} onNavigate={onPrescriptionNavigate} />}
         {review.funnel && <FunnelPanel funnel={review.funnel} />}
-        {review.offers && review.offers.length > 0 && <OffersPanel offers={review.offers} onOpenJob={onOpenJob} />}
+        {review.offers && review.offers.length > 0 && <OffersPanel offers={review.offers} onOpenJob={onOpenJob} onOpenRunway={onOpenRunway} />}
         {review.follow_ups.length > 0 ? <div className="pipeline-followups">
           <strong>超 {review.stale_days} 天未跟进</strong>
           <ul>{review.follow_ups.map(item => <li key={item.id}>

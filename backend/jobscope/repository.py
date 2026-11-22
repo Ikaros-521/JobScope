@@ -64,6 +64,7 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS job_pipeline_events (id INTEGER PRIMARY KEY AUTOINCREMENT, job_id TEXT NOT NULL REFERENCES jobs(id), from_status TEXT NOT NULL DEFAULT '', to_status TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS outreach_versions (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES jobs(id), kind TEXT NOT NULL, text TEXT NOT NULL, origin TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, used_at TEXT NOT NULL DEFAULT '');
                 CREATE TABLE IF NOT EXISTS gap_narratives (id TEXT PRIMARY KEY, origin TEXT NOT NULL DEFAULT '', job_id TEXT NOT NULL DEFAULT '', job_title TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runway_profile (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated_at TEXT NOT NULL);
             """)
             self._migrate_conversations(conn)
             # profile_entries.source 记录条目来源（笔记库导入的「规范化库根::相对路径」锚点），幂等重导靠它原位更新。
@@ -1154,6 +1155,27 @@ class Repository:
             rows = conn.execute('SELECT to_status, COUNT(*) AS n FROM job_pipeline_events '
                                 'WHERE substr(created_at,1,10)=? GROUP BY to_status', (today,)).fetchall()
         return {row['to_status']: row['n'] for row in rows}
+
+    # ── 生存跑道（2026-11-22 P2）：月支出/存款/社保/失业金，单行档案。 ──
+    # 隐私硬底线：只存本机这一张表，绝不进 profile_entries / 工坊取材 / 评估事实池
+    # 等任何模型素材路径；跨页只出推导值，金额原值不离开本页（见 runway.py 注释）。
+
+    def runway_profile(self):
+        with self.connection() as conn:
+            row = conn.execute('SELECT payload, updated_at FROM runway_profile WHERE id=1').fetchone()
+        if row is None:
+            return None
+        item = json.loads(row['payload'] or '{}')
+        item['updated_at'] = row['updated_at']
+        return item
+
+    def save_runway_profile(self, data):
+        item = {**data, 'updated_at': now()}
+        with self.connection() as conn:
+            conn.execute('INSERT INTO runway_profile (id,payload,updated_at) VALUES (1,?,?) '
+                         'ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, updated_at=excluded.updated_at',
+                         (json.dumps(item, ensure_ascii=False), item['updated_at']))
+        return self.runway_profile()
 
     # ── 每周节奏与 Offer 对比（2026-11-22，P1）：周报是心态锚点，offer 对比是收口决策。 ──
 

@@ -32,7 +32,7 @@ from .transcript import parse_labeled_transcript
 from .transcript_runs import TranscriptManager, new_transcript
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, ScopeExpansionInput, SignalSourceInput, SplitInput, TranscriptImportInput, TranscriptSegmentsInput
+from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, RunwayInput, ScopeExpansionInput, SignalSourceInput, SplitInput, TranscriptImportInput, TranscriptSegmentsInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -1667,6 +1667,21 @@ def create_app(data_dir=None):
     @app.get('/api/profile/gap-narratives')
     def list_gap_narratives():
         return {'narratives': repo.gap_narratives()}
+
+    # ── 生存跑道（2026-11-22 P2）：月支出/存款/社保/失业金 → 决策参考。 ──
+    # 隐私硬底线：只存本机单行表、绝不进任何模型素材路径；跨页只出推导值。
+
+    @app.get('/api/runway')
+    def read_runway():
+        from .runway import derive
+        profile = repo.runway_profile()
+        return {'profile': profile, 'derived': derive(profile) if profile else None}
+
+    @app.put('/api/runway')
+    def save_runway(data: RunwayInput):
+        from .runway import clean_profile, derive
+        profile = repo.save_runway_profile(clean_profile(data.model_dump()))
+        return {'profile': profile, 'derived': derive(profile)}
 
     @app.post("/api/resume-versions/optimize")
     def optimize_resume_version(data: OptimizeResumeInput):

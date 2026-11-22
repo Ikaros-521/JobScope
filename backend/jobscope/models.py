@@ -378,6 +378,16 @@ class GapNarrativeInput(RequestModel):
     job_title: str = Field(default='', max_length=300)
 
 
+class RunwayInput(RequestModel):
+    """生存跑道档案（2026-11-22 P2）：全部可选、只存本机、绝不进模型素材池。
+    金额只在本页展示，跨页只出推导值（跑道月数/断缴月数）。"""
+    monthly_expense: float | None = Field(default=None, ge=0, le=100000000)
+    savings: float | None = Field(default=None, ge=0, le=100000000)
+    social_security_last_month: str = Field(default='', pattern=r'^(?:\d{4}-(?:0[1-9]|1[0-2]))?$')
+    unemployment_claim: Literal['', 'not_claimed', 'claimed', 'ineligible'] = ''
+    notes: str = Field(default='', max_length=500)
+
+
 class ManualDescriptionInput(RequestModel):
     description: str = Field(min_length=1, max_length=100000)
     source_note: str = Field(min_length=1, max_length=1000)

@@ -1,7 +1,7 @@
 // 视图与导航的共享定义（2026-11-19 自 App.tsx 拆出）：App 壳做路由与侧栏，
 // JobResearch 等工作区组件需要引用同一套视图集合与深链解析，放独立模块避免循环导入。
 
-export type ViewId = 'today' | 'jobs' | 'favorites' | 'resume' | 'profile' | 'workshop' | 'sources' | 'evidence' | 'compare' | 'interview' | 'global' | 'knowledge' | 'logs' | 'settings'
+export type ViewId = 'today' | 'jobs' | 'favorites' | 'resume' | 'profile' | 'workshop' | 'runway' | 'sources' | 'evidence' | 'compare' | 'interview' | 'global' | 'knowledge' | 'logs' | 'settings'
 export type SettingsTab = 'model' | 'system' | 'extensions'
 
 export const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon: string; label: string }[] }[] = [
@@ -21,6 +21,7 @@ export const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon:
     { id: 'resume', icon: 'resume', label: '我的简历' },
     { id: 'profile', icon: 'book', label: '个人资料库' },
     { id: 'workshop', icon: 'wand', label: '简历工坊' },
+    { id: 'runway', icon: 'wallet', label: '生存跑道' },
   ] },
   { id: 'manage', label: '系统管理', items: [
     { id: 'sources', icon: 'source', label: '数据与采集' },

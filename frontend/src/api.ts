@@ -71,6 +71,20 @@ export function generateGapNarrative(payload: { job_id?: string; jd_text?: strin
   return post<GapNarrative>('/profile/gap-narrative', payload)
 }
 export function listGapNarratives() { return api<{ narratives: GapNarrative[] }>('/profile/gap-narratives') }
+// 生存跑道（2026-11-22 P2）：月支出/存款/社保/失业金，只存本机、绝不进模型素材池。
+// 跨页只展示推导值（跑道月数/断缴月数），金额原值只在本页可见。
+export type RunwayClaim = '' | 'not_claimed' | 'claimed' | 'ineligible'
+export type RunwayProfile = {
+  monthly_expense: number | null; savings: number | null
+  social_security_last_month: string; unemployment_claim: RunwayClaim; notes: string
+  updated_at: string
+}
+export type RunwayDerived = { runway_months: number | null; paused_months: number | null; claim_hint: string; medical_hint: string }
+export type RunwayPayload = { profile: RunwayProfile | null; derived: RunwayDerived | null }
+export function getRunway() { return api<RunwayPayload>('/runway') }
+export function saveRunway(body: { monthly_expense?: number | null; savings?: number | null; social_security_last_month?: string; unemployment_claim?: RunwayClaim; notes?: string }) {
+  return api<RunwayPayload>('/runway', { method: 'PUT', body: JSON.stringify(body) })
+}
 // 触达话术（2026-11-22）：生成即落版本，A/B 靠 used_at 使用标记；平台发送由用户在招聘站手动完成。
 export type OutreachVersion = { id: string; job_id: string; kind: 'greeting' | 'followup'; text: string; origin: string; created_at: string; used_at: string }
 export function getOutreachVersions(jobId: string) { return api<{ versions: OutreachVersion[] }>(`/jobs/${encodeURIComponent(jobId)}/outreach`) }
