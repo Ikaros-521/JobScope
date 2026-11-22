@@ -628,9 +628,9 @@ class Repository:
         管线状态（2026-11-17）与收藏共用一个篮子：给未收藏岗位设状态会自动收藏（进入管理视图）；
         取消收藏时管线状态一并清掉（离开篮子即离开管线）。'' 表示显式移出管线。
         跟进信息（2026-11-18）：note/due 独立于状态可改（清空状态/取消收藏时连带清掉），
-        '' 显式清空、缺省不动。"""
+        '' 显式清空、缺省不动。求职线（2026-11-22 P1）：main/shift 双轨标记，同 note/due 语义。"""
         fields = {key: patch[key] for key in ('location', 'salary', 'tags', 'starred', 'pipeline_status',
-                                              'pipeline_note', 'pipeline_due') if key in patch}
+                                              'pipeline_note', 'pipeline_due', 'pipeline_track') if key in patch}
         if not fields:
             return 0
         updated = 0
@@ -647,11 +647,11 @@ class Repository:
                     item.setdefault('platform_tags', [])
                     item['personal_tags'] = list(dict.fromkeys(fields['tags']))
                 item.update({key: value for key, value in fields.items()
-                             if key not in ('tags', 'pipeline_note', 'pipeline_due')})
+                             if key not in ('tags', 'pipeline_note', 'pipeline_due', 'pipeline_track')})
                 if 'tags' in fields:
                     item['tags'] = list(dict.fromkeys(item['platform_tags'] + item['personal_tags']))
-                # 跟进信息：空串显式清空（键整个移除），缺省不动。
-                for key in ('pipeline_note', 'pipeline_due'):
+                # 跟进信息/求职线：空串显式清空（键整个移除），缺省不动。
+                for key in ('pipeline_note', 'pipeline_due', 'pipeline_track'):
                     if key in fields:
                         if fields[key]:
                             item[key] = fields[key]
@@ -662,10 +662,10 @@ class Repository:
                 elif 'starred' in fields:
                     item.pop('starred_at', None)
                     # 取消收藏即移出管线：状态、变化时间与跟进信息跟着清掉，避免留下不可见的幽灵跟踪。
-                    for key in ('pipeline_status', 'pipeline_status_changed_at', 'pipeline_note', 'pipeline_due'):
+                    for key in ('pipeline_status', 'pipeline_status_changed_at', 'pipeline_note', 'pipeline_due', 'pipeline_track'):
                         item.pop(key, None)
                 if fields.get('pipeline_status') == '':
-                    for key in ('pipeline_status', 'pipeline_status_changed_at', 'pipeline_note', 'pipeline_due'):
+                    for key in ('pipeline_status', 'pipeline_status_changed_at', 'pipeline_note', 'pipeline_due', 'pipeline_track'):
                         item.pop(key, None)
                 elif fields.get('pipeline_status'):
                     item['pipeline_status'] = fields['pipeline_status']
@@ -942,7 +942,8 @@ class Repository:
         只有当前状态，归档且全程无事件的岗位历史未知，不计入转化分母（数量单列如实呈现，
         不冒充零转化）。归因三组：来源、是否定制简历（resume_versions.job_id 关联）、
         公司可靠度分带——分带组同时就是「评分 vs 实际结果」的校准报告：约面率明显偏离
-        分数高低序时，规则该调了。"""
+        分数高低序时，规则该调了。求职线（2026-11-22 P1）：主线/转型线各自的 stages/steps
+        单列（tracks），两类岗位的转化率不进同一个分母。"""
         from datetime import datetime
         with self.connection() as conn:
             jobs = [json.loads(row['payload']) for row in
@@ -968,33 +969,49 @@ class Repository:
         def first_ts(job, stage):
             return events.get(job.get('id'), {}).get(stage)
 
-        ever = {stage: 0 for stage in self.PIPELINE_STAGES}
+        def ever_and_steps(group):
+            """一组岗位的曾到达计数与三步转化（主线/转型线分组复用同一口径）。"""
+            ever = {stage: 0 for stage in self.PIPELINE_STAGES}
+            for job in group:
+                for stage in stages_of(job) & set(self.PIPELINE_STAGES):
+                    ever[stage] += 1
+            steps = []
+            for source, target in self.PIPELINE_STEPS:
+                rate = round(ever[target] / ever[source], 3) if ever[source] else None
+                samples = []
+                for job in group:
+                    start, end = first_ts(job, source), first_ts(job, target)
+                    if not start or not end:
+                        continue
+                    try:
+                        seconds = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
+                    except (TypeError, ValueError):
+                        continue
+                    if seconds >= 0:
+                        samples.append(seconds / 86400)
+                p25, median, p75, count = self._percentiles(samples)
+                steps.append({'from': source, 'to': target, 'rate': rate,
+                              'cycle_days': round(sum(samples) / count, 1) if count else None, 'cycle_n': count,
+                              'median_days': median, 'p25_days': p25, 'p75_days': p75})
+            return ever, steps
+
+        ever, steps = ever_and_steps(jobs)
         archived_untracked = 0
         for job in jobs:
-            stages = stages_of(job)
             if not events.get(job.get('id')) and job.get('pipeline_status') == 'archived':
                 archived_untracked += 1
-            for stage in stages & set(self.PIPELINE_STAGES):
-                ever[stage] += 1
 
-        steps = []
-        for source, target in self.PIPELINE_STEPS:
-            rate = round(ever[target] / ever[source], 3) if ever[source] else None
-            samples = []
-            for job in jobs:
-                start, end = first_ts(job, source), first_ts(job, target)
-                if not start or not end:
-                    continue
-                try:
-                    seconds = (datetime.fromisoformat(end) - datetime.fromisoformat(start)).total_seconds()
-                except (TypeError, ValueError):
-                    continue
-                if seconds >= 0:
-                    samples.append(seconds / 86400)
-            p25, median, p75, count = self._percentiles(samples)
-            steps.append({'from': source, 'to': target, 'rate': rate,
-                          'cycle_days': round(sum(samples) / count, 1) if count else None, 'cycle_n': count,
-                          'median_days': median, 'p25_days': p25, 'p75_days': p75})
+        # 求职线分组（2026-11-22 P1）：主线（现有经验保底）与转型线（新叙事）分开看转化，
+        # 两类岗位混在一个池子里会让「最低转化环节」失真。只列有岗位的线；未设线的岗位只进总口径。
+        tracks = []
+        for track_key, label in (('main', '主线'), ('shift', '转型线')):
+            group = [job for job in jobs if job.get('pipeline_track') == track_key]
+            if not group:
+                continue
+            track_ever, track_steps = ever_and_steps(group)
+            tracks.append(dict(track=track_key, label=label,
+                               stages=[{'status': stage, 'count': track_ever[stage]} for stage in self.PIPELINE_STAGES],
+                               steps=track_steps))
 
         def bucket_slices(keyfn, labelfn):
             buckets: dict[str, dict] = {}
@@ -1067,7 +1084,7 @@ class Repository:
 
         return {'stages': [{'status': stage, 'count': ever[stage]} for stage in self.PIPELINE_STAGES],
                 'steps': steps, 'attribution': attribution, 'archived_untracked': archived_untracked,
-                'cohorts': cohorts, 'by_weekday': by_weekday}
+                'tracks': tracks, 'cohorts': cohorts, 'by_weekday': by_weekday}
 
     # ── 触达版本（2026-11-22）：打招呼/跟进话术的生成记录与 A/B 使用标记。 ──
 

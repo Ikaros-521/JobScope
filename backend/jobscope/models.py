@@ -206,6 +206,8 @@ class JobBatchUpdate(RequestModel):
     # 跟进信息（2026-11-18）：下一步行动与截止日，今日概览据此生成待办；'' 显式清空，None 不改。
     pipeline_note: str | None = Field(default=None, max_length=300)
     pipeline_due: str | None = Field(default=None, max_length=10)
+    # 求职线（2026-11-22 P1）：main=主线保底 / shift=转型线，漏斗按线分母；'' 显式清空，None 不改。
+    pipeline_track: Literal['main', 'shift', ''] | None = Field(default=None)
 
     @field_validator("pipeline_due")
     @classmethod

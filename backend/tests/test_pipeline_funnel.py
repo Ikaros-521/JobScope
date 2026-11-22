@@ -269,3 +269,46 @@ def test_offer_comparison_api_and_dashboard_weekly(client):
     dashboard = client.get('/api/dashboard').json()
     assert len(dashboard['weekly']['weeks']) == 4
     assert dashboard['weekly']['weeks'][-1]['new_favorites'] >= 1
+
+
+# ── 求职线（2026-11-22 P1）：主线/转型线双轨标记 + 漏斗按线分母 ──
+
+def test_pipeline_track_persistence_and_clearing(repo):
+    job = repo.save_job(make_job(), 'boss')
+    repo.update_jobs([job['id']], {'pipeline_status': 'applied', 'pipeline_track': 'main'})
+    assert repo.job(job['id'])['pipeline_track'] == 'main'
+    # 缺省字段不动
+    repo.update_jobs([job['id']], {'location': '上海'})
+    assert repo.job(job['id'])['pipeline_track'] == 'main'
+    # '' 显式清空（键整个移除）
+    repo.update_jobs([job['id']], {'pipeline_track': ''})
+    assert 'pipeline_track' not in repo.job(job['id'])
+    # 移出管线连带清（不留幽灵标记）
+    repo.update_jobs([job['id']], {'pipeline_status': 'applied', 'pipeline_track': 'shift'})
+    repo.update_jobs([job['id']], {'pipeline_status': ''})
+    assert 'pipeline_track' not in repo.job(job['id'])
+
+
+def test_funnel_tracks_split_denominators(repo):
+    """主线与转型线的转化分母分开：保底线天然高、转型线天然低，混算会互相掺水。"""
+    main_a = repo.save_job(make_job(external_id='ma'), 'boss')
+    main_b = repo.save_job(make_job(external_id='mb'), 'boss')
+    shift_a = repo.save_job(make_job(external_id='sa'), 'boss')
+    repo.update_jobs([main_a['id']], {'pipeline_status': 'applied', 'pipeline_track': 'main'})
+    repo.update_jobs([main_a['id']], {'pipeline_status': 'interviewing'})
+    repo.update_jobs([main_b['id']], {'pipeline_status': 'applied', 'pipeline_track': 'main'})
+    repo.update_jobs([shift_a['id']], {'pipeline_status': 'applied', 'pipeline_track': 'shift'})
+    repo.update_jobs([shift_a['id']], {'pipeline_status': 'interviewing'})
+    funnel = repo.pipeline_funnel()
+    # 未设线的岗位只进总口径；两线各自单列
+    tracks = {item['track']: item for item in funnel['tracks']}
+    assert set(tracks) == {'main', 'shift'}
+    assert tracks['main']['label'] == '主线' and tracks['shift']['label'] == '转型线'
+    main_steps = {step['to']: step['rate'] for step in tracks['main']['steps']}
+    shift_steps = {step['to']: step['rate'] for step in tracks['shift']['steps']}
+    assert main_steps['interviewing'] == 0.5   # 主线 2 投 1 约面
+    assert shift_steps['interviewing'] == 1.0  # 转型线 1 投 1 约面
+    main_stages = {item['status']: item['count'] for item in tracks['main']['stages']}
+    assert main_stages['applied'] == 2
+    # 总口径不受影响（两个线都在总池子里）
+    assert {item['status']: item['count'] for item in funnel['stages']}['applied'] == 3

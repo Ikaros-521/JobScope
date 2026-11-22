@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api, date, getPipelineReview, patchJobs, post, startDetailBatch } from './api'
-import type { Job, OfferComparison, PageInfo, PipelineFunnel, PipelineFunnelBucket, PipelineFunnelCohort, PipelineFunnelStep, PipelineFunnelWeekday, PipelinePrescription, PipelineReview, Task } from './api'
+import type { Job, OfferComparison, PageInfo, PipelineFunnel, PipelineFunnelBucket, PipelineFunnelCohort, PipelineFunnelStep, PipelineFunnelTrack, PipelineFunnelWeekday, PipelinePrescription, PipelineReview, Task } from './api'
 import { emptyPage, Pagination } from './Pagination'
 import { toast } from './toast'
 import { addCompareCompany } from './compareSelectionStore'
@@ -47,6 +47,22 @@ function cycleTitle(step: PipelineFunnelStep) {
   return base + smallSampleNote(step.cycle_n)
 }
 
+// 求职线分组（2026-11-22 P1）：主线（现有经验保底）与转型线（新叙事）分开看三步转化。
+// 两类岗位混在总口径里会让「最低转化环节」失真——保底线天然高、转型线天然低，混算互相掺水。
+function TrackPanel({ tracks }: { tracks: PipelineFunnelTrack[] }) {
+  return <div className="attribution-group">
+    <table>
+      <thead><tr><th title="在跟进弹窗给岗位设「求职线」后，这里按线分开算三步转化；未设线的岗位只进总口径。样本量随行如实标注。">按求职线</th><th>意向→已投</th><th>已投→约面</th><th>约面→Offer</th></tr></thead>
+      <tbody>{tracks.map(item => <tr key={item.track}>
+        <td>{item.label}</td>
+        {item.steps.map(step => <td key={step.to}><b title={cycleTitle(step)}>
+          {step.rate === null ? '—' : `${Math.round(step.rate * 100)}%`}
+        </b></td>)}
+      </tr>)}</tbody>
+    </table>
+  </div>
+}
+
 function FunnelPanel({ funnel }: { funnel: PipelineFunnel }) {
   if (!funnel.steps.some(step => step.rate !== null)) return null
   const groups: { title: string; hint: string; buckets: PipelineFunnelBucket[] }[] = [
@@ -63,6 +79,7 @@ function FunnelPanel({ funnel }: { funnel: PipelineFunnel }) {
       </span>)}
       {funnel.archived_untracked > 0 && <span className="tiny-label" title="事件流上线前的归档岗位没有历史，不计入转化分母">{funnel.archived_untracked} 条归档无历史</span>}
     </div>
+    {funnel.tracks && funnel.tracks.length > 0 && <TrackPanel tracks={funnel.tracks} />}
     <div className="pipeline-attribution">
       {groups.filter(group => group.buckets.some(item => item.applied > 0)).map(group => <div key={group.title} className="attribution-group">
         {/* 组标题并入表头首格——不再单独占一行（2026-11-22 用户反馈：左上角第一个头不该自己换行）。 */}
@@ -353,7 +370,7 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange, onPrescripti
               <option value="">未跟踪</option>
               {PIPELINE_ORDER.map(status => <option key={status} value={status}>{PIPELINE_NAMES[status]}</option>)}
             </select>
-            <button className="text-button" disabled={Boolean(busy)} title="设置下一步行动与截止日；到期的会出现在「今日概览」待办" onClick={() => setFollowJob(item)}>{item.pipeline_due ? '改跟进' : '跟进'}</button>
+            <button className="text-button" disabled={Boolean(busy)} title="设置下一步行动、截止日与求职线；到期的会出现在「今日概览」待办" onClick={() => setFollowJob(item)}>{item.pipeline_due ? '改跟进' : '跟进'}</button>
             <button className="text-button" disabled={Boolean(busy)} title="生成打招呼/跟进话术并记录版本；发送仍在招聘站手动完成" onClick={() => setOutreachJob(item)}>话术</button>
             <button className="text-button" disabled={Boolean(busy)} title="重读源站原帖，刷新薪资与完整JD" onClick={() => void recheckOne(item)}>反查</button>
             <button className="text-button" onClick={() => joinCompare(item)}>加入横评</button>
@@ -361,6 +378,7 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange, onPrescripti
           footer={<span className="tiny-label job-follow-footer">
             {item.pipeline_due && <b className={`follow-due${isDueOverdue(item.pipeline_due) ? ' overdue' : ''}`} title="跟进截止日；逾期条目同时出现在「今日概览」待办">截止 {item.pipeline_due}{isDueOverdue(item.pipeline_due) ? '（逾期）' : ''}</b>}
             {item.pipeline_note && <span className="follow-note" title="下一步行动">{item.pipeline_note}</span>}
+            {item.pipeline_track && <span className="follow-note" title="求职线：漏斗按线分开算转化率">{item.pipeline_track === 'main' ? '「主线」' : '「转型线」'}</span>}
             {item.detail_collected_at ? `反查于 ${date(item.detail_collected_at)}` : '尚未反查过详情'}
           </span>} />)}</div>}
       <Pagination info={info} label="收藏夹" busy={Boolean(busy)} onPage={page => run('page', async () => { await load(undefined, page) })} />

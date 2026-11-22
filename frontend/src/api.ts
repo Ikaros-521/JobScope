@@ -9,6 +9,7 @@ export type Job = {
   pipeline_status_changed_at?: string
   pipeline_note?: string // 跟进备注（2026-11-18）：下一步行动；'' 清空
   pipeline_due?: string // 截止日 YYYY-MM-DD：今日概览据此生成待办
+  pipeline_track?: 'main' | 'shift' // 求职线（2026-11-22 P1）：主线=现有经验保底，转型线=新叙事；漏斗按线分母
 }
 // 漏斗转化与归因（2026-11-22）：曾到达口径（事件流∪当前状态），分母不足时 rate 为 null。
 // 推进天数给中位+四分位；1 条样本就算，n<10 时前端标注「参考有限」。
@@ -22,11 +23,18 @@ export type PipelineFunnelBucket = { key: string; label: string; applied: number
 export type PipelineFunnelCohort = { week_start: string; applied: number; interviewing: number; offer: number; active: number }
 // 周几投递（P2）：weekday 取 1=周一 … 7=周日（UTC 事件戳口径）。
 export type PipelineFunnelWeekday = { weekday: number; applied: number; interviewing: number; rate: number | null }
+// 求职线分组（2026-11-22 P1）：主线/转型线各自的曾到达与三步转化，未设线的岗位只进总口径。
+export type PipelineFunnelTrack = {
+  track: 'main' | 'shift'; label: string
+  stages: { status: string; count: number }[]
+  steps: PipelineFunnelStep[]
+}
 export type PipelineFunnel = {
   stages: { status: string; count: number }[]
   steps: PipelineFunnelStep[]
   attribution: { by_source: PipelineFunnelBucket[]; by_resume: PipelineFunnelBucket[]; by_reliability: PipelineFunnelBucket[] }
   archived_untracked: number
+  tracks?: PipelineFunnelTrack[]
   cohorts?: PipelineFunnelCohort[]
   by_weekday?: PipelineFunnelWeekday[]
 }
@@ -203,7 +211,7 @@ export function getCompanyLayers(companies: string[], gate?: { own_min: number; 
 }
 // 岗位收藏与反查：PATCH 支持部分字段（starred 显式 false = 取消收藏）；批量反查 ids 与完整JD补采共用一条任务管道。
 // 跟进信息（2026-11-18）：pipeline_note '' 清空、pipeline_due 'YYYY-MM-DD' 或 '' 清空，均不影响管线状态。
-export function patchJobs(ids: string[], patch: { starred?: boolean; location?: string; salary?: string; tags?: string[]; pipeline_status?: 'interested' | 'applied' | 'interviewing' | 'offer' | 'archived' | ''; pipeline_note?: string; pipeline_due?: string }) { return api<{ updated: number }>('/jobs', { method: 'PATCH', body: JSON.stringify({ ids, ...patch }) }) }
+export function patchJobs(ids: string[], patch: { starred?: boolean; location?: string; salary?: string; tags?: string[]; pipeline_status?: 'interested' | 'applied' | 'interviewing' | 'offer' | 'archived' | ''; pipeline_note?: string; pipeline_due?: string; pipeline_track?: 'main' | 'shift' | '' }) { return api<{ updated: number }>('/jobs', { method: 'PATCH', body: JSON.stringify({ ids, ...patch }) }) }
 export function startDetailBatch(ids?: string[]) { return post<{ task: Task }>('/browser/details', ids ? { ids } : {}) }
 // ---- 岗位去重（2026-11-19）：同公司+标题归一匹配置信候选，人工确认标记主次，统计不再双算 ----
 export type DedupJobSummary = { id: string; title: string; company: string; location: string; salary: string; source: string; updated_at: string; starred?: boolean; pipeline_status?: string }
