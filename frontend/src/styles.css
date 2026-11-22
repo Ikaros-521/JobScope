@@ -471,7 +471,7 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .pipeline-funnel { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: baseline; border-top: 1px dashed var(--line); margin-top: 2px; padding-top: 6px; }
 .funnel-step { font-size: 12px; color: var(--muted); white-space: nowrap; }
 .funnel-step b { color: var(--text); font-variant-numeric: tabular-nums; }
-.pipeline-attribution { flex-basis: 100%; display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 10px 36px; border-top: 1px dashed var(--line); padding-top: 6px; }
+.pipeline-attribution { flex-basis: 100%; display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 10px 64px; border-top: 1px dashed var(--line); padding-top: 6px; }
 .pipeline-offers { flex-basis: 100%; border-top: 1px dashed var(--line); padding-top: 6px; }
 .pipeline-offers h4 { margin: 0 0 2px; font-size: 12px; font-weight: 500; color: var(--muted); cursor: help; }
 /* 归因组标题已并入表头首格（不再有 h4），悬浮提示沿用 help 光标。 */
@@ -480,10 +480,9 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .pipeline-attribution th, .pipeline-offers th { font-weight: normal; color: var(--muted); padding: 0 10px 0 0; text-align: left; }
 .pipeline-attribution td, .pipeline-offers td { padding: 1px 10px 1px 0; text-align: left; color: var(--muted); }
 .pipeline-attribution td b, .pipeline-offers td b { color: var(--text); }
-/* 归因表加宽：三组均分整行宽度把右侧留白用起来，列距放开并禁止单元格折行，保持单行。 */
-.attribution-group { flex: 1 1 0; min-width: 190px; }
-.pipeline-attribution table { width: 100%; }
-.pipeline-attribution th, .pipeline-attribution td { white-space: nowrap; padding-right: 14px; }
+/* 归因表排版（2026-11-22 用户定版）：表内列距收紧、组间距拉开——边界清晰优先，表格保持内容宽不摊开。 */
+.attribution-group { flex: 0 0 auto; }
+.pipeline-attribution th, .pipeline-attribution td { white-space: nowrap; padding-right: 8px; }
 /* ── 触达话术面板（2026-11-22）：生成/复制/标记已用的版本列表。 ── */
 .outreach-editor { width: min(560px, 92vw); }
 .outreach-kinds { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0 10px; }
