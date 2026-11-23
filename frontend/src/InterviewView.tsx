@@ -2,14 +2,15 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Markdown } from './chat/Markdown'
 import { Icon } from './Icon'
 import { toast } from './toast'
+import AttributionPanel from './AttributionPanel'
 import {
   api, cancelInterviewRun, cancelTranscriptRun, createInterviewSession, date, deleteInterviewSession,
-  deleteInterviewTranscript, finishInterview, generateTranscriptReport, getInterviewMessages, getInterviewSession,
+  deleteInterviewTranscript, finishInterview, generateTranscriptReport, getAttribution, getFailureMuseum, getInterviewMessages, getInterviewSession,
   getInterviewTranscript, importInterviewTranscript, listInterviewPersonas, listInterviewSessions,
   listInterviewTranscripts, openInterviewStream, openTranscriptRunStream, relabelInterviewTranscript,
   saveTranscriptSegments, sendInterviewTurn,
 } from './api'
-import type { InterviewMessage, InterviewPersonaCard, InterviewSession, InterviewSessionSummary, InterviewStyle, Transcript, TranscriptReport, TranscriptSegment, TranscriptSummary } from './api'
+import type { AttributionRecord, InterviewMessage, InterviewPersonaCard, InterviewSession, InterviewSessionSummary, InterviewStyle, Transcript, TranscriptReport, TranscriptSegment, TranscriptSummary } from './api'
 
 // 模拟面试工作区（2026-11-19）：左侧场次列表 + 右侧「面试间 | 复盘报告」。
 // 面试官是纯拟真的无工具 agent：对话中零提示零点评，评价全部在复盘页签。
@@ -288,18 +289,20 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   const askedCount = progress ? Math.min(progress.current_index + 1, plan?.questions.length ?? 0) : 0
   const busy = streamRef.current !== null
   const report = session?.report
-  // 场次记录导出（题单+对话实录+复盘）：数据全在前端，直接组装 Markdown，不经过后端。
+  // 场次记录导出（题单+对话实录+复盘+归因标注）：组装 Markdown，不经过后端。
   const exportable = Boolean(session && (session.question_plan || messages.length))
 
   async function copyRecord() {
     if (!session) return
-    const ok = await copyText(buildInterviewMarkdown(session, messages))
+    const bundle = await loadAttributionBundle(session.id)
+    const ok = await copyText(buildInterviewMarkdown(session, messages, bundle))
     toast(ok ? '面试记录已复制到剪贴板' : '复制失败，可改用「导出MD」', ok ? 'notice' : 'error')
   }
 
-  function downloadRecord() {
+  async function downloadRecord() {
     if (!session) return
-    const url = URL.createObjectURL(new Blob([buildInterviewMarkdown(session, messages)], { type: 'text/markdown;charset=utf-8' }))
+    const bundle = await loadAttributionBundle(session.id)
+    const url = URL.createObjectURL(new Blob([buildInterviewMarkdown(session, messages, bundle)], { type: 'text/markdown;charset=utf-8' }))
     const link = document.createElement('a')
     link.href = url; link.download = interviewFileName(session); link.click()
     URL.revokeObjectURL(url)
@@ -379,8 +382,11 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
           reportProgress={runProgress} />
         : session.status === 'reporting'
           ? <ProgressiveReport feed={reportFeed} />
-          : <ReportPanel report={report ?? null} persona={session.persona}
-              onRegenerate={() => void finish()} busy={busy} />}
+          : <><ReportPanel report={report ?? null} persona={session.persona}
+              onRegenerate={() => void finish()} busy={busy} />
+            {/* 失败博物馆归因标注：复盘报告的自然延伸（可控/不可控分流，跨场报告在这里取数） */}
+            <AttributionPanel source="mock" sessionId={session.id}
+              signals={(progress?.segments ?? []).flatMap(item => item.signals ?? [])} /></>}
       </>}
       </>}
     </div>
@@ -945,8 +951,10 @@ function RealWorkspace({ transcriptId, modelConfigured, onConfigureModel, onCrea
         onSave={() => void saveSegments()} onReport={() => void startReport()} onRelabel={() => void relabel()} />
       : transcript.status === 'reporting'
         ? <TranscriptProgressiveReport feed={feed} />
-        : <TranscriptReportPanel report={transcript.report} jobLabel={jobLabelFull} stale={reportStale}
-            onRegenerate={() => void startReport()} busy={busy} />}
+        : <><TranscriptReportPanel report={transcript.report} jobLabel={jobLabelFull} stale={reportStale}
+            onRegenerate={() => void startReport()} busy={busy} />
+          {/* 失败博物馆归因标注：真实面试失败是主要馆藏（有真实结果可归因） */}
+          <AttributionPanel source="real" sessionId={transcript.id} onSaved={onChanged} /></>}
   </div>
 }
 
@@ -1108,7 +1116,23 @@ function interviewFileName(session: InterviewSession): string {
   return `面试记录-${base}-${stamp}.md`.replace(/[\\/:*?"<>|]/g, '_')
 }
 
-function buildInterviewMarkdown(session: InterviewSession, messages: InterviewMessage[]): string {
+// 归因标注导出的取数：标签显示名从分类学解析（失败退回 tag id），未标注过静默缺省。
+type AttributionBundle = { attribution: AttributionRecord | null; labels: Map<string, string> }
+const ATTRIBUTION_OUTCOME_NAMES: Record<string, string> = {
+  self_positive: '自评满意', self_neutral: '自评一般', self_negative: '自评不满意',
+  pass: '通过', fail: '未通过', unknown: '结果未知',
+}
+
+async function loadAttributionBundle(sessionId: string): Promise<AttributionBundle> {
+  const labels = new Map<string, string>()
+  try {
+    const museum = await getFailureMuseum()
+    for (const def of [...museum.controlled, ...museum.uncontrolled]) labels.set(def.id, def.label)
+  } catch { /* 报告照常导出，标签退回 id */ }
+  try { return { attribution: await getAttribution(sessionId), labels } } catch { return { attribution: null, labels } }
+}
+
+function buildInterviewMarkdown(session: InterviewSession, messages: InterviewMessage[], attributionBundle: AttributionBundle): string {
   const persona = session.persona
   const plan = session.question_plan
   const report = session.report
@@ -1156,6 +1180,19 @@ function buildInterviewMarkdown(session: InterviewSession, messages: InterviewMe
     }
     if (report.risk_list?.length) lines.push('### 高危清单', '', ...report.risk_list.map(item => `- ${item}`), '')
     if (report.actions?.length) lines.push('### 行动建议', '', ...report.actions.map(item => `- ${item}`), '')
+  }
+  if (attributionBundle.attribution) {
+    const { attribution, labels } = attributionBundle
+    lines.push('## 归因标注（失败博物馆）', '')
+    if (attribution.outcome) lines.push(`- 结果：${ATTRIBUTION_OUTCOME_NAMES[attribution.outcome] ?? attribution.outcome}`)
+    for (const [title, scope] of [['可控因素', 'controlled'], ['不可控因素', 'uncontrolled']] as const) {
+      const group = attribution.tags.filter(item => item.scope === scope)
+      if (!group.length) continue
+      lines.push(`### ${title}`, '')
+      for (const item of group) lines.push(`- ${labels.get(item.tag) ?? item.tag}${item.note ? `：${item.note}` : ''}`)
+      lines.push('')
+    }
+    if (attribution.note) lines.push(`**整场备注：** ${attribution.note}`, '')
   }
   return lines.join('\n')
 }

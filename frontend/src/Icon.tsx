@@ -27,6 +27,7 @@ const paths: Record<string, ReactNode> = {
   sun: <><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></>,
   mic: <><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></>,
   wallet: <><rect x="3" y="6" width="18" height="13" rx="2" /><path d="M3 10h18M16 14.5h.01" /></>,
+  museum: <><path d="M3 21h18M4 18h16M6 18v-8M10 18v-8M14 18v-8M18 18v-8" /><path d="M3 10 12 3l9 7Z" /></>,
 }
 
 export function Icon({ name, size = 18 }: { name: string; size?: number }) {

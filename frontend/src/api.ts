@@ -708,3 +708,34 @@ const TRANSCRIPT_STREAM_EVENTS = ['start', 'progress', 'done', 'error', 'cancell
 export function openTranscriptRunStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
   return openStream(`/api/interview/transcript-runs/${encodeURIComponent(runId)}/stream`, TRANSCRIPT_STREAM_EVENTS, onEvent)
 }
+
+// ---- 失败博物馆：面试可控/不可控结构化归因 + 跨场失分模式报告（纯规则，无 LLM） ----
+export type AttributionTag = { scope: 'controlled' | 'uncontrolled'; tag: string; note: string }
+export type AttributionRecord = {
+  id: string; session_id: string; source: 'mock' | 'real'; job_id: string; company: string; job_title: string
+  outcome: '' | 'self_positive' | 'self_neutral' | 'self_negative' | 'pass' | 'fail' | 'unknown'
+  tags: AttributionTag[]; note: string; created_at: string; updated_at: string
+}
+export type AttributionTagDef = { id: string; label: string; hint: string; advice?: string }
+export type PatternReport = {
+  total_sessions: number
+  recurring: { tag: string; label: string; count: number; advice: string; negative: number; positive: number }[]
+  uncontrolled: { tag: string; label: string; count: number; hint: string }[]
+  by_tag: { tag: string; label: string; scope: string; count: number; negative: number; positive: number }[]
+  limitations: string[]
+}
+export type FailureMuseum = {
+  records: AttributionRecord[]; report: PatternReport
+  controlled: AttributionTagDef[]; uncontrolled: AttributionTagDef[]
+}
+export type SuggestedSignal = { tag: string; source: string } // 面试官暗线弱点信号 → 预选建议
+export function saveAttribution(body: { source: 'mock' | 'real'; session_id: string; tags: AttributionTag[]; note?: string; outcome?: string }) {
+  return post<AttributionRecord>('/interview/attributions', body)
+}
+export function getAttribution(sessionId: string) {
+  return api<AttributionRecord>(`/interview/attributions/${encodeURIComponent(sessionId)}`)
+}
+export function deleteAttribution(sessionId: string) {
+  return api<{ ok: boolean }>(`/interview/attributions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' })
+}
+export function getFailureMuseum() { return api<FailureMuseum>('/interview/failure-museum') }

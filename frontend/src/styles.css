@@ -2630,6 +2630,56 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .jd-nav-row { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
 .jd-nav-note { font-size: 12px; color: var(--muted); }
 
+/* ── 失败博物馆（2026-11-23）：归因标注组件（attr-*，两处复盘报告共用）+ 博物馆视图（fm-*）。 ── */
+/* 作用域纪律：全局没有裸 label/input 样式；全局 button 居中陷阱对本组件无影响（chips 本就要居中）。 */
+.attr-panel { margin-top: 16px; }
+.attr-panel .section-heading { flex-wrap: wrap; }
+.attr-panel .section-heading .button { flex: none; }
+.attr-group { margin-top: 12px; }
+.attr-group-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; }
+.attr-group-head strong { font-size: 13px; }
+.attr-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.attr-chip { display: inline-flex; align-items: center; padding: 5px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); font-size: 12.5px; color: var(--ink, #222); cursor: pointer; user-select: none; transition: border-color .15s, background .15s; }
+.attr-chip:hover { border-color: var(--green); }
+.attr-chip.active { border-color: var(--green); background: var(--selected); color: var(--green); font-weight: 600; }
+.attr-chip.suggested { border-style: dashed; }
+.attr-note { display: block; margin-top: 7px; }
+.attr-note input { width: 100%; max-width: 520px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 12.5px; background: var(--paper); }
+.attr-note input:focus { outline: none; border-color: var(--green); }
+.attr-signals { margin-top: 12px; line-height: 1.7; }
+.attr-footer { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 16px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.attr-footer label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.attr-footer select { padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 12.5px; background: var(--paper); color: var(--ink, #222); }
+.attr-footer select:focus { outline: none; border-color: var(--green); }
+.attr-overall { flex: 1; min-width: 220px; }
+.attr-overall input { width: 100%; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 12.5px; background: var(--paper); }
+.attr-overall input:focus { outline: none; border-color: var(--green); }
+
+.fm-page { display: flex; flex-direction: column; gap: 14px; max-width: 960px; }
+.fm-page .paper-panel h2 { font-size: 14px; margin: 0 0 10px; }
+.fm-report { display: flex; flex-direction: column; }
+.fm-report h2 + h2, .fm-recurring + h2, .fm-uncontrolled + .tiny-label { margin-top: 18px; }
+.fm-recurring { display: flex; flex-direction: column; gap: 10px; }
+.fm-recurring-item { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 9px 12px; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: 8px; background: var(--surface); }
+.fm-recurring-item strong { font-size: 13px; color: var(--green); font-variant-numeric: tabular-nums; }
+.fm-advice { flex-basis: 100%; margin: 0; font-size: 12.5px; color: var(--ink, #222); line-height: 1.6; }
+.fm-uncontrolled { display: flex; flex-wrap: wrap; gap: 7px; }
+.fm-uncontrolled-item { display: inline-flex; align-items: center; gap: 6px; }
+.fm-tag-chip { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; background: var(--selected); color: var(--green); font-size: 12px; font-weight: 600; }
+.fm-tag-chip.small { padding: 2px 9px; font-weight: 500; }
+.fm-tag-chip.muted-chip { background: var(--surface); border: 1px solid var(--line); color: var(--muted); }
+.fm-limit { margin: 6px 0 0; line-height: 1.7; }
+.fm-records { display: flex; flex-direction: column; }
+.fm-record { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; padding: 10px 0; border-top: 1px solid var(--line); }
+.fm-record:first-child { border-top: none; }
+.fm-source { flex: none; font-size: 11.5px; font-weight: 700; padding: 1px 8px; border-radius: 5px; background: var(--selected); color: var(--green); }
+.fm-source.real { background: #e8f0fa; color: #2b6cb0; }
+.fm-record-title { font-size: 13px; }
+.fm-outcome { font-size: 12px; color: var(--muted); }
+.fm-record-tags { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 6px; }
+.fm-record-note { flex-basis: 100%; margin: 0; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+.fm-empty { text-align: center; line-height: 2; }
+
 /* 开战战绩（2026-11-23）：今日页累计战绩区——数字行复用 today-weekly，说明行纵向堆叠。 */
 .today-record-notes { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
 

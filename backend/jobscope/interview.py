@@ -328,6 +328,11 @@ def build_question_plan(persona, material, *, question_count=8):
     """出题：一次非流式大预算调用（分析绑定）；截断/垃圾自动重试一次，两次都坏才报错。
 
     出题失败=整场判死（用户须删场重开），一次模型抽风不值得让用户买单。
+
+    第三层预留（失败博物馆闭环，2026-11-23 未实现）：material 里将来带
+    weak_focus（failure_museum.build_pattern_report 的 recurring 摘要，
+    如「细节追问卡壳 ×3」），payload 注入 weak_focus 键并在 _PLAN_SYSTEM
+    加一条「重复失分点定向出题、source 标 weakness」的规则即可闭环。
     """
     from .model_transport import complete
     payload = dict(

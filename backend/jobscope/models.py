@@ -402,6 +402,26 @@ class JdAssessmentInput(RequestModel):
     seed: int | None = Field(default=None, ge=0, le=2147483647)
 
 
+class AttributionTagInput(RequestModel):
+    """失败博物馆单条归因标注：scope=controlled/uncontrolled，tag 对应分类学常量 id。"""
+    scope: Literal['controlled', 'uncontrolled']
+    tag: str = Field(min_length=1, max_length=40)
+    note: str = Field(default='', max_length=200)
+
+
+class AttributionInput(RequestModel):
+    """失败博物馆整场归档：一场面试一组标注（按 session_id upsert，可返回修改）。
+
+    outcome：mock 取 self_positive/self_neutral/self_negative（自评），
+    real 取 pass/fail/unknown（真实结果），均可留空不参与结果对比。
+    """
+    source: Literal['mock', 'real']
+    session_id: str = Field(min_length=1, max_length=100)
+    tags: list[AttributionTagInput] = Field(min_length=1, max_length=12)
+    note: str = Field(default='', max_length=500)
+    outcome: Literal['', 'self_positive', 'self_neutral', 'self_negative', 'pass', 'fail', 'unknown'] = ''
+
+
 class ManualDescriptionInput(RequestModel):
     description: str = Field(min_length=1, max_length=100000)
     source_note: str = Field(min_length=1, max_length=1000)

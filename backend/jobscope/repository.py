@@ -19,6 +19,10 @@ def digest(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
+# 失败博物馆归档行护栏（单用户场景远用不到，防失控增长）。
+MAX_ATTRIBUTION_ROWS = 500
+
+
 def iso_week_start(value):
     """ISO 周锚点：该时刻所在周的周一 00:00。事件戳统一 UTC，周界也按 UTC 切
     （与跟进截止日按本地日历日的口径不同：周报是统计聚合，差 8 小时只影响跨周零点附近的归属）。"""
@@ -66,6 +70,7 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS gap_narratives (id TEXT PRIMARY KEY, origin TEXT NOT NULL DEFAULT '', job_id TEXT NOT NULL DEFAULT '', job_title TEXT NOT NULL DEFAULT '', payload TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runway_profile (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS jd_assessments (id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS interview_attributions (id TEXT PRIMARY KEY, session_id TEXT UNIQUE NOT NULL, source TEXT NOT NULL, job_id TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', job_title TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '[]', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
             """)
             self._migrate_conversations(conn)
             # profile_entries.source 记录条目来源（笔记库导入的「规范化库根::相对路径」锚点），幂等重导靠它原位更新。
@@ -1173,6 +1178,58 @@ class Repository:
             item['payload'] = json.loads(item['payload'] or '{}')
             items.append(item)
         return items
+
+    # ── 失败博物馆归档（2026-11-23）：一场面试一组结构化归因标注，session_id 唯一可反复改。 ──
+    # 关系表而非 payload 快照：跨场模式报告要按标签/来源/结果扫全部场次。
+
+    def save_interview_attribution(self, data):
+        """按 session_id upsert（返回修改共用同一行）；company/job_title/outcome 由路由层快照。"""
+        item = {**data, 'id': 'FM-' + uuid.uuid4().hex[:20], 'created_at': now(), 'updated_at': now()}
+        with self.connection() as conn:
+            existing = conn.execute('SELECT id, created_at FROM interview_attributions WHERE session_id=?',
+                                    (item['session_id'],)).fetchone()
+            if existing:
+                item = {**item, 'id': existing['id'], 'created_at': existing['created_at']}
+            # INSERT 一律显式列名（迁移教训：位置式插入在追加列后静默错位）。
+            conn.execute('INSERT INTO interview_attributions (id,session_id,source,job_id,company,job_title,outcome,tags,note,created_at,updated_at) '
+                         'VALUES (?,?,?,?,?,?,?,?,?,?,?) '
+                         'ON CONFLICT(session_id) DO UPDATE SET source=excluded.source, job_id=excluded.job_id, '
+                         'company=excluded.company, job_title=excluded.job_title, outcome=excluded.outcome, '
+                         'tags=excluded.tags, note=excluded.note, updated_at=excluded.updated_at',
+                         (item['id'], item['session_id'], item['source'], item.get('job_id', ''),
+                          item.get('company', ''), item.get('job_title', ''), item.get('outcome', ''),
+                          json.dumps(item.get('tags') or [], ensure_ascii=False), item.get('note', ''),
+                          item['created_at'], item['updated_at']))
+            stale = conn.execute('SELECT id FROM interview_attributions ORDER BY updated_at DESC, rowid DESC LIMIT -1 OFFSET ?',
+                                 (MAX_ATTRIBUTION_ROWS,)).fetchall()
+            for row in stale:
+                conn.execute('DELETE FROM interview_attributions WHERE id=?', (row['id'],))
+        return self.get_interview_attribution(item['session_id'])
+
+    def get_interview_attribution(self, session_id):
+        with self.connection() as conn:
+            row = conn.execute('SELECT * FROM interview_attributions WHERE session_id=?', (session_id,)).fetchone()
+        if row is None:
+            return None
+        item = dict(row)
+        item['tags'] = json.loads(item['tags'] or '[]')
+        return item
+
+    def interview_attributions(self):
+        """全部归档行（新→旧）：跨场模式报告与博物馆列表共用。"""
+        with self.connection() as conn:
+            rows = conn.execute('SELECT id,session_id,source,job_id,company,job_title,outcome,tags,note,created_at,updated_at '
+                                'FROM interview_attributions ORDER BY updated_at DESC, rowid DESC').fetchall()
+        items = []
+        for row in rows:
+            item = dict(row)
+            item['tags'] = json.loads(item['tags'] or '[]')
+            items.append(item)
+        return items
+
+    def delete_interview_attribution(self, session_id):
+        with self.connection() as conn:
+            return conn.execute('DELETE FROM interview_attributions WHERE session_id=?', (session_id,)).rowcount > 0
 
     def pipeline_today_counts(self):
         """当日管线事件计数（按 to_status）：今日行动清单的「已投」进度。"""

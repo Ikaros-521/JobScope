@@ -1,7 +1,7 @@
 // 视图与导航的共享定义（2026-11-19 自 App.tsx 拆出）：App 壳做路由与侧栏，
 // JobResearch 等工作区组件需要引用同一套视图集合与深链解析，放独立模块避免循环导入。
 
-export type ViewId = 'today' | 'jobs' | 'favorites' | 'resume' | 'profile' | 'workshop' | 'runway' | 'jd-assessment' | 'sources' | 'evidence' | 'compare' | 'interview' | 'global' | 'knowledge' | 'logs' | 'settings'
+export type ViewId = 'today' | 'jobs' | 'favorites' | 'resume' | 'profile' | 'workshop' | 'runway' | 'jd-assessment' | 'failure-museum' | 'sources' | 'evidence' | 'compare' | 'interview' | 'global' | 'knowledge' | 'logs' | 'settings'
 export type SettingsTab = 'model' | 'system' | 'extensions'
 
 export const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon: string; label: string }[] }[] = [
@@ -11,6 +11,7 @@ export const NAV_GROUPS: { id: string; label: string; items: { id: ViewId; icon:
     { id: 'favorites', icon: 'star', label: '收藏' },
     { id: 'interview', icon: 'mic', label: '模拟面试' },
     { id: 'jd-assessment', icon: 'filter', label: '反向JD测评' },
+    { id: 'failure-museum', icon: 'museum', label: '失败博物馆' },
     { id: 'evidence', icon: 'book', label: '公司资料库' },
     { id: 'compare', icon: 'chart', label: '数据分析' },
   ] },

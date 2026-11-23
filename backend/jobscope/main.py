@@ -32,7 +32,7 @@ from .transcript import parse_labeled_transcript
 from .transcript_runs import TranscriptManager, new_transcript
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JdAssessmentInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, RunwayInput, ScopeExpansionInput, SignalSourceInput, SplitInput, TranscriptImportInput, TranscriptSegmentsInput
+from .models import AnalysisStatusInput, AnalyzeInput, AttributionInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JdAssessmentInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, RunwayInput, ScopeExpansionInput, SignalSourceInput, SplitInput, TranscriptImportInput, TranscriptSegmentsInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -1381,6 +1381,7 @@ def create_app(data_dir=None):
             except ValueError:
                 pass  # 对话行已不在：删除会话仍要继续
         repo.delete_interview_session(session_id)
+        repo.delete_interview_attribution(session_id)  # 失败博物馆归档随场次级联删除
         return dict(ok=True)
 
     @app.get('/api/interview/runs/{run_id}')
@@ -1502,6 +1503,7 @@ def create_app(data_dir=None):
         if handle:
             raise HTTPException(409, '逐字稿正在生成中，请先停止再删除')
         repo.delete_interview_transcript(transcript_id)
+        repo.delete_interview_attribution(transcript_id)  # 失败博物馆归档随记录级联删除
         return dict(ok=True)
 
     @app.get('/api/interview/transcript-runs/{run_id}')
@@ -1705,6 +1707,51 @@ def create_app(data_dir=None):
         from .runway import clean_profile, derive
         profile = repo.save_runway_profile(clean_profile(data.model_dump()))
         return {'profile': profile, 'derived': derive(profile)}
+
+    # ── 失败博物馆（2026-11-23）：面试可控/不可控结构化归因 + 跨场失分模式报告。纯规则，无 LLM。 ──
+
+    @app.post('/api/interview/attributions')
+    def save_interview_attribution(data: AttributionInput):
+        from .failure_museum import normalize_tags
+        tags = [item.model_dump() for item in data.tags]
+        try:
+            tags = normalize_tags(tags)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        # company/job_title/job_id 从原场记录快照：博物馆列表不依赖原场次存活，删场后归档仍在。
+        if data.source == 'mock':
+            session = repo.get_interview_session(data.session_id)
+            if session is None:
+                raise HTTPException(404, '模拟面试场次不存在，无法归档')
+            company, job_title, job_id = session.get('company', ''), session.get('job_title', ''), session.get('job_id', '')
+        else:
+            transcript = repo.get_interview_transcript(data.session_id)
+            if transcript is None:
+                raise HTTPException(404, '真实复盘记录不存在，无法归档')
+            company, job_title, job_id = transcript.get('company', ''), transcript.get('job_title', ''), transcript.get('job_id', '')
+        return repo.save_interview_attribution(dict(
+            session_id=data.session_id, source=data.source, job_id=job_id, company=company,
+            job_title=job_title, outcome=data.outcome, tags=tags, note=data.note.strip()))
+
+    @app.get('/api/interview/attributions/{session_id}')
+    def read_interview_attribution(session_id: str = PathParam(max_length=100)):
+        item = repo.get_interview_attribution(session_id)
+        if item is None:
+            raise HTTPException(404, '该场次还没有归因标注')
+        return item
+
+    @app.delete('/api/interview/attributions/{session_id}')
+    def remove_interview_attribution(session_id: str = PathParam(max_length=100)):
+        if not repo.delete_interview_attribution(session_id):
+            raise HTTPException(404, '该场次还没有归因标注')
+        return dict(ok=True)
+
+    @app.get('/api/interview/failure-museum')
+    def failure_museum_report():
+        from . import failure_museum
+        records = repo.interview_attributions()
+        return {'records': records, 'report': failure_museum.build_pattern_report(records),
+                'controlled': failure_museum.CONTROLLED_TAGS, 'uncontrolled': failure_museum.UNCONTROLLED_TAGS}
 
     @app.post("/api/resume-versions/optimize")
     def optimize_resume_version(data: OptimizeResumeInput):
