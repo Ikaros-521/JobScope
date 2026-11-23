@@ -116,3 +116,46 @@ def test_dashboard_due_marks_overdue_and_skips_terminal(client):
     data = client.get('/api/dashboard').json()
     assert [item['id'] for item in data['due']] == [overdue]
     assert data['due'][0]['overdue'] is True
+
+
+def test_dashboard_briefing_counts_last_24h_only(client):
+    repo = client.app.state.repo
+    fresh = repo.save_job(make_job(external_id='br-1', title='简报新岗'), 'boss')
+    stale = repo.save_job(make_job(external_id='br-2', title='简报老岗', company='乙公司'), 'boss')
+    three_days_ago = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+    with repo.connection() as conn:
+        # 老岗首见拨回 3 天前：不计入新入库。
+        row = conn.execute("SELECT payload FROM jobs WHERE json_extract(payload,'$.external_id')='br-2'").fetchone()
+        old_job = json.loads(row['payload'])
+        conn.execute("UPDATE evidence SET payload=json_set(payload,'$.collected_at',?) WHERE id=?",
+                     (three_days_ago, repo.job(old_job['id'])['evidence_ids'][0]))
+        # 3 天前的旧事件：不计入推进。
+        conn.execute("INSERT INTO job_pipeline_events (job_id,from_status,to_status,created_at) VALUES (?,?,?,?)",
+                     (stale['id'], '', 'interested', three_days_ago))
+        # 近 24h 的采集异常：计入 collect_attention。
+        conn.execute("INSERT INTO tasks (id,payload) VALUES (?,?)",
+                     ('br-task', json.dumps({'id': 'br-task', 'status': 'needs_login', 'source': 'boss',
+                                             'query': 'Python', 'message': '', 'count': 0,
+                                             'created_at': datetime.now(timezone.utc).isoformat()})))
+    client.patch('/api/jobs', json={'ids': [fresh['id']], 'pipeline_status': 'applied'})
+
+    data = client.get('/api/dashboard').json()['briefing']
+    assert data['new_jobs'] == 1
+    assert data['new_favorites'] == 1  # 推进状态自动收藏，starred_at 在窗口内
+    assert data['moves'] == {'applied': 1}
+    assert data['collect_attention'] == 1
+    assert data['days_since_last_move'] == 0  # 刚推进过：不进最低功耗模式
+
+
+def test_dashboard_briefing_silent_days_after_absence(client):
+    repo = client.app.state.repo
+    job = repo.save_job(make_job(external_id='lp-1', title='静默岗'), 'boss')
+    client.patch('/api/jobs', json={'ids': [job['id']], 'pipeline_status': 'applied'})
+    five_days_ago = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    with repo.connection() as conn:
+        conn.execute("UPDATE job_pipeline_events SET created_at=?", (five_days_ago,))
+        conn.execute("UPDATE jobs SET payload=json_set(payload,'$.starred_at',?) WHERE id=?", (five_days_ago, job['id']))
+    data = client.get('/api/dashboard').json()['briefing']
+    assert data['days_since_last_move'] == 5
+    assert data['moves'] == {}  # 静默窗口外，增量全零
+    assert data['last_move_at']

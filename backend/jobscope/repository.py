@@ -1182,6 +1182,51 @@ class Repository:
                                 'WHERE substr(created_at,1,10)=? GROUP BY to_status', (today,)).fetchall()
         return {row['to_status']: row['n'] for row in rows}
 
+    def daily_briefing(self):
+        """近 24 小时增量（晨间简报，2026-11-23）：新入库/新收藏/管线推进/采集通道异常的全量计数。
+
+        首页各列表（近 7 天新入库 cap 6、本周变化 cap 8）有截断，这里只给数字不给列表，
+        保证「打开第一眼」的增量不漏数；口径与 recent_first_seen / 管线事件流一致（UTC 戳）。
+        采集通道异常 = failed / needs_login / needs_verification，是唯一要用户动手的信号。"""
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        with self.connection() as conn:
+            new_jobs = conn.execute(
+                """SELECT count(*) FROM (
+                       SELECT j.id, min(json_extract(e.payload,'$.collected_at')) AS fs
+                       FROM jobs j
+                       JOIN job_evidence je ON je.job_id=j.id
+                       JOIN evidence e ON e.id=je.evidence_id
+                       WHERE e.kind='job_posting' AND json_extract(j.payload,'$.duplicate_of') IS NULL
+                       GROUP BY j.id HAVING fs >= ?)""",
+                (cutoff,)).fetchone()[0]
+            new_favorites = conn.execute(
+                "SELECT count(*) FROM jobs WHERE json_extract(payload,'$.starred')=1 "
+                "AND json_extract(payload,'$.starred_at')>=?", (cutoff,)).fetchone()[0]
+            moves = {row['to_status']: row['n'] for row in conn.execute(
+                "SELECT to_status, COUNT(*) AS n FROM job_pipeline_events "
+                "WHERE created_at>=? AND to_status!='' GROUP BY to_status", (cutoff,))}
+            task_status = {row[0]: row[1] for row in conn.execute(
+                "SELECT json_extract(payload,'$.status'), COUNT(*) FROM tasks "
+                "WHERE json_extract(payload,'$.created_at')>=? GROUP BY 1", (cutoff,))}
+            last_move = conn.execute(
+                "SELECT max(created_at) FROM job_pipeline_events WHERE to_status!=''").fetchone()[0]
+            last_star = conn.execute(
+                "SELECT max(json_extract(payload,'$.starred_at')) FROM jobs "
+                "WHERE json_extract(payload,'$.starred')=1").fetchone()[0]
+        attention = sum(task_status.get(key, 0) for key in ('failed', 'needs_login', 'needs_verification'))
+        # 静默时长（最低功耗模式，2026-11-23）：距最近一次用户动作（管线推进∪收藏）的天数。
+        # 无历史返回 None——前端只在有历史且 ≥ 阈值时切温和重入，空库走入门引导不进这个模式。
+        last_move_at = max([v for v in (last_move, last_star) if v], default=None)
+        days_since_last_move = None
+        if last_move_at:
+            try:
+                days_since_last_move = (datetime.now(timezone.utc) - datetime.fromisoformat(last_move_at)).days
+            except ValueError:
+                days_since_last_move = None
+        return {'since': cutoff, 'new_jobs': new_jobs, 'new_favorites': new_favorites,
+                'moves': moves, 'collect_attention': attention,
+                'last_move_at': last_move_at, 'days_since_last_move': days_since_last_move}
+
     # ── 生存跑道（2026-11-22 P2）：月支出/存款/社保/失业金，单行档案。 ──
     # 隐私硬底线：只存本机这一张表，绝不进 profile_entries / 工坊取材 / 评估事实池
     # 等任何模型素材路径；跨页只出推导值，金额原值不离开本页（见 runway.py 注释）。

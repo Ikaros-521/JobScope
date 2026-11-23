@@ -285,12 +285,19 @@ export type OfferComparison = {
   reliability_score: number | null; reliability_band: string | null
   baseline_median: number | null; baseline_note: string; baseline_delta: number | null
 }
+// 晨间简报（2026-11-23）：近 24 小时增量计数（UTC 戳口径），全量不截断；moves 为 to_status → 条数。
+export type DashboardBriefing = {
+  since: string; new_jobs: number; new_favorites: number
+  moves: Record<string, number>; collect_attention: number
+  last_move_at: string | null; days_since_last_move: number | null
+}
 export type Dashboard = {
   date: string
   counts: { jobs: number; evidence: number; companies: number; favorites: number; tracked: number }
   pipeline: PipelineReview
   due: DashboardDue[]
   weekly?: PipelineWeekly
+  briefing?: DashboardBriefing
   prescriptions?: Prescriptions
   new_jobs: DashboardNewJob[]
   backup: BackupStatus

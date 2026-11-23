@@ -728,6 +728,8 @@ def create_app(data_dir=None):
             'due': repo.pipeline_due_items(),
             # 本周节奏（2026-11-22 P1）：按 ISO 周聚合事件流与新收藏，末两周环比在前端算。
             'weekly': repo.pipeline_weekly(),
+            # 晨间简报（2026-11-23）：近 24 小时增量计数，首屏单行条——安静时前端整条隐藏。
+            'briefing': repo.daily_briefing(),
             # 行动处方（2026-11-22）：漏斗数据 → 今日行动清单 + 处方卡，今日页直接消费。
             'prescriptions': build_prescriptions(repo),
             'new_jobs': repo.recent_first_seen(),

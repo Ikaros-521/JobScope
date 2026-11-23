@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createBackup, date, getDashboard, relativeDays } from './api'
-import type { Dashboard, DashboardDue, PipelinePrescription, PipelineWeeklyWeek, TodayPlan } from './api'
+import type { Dashboard, DashboardBriefing, DashboardDue, PipelineFunnel, PipelineFunnelBucket, PipelinePrescription, PipelineWeeklyWeek, TodayPlan } from './api'
 import { toast } from './toast'
 import { Icon } from './Icon'
 import { sourceNames } from './JobCard'
@@ -17,6 +17,8 @@ const TASK_STATUS_NAMES: Record<string, string> = {
   needs_login: '需要登录', needs_verification: '需要验证', backoff: '退避等待',
 }
 const BACKUP_REMIND_DAYS = 7
+// 最低功耗阈值（2026-11-23）：静默 ≥4 天且有过管线历史 → 温和重入模式（跳过周末 2-3 天的正常间隔）。
+const LOW_POWER_DAYS = 4
 
 export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJobs, onOpenSettings,
   onPrescriptionNavigate }: {
@@ -57,9 +59,12 @@ export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJob
     <div className="loading-state"><span className="spinner" />正在读取本机数据…</div>
   </section>
 
-  const { counts, pipeline, due, weekly, prescriptions, new_jobs: newJobs, backup, recent_tasks: recentTasks } = data
+  const { counts, pipeline, due, weekly, briefing, prescriptions, new_jobs: newJobs, backup, recent_tasks: recentTasks } = data
   const backupStale = backup.days_since === null || backup.days_since > BACKUP_REMIND_DAYS
   const staleFollowUps = pipeline.follow_ups
+  // 静默天数只认用户动作（推进∪收藏）；空库无历史不进此模式，走入门引导。
+  const quietDays = briefing?.days_since_last_move ?? 0
+  const lowPower = quietDays >= LOW_POWER_DAYS && Object.keys(pipeline.totals).length > 0
 
   return <section className="today-view" aria-label="今日概览">
     {counts.jobs === 0 ? <section className="paper-panel today-panel">
@@ -78,15 +83,23 @@ export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJob
         <button className="text-button" onClick={onOpenSettings}>管理备份</button>
       </div>}
 
-      {/* 今日行动（2026-11-22）：投递目标 + 处方卡（最多 3 条，全量在收藏页漏斗区）。 */}
-      {prescriptions && (prescriptions.prescriptions.length > 0 || prescriptions.today_plan) &&
+      {/* 晨间简报（2026-11-23）：打开第一眼先看「自昨天以来发生了什么」，再决定今天做什么。 */}
+      {briefing && <BriefingStrip briefing={briefing} onOpenSources={onOpenSources} />}
+
+      {/* 最低功耗模式（2026-11-23）：静默 ≥4 天后的温和重入——替下目标行与处方卡，不弹欠账。 */}
+      {lowPower ? <ReentryCard days={quietDays} onOpenFavorites={onOpenFavorites} /> :
+        prescriptions && (prescriptions.prescriptions.length > 0 || prescriptions.today_plan) &&
         <ActionBoard plan={prescriptions.today_plan} items={prescriptions.prescriptions.slice(0, 3)}
           total={prescriptions.prescriptions.length} onNavigate={onPrescriptionNavigate} />}
 
       <div className="today-grid">
         <section className="paper-panel today-panel today-todo" aria-label="待跟进">
-          <div className="section-heading"><div><h2>今日待跟进</h2><p className="body-small muted">截止日到期的管线岗位优先；下面是超过 {pipeline.stale_days} 天没有状态变化的提醒。</p></div></div>
-          {due.length === 0 && staleFollowUps.length === 0
+          <div className="section-heading"><div><h2>今日待跟进</h2>
+            <p className="body-small muted">{lowPower
+              ? `有 ${due.length + staleFollowUps.length} 条在等——不急，节奏回来了再处理。`
+              : `截止日到期的管线岗位优先；下面是超过 ${pipeline.stale_days} 天没有状态变化的提醒。`}</p></div></div>
+          {lowPower ? <button className="text-button today-panel-link" onClick={onOpenFavorites}>去收藏夹看一眼<Icon name="arrow" size={13} /></button>
+            : due.length === 0 && staleFollowUps.length === 0
             ? <div className="inline-empty">没有到期待办。在收藏夹给岗位设「截止日」，或推进状态后这里会提醒你。</div>
             : <ul className="today-due-list">
               {due.map(item => <DueRow key={item.id} item={item} onOpen={onOpenJob} />)}
@@ -108,7 +121,10 @@ export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJob
             <div className="today-stat"><b>{counts.evidence.toLocaleString()}</b><span>证据资料</span></div>
           </div>
           <div className="section-heading today-second-heading"><div><h2>本周节奏</h2><p className="body-small muted">按周聚合管线推进，环比上周——节奏比单日爆发更可靠。</p></div></div>
-          {weekly && <WeeklyRhythm weeks={weekly.weeks} onOpenFavorites={onOpenFavorites} />}
+          {weekly && <WeeklyRhythm weeks={weekly.weeks} onOpenFavorites={onOpenFavorites} lowPower={lowPower} />}
+          <div className="section-heading today-second-heading"><div><h2>开战战绩</h2>
+            <p className="body-small muted">累计曾到达口径，约面含拿 Offer 的岗位。</p></div></div>
+          {pipeline.funnel && <RecordBoard funnel={pipeline.funnel} />}
           <div className="section-heading today-second-heading"><div><h2>近 7 天新入库</h2></div></div>
           {newJobs.length === 0 ? <div className="inline-empty">近 7 天没有新岗位入库。</div>
             : <ul className="today-new-list">
@@ -174,9 +190,84 @@ function ActionBoard({ plan, items, total, onNavigate }: {
   </section>
 }
 
+// 最低功耗模式（2026-11-23）：静默 ≥4 天后的温和重入。替下「0/N 今日已投」的目标行与处方卡
+// ——欠账清单和进度数字是回归的阻力，一件今天能完成的小事才是入口。中断很常见，回到节奏比补进度重要。
+function ReentryCard({ days, onOpenFavorites }: { days: number; onOpenFavorites: () => void }) {
+  return <section className="paper-panel today-panel today-action" aria-label="重新开始">
+    <div className="section-heading"><div><h2>重新开始</h2>
+      <p className="body-small muted">距上次推进已 {days} 天——求职中断很常见，今天从一件小事开始就行。</p></div></div>
+    <ul className="prescription-list">
+      <li className="prescription-item info">
+        <div className="prescription-head"><b>今天只做一件：去收藏夹挑一家投出去</b>
+          <button type="button" className="text-button" onClick={onOpenFavorites}>去收藏夹<Icon name="arrow" size={12} /></button></div>
+        <p className="prescription-action">不用清积压、不用补进度——投完这一家，今天就算赢。</p>
+      </li>
+    </ul>
+  </section>
+}
+
+// 晨间简报（2026-11-23）：近 24 小时增量单行条。数字来自 dashboard.briefing（全量计数不截断）；
+// 全零的安静早晨整条隐藏，不占首屏；采集通道异常是唯一「要处理」信号，可跳数据与采集。
+function BriefingStrip({ briefing, onOpenSources }: { briefing: DashboardBriefing; onOpenSources: () => void }) {
+  const parts: string[] = []
+  if (briefing.new_jobs) parts.push(`新入库 ${briefing.new_jobs}`)
+  if (briefing.new_favorites) parts.push(`新收藏 ${briefing.new_favorites}`)
+  const moveBits = ['interested', 'applied', 'interviewing', 'offer']
+    .map(status => briefing.moves[status] ? `${PIPELINE_NAMES[status]} ${briefing.moves[status]}` : '')
+    .filter(Boolean)
+  if (moveBits.length) parts.push(`推进 ${moveBits.join('、')}`)
+  if (!parts.length && !briefing.collect_attention) return null
+  return <div className="today-briefing" role="status">
+    <Icon name="book" size={15} />
+    <span>近 24 小时：{parts.length ? parts.join(' · ') : '没有新动静'}</span>
+    {briefing.collect_attention > 0 && <button type="button" className="text-button" onClick={onOpenSources}>
+      采集通道 {briefing.collect_attention} 条要处理<Icon name="arrow" size={12} /></button>}
+  </div>
+}
+
+// 开战战绩（2026-11-23）：累计战果从收藏页漏斗区上移到每天第一屏——认可度不在功能多少，
+// 在回报看得见。全部复用 dashboard 既有载荷：简历自对照与评分校准即漏斗归因切片
+// （约面 = 进面试 ∪ 拿 Offer），批次里程碑只看近 6 批窗口，不冒充全历史；样本不足如实标注。
+function RecordBoard({ funnel }: { funnel: PipelineFunnel }) {
+  const stages: Record<string, number> = {}
+  for (const stage of funnel.stages) stages[stage.status] = stage.count
+  const applied = stages.applied || 0
+  if (applied === 0) return <div className="inline-empty">还没有投递记录——推进第一个「已投递」后，这里开始累计战绩。</div>
+  const interviewed = (stages.interviewing || 0) + (stages.offer || 0)
+  const perHundred = Math.round((interviewed / applied) * 100)
+  const share = (bucket: PipelineFunnelBucket) =>
+    `${bucket.label} ${bucket.interviewing}/${bucket.applied}` +
+    (bucket.interview_rate === null ? '' : `（${Math.round(bucket.interview_rate * 100)}%）`)
+  const resumeBuckets = funnel.attribution.by_resume.filter(bucket => bucket.applied > 0)
+  const bandBuckets = funnel.attribution.by_reliability.filter(bucket => bucket.applied > 0)
+  const cohorts = funnel.cohorts || []
+  const firstBatch = cohorts[cohorts.length - 1]
+  const latestHitBatch = cohorts.find(cohort => cohort.interviewing > 0)
+  return <div>
+    <div className="today-weekly">
+      <div className="today-weekly-stat"><b>{applied}</b><span>投递</span></div>
+      <div className="today-weekly-stat"><b>{interviewed}</b><span>约面</span></div>
+      <div className="today-weekly-stat"><b>{stages.offer || 0}</b><span>Offer</span></div>
+      <div className="today-weekly-stat"><b>{perHundred}</b><span>每百投约面</span></div>
+    </div>
+    <div className="today-record-notes">
+      {applied < 10 && <span className="tiny-label">投递样本 {applied} 份，还不足 10，数字参考有限。</span>}
+      {resumeBuckets.length > 0 && <span className="tiny-label" title="同一批岗位里，定制简历与通用简历的约面对比——自己跟自己比">
+        简历自对照：{resumeBuckets.map(share).join(' · ')}{resumeBuckets.length < 2 ? '（另一组还没有样本）' : ''}
+      </span>}
+      {bandBuckets.length > 1 && <span className="tiny-label" title="高分公司的约面率长期不高于低分时，评分规则该校准了">
+        评分校准：{bandBuckets.map(share).join(' · ')}
+      </span>}
+      {firstBatch && <span className="tiny-label" title="批次窗口只统计最近 6 批">
+        首批投递 {firstBatch.week_start} 那周起步{latestHitBatch ? ` · 最近约面批 ${latestHitBatch.week_start}` : ''}
+      </span>}
+    </div>
+  </div>
+}
+
 // 本周节奏（2026-11-22 P1）：末两周环比。只陈述数字与变化，不做好坏评价；
 // 全 0 时是「这周还没动」的事实提醒，不是催办。
-function WeeklyRhythm({ weeks, onOpenFavorites }: { weeks: PipelineWeeklyWeek[]; onOpenFavorites: () => void }) {
+function WeeklyRhythm({ weeks, onOpenFavorites, lowPower = false }: { weeks: PipelineWeeklyWeek[]; onOpenFavorites: () => void; lowPower?: boolean }) {
   if (weeks.length === 0) return null
   const [current, previous] = [weeks[weeks.length - 1], weeks[weeks.length - 2] || null]
   const metrics = [
@@ -197,7 +288,7 @@ function WeeklyRhythm({ weeks, onOpenFavorites }: { weeks: PipelineWeeklyWeek[];
       </div>
     })}
     {current.applied === 0 && current.new_favorites === 0
-      ? <span className="tiny-label">这周还没有推进——去收藏夹挑两家投出去。</span>
+      ? <span className="tiny-label">{lowPower ? '这周还没有推进。' : '这周还没有推进——去收藏夹挑两家投出去。'}</span>
       : <button type="button" className="text-button" onClick={onOpenFavorites}>去推进<Icon name="arrow" size={12} /></button>}
   </div>
 }
