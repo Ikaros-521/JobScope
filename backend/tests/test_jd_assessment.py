@@ -1,13 +1,14 @@
 """反向JD测评：成对平衡设计不变量、计分恢复仿真、质检闸门与 API 提交。
 
 设计质量是本功能的命门（用户要求「题目经得起推敲」），所以设计不变量逐条断言：
-每特征恰 16 次出现、左右各 8（特征固定一侧）、每卡 3 特征分属 3 维、AB 不相交、
-同卡共现均匀（135 跨维对 ∈ {0,2,3}，max=3，零共现对 ≤8）。2026-11-23 扩池
-（12→18 特征）后跨卡共现不再精确平衡，其混淆由差向量回归显式校正。
-不变量按 key 计算——卡上文本是会话种子选出的变体，键结构种子无关。
-计分准确性用植入人格仿真验证：软 sigmoid 人格（beta=1.2，模拟真实作答噪声）
-的偏好/回避判定必须回收（seed=0 全部强判定回收）；噪声人格下中性特征误判受阈值约束
-（阈值 1.2/1.8 按中性 |w| p92/p99 校准，16 观测下误报 ~8%/特征）。
+每特征恰 12 次出现、左右各 6（特征固定一侧）、每卡 3 特征分属 3 维、AB 不相交、
+同卡共现均匀（135 跨维对 ∈ {0,1,2}，max=2，零共现对 ≤21）。2026-11-23 扩池
+（12→18 特征）+ 减量（48→36 对，全卷 40 题）后跨卡共现不再精确平衡，
+其混淆由差向量回归显式校正。不变量按 key 计算——卡上文本是会话种子选出的变体，
+键结构种子无关。计分准确性用植入人格仿真验证：软 sigmoid 人格（beta=2.0，
+内容播种保证锚点副本前后一致）的偏好/回避判定必须全部回收、中性零强误报；
+噪声人格下中性特征误判受阈值约束（阈值 1.2/1.8 按中性 |w| p92/p99 校准，
+12 观测下误报 ~8%/特征）。
 """
 import random as _random
 import sys
@@ -44,8 +45,8 @@ def _feature_keys(trial, side):
 
 def test_design_shape_and_cleanliness():
     trials = J.trials()
-    assert len(trials) == 52
-    assert len({t['id'] for t in trials}) == 52
+    assert len(trials) == 40
+    assert len({t['id'] for t in trials}) == 40
     uniq = [t for t in trials if t['id'].startswith('T')]
     assert len(uniq) == J.N_PAIRS
     fillers = set(J.FILLERS)
@@ -69,7 +70,7 @@ def test_design_shape_and_cleanliness():
 
 
 def test_design_pairwise_balance():
-    """成对平衡：每特征恰 16 次、左卡恰 8（特征固定一侧）；同卡共现均匀。"""
+    """成对平衡：每特征恰 12 次、左卡恰 6（特征固定一侧）；同卡共现均匀。"""
     idx = {f['key']: i for i, f in enumerate(J.FEATURES)}
     dim_of = {f['key']: f['dim'] for f in J.FEATURES}
     uniq = [t for t in J.trials() if t['id'].startswith('T')]
@@ -88,23 +89,23 @@ def test_design_pairwise_balance():
             for y in kb:
                 if dim_of[x] == dim_of[y]:
                     same_dim[J._edge(idx[x], idx[y])] += 1
-    assert set(total.values()) == {16}, f'出现次数必须精确为 16：{sorted(set(total.values()))}'
-    assert set(left.values()) == {8}, f'左卡计数必须精确为 8：{sorted(set(left.values()))}'
+    assert set(total.values()) == {12}, f'出现次数必须精确为 12：{sorted(set(total.values()))}'
+    assert set(left.values()) == {6}, f'左卡计数必须精确为 6：{sorted(set(left.values()))}'
     # 同卡共现只发生在跨维对之间（同卡同维禁止已在 shape 测试断言）；跨卡同维配对
     # （同维两特征分处 AB，如 p1 vs p2 对照题）是允许且有益的对照，不设上限。
-    assert max(same.values()) <= 3, f'同卡共现超出上限 3：{sorted(same.values(), reverse=True)[:5]}'
+    assert max(same.values()) <= 2, f'同卡共现超出上限 2：{sorted(same.values(), reverse=True)[:5]}'
     cross_pairs = [J._edge(idx[x], idx[y]) for x, y in combinations([f['key'] for f in J.FEATURES], 2)
                    if dim_of[x] != dim_of[y]]
     zeros = sum(1 for p in cross_pairs if same[p] == 0)
-    assert zeros <= 8, f'零共现跨维对过多：{zeros}'
+    assert zeros <= 21, f'零共现跨维对过多：{zeros}'
 
 
 # ── 计分恢复仿真：植入人格的偏好/回避判定必须回收。 ──
 
-PLANTED_LIKES = {'i1', 'w1', 's1'}
-PLANTED_HATES = {'w2', 'w4'}
+PLANTED_LIKES = {'a1', 'i1', 'i3'}
+PLANTED_HATES = {'i2', 's2'}
 PERSONA_SCALE = 2.0          # 植入强度：软 sigmoid 下的「明确偏好」
-PERSONA_BETA = 1.2           # 作答噪声（与 noisy 版共用，只是种子不同）
+PERSONA_BETA = 2.0           # 作答果断度（36 对/12 观测下 1.2 的作答噪声会淹掉单条 hate）
 
 
 def _planted_choice(t, tag='main'):
@@ -125,7 +126,7 @@ def _planted_choice(t, tag='main'):
 
 
 def test_score_recovers_planted_preferences():
-    """seed=0：3 偏好全部强判定、2 回避全部回收、中性零强误报（校准扫描见模块注释）。"""
+    """内容播种人格：3 偏好 + 2 回避全部回收、中性零强误报（组合扫描选定，见模块注释）。"""
     report = J.score_responses([_planted_choice(t) for t in J.trials()])
     assert report['quality']['grade'] == 'ok'
     assert report['quality']['anchor_agreement'] == 3
@@ -152,7 +153,7 @@ def test_score_noisy_persona_stays_honest():
     """噪声人格：植入信号仍以偏好/回避为主 verdict，中性特征误报受阈值约束（≤1）。"""
     report = J.score_responses([_planted_choice(t, tag='noisy') for t in J.trials()])
     verdicts = {f['key']: f['verdict'] for f in report['features']}
-    assert verdicts['w2'] in ('strong_avoid', 'avoid')
+    assert verdicts['i2'] in ('strong_avoid', 'avoid')
     assert sum(1 for k in PLANTED_LIKES if verdicts[k].startswith('strong')) >= 1
     spurious_strong = [f['key'] for f in report['features']
                        if f['key'] not in PLANTED_LIKES | PLANTED_HATES and f['verdict'].startswith('strong')]
@@ -166,7 +167,7 @@ def test_quality_gates():
     # 全部过快：有效样本为 0，三个闸门齐响
     fast = [dict(trial_id=t['id'], choice='a', rt_ms=100) for t in trials]
     report = J.score_responses(fast)
-    assert report['quality']['rt_excluded'] == 52
+    assert report['quality']['rt_excluded'] == 40
     assert report['quality']['valid_trials'] == 0
     assert any('过快' in flag for flag in report['quality']['flags'])
     assert any('有效样本不足' in flag for flag in report['quality']['flags'])
@@ -204,7 +205,7 @@ def test_score_rejects_invalid_input():
 
 def test_api_roundtrip(client):
     trials = client.get('/api/jd-assessment/trials').json()['trials']
-    assert len(trials) == 52
+    assert len(trials) == 40
     responses = [dict(trial_id=t['id'], choice=_planted_choice(t)['choice'], rt_ms=2000) for t in trials]
     saved = client.post('/api/jd-assessment', json={'responses': responses})
     assert saved.status_code == 200
@@ -228,7 +229,7 @@ def test_seed_keeps_key_structure_invariants():
     dim_of = {f['key']: f['dim'] for f in J.FEATURES}
     for seed in (1, 42, 20261123, 999999999):
         trials = J.trials(seed)
-        assert len(trials) == 52 and len({t['id'] for t in trials}) == 52
+        assert len(trials) == 40 and len({t['id'] for t in trials}) == 40
         fillers = set(J.FILLERS)
         by_id = {t['id']: t for t in trials}
         uniq = [t for t in trials if t['id'].startswith('T')]
@@ -243,8 +244,8 @@ def test_seed_keeps_key_structure_invariants():
                 left[k] += 1
             for k in ka + kb:
                 total[k] += 1
-        assert set(total.values()) == {16}
-        assert set(left.values()) == {8}
+        assert set(total.values()) == {12}
+        assert set(left.values()) == {6}
         for anchor_id, source_id in J.anchor_of(seed).items():
             assert by_id[anchor_id]['a'] == by_id[source_id]['a']
             assert by_id[anchor_id]['b'] == by_id[source_id]['b']
@@ -267,7 +268,7 @@ def test_seed_changes_surface_but_not_keys():
 
 
 def test_variant_pool_caps_text_exposure():
-    """同一文本整卷出现次数被变体轮换压住：特征文本 ≤7、填充 ≤5（锚点复制另计 +1）；
+    """同一文本整卷出现次数被变体轮换压住：特征文本 ≤6、填充 ≤5（锚点复制另计 +1）；
     54 条变体与 24 条填充全部上场（AT1 专用片段不计入）。"""
     for seed in (None, 7, 31337):
         counter = Counter()
@@ -277,7 +278,7 @@ def test_variant_pool_caps_text_exposure():
             for side in ('a', 'b'):
                 counter.update(t[side])
         feature_texts = set(J.PHRASE_TO_FEATURE)
-        assert all(v <= 8 for p, v in counter.items() if p in feature_texts)
+        assert all(v <= 6 for p, v in counter.items() if p in feature_texts)
         assert all(v <= 5 for p, v in counter.items() if p not in feature_texts)
         assert len([p for p in counter if p in feature_texts]) == len(J.FEATURES) * 3
         assert set(p for p in counter if p not in feature_texts) == set(J.FILLERS)
@@ -290,8 +291,8 @@ def test_score_with_seed_roundtrip():
     assert report['quality']['grade'] == 'ok'
     assert report['quality']['anchor_agreement'] == 3
     verdicts = {f['key']: f['verdict'] for f in report['features']}
-    assert verdicts['w1'] in ('strong_like', 'like')
-    assert verdicts['w2'] in ('strong_avoid', 'avoid')
+    assert verdicts['a1'] in ('strong_like', 'like')
+    assert verdicts['i2'] in ('strong_avoid', 'avoid')
 
 
 def test_api_seed_roundtrip(client):
