@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
-import { safeUrl } from '../api'
+import { isAgentJobAction, safeUrl } from '../api'
 import type { Citation, ScopeExpansion, StoredMessage } from '../api'
 import { useSystemSettings } from '../systemSettingsStore'
 import { ScopeExpansionCard } from './ScopeExpansionCard'
+import { JobActionCard } from './JobActionCard'
 import { Markdown } from './Markdown'
 import { ToolTimeline } from './ToolTimeline'
 import { ChatSegments } from './ChatSegments'
@@ -23,7 +24,7 @@ async function copyText(text: string): Promise<boolean> {
   try { await navigator.clipboard.writeText(text); return true } catch { return false }
 }
 
-export function ChatMessageItem({ message, live, showReasoning, editing, canMutate, onStartEdit, onEditSubmit, onEditCancel, onResend, onDelete, actionsDisabled = false, onAcceptScope }: {
+export function ChatMessageItem({ message, live, showReasoning, editing, canMutate, onStartEdit, onEditSubmit, onEditCancel, onResend, onDelete, actionsDisabled = false, onAcceptScope, onOpenJob, onWorkshop }: {
   message: StoredMessage
   live?: boolean
   showReasoning: boolean
@@ -36,6 +37,9 @@ export function ChatMessageItem({ message, live, showReasoning, editing, canMuta
   onDelete: (message: StoredMessage) => void
   actionsDisabled?: boolean
   onAcceptScope?: (action: ScopeExpansion) => Promise<void>
+  // Agent 内部动作卡的跳转出口：评估卡 → 岗位研究定位岗位；工坊卡 → 简历工坊预填
+  onOpenJob?: (jobId: string) => void
+  onWorkshop?: (prefill: { jobId: string; company: string; jobTitle: string; instructions?: string }) => void
 }) {
   const [copied, setCopied] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
@@ -91,7 +95,9 @@ export function ChatMessageItem({ message, live, showReasoning, editing, canMuta
         {message.trace?.events?.length ? <ToolTimeline steps={message.trace.events} /> : null}
         <div className="message-content"><Markdown content={message.content} /></div>
       </>}
-      {onAcceptScope && message.actions?.map(action => <ScopeExpansionCard key={action.id} action={action} disabled={actionsDisabled} onAccept={onAcceptScope} />)}
+      {message.actions?.map(action => isAgentJobAction(action)
+        ? <JobActionCard key={action.id} action={action} disabled={actionsDisabled} onOpenJob={onOpenJob} onWorkshop={onWorkshop} />
+        : (onAcceptScope ? <ScopeExpansionCard key={action.id} action={action} disabled={actionsDisabled} onAccept={onAcceptScope} /> : null))}
       {message.metrics && <p className="tiny-label">薪资统计基于 {message.metrics.matched_jobs} 个符合筛选条件的岗位，招聘报价不代表实际工资。</p>}
       {/* 参考数据条数多时收进一张大折叠卡，避免整页被刷屏；少量仍保持平铺。 */}
       {message.citations && message.citations.length > 2 ? <details className="citation-group">

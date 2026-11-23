@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { KeyboardEvent as ReactKeyboardEvent, TouchEvent as ReactTouchEvent, WheelEvent as ReactWheelEvent } from 'react'
-import { acceptScopeExpansion, estimateTokens, getChannels, getModelSettings, listLlmChannels, proposeScopeExpansion } from '../api'
-import type { ChatScope, ConversationNavigation, LlmChannel, PermissionMode, ScopeExpansion, StoredMessage } from '../api'
+import { acceptScopeExpansion, estimateTokens, getChannels, getModelSettings, isAgentJobAction, listLlmChannels, proposeScopeExpansion } from '../api'
+import type { ChatAction, ChatScope, ConversationNavigation, LlmChannel, PermissionMode, ScopeExpansion, StoredMessage } from '../api'
 import { toast } from '../toast'
 import { updateSystemSettings, useSystemSettings } from '../systemSettingsStore'
 import { ChatComposer } from './ChatComposer'
@@ -13,6 +13,7 @@ import { ToolTimeline } from './ToolTimeline'
 import { Markdown } from './Markdown'
 import { useChatRun } from './useChatRun'
 import { ScopeExpansionCard } from './ScopeExpansionCard'
+import { JobActionCard } from './JobActionCard'
 import './chatRecovery.css'
 
 const SUGGESTIONS = ['结合我的简历，制定 Agent 岗位面试计划', '检索 Python 岗位并比较薪资', '我的知识库里有哪些内容？']
@@ -25,13 +26,16 @@ const STICK_THRESHOLD = 80
 // 上下文估算基数：system 提示 + 工具声明，不随会话变化。
 const CONTEXT_BASE_TOKENS = 600
 
-export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onConfigureModel, onOpenKnowledge, navigation, onNavigateConversation, onOpened, prefill, onPrefillConsumed }: {
+export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onConfigureModel, onOpenKnowledge, navigation, onNavigateConversation, onOpened, prefill, onPrefillConsumed, onOpenJob, onWorkshop }: {
   scope: ChatScope; modelConfigured: boolean; onManageExtensions?: () => void
   onConfigureModel?: () => void
   onOpenKnowledge?: () => void
   navigation?: ConversationNavigation | null
   onNavigateConversation?: (navigation: ConversationNavigation) => void
   onOpened?: (requestId: string) => void
+  // Agent 内部动作卡的跳转出口：评估卡 → 岗位研究定位岗位；工坊卡 → 简历工坊预填
+  onOpenJob?: (jobId: string) => void
+  onWorkshop?: (prefill: { jobId: string; company: string; jobTitle: string; instructions?: string }) => void
   // 外部（如求职参考的「让 Agent 协同补齐」按钮）带来的预填指令：token 变化时写入输入框一次，
   // 不覆盖用户随后手动改动；只在输入框为空时应用，避免打断正在编辑的内容。应用后回调消费，
   // 避免之后每次进入工作区都被同一段指令顶出来；newSession 的入口先落到全新会话再预填——
@@ -195,8 +199,9 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCo
 
   useEffect(() => { setLocalActions([]); setActionOverrides({}); setShowScopeOptions(false) }, [conversation.id])
 
-  function resolveAction(action: ScopeExpansion) {
-    return actionOverrides[action.id] || scopeActions.find(item => item.id === action.id) || action
+  function resolveAction<T extends ChatAction>(action: T): T {
+    if (isAgentJobAction(action)) return action // 自包含卡，无服务端解析
+    return (actionOverrides[action.id] || scopeActions.find(item => item.id === action.id) || action) as T
   }
 
   async function requestExpansion(target: 'company' | 'global') {
@@ -227,7 +232,8 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCo
     } finally { cloningRef.current = false; setCloning(false) }
   }
 
-  function actionInScope(action: ScopeExpansion) {
+  function actionInScope(action: ChatAction) {
+    if (isAgentJobAction(action)) return true // 动作卡自包含岗位信息，不随会话范围过滤
     const source = action.source_scope
     if (source.kind !== scope.kind) return false
     if (source.kind === 'job' && scope.kind === 'job') return source.job_id === scope.jobId
@@ -393,6 +399,8 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCo
             message={{ ...message, actions: message.actions?.filter(actionInScope).map(resolveAction) }}
             actionsDisabled={busy}
             onAcceptScope={acceptExpansion}
+            onOpenJob={onOpenJob}
+            onWorkshop={onWorkshop}
             showReasoning={showReasoning}
             editing={editing?.id === message.id}
             canMutate={canMutate}
@@ -414,7 +422,9 @@ export function ChatWorkspace({ scope, modelConfigured, onManageExtensions, onCo
               {run.answer && <div className="message-content"><Markdown content={run.answer} /></div>}
             </>}
             {run.error && <div className="run-error">{run.error}</div>}
-            {Array.from(new Map(liveActions.map(action => [action.id, action])).values()).map(action => <ScopeExpansionCard key={action.id} action={resolveAction(action)} disabled onAccept={acceptExpansion} />)}
+            {Array.from(new Map(liveActions.map(action => [action.id, action])).values()).map(action => isAgentJobAction(action)
+              ? <JobActionCard key={action.id} action={action} disabled onOpenJob={onOpenJob} onWorkshop={onWorkshop} />
+              : <ScopeExpansionCard key={action.id} action={resolveAction(action)} disabled onAccept={acceptExpansion} />)}
           </article>}
           {floatingActions.map(action => <ScopeExpansionCard key={action.id} action={resolveAction(action)} disabled={busy} onAccept={acceptExpansion} />)}
 

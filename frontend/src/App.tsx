@@ -291,7 +291,7 @@ export default function App() {
 
     <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'settings' || view === 'compare' || view === 'favorites' || view === 'knowledge' || view === 'logs' || view === 'profile' || view === 'today' || view === 'jd-assessment' || view === 'failure-museum' ? 'main main-compact' : 'main'}>
       <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'today' ? '今日概览' : view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'interview' ? '模拟面试' : view === 'jd-assessment' ? '反向JD测评' : view === 'failure-museum' ? '失败博物馆' : view === 'resume' ? '我的简历' : view === 'profile' ? '个人资料库' : view === 'workshop' ? '简历工坊' : view === 'runway' ? '生存跑道' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'knowledge' ? '知识库' : view === 'logs' ? '运行日志' : view === 'settings' ? '设置中心' : '数据与采集'}</div><div className="topbar-right"><button className="icon-button" aria-label="刷新工作区" title="刷新档案、元数据与收藏角标" onClick={() => setRefreshTick(tick => tick + 1)}><Icon name="source" size={17} /></button></div></header>
-      <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} onConfigureModel={configureModel} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => openSettings('extensions')} onOpenCompare={() => setView('compare')} onOpenKnowledge={() => setView('knowledge')} openCompanyChat={companyChatRequest} /></div>
+      <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} onConfigureModel={configureModel} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => openSettings('extensions')} onOpenCompare={() => setView('compare')} onOpenKnowledge={() => setView('knowledge')} openCompanyChat={companyChatRequest} onOpenJob={openJobFrom} onWorkshop={openWorkshop} /></div>
 
       {/* 岗位研究常驻挂载（hidden 切换）：筛选与选中状态在视图切换间保留；跨视图联动经下方信号。 */}
       <JobResearch
@@ -319,7 +319,7 @@ export default function App() {
 
       {view === 'knowledge' && <KnowledgeView onCountChange={setKnowledgeTotal} />}
 
-      {view === 'global' && <><h1 className="sr-only">全局对话</h1><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onManageExtensions={() => openSettings('extensions')} onOpenKnowledge={() => setView('knowledge')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} prefill={chatPrompt} onPrefillConsumed={() => setChatPrompt(null)} /></>}
+      {view === 'global' && <><h1 className="sr-only">全局对话</h1><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onManageExtensions={() => openSettings('extensions')} onOpenKnowledge={() => setView('knowledge')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} prefill={chatPrompt} onPrefillConsumed={() => setChatPrompt(null)} onOpenJob={openJobFrom} onWorkshop={openWorkshop} /></>}
 
       {view === 'compare' && <CompanyCompare />}
 

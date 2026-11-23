@@ -155,15 +155,19 @@ export type StoredMessage = {
   failed?: boolean; failure?: string;
   // kind='compaction' 是压缩检查点；compacted 表示该消息已被压缩折叠（仅 UI 呈现，不进模型上下文）
   kind?: string; compacted_count?: number; compacted?: boolean;
-  citations?: Citation[]; trace?: ResearchRun; metrics?: SalaryMetrics | null; actions?: ScopeExpansion[]
+  citations?: Citation[]; trace?: ResearchRun; metrics?: SalaryMetrics | null; actions?: ChatAction[]
   // 顺序显示模式的分段日志：思维链/正文/工具步骤按发生顺序穿插（旧消息没有，回落合并显示）
   timeline?: ChatSegment[]
 }
 export type ConversationScope = { kind: 'global' } | { kind: 'company'; company: string } | { kind: 'job'; company: string; job_id: string }
 export type ScopeExpansion = { id: string; type: 'scope_expansion'; source_scope: ConversationScope; target_scope: ConversationScope; reason: string; target_conversation_id: string | null }
+// Agent 内部动作卡（2026-11-23）：评估/工坊跳转卡随消息落库、自包含可直接导航，无需服务端 accept
+export type AgentJobAction = { id: string; type: 'assess_job' | 'optimize_resume'; job_id: string; title: string; company: string; reason?: string; instructions?: string }
+export type ChatAction = ScopeExpansion | AgentJobAction
+export function isAgentJobAction(action: ChatAction): action is AgentJobAction { return action.type === 'assess_job' || action.type === 'optimize_resume' }
 export type ConversationNavigation = { requestId: string; conversationId: string; scope: ConversationScope }
 export type ScopeExpansionResult = { conversation_id: string; scope: ConversationScope; source_conversation_id: string; action_id: string }
-export type ToolStep = { step: number; tool: string; duration_ms: number; label?: string; status?: string; arguments?: Record<string, unknown>; result_preview?: string; selected?: number; matched_jobs?: number; calls?: number; action?: ScopeExpansion }
+export type ToolStep = { step: number; tool: string; duration_ms: number; label?: string; status?: string; arguments?: Record<string, unknown>; result_preview?: string; selected?: number; matched_jobs?: number; calls?: number; action?: ChatAction }
 // 顺序显示模式的分段：思维链/正文按段追加，工具步骤穿插其间，与发生顺序一致。
 // step 段有两种来源：流式增量（step 键）与落库回放（event 键，general_agent._event），渲染层两个键都兼容。
 export type ChatSegment = { kind: 'reasoning' | 'text'; text: string } | { kind: 'step'; step?: ToolStep; event?: ToolStep }

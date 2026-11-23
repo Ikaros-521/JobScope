@@ -7,6 +7,8 @@ const toolNames: Record<string, string> = {
   project_search: '检索项目资料', project_read: '读取证据正文', project_salary: '查询全库岗位薪资',
   web_search: '全网搜索', web_read: '网页阅读',
   resume_read: '读取已确认简历事实', skill_read: '加载 Skill 指令', skill_resource: '读取 Skill 资源',
+  favorite_add: '收藏岗位', favorite_remove: '取消收藏岗位', match_jobs: '按偏好匹配岗位',
+  assess_job: '生成评估卡片', optimize_resume: '生成简历优化卡片',
   tool_approval: '等待工具确认', tool_denied: '用户拒绝调用', tool_error: '工具调用失败',
   model_retry: '模型响应异常，已自动重试', loop_warning: '重复调用告警',
 }
