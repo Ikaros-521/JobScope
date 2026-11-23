@@ -107,10 +107,10 @@ export type JdAssessmentReport = {
   note: string
 }
 export type JdAssessmentItem = { id: string; payload: { responses: { trial_id: string; choice: 'a' | 'b'; rt_ms: number }[]; report: JdAssessmentReport }; created_at: string }
-export function getJdAssessmentTrials() { return api<{ trials: JdTrial[] }>('/jd-assessment/trials') }
+export function getJdAssessmentTrials(seed?: number) { return api<{ trials: JdTrial[] }>(`/jd-assessment/trials${seed != null ? `?seed=${seed}` : ''}`) }
 export function getJdAssessments() { return api<{ assessments: JdAssessmentItem[] }>('/jd-assessment') }
-export function submitJdAssessment(responses: { trial_id: string; choice: 'a' | 'b'; rt_ms: number }[]) {
-  return post<JdAssessmentItem>('/jd-assessment', { responses })
+export function submitJdAssessment(responses: { trial_id: string; choice: 'a' | 'b'; rt_ms: number }[], seed?: number) {
+  return post<JdAssessmentItem>('/jd-assessment', { responses, seed })
 }
 // 触达话术（2026-11-22）：生成即落版本，A/B 靠 used_at 使用标记；平台发送由用户在招聘站手动完成。
 export type OutreachVersion = { id: string; job_id: string; kind: 'greeting' | 'followup'; text: string; origin: string; created_at: string; used_at: string }

@@ -11,14 +11,19 @@ Recognition / Relationships / Support / Working Conditions）的中文转译，�
 2. 洁净：同卡同维最多一条特征、AB 卡不共享特征或填充片段——避免同题内互相污染；
 3. 质检：3 道前后重复锚点题（测一致性）+ 1 道显性占优题（测注意力）+ 反应时下限。
 
+表层多样性（2026-11-23，针对「做题像重复」反馈）：配对骨架（哪些特征同题）保持 BIBD 固化，
+但每条特征有 3 条同义变体表述、填充 16 条，且题序/变体/填充由会话种子决定——计分按键池化，
+变体只换皮不换骨；同一条文本在整卷里的出现次数从 ~22 次降到 ~7 次，重测必换卷。
+
 计分：选中率差（AMCE = 含该片段的卡被选比例 − 不含的被选比例）为主结论，
 条件逻辑斯蒂回归（岭正则，纯 Python）权重仅作共现校正的排序参考。
 """
 import math
 import random as _random
 
-# ── 词表：6 维 × 2 特征。phrase 尽量用 JD 原文式中性陈述（可观察事实），screen 是
-# 用户回头筛岗位时的关键词形态。片段本身不带褒贬引导——报告反映的是用户自己的反应。 ──
+# ── 词表：6 维 × 2 特征。phrase 是报告引用的正典表述，variants 是出题用的同义变体
+#（同一构念、JD 原文式中性陈述，只换措辞不换强度——计分按 key 池化全部变体）。
+# screen 是用户回头筛岗位时的关键词形态。片段本身不带褒贬引导——报告反映用户自己的反应。 ──
 
 DIMENSIONS = [
     dict(key='achievement', label='成就攻坚', onet='Achievement'),
@@ -30,18 +35,30 @@ DIMENSIONS = [
 ]
 
 FEATURES = [
-    dict(key='a1', dim='achievement', phrase='从0到1搭建新模块，对交付结果负责', screen='从0到1'),
-    dict(key='a2', dim='achievement', phrase='背量化业绩指标，按季度结果考核', screen='量化指标'),
-    dict(key='i1', dim='independence', phrase='独立负责一条业务线，自主安排优先级', screen='独立负责'),
-    dict(key='i2', dim='independence', phrase='小团队作战，单线汇报，决策链短', screen='单线汇报'),
-    dict(key='r1', dim='recognition', phrase='薪资高于同类岗位，调薪机制明确', screen='薪资高于市场'),
-    dict(key='r2', dim='recognition', phrase='晋升通道清晰，职级体系透明', screen='晋升通道清晰'),
-    dict(key='s1', dim='relationships', phrase='团队氛围轻松，同事靠谱互相补位', screen='团队氛围好'),
-    dict(key='s2', dim='relationships', phrase='需要频繁跨部门拉通对齐', screen='频繁跨部门'),
-    dict(key='p1', dim='support', phrase='有导师带教和体系化的培训机制', screen='导师带教'),
-    dict(key='p2', dim='support', phrase='工程流程规范，评审与文档机制齐全', screen='流程规范'),
-    dict(key='w1', dim='conditions', phrase='双休，弹性打卡，支持混合远程', screen='双休弹性'),
-    dict(key='w2', dim='conditions', phrase='版本期常态加班，冲刺节奏', screen='常态加班'),
+    dict(key='a1', dim='achievement', phrase='从0到1搭建新模块，对交付结果负责', screen='从0到1',
+         variants=['牵头把新业务从想法做到上线，交付质量由你兜底', '负责没人趟过路的新模块，从设计到落地全程主导']),
+    dict(key='a2', dim='achievement', phrase='背量化业绩指标，按季度结果考核', screen='量化指标',
+         variants=['目标全部数字化，季度考核只看结果达成', '绩效与可量化产出直接挂钩，达成多少算多少']),
+    dict(key='i1', dim='independence', phrase='独立负责一条业务线，自主安排优先级', screen='独立负责',
+         variants=['一条产品线只归你管，节奏和优先级自己定', '手头项目自主决策，不用事事对齐']),
+    dict(key='i2', dim='independence', phrase='小团队作战，单线汇报，决策链短', screen='单线汇报',
+         variants=['团队精简，只向一位负责人汇报，拍板快', '扁平架构，重大决策当天就能定']),
+    dict(key='r1', dim='recognition', phrase='薪资高于同类岗位，调薪机制明确', screen='薪资高于市场',
+         variants=['薪水在同类岗位里属高位，调薪规则写进制度', '薪酬定位高于市场同类，调薪窗口固定']),
+    dict(key='r2', dim='recognition', phrase='晋升通道清晰，职级体系透明', screen='晋升通道清晰',
+         variants=['职级标准公开，晋升路径和周期都明确', '上升通道写得很清楚，到什么标准拿什么职级']),
+    dict(key='s1', dim='relationships', phrase='团队氛围轻松，同事靠谱互相补位', screen='团队氛围好',
+         variants=['团队磨合成熟，关键时候有人搭手', '氛围松弛，分工之外愿意互相顶上']),
+    dict(key='s2', dim='relationships', phrase='需要频繁跨部门拉通对齐', screen='频繁跨部门',
+         variants=['大量时间花在跨团队沟通和对齐会上', '工作重心包含跨部门协调与推进']),
+    dict(key='p1', dim='support', phrase='有导师带教和体系化的培训机制', screen='导师带教',
+         variants=['入职有导师一对一带，培训体系成建制', '成长有专人护航，技能培训排进工时']),
+    dict(key='p2', dim='support', phrase='工程流程规范，评审与文档机制齐全', screen='流程规范',
+         variants=['研发流程成熟，代码评审和文档是硬性环节', '规范先行：评审、文档、发布全流程有章法']),
+    dict(key='w1', dim='conditions', phrase='双休，弹性打卡，支持混合远程', screen='双休弹性',
+         variants=['五天工作制，上下班时间灵活，可混合办公', '标准双休，打卡时间自定，每周可远程']),
+    dict(key='w2', dim='conditions', phrase='版本期常态加班，冲刺节奏', screen='常态加班',
+         variants=['发版前连续加班是常态，节奏偏冲刺型', '上线窗口期高强度作战，加班随版本走']),
 ]
 
 FILLERS = [
@@ -53,6 +70,14 @@ FILLERS = [
     '跟进线上问题并修复',
     '定期同步开发进度',
     '完成日常迭代任务',
+    '参与技术方案讨论，推动方案落地',
+    '编写单元测试与集成测试',
+    '与产品经理对齐需求细节',
+    '维护服务可用性，响应线上告警',
+    '梳理接口文档与调用关系',
+    '在既有代码基础上做增量开发',
+    '协助定位排查线上环境问题',
+    '参加评审会，给出技术意见',
 ]
 
 # 注意力校验题：A 卡在常识上严格占优（休息/透明/流程），选 B 视为未认真作答。
@@ -122,18 +147,34 @@ def _repair_fillers(filler_pairs):
             return
 
 
-def _build_trials():
-    rng = _random.Random(DESIGN_SEED)
-    key_of = [f['key'] for f in FEATURES]
-    filler_tokens = [f for f in FILLERS for _ in range(N_PAIRS * 2 // len(FILLERS))]
-    rng.shuffle(filler_tokens)
+def _build_trials(seed):
+    """seed 决定表层（题序/变体/填充/卡内条目序），配对骨架 _DESIGNED_TRIALS 不变——
+    所以任何种子下按 key 计算的设计不变量（平衡/洁净/锚点）都与默认卷完全一致。"""
+    rng = _random.Random(seed)
+    texts_of = {f['key']: [f['phrase'], *f['variants']] for f in FEATURES}
+    # 每条特征一个轮换牌组：洗牌后逐次取用、用尽重洗。3 条变体在整卷出现次数天然均衡（±1），
+    # 同一文本的两次出现被强制隔开至少一轮（≈3 次该特征的出现）——比独立随机抽样更抗扎堆。
+    decks = {key: [] for key in texts_of}
+
+    def _text_for(key):
+        if not decks[key]:
+            decks[key] = list(texts_of[key])
+            rng.shuffle(decks[key])
+        return decks[key].pop()
+
+    # 填充同理轮换：88 槽位对 16 条片段，每条约 5–6 次且不扎堆、AB 不重样。
+    filler_tokens = []
+    while len(filler_tokens) < N_PAIRS * 2:
+        batch = list(FILLERS)
+        rng.shuffle(batch)
+        filler_tokens.extend(batch)
     filler_pairs = [[filler_tokens[i * 2], filler_tokens[i * 2 + 1]] for i in range(N_PAIRS)]
     _repair_fillers(filler_pairs)
-    phrase_of = {f['key']: f['phrase'] for f in FEATURES}
+    key_of = [f['key'] for f in FEATURES]
     trials = []
     for index, ((a, b), (fa, fb)) in enumerate(zip(_DESIGNED_TRIALS, filler_pairs)):
-        card_a = [phrase_of[key_of[k]] for k in a] + [fa]
-        card_b = [phrase_of[key_of[k]] for k in b] + [fb]
+        card_a = [_text_for(key_of[k]) for k in a] + [fa]
+        card_b = [_text_for(key_of[k]) for k in b] + [fb]
         rng.shuffle(card_a)
         rng.shuffle(card_b)
         trials.append(dict(id=f'T{index + 1:02d}', a=card_a, b=card_b))
@@ -149,28 +190,30 @@ def _build_trials():
     return sequence, anchor_of
 
 
-_TRIALS = None
-_ANCHOR_OF = None
+_SESSION_CACHE = {}
 
 
-def trial_list():
-    """题序列只随代码版本变化（固定种子），进程内缓存；前端按此渲染与回传 trial_id。"""
-    global _TRIALS, _ANCHOR_OF
-    if _TRIALS is None:
-        _TRIALS, _ANCHOR_OF = _build_trials()
-    return {'trials': _TRIALS}
+def _session(seed):
+    key = DESIGN_SEED if seed is None else int(seed)
+    if key not in _SESSION_CACHE:
+        if len(_SESSION_CACHE) >= 64:      # 会话级缓存兜底，防长驻进程无限增长
+            _SESSION_CACHE.clear()
+        _SESSION_CACHE[key] = _build_trials(key)
+    return _SESSION_CACHE[key]
 
 
-def trials():
-    if _TRIALS is None:
-        trial_list()
-    return _TRIALS
+def trial_list(seed=None):
+    """题序列随会话种子变化（缺省用固定种子，等价于旧行为），进程内按种子缓存；
+    前端按此渲染与回传 trial_id，提交时带上同一 seed 供服务端复现锚点配对。"""
+    return {'trials': _session(seed)[0]}
 
 
-def anchor_of():
-    if _ANCHOR_OF is None:
-        trial_list()
-    return _ANCHOR_OF
+def trials(seed=None):
+    return _session(seed)[0]
+
+
+def anchor_of(seed=None):
+    return _session(seed)[1]
 
 
 # ── 计分。RT_FLOOR 以下的作答视为没读题；锚点/注意力结果进质检不进结论。 ──
@@ -183,7 +226,7 @@ MIN_FEATURE_N = 10          # 特征出现卡数低于此 → 该条低置信
 WEIGHT_STRONG, WEIGHT_LIKE = 1.6, 0.9
 WEIGHT_ITERS, WEIGHT_RIDGE = 1500, 0.25
 
-PHRASE_TO_FEATURE = {f['phrase']: f for f in FEATURES}
+PHRASE_TO_FEATURE = {text: f for f in FEATURES for text in (f['phrase'], *f['variants'])}
 FEATURE_BY_KEY = {f['key']: f for f in FEATURES}
 DIMENSION_BY_KEY = {d['key']: d for d in DIMENSIONS}
 
@@ -224,9 +267,10 @@ def _line(kind, keys):
     return f'对含 {words} 的岗位先降级或直接跳过，别花时间细读。'
 
 
-def score_responses(responses):
-    """responses: [{trial_id, choice, rt_ms}]（全量、有序）。返回报告 dict；非法输入抛 ValueError。"""
-    all_trials = trials()
+def score_responses(responses, seed=None):
+    """responses: [{trial_id, choice, rt_ms}]（全量、有序）；seed 必须与取题时一致（决定锚点
+    配对来源，特征计数与键结构无关种子）。返回报告 dict；非法输入抛 ValueError。"""
+    all_trials = trials(seed)
     trial_map = {t['id']: t for t in all_trials}
     if len(responses) != len(all_trials):
         raise ValueError(f'作答数量不符：应答 {len(all_trials)} 题，收到 {len(responses)} 题')
@@ -254,7 +298,7 @@ def score_responses(responses):
         flags.append('注意力校验未通过，结果可信度低')
 
     anchor_results = []
-    anchor_map = anchor_of()
+    anchor_map = anchor_of(seed)
     for r in valid + excluded:
         source = anchor_map.get(r['trial_id'])
         if not source:
@@ -273,9 +317,10 @@ def score_responses(responses):
         flags.append(f'有效样本不足（{valid_n} 题），建议重测')
 
     # 特征计数：每道有效题贡献「选中卡含 f」与「未选中卡含 f」；权重用差向量回归做共现校正。
+    # 卡上文本可能是任一变体——映射按 key 池化，与种子/变体选择无关。
     wins = {f['key']: 0 for f in FEATURES}
     present = {f['key']: 0 for f in FEATURES}
-    feature_keys = {f['phrase']: f['key'] for f in FEATURES}
+    feature_keys = {text: f['key'] for text, f in PHRASE_TO_FEATURE.items()}
     diff_rows = []
     for r in valid:
         chosen_card = r['trial'][r['chosen']]

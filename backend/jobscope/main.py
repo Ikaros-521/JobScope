@@ -1673,9 +1673,9 @@ def create_app(data_dir=None):
     # ── 反向JD测评（2026-11-22）：真实JD片段二选一 → 隐性筛选条件报告。纯规则，无 LLM。 ──
 
     @app.get('/api/jd-assessment/trials')
-    def jd_assessment_trials():
+    def jd_assessment_trials(seed: int | None = None):
         from .jd_assessment import trial_list
-        return trial_list()
+        return trial_list(seed)
 
     @app.get('/api/jd-assessment')
     def list_jd_assessments():
@@ -1686,10 +1686,10 @@ def create_app(data_dir=None):
         from .jd_assessment import score_responses
         responses = [item.model_dump() for item in data.responses]
         try:
-            report = score_responses(responses)
+            report = score_responses(responses, data.seed)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
-        return repo.save_jd_assessment({'responses': responses, 'report': report})
+        return repo.save_jd_assessment({'responses': responses, 'report': report, 'seed': data.seed})
 
     # ── 生存跑道（2026-11-22 P2）：月支出/存款/社保/失业金 → 决策参考。 ──
     # 隐私硬底线：只存本机单行表、绝不进任何模型素材路径；跨页只出推导值。

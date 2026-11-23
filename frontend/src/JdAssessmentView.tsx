@@ -12,6 +12,8 @@ import { Button } from './ui'
 // 报告版面（2026-11-22 用户反馈重做）：借鉴测评报告三栏式——左卡六维滑杆
 // （彩色轨道+游标+两极标注），中列回避清单（! 图标）、右卡优先清单（✓ 图标），
 // 底部 12 条片段两列明细。
+// 表层多样性（2026-11-23）：每条特征 3 变体轮换 + 填充 16 条 + 会话种子随机卷面，
+// 消除「整卷都是同样 12 句话」的既视感；计分按键池化，统计底座不变。
 const VERDICT_LABELS: Record<string, string> = {
   strong_like: '明显偏好', like: '偏好', neutral: '中性',
   avoid: '回避', strong_avoid: '明显回避', uncertain: '样本不足',
@@ -40,10 +42,13 @@ export function JdAssessmentView() {
   // 误触后回改不会被 800ms 质检闸门误杀。
   const [answers, setAnswers] = useState<(JdAnswer | null)[]>([])
   const trialShownAt = useRef(0)
+  // 会话种子：开卷时随机生成，交卷回传同值（服务端靠它复现锚点配对）；重测换种子 = 换一张卷。
+  const seedRef = useRef(-1)
 
   const load = useCallback(async () => {
     try {
-      const [trialData, history] = await Promise.all([getJdAssessmentTrials(), getJdAssessments()])
+      if (seedRef.current < 0) seedRef.current = Math.floor(Math.random() * 2147483647)
+      const [trialData, history] = await Promise.all([getJdAssessmentTrials(seedRef.current), getJdAssessments()])
       setTrials(trialData.trials)
       setLatest(history.assessments[0] || null)
       setPhase(history.assessments[0] ? 'report' : 'intro')
@@ -78,7 +83,7 @@ export function JdAssessmentView() {
   function submit() {
     if (phase !== 'test' || !allDone) return
     setPhase('submitting')
-    submitJdAssessment(answers.filter(Boolean) as JdAnswer[])
+    submitJdAssessment(answers.filter(Boolean) as JdAnswer[], seedRef.current)
       .then(item => { setLatest(item); setPhase('report'); toast('测评完成，报告已保存在本机', 'notice') })
       .catch((err: Error) => { toast(err.message, 'error'); setPhase('test') })
   }
@@ -99,7 +104,12 @@ export function JdAssessmentView() {
   }
   function retake() {
     if (!window.confirm('重新测一次？新报告完成后会取代当前展示（历史仍保留在数据库）。')) return
-    startTest()
+    // 换种子换卷：新题序 + 新变体 + 新填充，重测不是重做同一张卷。
+    seedRef.current = Math.floor(Math.random() * 2147483647)
+    setPhase('loading')
+    getJdAssessmentTrials(seedRef.current)
+      .then(data => { setTrials(data.trials); startTest() })
+      .catch((err: Error) => { toast(err.message, 'error'); setPhase('report') })
   }
 
   if (phase === 'loading') return null

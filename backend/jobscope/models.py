@@ -396,8 +396,10 @@ class JdAssessmentResponse(RequestModel):
 
 
 class JdAssessmentInput(RequestModel):
-    """反向JD测评提交：全量作答一次落库，服务端确定性计分并生成报告（无 LLM）。"""
+    """反向JD测评提交：全量作答一次落库，服务端确定性计分并生成报告（无 LLM）。
+    seed 是取题时的会话种子（决定题序/变体/锚点配对），须与 GET trials 一致；省略走默认卷。"""
     responses: list[JdAssessmentResponse] = Field(min_length=1, max_length=120)
+    seed: int | None = Field(default=None, ge=0, le=2147483647)
 
 
 class ManualDescriptionInput(RequestModel):
