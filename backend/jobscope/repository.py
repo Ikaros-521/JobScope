@@ -1154,7 +1154,7 @@ class Repository:
             items.append(item)
         return items
 
-    # ── 反向JD测评（2026-11-22）：48 题作答 + 确定性报告，只留最近 5 份供回看。 ──
+    # ── 反向JD测评（2026-11-22）：全卷作答 + 确定性报告（payload 不限定题型版本），只留最近 5 份供回看。 ──
 
     def save_jd_assessment(self, payload):
         """每次完整作答落一份版本；payload = {responses, report}，报告在提交时确定性算好。"""

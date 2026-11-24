@@ -389,9 +389,11 @@ class RunwayInput(RequestModel):
 
 
 class JdAssessmentResponse(RequestModel):
-    """反向JD测评单题作答：trial_id 对应题库序列，rt_ms 反应时（过快判无效，进质检）。"""
+    """反向JD测评单题作答：trial_id 对应题库序列；best / worst 是该题 items 里的下标
+    （最想投 / 最不想投，不能相同——相同由计分入口拒绝）；rt_ms 反应时（过快判无效，进质检）。"""
     trial_id: str = Field(min_length=1, max_length=10)
-    choice: Literal['a', 'b']
+    best: int = Field(ge=0, le=3)
+    worst: int = Field(ge=0, le=3)
     rt_ms: int = Field(default=0, ge=0, le=600000)
 
 

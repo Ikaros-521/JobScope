@@ -2549,7 +2549,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .runway-link { margin: 8px 0 0; }
 @media (max-width: 1000px) { .runway-form { grid-template-columns: 1fr; } .runway-figures { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); } }
 
-/* ── 反向JD测评（2026-11-22）：48 组 JD 片段二选一 → 隐性筛选条件报告。 ── */
+/* ── 反向JD测评（2026-11-22；2026-11-24 改 best-worst 选题）：每题 4 段 JD 片段点「最想投」「最不想投」 → 隐性筛选条件报告。 ── */
 .jd-wrap { max-width: 1080px; }
 .jd-panel { margin-bottom: 20px; }
 .jd-intro-list { margin: 0 0 16px; padding-left: 20px; color: var(--muted); font-size: 13px; line-height: 2; }
@@ -2562,16 +2562,20 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .jd-progress i { display: block; height: 100%; background: var(--green); transition: width 120ms; }
 .jd-hint { color: var(--muted); font-size: 12px; }
 .jd-hint-center { text-align: center; margin: 12px 0 0; }
-.jd-stage { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-.jd-card { display: block; width: 100%; text-align: left; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px 12px; cursor: pointer; transition: border-color 120ms, background 120ms, box-shadow 120ms, transform 120ms; }
-.jd-card:hover:not(:disabled), .jd-card:focus-visible { border-color: var(--green); outline: none; box-shadow: 0 3px 10px rgba(23, 62, 53, .12); transform: translateY(-1px); }
-.jd-card:disabled { opacity: .6; cursor: default; }
-.jd-card-side { display: inline-block; font-size: 12px; font-weight: 700; color: #fff; border-radius: 5px; padding: 2px 9px; margin-bottom: 10px; letter-spacing: .04em; }
-.jd-side-a { background: #3aa8a0; }
-.jd-side-b { background: #8b6fc0; }
-.jd-card ul { margin: 0; padding: 0; list-style: none; }
-.jd-card li { position: relative; padding: 5px 0 5px 14px; font-size: 13px; line-height: 1.5; }
-.jd-card li::before { content: ''; position: absolute; left: 2px; top: 12px; width: 5px; height: 5px; border-radius: 50%; background: var(--muted); opacity: .55; }
+/* 作答区：每题 4 条片段，点两下（先最想投、再最不想投）。按钮是行向 flex，
+   显式压掉全局 button 的 justify-content:center（列内容靠 flex:1 撑满）。 */
+.jd-ask { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+.jd-items { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.jd-item { display: flex; align-items: center; justify-content: flex-start; gap: 12px; width: 100%; text-align: left; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 11px 14px; cursor: pointer; transition: border-color 120ms, background 120ms, box-shadow 120ms; }
+.jd-item:hover:not(:disabled), .jd-item:focus-visible { border-color: var(--green); outline: none; box-shadow: 0 3px 10px rgba(23, 62, 53, .12); }
+.jd-item:disabled { cursor: default; }
+.jd-item-key { flex: none; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--line); color: var(--muted); font-size: 12px; font-weight: 700; font-style: normal; }
+.jd-item span { flex: 1; min-width: 0; font-size: 13px; line-height: 1.6; }
+.jd-item-tag { flex: none; font-size: 12px; font-weight: 600; font-style: normal; border-radius: 5px; padding: 2px 9px; color: #fff; background: var(--green); }
+.jd-item-best { border-color: var(--green); background: var(--selected); }
+.jd-item-best .jd-item-key { background: var(--green); color: #fff; }
+.jd-item-worst { border-color: #e8a33d; background: #faf7ef; }
+.jd-item-worst .jd-item-key, .jd-item-worst .jd-item-tag { background: #e8a33d; color: #fff; }
 /* 报告：质检条 */
 .jd-quality { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; background: var(--selected); border-left: 3px solid var(--green); border-radius: 8px; padding: 10px 14px; font-size: 12px; color: var(--muted); margin-bottom: 16px; }
 .jd-quality b { color: var(--green); font-size: 13px; }
@@ -2618,16 +2622,14 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .jd-rates i { font-style: normal; opacity: .6; padding: 0 2px; }
 .jd-note { margin: 14px 0 0; font-size: 12px; color: var(--muted); line-height: 1.7; }
 @media (max-width: 900px) { .jd-report-grid { grid-template-columns: 1fr; } }
-@media (max-width: 760px) { .jd-stage { grid-template-columns: 1fr; } .jd-detail-grid { grid-template-columns: 1fr; } .jd-detail-row:nth-child(2) { border-top: 1px solid var(--line); } .jd-rates { display: none; } }
+@media (max-width: 760px) { .jd-detail-grid { grid-template-columns: 1fr; } .jd-detail-row:nth-child(2) { border-top: 1px solid var(--line); } .jd-rates { display: none; } .jd-item-tag { display: none; } }
 .runway-guide { margin: 2px 0 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
 .runway-guide summary { padding: 9px 12px; cursor: pointer; font-size: 12.5px; color: var(--muted); user-select: none; }
 .runway-guide summary:hover { color: var(--ink, #222); }
 .runway-guide-body { padding: 2px 14px 12px; display: flex; flex-direction: column; gap: 6px; }
 .runway-guide-body h4 { margin: 4px 0 0; font-size: 12.5px; }
 .runway-guide-body ul, .runway-guide-body ol { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.75; color: var(--ink, #222); display: flex; flex-direction: column; gap: 2px; }
-/* 返回修改：已选卡高亮 + 底部导航条 */
-.jd-card-picked { border-color: var(--green); background: var(--selected); }
-.jd-picked-tag { margin-left: 7px; background: rgba(255, 255, 255, .3); border-radius: 4px; padding: 1px 7px; font-weight: 500; font-style: normal; }
+/* 返回修改：底部导航条（已选高亮见 .jd-item-best / .jd-item-worst） */
 .jd-nav-row { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
 .jd-nav-note { font-size: 12px; color: var(--muted); }
 

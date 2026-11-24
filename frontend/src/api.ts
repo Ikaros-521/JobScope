@@ -85,31 +85,33 @@ export function getRunway() { return api<RunwayPayload>('/runway') }
 export function saveRunway(body: { monthly_expense?: number | null; savings?: number | null; social_security_last_month?: string; unemployment_claim?: RunwayClaim; notes?: string }) {
   return api<RunwayPayload>('/runway', { method: 'PUT', body: JSON.stringify(body) })
 }
-// 反向JD测评（2026-11-22）：真实JD片段二选一 → 隐性筛选条件报告。纯规则计分，无 LLM。
-// verdict: strong_like/like/neutral/avoid/strong_avoid/uncertain；rate_* 为选中率（0–1）。
-export type JdTrial = { id: string; a: string[]; b: string[] }
+// 反向JD测评（2026-11-22 首版；2026-11-24 题型改 best-worst 选题）：每题 4 段真实 JD 片段，点出「最想投」
+// 「最不想投」各一条 → 隐性筛选条件报告。纯规则计分，无 LLM。
+// verdict: strong_like/like/neutral/avoid/strong_avoid/uncertain；score = 最想投率 − 最不想投率（-1–1）。
+export type JdTrial = { id: string; items: string[] }
+export type JdAnswer = { trial_id: string; best: number; worst: number; rt_ms: number }
 export type JdAssessmentFeature = {
   key: string; dim: string; dim_label: string; phrase: string; screen: string
-  n_present: number; rate_present: number; rate_absent: number
-  amce: number; se: number; weight: number
+  n_present: number; best: number; worst: number; best_rate: number; worst_rate: number
+  score: number; se: number
   verdict: 'strong_like' | 'like' | 'neutral' | 'avoid' | 'strong_avoid' | 'uncertain'
   low_confidence: boolean
 }
 export type JdAssessmentQuality = {
   attention_pass: boolean; anchor_agreement: number; anchors: number
-  rt_excluded: number; valid_trials: number; flags: string[]; grade: 'ok' | 'weak'
+  rt_excluded: number; valid_trials: number; total_trials: number; flags: string[]; grade: 'ok' | 'weak'
 }
 export type JdAssessmentReport = {
   quality: JdAssessmentQuality
   features: JdAssessmentFeature[]
-  dimensions: { key: string; label: string; onet: string; weight: number; amce: number; verdict: string }[]
+  dimensions: { key: string; label: string; onet: string; score: number; verdict: string }[]
   actions: { prefer: string[]; avoid: string[]; prefer_line: string; avoid_line: string }
   note: string
 }
-export type JdAssessmentItem = { id: string; payload: { responses: { trial_id: string; choice: 'a' | 'b'; rt_ms: number }[]; report: JdAssessmentReport }; created_at: string }
+export type JdAssessmentItem = { id: string; payload: { responses: JdAnswer[]; report: JdAssessmentReport }; created_at: string }
 export function getJdAssessmentTrials(seed?: number) { return api<{ trials: JdTrial[] }>(`/jd-assessment/trials${seed != null ? `?seed=${seed}` : ''}`) }
 export function getJdAssessments() { return api<{ assessments: JdAssessmentItem[] }>('/jd-assessment') }
-export function submitJdAssessment(responses: { trial_id: string; choice: 'a' | 'b'; rt_ms: number }[], seed?: number) {
+export function submitJdAssessment(responses: JdAnswer[], seed?: number) {
   return post<JdAssessmentItem>('/jd-assessment', { responses, seed })
 }
 // 触达话术（2026-11-22）：生成即落版本，A/B 靠 used_at 使用标记；平台发送由用户在招聘站手动完成。

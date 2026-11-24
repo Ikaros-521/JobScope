@@ -1672,7 +1672,8 @@ def create_app(data_dir=None):
     def list_gap_narratives():
         return {'narratives': repo.gap_narratives()}
 
-    # ── 反向JD测评（2026-11-22）：真实JD片段二选一 → 隐性筛选条件报告。纯规则，无 LLM。 ──
+    # ── 反向JD测评（2026-11-22；2026-11-24 改 best-worst 选题）：每题 4 段真实 JD 片段点「最想投」「最不想投」
+    # → 隐性筛选条件报告。纯规则，无 LLM。 ──
 
     @app.get('/api/jd-assessment/trials')
     def jd_assessment_trials(seed: int | None = None):

@@ -1,40 +1,46 @@
-"""反向JD测评（2026-11-22 首版，2026-11-23 扩池）：真实JD片段二选一 → 隐性筛选条件报告。
-纯规则，无 LLM、确定性、可测。
+"""反向JD测评（2026-11-22 首版，2026-11-24 题型改 best-worst 选题）：真实 JD 片段里点出
+「最想投」和「最不想投」各一条 → 隐性筛选条件报告。纯规则，无 LLM、确定性、可测。
 
-形态对标强制选择（forced-choice）实验范式：每题两张由 JD 原文式片段拼成的岗位卡，
-强制选一张更愿意投的。维度词表取 O*NET Work Values 六维（Achievement / Independence /
-Recognition / Relationships / Support / Working Conditions）的中文转译，每维 3 条特征片段
-（2026-11-23 由 2 扩到 3：12 条构念撑 48 题时相邻题平均共享 3/6 构念，做题像重复；
-18 条压到 2/6，同时每条文本配 3 条同义变体）。构念池取 18 而非更大，是统计力与
-重复感的折中：48 对 × 3+3 卡让每特征恰 16 次观测，判定阈值不用大幅放宽。
-设计目标是把「MBTI 式的巴纳姆标签」换成「具体到片段的反应率与筛选建议」：
-报告输出「含「独立负责」的片段你选中率 82%，含「频繁跨部门」的仅 23%」，而非人格标签。
+为什么换题型（2026-11-24 诊断与仿真，下面是旧题型的实测数字）：旧版是「两张
+各 3 条片段的岗位卡二选一」——每题 6 条构念、18 条构念各出现 12 次（每 3 题一次），且每次
+观测都被同卡另 5 条稀释：重复感强（每题平均 5.5 道题有卡与其 2/3 片段相同）而精度低
+（纯中性人格误报实测 13.6% / 3.0%，真效应 1.2–1.8 的偏好检出率约 25%）。best-worst 选题
+（MaxDiff）每题只放 4 条、点「最想投」「最不想投」各一，每次出场都是 4 条里的直接比较，
+不再稀释：同样 40 题下每构念出场 8 次，纯中性误报 7.7% / 0.4%、检出率 50% / 76% / 95%
+（真效应 1.2–1.8 / 1.8–2.5 / ≥2.5），构念密度从 1/3 降到 2/9，且没有孪生题。
 
-配对设计（质量闸门，tests/test_jd_assessment.py 逐项断言）：
-1. 平衡：每条特征恰出现 12 次、左右卡位各 6（特征固定一侧）——AMCE 不被位置/频次混淆；
-2. 洁净：同卡同维最多一条、AB 卡不共享特征或填充片段；同卡共现均匀
-   （216 槽 / 135 跨维对：102 对×2 + 12 对×1 + 21 对×0，max=2，均值 1.6）。
-   跨卡共现不设硬平衡（扩池后组合不可行），由差向量回归显式建模校正；
-3. 质检：3 道前后重复锚点题（测一致性）+ 1 道显性占优题（测注意力）+ 反应时下限。
+题型对标 best-worst scaling 的 object case：与其让用户给每条片段打分（人人都会说「重要」），
+不如强迫在 4 条里挑出相对最想要和最不想要的，得到可比较的相对倾向。
+维度词表取 O*NET Work Values 六维（Achievement / Independence / Recognition / Relationships /
+Support / Working Conditions）的中文转译，每维 3 条构念，每条 3 条同义变体。
+报告输出「含「独立负责」的片段 8 次出现里你 6 次选为最想投」，而非人格标签。
 
-题量（2026-11-23 用户反馈「题目不需要这么多」）：48 对 → 36 对，全卷 52 → 40 题
-（36 配对 + 4 道质检）。观测 16→12 次/特征，但岭回归随试次减少自动加强收缩，
-噪声分布几乎不变（中性 |w| p90 1.16 vs 1.15、p99 1.88 vs 1.82），判定阈值 1.2/1.8
-经仿真验证可原样保留；代价是 MIN_FEATURE_N=10 只容忍 2 道 RT 剔除。
+区组设计（质量闸门，tests/test_jd_assessment.py 逐项断言）：
+1. 平衡：每条构念恰出场 8 次；任意两条构念同组 1–2 次（216 个配对槽 / 153 个构念对 =
+   90 对×1 + 63 对×2，零共现对为 0）；同块同维最多 2 条，18 个同维对各同组 1–2 次（维内
+   对照）；没有两道题共享 ≥3 条（无孪生题）。设计是 0-1 整数规划的精确解（output/gen_blocks_36.py）。
+2. 间隔：题序由间隔感知排序决定（相邻题基本不共享构念、同一句原文从不相邻），不是裸洗牌。
+3. 质检：3 道重复校验题（原题隔 ≥10 题原样重现，测一致性）+ 1 道注意力题（一好一坏两条
+   显性片段 + 2 条中性片段，测注意力）+ 反应时下限。质检题不进计分。
+题序 / 块内条目顺序 / 同义变体由会话种子决定——计分按键池化，重测必换卷。
 
-表层多样性（2026-11-23）：每条特征 3 条同义变体轮换、填充 24 条，题序/变体/填充由会话种子
-决定——计分按键池化，变体只换皮不换骨；同一条文本整卷曝光 ~4 次，重测必换卷。
+题量为什么是 36 而不是 27：每构念 6 次出场（27 题）时计分只有 7 个取值，判定只能在
+「误报 14.8%、检出 52% / 77% / 94%」与「误报 3.9%、检出 27% / 52% / 80%」之间二选一；
+8 次出场才能同时压住误报、保住灵敏度（output/compare_27_vs_36.py）。重复感只取决于构念
+密度（每题 4 条 / 18 条）和孪生题，两版相同，所以多出的 9 题只换来精度。
 
-计分：选中率差（AMCE = 含该片段的卡被选比例 − 不含的被选比例）为主结论，
-条件逻辑斯蒂回归（岭正则，纯 Python）权重仅作共现校正的排序参考。
+计分：有界计分 = 被选「最想投」的比例 − 被选「最不想投」的比例，取值 [-1, 1]。
+不用 logit 权重是因为出场次数少时权重的零分布重尾（近可分时发散），阈值没法稳定校准；
+有界计分无需迭代、可解释，仿真里与岭回归 logit 的秩相关相当（0.81 vs 0.82）。
+判定阈值由纯中性人格仿真校准（output/calibrate_bws_rules.py），见 SCORE_LIKE / SCORE_STRONG。
 """
 import math
 import random as _random
 
-# ── 词表：6 维 × 4 特征。phrase 是报告引用的正典表述，variants 是出题用的同义变体
+# ── 词表：6 维 × 3 构念。phrase 是报告引用的正典表述，variants 是出题用的同义变体
 #（同一构念、JD 原文式中性陈述，只换措辞不换强度——计分按 key 池化全部变体）。
 # screen 是用户回头筛岗位时的关键词形态。片段本身不带褒贬引导——报告反映用户自己的反应。
-# 顺序即设计下标（维内分组连续），改顺序或增删必须重新生成 _DESIGNED_TRIALS。 ──
+# 顺序即设计下标（维内分组连续），改顺序或增删必须重新生成 _DESIGNED_BLOCKS。 ──
 
 DIMENSIONS = [
     dict(key='achievement', label='成就攻坚', onet='Achievement'),
@@ -84,129 +90,151 @@ FEATURES = [
          variants=['驻场办公为主，地点随项目走', '长期在客户现场工作，随项目搬迁']),
 ]
 
-FILLERS = [
-    '负责业务模块的日常开发与维护',
-    '参与需求评审，输出技术方案',
-    '配合测试完成版本发布',
-    '编写和维护项目技术文档',
-    '优化既有功能的性能与稳定性',
-    '跟进线上问题并修复',
-    '定期同步开发进度',
-    '完成日常迭代任务',
-    '参与技术方案讨论，推动方案落地',
-    '编写单元测试与集成测试',
-    '与产品经理对齐需求细节',
-    '维护服务可用性，响应线上告警',
-    '梳理接口文档与调用关系',
-    '在既有代码基础上做增量开发',
-    '协助定位排查线上环境问题',
-    '参加评审会，给出技术意见',
-    '参加需求澄清会议并确认排期',
-    '编写接口联调文档并与前端对齐',
-    '排查并修复偶发的超时问题',
-    '根据反馈调整既有模块的交互细节',
-    '参与周会同步本周进展与风险',
-    '完善监控告警与值班响应流程',
-    '梳理上线步骤并执行发布检查单',
-    '整理故障复盘结论并落实改进项',
-]
-
-# 注意力校验题：A 卡在常识上严格占优（休息/透明/流程），选 B 视为未认真作答。
-# 片段全部专用，不进特征统计池，避免污染 AMCE。
+# 注意力校验题：一好一坏两条显性片段（常识上严格分高低）+ 两条中性片段凑成 4 条。
+# 认真作答应把第 1 条选为最想投、第 2 条选为最不想投。片段全部专用，不进特征统计池；
+# 会话种子会打乱这 4 条的呈现顺序，判定按文本对回，不受位置习惯影响。
 ATTENTION_TRIAL = dict(
     id='AT1',
-    a=['双休不加班，弹性打卡', '尊重生活边界，不鼓励无效加班', '按法定节假日放假', '需求稳定，不频繁变更'],
-    b=['大小周，工作日晚间常态加班', '调薪机制不透明', '流程混乱，需求频繁变更', '通勤远且需常驻现场'],
+    items=['双休不加班，弹性打卡', '大小周，工作晚间常态加班', '负责业务模块的日常开发与维护',
+           '编写和维护项目技术文档'],
 )
+ATTENTION_BEST, ATTENTION_WORST = 0, 1     # ATTENTION_TRIAL['items'] 里的下标
 
-FEATURES_PER_CARD = 3          # 每卡 3 条特征 + 1 条填充片段 = 4 条
-N_PAIRS = 36                   # 36 组唯一配对 → 每特征 6 左 + 6 右 = 12 次
+BLOCK_SIZE = 4                  # 每题 4 条构念片段
+N_BLOCKS = 36                   # 36 道正式题 → 每构念出场 8 次
 DESIGN_SEED = 20261122
 
-# 40 题序列：36 唯一 + 1 注意力 + 3 锚点。锚点是唯一配对的精确重复（间隔 ≥12 题），
-# 用来测前后一致性——孤立的选择是噪声，重复题上的稳定选择才是信号。
-ANCHOR_SOURCES = (4, 13, 22)   # 唯一序列中的下标（即第 5 / 14 / 23 题）
+# 40 题序列 = 36 正式 + 1 注意力 + 3 重复校验。重复校验题是正式题的精确复制，分布在序列中后段、
+# 与原题隔 ≥10 题，用来测前后一致性——孤立的选择是噪声，重复题上的稳定选择才是信号。
+# ANCHOR_SOURCES 是排序后正式题序列里的下标；它们只进质检、不进计分（同一题数两遍会虚增样本）。
+ANCHOR_SOURCES = (3, 12, 20)
+_ORDER_WEIGHTS = (20.0, 3.0, 1.0, 0.5, 0.25)   # 隔 1..5 题的重复代价权重
 
 
-def _edge(i, j):
-    return (i, j) if i < j else (j, i)
-
-
-# 成对平衡设计（2026-11-23 扩池+减量版固化）：36 组试次，每组 [A 卡特征下标, B 卡特征下标]。
-# 生成器：维三元组多重集构造（每维恰 36 槽）→ 分侧局部搜索（每特征 A 卡恰 6，特征固定一侧）
-# → AB 不相交贪心配对 → 维内换位模拟退火抛光共现均匀度（脚本 output/gen_design_36.py）。
-# 已验证的不变量：
-#   1. 频次：任一特征恰出现 12 次，其中左卡恰 6 次（精确）；
-#   2. 洁净：每卡 3 特征分属 3 个不同维度，AB 卡特征不相交；
-#   3. 同卡共现：216 槽摊到 135 个跨维特征对——102 对×2 + 12 对×1 + 21 对×0，max=2，均值 1.6。
-# 跨卡共现不设硬平衡（扩池后组合不可行），其混淆由差向量回归显式建模校正。
+# best-worst 区组设计（2026-11-24 固化）：36 题，每题 [4 条构念下标]。由 0-1 整数规划求得
+# （候选块 = 全部 4 元子集去掉同维 3 条的；约束 = 每构念恰 8 次、每对同组 1–2 次、共 36 块、
+# 孪生块对互斥，脚本 output/gen_blocks_36.py，HiGHS 求解）。已验证的不变量：
+#   1. 频次：任一构念恰出场 8 次；
+#   2. 共现：任意两条构念同组 1–2 次——90 对×1 + 63 对×2，零共现对为 0；
+#      同维对（18 个）8 对×1 + 10 对×2，同块同维最多 2 条；
+#   3. 无孪生题：没有两道题共享 ≥3 条构念。
 # 改动 FEATURES 数量或顺序会使下标失效，必须重新生成此常量。
-_DESIGNED_TRIALS = [
-    [[11, 12, 15], [0, 3, 7]],
-    [[2, 3, 17], [6, 11, 13]],
-    [[2, 3, 8], [0, 5, 17]],
-    [[1, 5, 17], [8, 12, 15]],
-    [[2, 7, 15], [3, 10, 16]],
-    [[7, 9, 17], [11, 13, 16]],
-    [[0, 9, 12], [1, 6, 15]],
-    [[0, 3, 6], [5, 9, 12]],
-    [[6, 10, 15], [0, 4, 11]],
-    [[5, 13, 16], [1, 3, 14]],
-    [[9, 14, 15], [1, 3, 13]],
-    [[10, 13, 17], [2, 6, 12]],
-    [[4, 8, 12], [2, 10, 17]],
-    [[1, 11, 15], [5, 8, 10]],
-    [[0, 8, 10], [11, 12, 17]],
-    [[6, 10, 13], [4, 9, 16]],
-    [[0, 5, 6], [2, 8, 14]],
-    [[4, 14, 16], [3, 7, 11]],
-    [[0, 12, 16], [3, 6, 14]],
-    [[2, 7, 16], [1, 5, 8]],
-    [[11, 14, 16], [0, 13, 17]],
-    [[3, 8, 9], [2, 10, 16]],
-    [[2, 6, 11], [4, 10, 15]],
-    [[3, 9, 13], [5, 7, 15]],
-    [[4, 14, 17], [7, 9, 16]],
-    [[5, 6, 16], [2, 14, 15]],
-    [[1, 7, 14], [2, 4, 11]],
-    [[4, 8, 15], [0, 7, 13]],
-    [[1, 4, 10], [7, 14, 17]],
-    [[5, 10, 12], [0, 8, 14]],
-    [[1, 7, 11], [5, 9, 15]],
-    [[5, 7, 13], [1, 10, 12]],
-    [[0, 9, 14], [1, 4, 6]],
-    [[2, 4, 12], [8, 9, 13]],
-    [[3, 11, 17], [6, 12, 16]],
-    [[1, 8, 13], [4, 9, 17]],
+_DESIGNED_BLOCKS = [
+    [0, 1, 3, 15],
+    [0, 1, 7, 10],
+    [0, 2, 5, 13],
+    [0, 2, 9, 16],
+    [0, 3, 8, 12],
+    [0, 4, 7, 17],
+    [0, 5, 11, 14],
+    [0, 6, 10, 11],
+    [1, 2, 4, 11],
+    [1, 2, 6, 15],
+    [1, 5, 9, 17],
+    [1, 6, 8, 13],
+    [1, 11, 12, 16],
+    [1, 13, 14, 16],
+    [2, 3, 10, 14],
+    [2, 7, 8, 14],
+    [2, 7, 15, 16],
+    [2, 10, 12, 17],
+    [3, 4, 11, 13],
+    [3, 4, 15, 17],
+    [3, 5, 12, 16],
+    [3, 6, 7, 16],
+    [3, 9, 10, 13],
+    [4, 5, 7, 8],
+    [4, 6, 14, 15],
+    [4, 8, 10, 16],
+    [4, 9, 12, 14],
+    [5, 6, 8, 9],
+    [5, 6, 12, 13],
+    [5, 10, 11, 15],
+    [6, 12, 14, 17],
+    [7, 9, 11, 13],
+    [7, 9, 12, 15],
+    [8, 9, 11, 17],
+    [8, 13, 15, 17],
+    [10, 14, 16, 17],
 ]
 
 
-def _repair_fillers(filler_pairs):
-    """AB 卡不共用同一填充片段（两卡出现一模一样的条目会显得出题马虎）：与一张两侧
-    都没有该片段的题对换。填充片段不进计分，这条只关乎观感。"""
-    for _ in range(200):
-        pi = next((i for i, (x, y) in enumerate(filler_pairs) if x == y), None)
-        if pi is None:
-            return
-        a, b = filler_pairs[pi]
-        for pj, (a2, b2) in enumerate(filler_pairs):
-            if pj == pi or a in (a2, b2):
-                continue
-            donor, slot = (a2, 0) if a2 != b else (b2, 1)
-            filler_pairs[pi][0] = donor
-            filler_pairs[pj][slot] = a
-            break
+def _greedy_order(cost, rng):
+    """最近邻贪心初始解：每一步接上与上一题重复代价最低的未排题（代价并列时随机）。"""
+    current = rng.randrange(len(cost))
+    order, left = [current], set(range(len(cost))) - {current}
+    while left:
+        current = min(left, key=lambda j: (cost[current][j], rng.random()))
+        order.append(current)
+        left.discard(current)
+    return order
+
+
+def _spaced_order(cost, rng, iters=5000):
+    """间隔感知题序：模拟退火最小化 Σ 隔 d 题的重复代价（d=1..5，权重递减）。
+    cost[i][j] = 两题共享构念数 + 4×同一句原文数。旧版这里是裸 shuffle，实测 35 对相邻题里
+    15 对含同一句原文、同一构念最长连出 5 题。
+    移动用「插入」（抽出第 x 题插到第 y 位，60%）与「对换」（40%）两种——只做对换时相邻题仍会
+    残留共享。权重是权衡出来的（output/tune_order_weights.py）：隔 1 题权重 10 时优化器宁可让
+    相邻题共享构念（代价 10）也要避开「隔一题重现同一句」（(1+4)×3=15）；提到 20 后相邻题
+    共享构念降到 ~0.06 条/卷、同一句原文从不相邻。剩余重复在「隔 1–2 题再出现」，那是构念
+    密度的数学下限（每条构念 8 次出场摊在 36 题，总有一半的重现间隔 ≤3），消不掉。
+    单卷构建约 300ms，按种子缓存后只付一次。"""
+    n = len(cost)
+    weights = _ORDER_WEIGHTS
+    span = len(weights)
+
+    def edges_at(p):
+        for d, w in enumerate(weights, start=1):
+            if p - d >= 0:
+                yield (p, d, w)
+            if p + d < n:
+                yield (p + d, d, w)
+
+    order = _greedy_order(cost, rng)
+
+    def energy(edges):
+        return sum(w * cost[order[k - d]][order[k]] for k, d, w in edges)
+
+    cur = best = energy([e for k in range(n) for e in edges_at(k) if e[0] == k])
+    best_order = list(order)
+    t0, t1 = 5.0, 0.05
+    for it in range(iters):
+        temp = t0 * (t1 / t0) ** (it / iters)
+        x, y = rng.sample(range(n), 2)
+        if rng.random() < 0.6:
+            lo, hi = min(x, y), max(x, y)
+            touched = {e for p in range(max(0, lo - span), min(n, hi + span + 1)) for e in edges_at(p)}
+            before = energy(touched)
+            item = order.pop(x)
+            order.insert(y, item)
+            new = cur - before + energy(touched)
+            take = new <= cur or rng.random() < math.exp(-(new - cur) / temp)
+            if not take:
+                order.pop(y)
+                order.insert(x, item)
         else:
-            return
+            touched = {e for p in (x, y) for e in edges_at(p)}
+            before = energy(touched)
+            order[x], order[y] = order[y], order[x]
+            new = cur - before + energy(touched)
+            take = new <= cur or rng.random() < math.exp(-(new - cur) / temp)
+            if not take:
+                order[x], order[y] = order[y], order[x]
+        if take:
+            cur = new
+            if new < best:
+                best, best_order = new, list(order)
+    return best_order
 
 
 def _build_trials(seed):
-    """seed 决定表层（题序/变体/填充/卡内条目序），配对骨架 _DESIGNED_TRIALS 不变——
-    所以任何种子下按 key 计算的设计不变量（平衡/洁净/锚点）都与默认卷完全一致。"""
+    """seed 决定表层（题序/变体/块内条目顺序/注意力题顺序），设计骨架 _DESIGNED_BLOCKS 不变——
+    所以任何种子下按键计算的设计不变量（平衡/共现/锚点）都与默认卷完全一致。"""
     rng = _random.Random(seed)
     texts_of = {f['key']: [f['phrase'], *f['variants']] for f in FEATURES}
-    # 每条特征一个轮换牌组：洗牌后逐次取用、用尽重洗。3 条变体在整卷出现次数天然均衡（±1），
-    # 同一文本的两次出现被强制隔开至少一轮（≈3 次该特征的出现）——比独立随机抽样更抗扎堆。
+    # 每条构念一个轮换牌组：洗牌后逐次取用、用尽重洗。8 次出场对 3 条变体 = 每句 2–3 次，
+    # 一轮（3 次出场）内同一句至多出现一次；跨轮可能挨着，交给后面的题序排序隔开。
     decks = {key: [] for key in texts_of}
 
     def _text_for(key):
@@ -215,31 +243,35 @@ def _build_trials(seed):
             rng.shuffle(decks[key])
         return decks[key].pop()
 
-    # 填充同理轮换：88 槽位对 16 条片段，每条约 5–6 次且不扎堆、AB 不重样。
-    filler_tokens = []
-    while len(filler_tokens) < N_PAIRS * 2:
-        batch = list(FILLERS)
-        rng.shuffle(batch)
-        filler_tokens.extend(batch)
-    filler_pairs = [[filler_tokens[i * 2], filler_tokens[i * 2 + 1]] for i in range(N_PAIRS)]
-    _repair_fillers(filler_pairs)
     key_of = [f['key'] for f in FEATURES]
-    trials = []
-    for index, ((a, b), (fa, fb)) in enumerate(zip(_DESIGNED_TRIALS, filler_pairs)):
-        card_a = [_text_for(key_of[k]) for k in a] + [fa]
-        card_b = [_text_for(key_of[k]) for k in b] + [fb]
-        rng.shuffle(card_a)
-        rng.shuffle(card_b)
-        trials.append(dict(id=f'T{index + 1:02d}', a=card_a, b=card_b))
-    rng.shuffle(trials)
-    # 锚点按「洗牌后的序列位置」复制，来源 id 必须记实际 id（id 是配对序号，与位置无关）。
-    anchor_of = {f'AC{i + 1}': trials[src]['id'] for i, src in enumerate(ANCHOR_SOURCES)}
+    blocks = []
+    for index, feats in enumerate(_DESIGNED_BLOCKS):
+        items = [_text_for(key_of[k]) for k in feats]
+        rng.shuffle(items)          # 块内位置随机化：位置习惯（总点第一条）不偏袒任何构念
+        blocks.append(dict(id=f'T{index + 1:02d}', items=items))
+
+    n = len(blocks)
+    cost = [[0.0] * n for _ in range(n)]
+    for i in range(n):
+        for j in range(i + 1, n):
+            shared = len(set(_DESIGNED_BLOCKS[i]) & set(_DESIGNED_BLOCKS[j]))
+            same_text = len(set(blocks[i]['items']) & set(blocks[j]['items']))
+            cost[i][j] = cost[j][i] = shared + 4.0 * same_text
+    order = _spaced_order(cost, rng)
+    blocks = [blocks[i] for i in order]
+
+    # 锚点按「排序后的序列位置」复制，来源 id 必须记实际 id（id 是设计序号，与位置无关）。
+    anchor_of = {f'AC{i + 1}': blocks[src]['id'] for i, src in enumerate(ANCHOR_SOURCES)}
+
     def _copy(i):
-        return dict(id=f'AC{i + 1}', a=list(trials[ANCHOR_SOURCES[i]]['a']), b=list(trials[ANCHOR_SOURCES[i]]['b']))
-    sequence = (trials[:24] + [ATTENTION_TRIAL] + trials[24:28]
-                + [_copy(0)] + trials[28:30]
-                + [_copy(1)] + trials[30:31]
-                + [_copy(2)] + trials[31:])
+        return dict(id=f'AC{i + 1}', items=list(blocks[ANCHOR_SOURCES[i]]['items']))
+
+    attention_items = list(ATTENTION_TRIAL['items'])
+    rng.shuffle(attention_items)
+    # 排布：u[:13] AC1 u[13:25] AT1 u[25:27] AC2 u[27:32] AC3 u[32:] → 锚点与原题相隔 10 / 17 / 14 题。
+    sequence = (blocks[:13] + [_copy(0)] + blocks[13:25]
+                + [dict(id=ATTENTION_TRIAL['id'], items=attention_items)]
+                + blocks[25:27] + [_copy(1)] + blocks[27:32] + [_copy(2)] + blocks[32:])
     return sequence, anchor_of
 
 
@@ -269,17 +301,19 @@ def anchor_of(seed=None):
     return _session(seed)[1]
 
 
-# ── 计分。RT_FLOOR 以下的作答视为没读题；锚点/注意力结果进质检不进结论。 ──
+# ── 计分。RT_FLOOR 以下的作答视为没读题；重复校验题/注意力题的结果进质检不进结论。 ──
 
 RT_FLOOR = 800
-MIN_FEATURE_N = 10          # 特征出现卡数低于此 → 该条低置信
-# 判定阈值作用于回归权重（共现校正后的净效应），不是原始选中率差——原始差会被
-# 「这张卡的其他片段恰好更强」拉偏，权重把共现结构显式建模掉了。阈值由噪声人格
-# 仿真校准：中性特征 |w| 的 p90≈1.16、p99≈1.88（36 对/12 观测；48 对/16 观测下
-# p90≈1.15、p99≈1.82——岭回归随试次减少自动加强收缩，噪声几乎不随题量变化），
-# 阈值取 p92/p99——误报约 8%/特征（旧 22 观测设计为 5%），换构念丰富度的精度税。
-WEIGHT_STRONG, WEIGHT_LIKE = 1.8, 1.2
-WEIGHT_ITERS, WEIGHT_RIDGE = 1500, 0.25
+MIN_FEATURE_N = 6            # 构念有效出场次数低于此（8 次里被剔除超过 2 次）→ 该条低置信
+MIN_VALID = 24               # 有效正式题少于 36 的 2/3 → 建议重测
+# 判定阈值作用于有界计分（最想投率 − 最不想投率），由纯中性人格仿真校准（毫无偏好、每题随机
+# 点两条：output/calibrate_bws_rules.py）。旧版二选一的阈值在纯中性人格下实测误报 13.6% / 3.0%
+# （注释自称 8% / 1%），所以这次按纯中性口径定，并且取能同时压住误报、保住灵敏度的题量：
+#   构念级：净差/出场 ≥ 1/2（8 次里差 4 次）→ 倾向，误报 7.7%，真效应 1.2–1.8 / 1.8–2.5 / ≥2.5
+#           的检出率 50% / 76% / 95%；≥ 3/4（差 6 次）→ 明显，误报 0.4%。
+#   维度级：3 条构念计分的均值，噪声只有单条的 1/√3，阈值相应收紧（均值 ≥ 1/3 倾向 1.9%、≥ 1/2 明显 0.02%）。
+SCORE_LIKE, SCORE_STRONG = 1 / 2, 3 / 4
+DIM_LIKE, DIM_STRONG = 0.33, 0.5
 
 PHRASE_TO_FEATURE = {text: f for f in FEATURES for text in (f['phrase'], *f['variants'])}
 FEATURE_BY_KEY = {f['key']: f for f in FEATURES}
@@ -291,22 +325,17 @@ VERDICT_LABELS = {
 }
 
 
-def _sigmoid(z):
-    z = max(-30.0, min(30.0, z))
-    return 1.0 / (1.0 + math.exp(-z))
-
-
-def _verdict(weight, low_confidence):
-    """判定看回归权重（净效应方向与强度），幅度阈值经仿真校准。"""
+def _verdict(score, like, strong, low_confidence):
+    """判定看有界计分（净方向与强度），幅度阈值经中性人格仿真校准。"""
     if low_confidence:
         return 'uncertain'
-    if weight >= WEIGHT_STRONG:
+    if score >= strong:
         return 'strong_like'
-    if weight >= WEIGHT_LIKE:
+    if score >= like:
         return 'like'
-    if weight > -WEIGHT_LIKE:
+    if score > -like:
         return 'neutral'
-    if weight > -WEIGHT_STRONG:
+    if score > -strong:
         return 'avoid'
     return 'strong_avoid'
 
@@ -323,142 +352,124 @@ def _line(kind, keys):
 
 
 def score_responses(responses, seed=None):
-    """responses: [{trial_id, choice, rt_ms}]（全量、有序）；seed 必须与取题时一致（决定锚点
-    配对来源，特征计数与键结构无关种子）。返回报告 dict；非法输入抛 ValueError。"""
+    """responses: [{trial_id, best, worst, rt_ms}]（全量；best/worst 是该题 items 的下标）；
+    seed 必须与取题时一致（决定题序与锚点配对，计分本身与种子无关）。返回报告 dict；
+    非法输入抛 ValueError。"""
     all_trials = trials(seed)
     trial_map = {t['id']: t for t in all_trials}
     if len(responses) != len(all_trials):
         raise ValueError(f'作答数量不符：应答 {len(all_trials)} 题，收到 {len(responses)} 题')
     seen = set()
-    valid, excluded = [], []
+    records, valid, excluded, fast = {}, [], [], []
     for row in responses:
         trial_id = row.get('trial_id') or ''
         if trial_id not in trial_map or trial_id in seen:
             raise ValueError(f'作答含未知或重复的题目编号：{trial_id}')
         seen.add(trial_id)
-        choice = row.get('choice')
-        if choice not in ('a', 'b'):
-            raise ValueError(f'作答选项非法：{choice}')
+        best, worst = row.get('best'), row.get('worst')
+        items = trial_map[trial_id]['items']
+        if not (type(best) is int and type(worst) is int
+                and 0 <= best < len(items) and 0 <= worst < len(items)):
+            raise ValueError(f'作答选项非法：{trial_id} 的最想/最不想下标越界')
+        if best == worst:
+            raise ValueError(f'作答选项非法：{trial_id} 的最想投与最不想投是同一条')
         rt = int(row.get('rt_ms') or 0)
-        target = valid if rt >= RT_FLOOR else excluded
-        target.append(dict(trial=trial_map[trial_id], chosen=choice, trial_id=trial_id))
+        record = dict(trial=trial_map[trial_id], best=best, worst=worst, trial_id=trial_id, fast=rt < RT_FLOOR)
+        records[trial_id] = record
+        if record['fast']:
+            fast.append(record)
+        if trial_id.startswith('T'):          # 只有正式题进计分
+            (valid if not record['fast'] else excluded).append(record)
 
     valid_n = len(valid)
     flags = []
-    attention_pass = next((r['chosen'] == 'a' for r in valid if r['trial_id'] == 'AT1'), None)
-    if attention_pass is None:
-        attention_pass = next((r['chosen'] == 'a' for r in excluded if r['trial_id'] == 'AT1'), False)
+    attention_items = ATTENTION_TRIAL['items']
+    attention = records.get(ATTENTION_TRIAL['id'])
+    attention_pass = False
+    if attention is None or attention['fast']:
         flags.append('注意力校验题被判定为过快作答')
-    if not attention_pass:
-        flags.append('注意力校验未通过，结果可信度低')
+    else:
+        attention_pass = (attention['trial']['items'][attention['best']] == attention_items[ATTENTION_BEST]
+                          and attention['trial']['items'][attention['worst']] == attention_items[ATTENTION_WORST])
+        if not attention_pass:
+            flags.append('注意力校验未通过，结果可信度低')
 
     anchor_results = []
-    anchor_map = anchor_of(seed)
-    for r in valid + excluded:
-        source = anchor_map.get(r['trial_id'])
-        if not source:
-            continue
-        original = next((row['chosen'] for row in valid + excluded if row['trial_id'] == source), None)
-        if original is not None:
-            anchor_results.append(r['chosen'] == original)
+    for anchor_id, source_id in anchor_of(seed).items():
+        anchor, source = records.get(anchor_id), records.get(source_id)
+        if anchor and source:
+            anchor_results.append((anchor['best'], anchor['worst']) == (source['best'], source['worst']))
     anchor_agreement = sum(anchor_results)
     if len(anchor_results) == len(ANCHOR_SOURCES) and anchor_agreement <= 1:
         flags.append('重复题前后不一致，建议重测')
 
-    rt_excluded_ratio = len(excluded) / len(all_trials) if all_trials else 0.0
-    if rt_excluded_ratio > 0.3:
-        flags.append(f'过快作答过多（{len(excluded)} 题），建议重测')
-    if valid_n < 24:
+    if len(fast) / len(all_trials) > 0.3:
+        flags.append(f'过快作答过多（{len(fast)} 题），建议重测')
+    if valid_n < MIN_VALID:
         flags.append(f'有效样本不足（{valid_n} 题），建议重测')
 
-    # 特征计数：每道有效题贡献「选中卡含 f」与「未选中卡含 f」；权重用差向量回归做共现校正。
+    # 有界计分：每次出场记 +1（被选最想投）/ −1（被选最不想投）/ 0，计分 = 均值。
     # 卡上文本可能是任一变体——映射按 key 池化，与种子/变体选择无关。
-    wins = {f['key']: 0 for f in FEATURES}
-    present = {f['key']: 0 for f in FEATURES}
     feature_keys = {text: f['key'] for text, f in PHRASE_TO_FEATURE.items()}
-    diff_rows = []
+    present = {f['key']: 0 for f in FEATURES}
+    picks = {f['key']: 0 for f in FEATURES}
+    marks = {f['key']: [] for f in FEATURES}
     for r in valid:
-        chosen_card = r['trial'][r['chosen']]
-        other_card = r['trial']['b' if r['chosen'] == 'a' else 'a']
-        for phrase in chosen_card:
-            key = feature_keys.get(phrase)
-            if key:
-                wins[key] += 1
-        for phrase in chosen_card + other_card:
-            key = feature_keys.get(phrase)
-            if key:
-                present[key] += 1
-        diff_rows.append(([feature_keys[p] for p in chosen_card if p in feature_keys],
-                          [feature_keys[p] for p in other_card if p in feature_keys]))
-    weight_map = dict(zip([f['key'] for f in FEATURES], _fit_diff_weights(diff_rows)))
+        for idx, text in enumerate(r['trial']['items']):
+            key = feature_keys[text]
+            present[key] += 1
+            mark = 1 if idx == r['best'] else -1 if idx == r['worst'] else 0
+            picks[key] += mark
+            marks[key].append(mark)
 
-    total_cards = 2 * valid_n
     features_report = []
     for f in FEATURES:
         key = f['key']
         n_present = present[key]
-        n_absent = total_cards - n_present
-        low_confidence = n_present < MIN_FEATURE_N or valid_n < 24
-        rate_present = wins[key] / n_present if n_present else 0.0
-        rate_absent = (valid_n - wins[key]) / n_absent if n_absent else 0.0
-        amce = rate_present - rate_absent
-        se = 0.0
-        if n_present and n_absent:
-            se = math.sqrt(rate_present * (1 - rate_present) / n_present
-                           + rate_absent * (1 - rate_absent) / n_absent)
+        low_confidence = n_present < MIN_FEATURE_N or valid_n < MIN_VALID
+        score = picks[key] / n_present if n_present else 0.0
+        # 标准误取逐次出场记号的样本标准差 / √n（中性人格下 ≈ 0.707/√8 ≈ 0.25）。
+        if n_present >= 2:
+            variance = sum((m - score) ** 2 for m in marks[key]) / (n_present - 1)
+            se = math.sqrt(variance / n_present)
+        else:
+            se = 1.0
+        best_n = sum(1 for m in marks[key] if m == 1)
+        worst_n = sum(1 for m in marks[key] if m == -1)
         features_report.append(dict(
             key=key, dim=f['dim'], dim_label=DIMENSION_BY_KEY[f['dim']]['label'],
             phrase=f['phrase'], screen=f['screen'],
-            n_present=n_present, rate_present=round(rate_present, 4),
-            rate_absent=round(rate_absent, 4), amce=round(amce, 4), se=round(se, 4),
-            weight=round(weight_map.get(key, 0.0), 4),
-            verdict=_verdict(weight_map.get(key, 0.0), low_confidence), low_confidence=low_confidence,
+            n_present=n_present, best=best_n, worst=worst_n,
+            best_rate=round(best_n / n_present, 4) if n_present else 0.0,
+            worst_rate=round(worst_n / n_present, 4) if n_present else 0.0,
+            score=round(score, 4), se=round(se, 4),
+            verdict=_verdict(score, SCORE_LIKE, SCORE_STRONG, low_confidence),
+            low_confidence=low_confidence,
         ))
-    # 展示与结论排序都按权重（净效应）：显示里保留原始选中率差（amce）作参考。
-    features_report.sort(key=lambda item: -item['weight'])
+    # 展示与结论排序都按计分（净方向）。
+    features_report.sort(key=lambda item: -item['score'])
 
     dimensions_report = []
     for d in DIMENSIONS:
         members = [item for item in features_report if item['dim'] == d['key']]
-        mean_w = sum(item['weight'] for item in members) / len(members) if members else 0.0
-        mean_amce = sum(item['amce'] for item in members) / len(members) if members else 0.0
+        mean_score = sum(item['score'] for item in members) / len(members)
         dimensions_report.append(dict(key=d['key'], label=d['label'], onet=d['onet'],
-                                      weight=round(mean_w, 4), amce=round(mean_amce, 4),
-                                      verdict=_verdict(mean_w, any(item['low_confidence'] for item in members))))
+                                      score=round(mean_score, 4),
+                                      verdict=_verdict(mean_score, DIM_LIKE, DIM_STRONG,
+                                                       any(item['low_confidence'] for item in members))))
 
     prefer = [item['key'] for item in features_report if item['verdict'] in ('strong_like', 'like')][:4]
     avoid = [item['key'] for item in reversed(features_report) if item['verdict'] in ('avoid', 'strong_avoid')][:4]
     grade = 'weak' if flags else 'ok'
     report = dict(
         quality=dict(attention_pass=attention_pass, anchor_agreement=anchor_agreement,
-                     anchors=len(ANCHOR_SOURCES), rt_excluded=len(excluded),
-                     valid_trials=valid_n, flags=flags, grade=grade),
+                     anchors=len(ANCHOR_SOURCES), rt_excluded=len(fast),
+                     valid_trials=valid_n, total_trials=len(all_trials), flags=flags, grade=grade),
         features=features_report,
         dimensions=dimensions_report,
         actions=dict(prefer=prefer, avoid=avoid,
                      prefer_line=_line('prefer', prefer), avoid_line=_line('avoid', avoid)),
-        note='结果只反映你在这组片段上的相对倾向，不是岗位市场判断；二选一信息量有限，'
-             '差异小的条目仅供参考。质检全过（一致性 3/3、注意力通过、无过快作答）时结果最可信。',
+        note='结果只反映你在这组片段上的相对倾向，不是岗位市场判断；差异小的条目仅供参考。'
+             '质检全过（重复一致 3/3、注意力通过、无过快作答）时结果最可信。',
     )
     return report
-
-
-def _fit_diff_weights(diff_rows):
-    """差向量回归：选中侧特征 +w，未选中侧 −w，最大化 Σ log σ(w·d)。纯 Python 梯度下降。"""
-    k = len(FEATURES)
-    index_of = {f['key']: i for i, f in enumerate(FEATURES)}
-    prepared = [([index_of[key] for key in pos], [index_of[key] for key in neg]) for pos, neg in diff_rows]
-    w = [0.0] * k
-    n = max(1, len(prepared))
-    for it in range(WEIGHT_ITERS):
-        step = 0.4 / (1.0 + it * 0.002)
-        grad = [WEIGHT_RIDGE * w[i] / n for i in range(k)]
-        for pos, neg in prepared:
-            z = sum(w[i] for i in pos) - sum(w[i] for i in neg)
-            g = _sigmoid(z) - 1.0
-            for i in pos:
-                grad[i] += g / n
-            for i in neg:
-                grad[i] -= g / n
-        w = [w[i] - step * grad[i] for i in range(k)]
-    return w
