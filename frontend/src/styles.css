@@ -2383,8 +2383,8 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 /* 反问收尾条：结束出口必须显眼，不再藏底部小字（用户看不见就一直等「怎么还没结束」） */
 .iv-wrapup-bar { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 14px; border-top: 1px solid var(--line, #e3e0d8); background: var(--accent-soft, #f3ecdb); font-size: 12.5px; color: var(--accent, #8a6d3b); }
 .iv-wrapup-bar + .interview-composer { border-top: 0; }
-/* 复盘页签「重新生成」：挤到标题行右端 */
-.iv-regen { margin-left: auto; align-self: flex-start; }
+/* 复盘页签标题行右端的按钮组（「强化重练本场错题」+「重新生成」）：挤到标题行右端 */
+.iv-report-actions { margin-left: auto; align-self: flex-start; display: flex; gap: 6px; flex: none; }
 /* 渐进式复盘：头行 + 骨架卡 shimmer + 完成卡 fade-in（等待变提前阅读） */
 .iv-live-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border: 1px solid var(--line, #e3e0d8); border-radius: 10px; background: var(--panel, #fff); font-size: 13px; }
 .iv-live-head .spinner { width: 13px; height: 13px; border-width: 2px; color: var(--accent, #8a6d3b); }
@@ -2500,6 +2500,49 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .iv-live-seg p { margin: 0; font-size: 13px; line-height: 1.65; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
 .iv-live-tail .iv-skeleton { padding: 4px 2px; }
 .iv-live-tail .iv-skeleton i { height: 9px; width: 60%; }
+
+/* ---- 错题强化（2026-11-24）：错题本选题面板 + 复盘前后对照 + 复盘页「重练」入口 ---- */
+/* 新建面板里的题量说明（错题强化官卡片：题量随选中的错题数） */
+.iv-drill-count { align-self: center; }
+.iv-drill-count b { color: var(--accent, #8a6d3b); }
+/* 错题本面板：表头（计数 + 全选/清空）→ 失分要素筛选 → 按来源场次分组的可滚动清单 */
+.iv-drill { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--line, #e3e0d8); border-radius: 12px; padding: 12px 14px; background: var(--panel, #fff); }
+.iv-drill-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 13px; }
+.iv-drill-head .iv-drill-selected { margin-left: auto; }
+.iv-drill-bulk { display: flex; gap: 10px; }
+.iv-drill-bulk .text-button { min-height: 24px; padding: 0; font-size: 12px; }
+.iv-drill-bulk .text-button:disabled { cursor: default; text-decoration: none; }
+.iv-drill-filters { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.iv-drill-filters button { border: 1px solid var(--line, #d8d4c8); background: var(--panel, #fff); padding: 3px 10px; border-radius: 999px; cursor: pointer; font-size: 12px; color: var(--muted, #666); }
+.iv-drill-filters button.active { border-color: var(--accent, #8a6d3b); color: var(--accent, #8a6d3b); font-weight: 600; background: var(--accent-soft, #f3ecdb); }
+.iv-drill-job { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; border: 1px dashed var(--accent, #8a6d3b); background: var(--accent-soft, #f3ecdb); color: var(--accent, #8a6d3b); border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 12.5px; text-align: left; }
+.iv-drill-list { max-height: 340px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 2px; }
+.iv-drill-group { border: 1px solid var(--line, #e8e5da); border-radius: 10px; overflow: hidden; }
+.iv-drill-group-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--chip, #f6f4ee); cursor: pointer; font-size: 13px; }
+.iv-drill-group-head .tiny-label { margin-left: auto; white-space: nowrap; }
+.iv-drill-item { display: flex; gap: 10px; padding: 9px 12px; border-top: 1px solid var(--line, #e8e5da); cursor: pointer; }
+.iv-drill-item:hover { background: var(--accent-soft, #f3ecdb); }
+.iv-drill-item.selected { background: var(--accent-soft, #f3ecdb); box-shadow: inset 3px 0 0 var(--accent, #8a6d3b); }
+.iv-drill-item input, .iv-drill-group-head input { flex: none; margin-top: 3px; accent-color: var(--accent, #8a6d3b); }
+.iv-drill-body { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.iv-drill-q { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.iv-drill-text { font-size: 13.5px; line-height: 1.55; min-width: 0; overflow-wrap: anywhere; }
+.iv-drill-badge { font-style: normal; font-size: 11px; padding: 1px 7px; border-radius: 999px; white-space: nowrap; background: var(--chip, #f1efe8); color: var(--muted, #666); }
+.iv-drill-badge.repeat { background: #fdf1e0; color: #b5651d; }
+.iv-drill-badge.again { background: #fdf6e7; color: #9a6b1f; }
+.iv-drill-badge.cleared { background: #f2f8f2; color: #2e7d32; }
+.iv-drill-problems { font-size: 12px; color: var(--muted, #777); line-height: 1.6; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.iv-drill-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 3px; }
+.iv-drill-tags i { font-style: normal; font-size: 11px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--line, #e3e0d8); color: var(--muted, #777); }
+.iv-drill-empty { padding: 16px 12px; font-size: 13px; color: var(--muted, #666); line-height: 1.7; }
+.iv-drill-extra { margin: 0; padding: 0 4px; }
+/* 复盘里的错题强化对照：总评下的计数条 + 逐题「上次失分」行（上次=琥珀，本次缺失=红） */
+.iv-drill-stats { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; padding: 8px 12px; border: 1px solid #dfd4b8; border-radius: 10px; background: var(--accent-soft, #f3ecdb); font-size: 12.5px; color: var(--accent, #8a6d3b); line-height: 1.6; }
+.iv-drill-stats b { font-size: 14px; }
+.iv-previous { font-size: 12px; color: #9a6b1f; margin: 6px 0 0; }
+/* 逐题复盘底部的「重练此题」：压掉 .text-button 的 36px 默认高度（紧凑列表约定） */
+.iv-review-foot { display: flex; justify-content: flex-end; margin-top: 6px; }
+.iv-review-foot .text-button { min-height: 24px; padding: 0; font-size: 12px; }
 
 /* ── 行动处方与今日行动（2026-11-22）：漏斗数据 → 可执行动作 ── */
 .pipeline-prescriptions { flex-basis: 100%; margin-top: 4px; padding-top: 10px; border-top: 1px dashed var(--line, #e8e5da); }

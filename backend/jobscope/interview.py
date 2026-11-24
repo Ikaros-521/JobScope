@@ -7,6 +7,10 @@
 出题弹药三源合一（相对开源方案的差异化）：岗位库 JD + 适配评估的 gaps/低分
 维度 + 简历存档事实。模型配置复用「分析」功能绑定（同为大任务模型，后续需要
 独立绑定再扩 PURPOSES）。
+
+错题强化（2026-11-24，drill.py）是题目级的定向场：material.drills 带既往复盘中
+答得不好的题，每道错题出一道变式题（_DRILL_PLAN_SYSTEM），面试官题单带「上次
+失分点」暗线（_plan_text），复盘逐题对照上次（review_segment 的 previous）。
 """
 import json
 import logging
@@ -15,6 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from . import drill
 from .model_transport import output_budget
 from .settings import get_active_configs, use_config
 
@@ -137,6 +142,13 @@ PERSONA_PRESETS = [
          directive='本场是空窗期专题：所有题目围绕候选人的空窗期展开——离开原因、空窗期做了什么、'
                    '能力是否脱节、与目标岗位的关联、为什么现在求职。追问必须逼出具体事实与产出，'
                    '不接受空泛表态；候选人的空窗期事实（如有）是核实基准，答不出事实即追问到底。'),
+    dict(id='reinforce', name='错题强化官', role_family='general',
+         rounds=['business'], default_round='business',
+         blurb='挑既往复盘里答得不好的题，换问法重考一遍；面试官盯住你上次缺失的要素追问到底，复盘逐题对照上次',
+         tags=['错题重练', '变式提问', '前后对照'],
+         directive='本场是错题强化专题：每道题都对应候选人此前一场面试里答得不好的题（题单里标了「上次失分点」）。'
+                   '按变式题提问，绝口不提「上次」「错题」；候选人的回答必须逐一核实上次失分点，没覆盖的就追问到底。'
+                   '评价仍全部留给复盘，面试中不点评。'),
     dict(id='custom', name='自定义岗位', role_family='general',
          rounds=['business', 'cross', 'director', 'hr'], default_round='business',
          blurb='填上具体岗位名称再开面；按 JD 与岗位名自动推断考什么', tags=['按 JD 推断', '任意岗位']),
@@ -232,6 +244,25 @@ def _progress_directive(plan, phase, progress):
     return '\n【实时进度（系统记账，以此为准）】\n' + '\n'.join(lines) + '\n'
 
 
+def _plan_text(material, plan):
+    """题单文本。错题强化场次每道题多一行「上次失分点」——面试官暗线，候选人不可见。
+
+    每轮对话都重 build 这段 prompt，所以失分点只带压缩后的前几条（drill.brief），
+    上次的高分示范不进来（面试官不需要知道答案，只需要知道往哪追问）。
+    """
+    drills = material.get('drills') or []
+    lines = []
+    for index, item in enumerate(plan['questions']):
+        line = (f'{index}. [{item["topic"]}]（来源:{item["source"]}）{item["question"]}\n'
+                f'   考察点:{item["focus"]} 追问路径:{"/".join(item["followups"])}')
+        target = item.get('drill')
+        problems = drills[target].get('problems') if isinstance(target, int) and 0 <= target < len(drills) else None
+        if problems:
+            line += f'\n   上次失分点（候选人不可见）：{drill.brief(problems)}——回答没覆盖到就追问到底'
+        lines.append(line)
+    return '\n'.join(lines)
+
+
 def build_interviewer_system(persona, material, plan, *, phase='opening', progress=None):
     """面试官 system prompt：三段式人设 + 导演规则 + 题单 + 候选材料（含公司情报）。
 
@@ -240,9 +271,7 @@ def build_interviewer_system(persona, material, plan, *, phase='opening', progre
     progress 是场次实时记账（current_index/segments）：模型面对长对话数不清自己追问了几轮，
     必须把系统侧的准确进度喂回去，追问超限换题、反问超轮收尾才有硬依据。
     """
-    questions_text = '\n'.join(
-        f'{index}. [{item["topic"]}]（来源:{item["source"]}）{item["question"]}\n   考察点:{item["focus"]} 追问路径:{"/".join(item["followups"])}'
-        for index, item in enumerate(plan['questions']))
+    questions_text = _plan_text(material, plan)
     progress_block = _progress_directive(plan, phase, progress)
     gaps_text = '\n'.join(f'- {gap}' for gap in material.get('gaps', [])[:8]) or '（本场没有适配评估数据）'
     target_line = persona['job_title'] or material.get('job_title') or '（未指明具体岗位，按画像与材料推断）'
@@ -253,13 +282,16 @@ def build_interviewer_system(persona, material, plan, *, phase='opening', progre
     gap_section = f'\n空窗期事实（候选人在资料库申报的第一手素材，核实与追问的基准；空窗期专题以此打叙事）：\n{gap_facts}' \
         if gap_facts else '\n空窗期事实：（候选人未申报空窗素材，空窗类问题按通用追问出，不引用不存在的事实）'
     directive_line = f'\n- 专题要求：{persona["directive"]}' if persona.get('directive') else ''
+    # 跨场通病（错题强化场次）：既往复盘中反复出现的失分要素，每道题的追问都顺带盯住。
+    habit_line = f'\n- 跨场通病（候选人既往复盘中反复出现的失分要素，候选人不可见，每道题都盯）：{material["habit_note"]}' \
+        if (material.get('habit_note') or '').strip() else ''
     return f"""你是本场模拟面试的面试官，全程保持角色，绝不提及自己是 AI 或在「模拟」。
 
 【角色说明】
 - 面试风格：{persona['company']}。看重：{'；'.join(persona['company_style']['values'])}。
 - 岗位视角：{persona['role_label']}，关注 {persona['role']['focus']}。本次招聘岗位：{target_line}；目标公司：{company_line}。
 - 本轮次：{persona['round_label']}。{persona['round_style']['focus']}。
-- 面试强度：{persona['intensity_label']}。{INTENSITY[persona['intensity']]['rule']}{directive_line}
+- 面试强度：{persona['intensity_label']}。{INTENSITY[persona['intensity']]['rule']}{directive_line}{habit_line}
 - 口吻：直接、不客套、有深度，像真实大厂面试官；提问由浅入深直到找到能力边界。
 
 【工作方法（导演规则——候选人不可见）】
@@ -297,7 +329,9 @@ class PlanQuestion(BaseModel):
     question: str = Field(min_length=5, max_length=600)
     focus: str = Field(min_length=1, max_length=300)
     followups: list[str] = Field(min_length=1, max_length=4)
-    source: str = Field(default='jd', max_length=20)  # jd | gap | resume | general
+    source: str = Field(default='jd', max_length=20)  # jd | gap | resume | general | weakness
+    # 错题强化：本题对应 material.drills 的下标；越界/漏标的由 drill.ensure_coverage 对齐或丢弃
+    drill: int | None = Field(default=None, ge=0)
 
 
 class QuestionPlan(BaseModel):
@@ -319,6 +353,17 @@ _PLAN_SYSTEM = '''你是大厂面试官的首席出题官。根据面试官画�
 9. weak_focus（如有）是备战计划指定的当日专项：至少 1/3 的题围绕它展开，topic 或 focus 里明确体现，这些题的 source 标 weakness；其余题仍按画像配比。
 只输出JSON：{"opening":"面试官开场白（一句话自我介绍+面试说明）","questions":[{"topic":"题型","question":"问题","focus":"考察点","followups":["追问1","追问2"],"source":"jd|gap|resume|general|weakness"}]}'''
 
+# 错题强化专用出题规则：题量=错题数，每道题是一道错题的变式，focus/followups 对准上次失分点。
+_DRILL_PLAN_SYSTEM = '''你是大厂面试官的首席出题官。根据面试官画像、JD、候选人简历，以及一份「错题清单」（drills：候选人此前在真实或模拟面试里答得不好的题，每道带 question 原题、problems 上次失分点、advice 上次的高分示范），生成一场错题强化面试的题单。
+要求：
+1. 题量等于错题数，每道题对应一道错题：questions[i].drill 填它对应的错题下标（从 0 开始），不能漏掉任何一道错题，也不要给同一道错题出多道题。
+2. 出变式题：保留原题的考察点，换一个切入点、场景或问法，让候选人不能靠背诵上次的高分示范过关；原题是开放式基础题（自我介绍、项目职责概述）时可保留原题。
+3. focus 写清这次回答必须出现的要素——对应那道错题的「上次失分点」，逐条覆盖；错题没有失分点时按原题考察点写。
+4. followups 针对每个失分点设计核实型追问（2-4 个），直指上次没答出来的地方。
+5. habits（如有）是候选人跨场反复出现的失分要素：每道题的追问都顺带盯住它。
+6. 所有题的 source 标 weakness；question 用面试官的真实口吻写，具体到场景，题面里不要出现「上次」「错题」字样。
+只输出JSON：{"opening":"面试官开场白（一句话自我介绍+面试说明）","questions":[{"topic":"题型","question":"问题","focus":"考察点","followups":["追问1","追问2"],"source":"weakness","drill":0}]}'''
+
 
 def _parse_json(content):
     content = re.sub(r'^```(?:json)?\s*|\s*```$', '', content.strip())
@@ -333,8 +378,14 @@ def build_question_plan(persona, material, *, question_count=8):
     material.weak_focus 是备战计划的当日专项（也承接失败博物馆预留的
     recurring 闭环）：注入 payload 后由 _PLAN_SYSTEM 第 9 条定向出题，
     这些题的 source 标 weakness。没有专项时行为与之前一致。
+
+    material.drills 是错题强化（drill.prepare 解析出的重练目标）：改走
+    _DRILL_PLAN_SYSTEM，题量=错题数，每题带 drill 下标。这种场次出题失败不判死——
+    原题重问（plan.fallback=True）也要让用户练上；模型漏题/漏标下标由
+    drill.ensure_coverage 补齐对齐。
     """
     from .model_transport import complete
+    weak_drills = material.get('drills') or []
     payload = dict(
         persona=dict(company=persona['company'], round=persona['round_label'], role=persona['role_label'],
                      job_title=persona['job_title'], focus=persona['role']['focus'],
@@ -348,9 +399,15 @@ def build_question_plan(persona, material, *, question_count=8):
         company_brief=material.get('company_brief') or '',
         weak_focus=material.get('weak_focus') or '',
     )
+    if weak_drills:
+        payload.update(question_count=len(weak_drills),
+                       drills=[dict(question=item['question'], problems=item.get('problems') or [],
+                                    advice=item.get('advice') or '') for item in weak_drills],
+                       habits=material.get('habit_note') or '')
+    system = _DRILL_PLAN_SYSTEM if weak_drills else _PLAN_SYSTEM
     for attempt in (1, 2):
         config = get_config()
-        content, _ = complete(config, _PLAN_SYSTEM, json.dumps(payload, ensure_ascii=False),
+        content, _ = complete(config, system, json.dumps(payload, ensure_ascii=False),
                               temperature=.3, max_tokens=output_budget(config, PLAN_MAX_TOKENS), timeout=300)
         try:
             plan = QuestionPlan.model_validate(_parse_json(content))
@@ -358,8 +415,17 @@ def build_question_plan(persona, material, *, question_count=8):
         except (json.JSONDecodeError, ValidationError) as exc:
             logger.warning('模拟面试出题返回无效（第 %s 次）：%s', attempt, exc)
             if attempt == 2:
+                if weak_drills:
+                    logger.warning('错题强化出题两次无效，退原题重练 drills=%s', len(weak_drills))
+                    return dict(opening='你好，我是今天的面试官，我们直接开始。', fallback=True,
+                                questions=drill.ensure_coverage([], weak_drills))
                 raise ValueError('出题结果无效，请重试') from None
-    result = plan.model_dump()
+    questions = plan.model_dump()['questions']
+    if weak_drills:
+        return dict(opening=plan.opening, questions=drill.ensure_coverage(questions, weak_drills))
+    # 常规场次不带 drill 键：题单结构与会话快照与引入错题强化之前保持一致。
+    result = dict(opening=plan.opening,
+                  questions=[{key: value for key, value in item.items() if key != 'drill'} for item in questions])
     result['questions'] = result['questions'][:question_count]
     return result
 
@@ -416,10 +482,19 @@ REVIEW_SYSTEM = '''你是面试教练。根据题单元信息（题目/考察点
 要求：critique 以面试官视角点评这段回答（好在哪、差在哪，引用原话）；missing 列出缺失的要素（如 量化数据/我的动作/结果/背景S/任务T）；model_answer 给一段针对本题的高分示范答法（结合候选人材料改写，不是通用模板）；bad_answer_note 一句话点出典型的低分踩坑写法。
 只输出JSON：{"critique":"...","missing":["..."],"model_answer":"...","bad_answer_note":"..."}'''
 
+# 错题强化场次的逐题点评追加规则：先对照上次失分档案，再常规点评。
+_REVIEW_DRILL_RULE = ('\n本题带 previous（候选人此前在同一道题上的失分档案）：critique 第一句先做前后对照——'
+                      '上次失分点这次补上了哪些、仍缺哪些，再按常规点评；missing 只列这次回答仍然缺失的要素，'
+                      '上次缺、这次已经讲到的不要重复列；model_answer 在上次示范的基础上更贴合这次的回答。')
+
 _SUMMARY_SYSTEM = '''你是面试教练主管。根据逐题点评汇总本场模拟面试的复盘总评。
 dimensions 从这些维度打分（1-5）：结构化表达、数据与量化、业务理解、个人贡献清晰度、抗压追问。
 summary 给总评（整体表现、最突出的 1-2 个优点、最致命的问题、与岗位面试官预期的差距），risk_list 给「下次真面试前必须补的高危问题」，actions 给具体可执行动作（可指向改简历/补材料/换说法）。
 只输出JSON：{"summary":"...","dimensions":[{"name":"结构化表达","score":3,"comment":"..."}],"risk_list":["..."],"actions":["..."]}'''
+
+# 错题强化场次（有题目带既往失分档案）的汇总追加规则。
+_SUMMARY_DRILL_RULE = ('\nreviews 里有题目带 previous_problems（错题强化：该题此前的失分档案）时，'
+                       'summary 末尾用一句话说明重练效果：哪些上次失分点这次补上了、哪些仍要再练。')
 
 
 def get_config():
@@ -450,15 +525,22 @@ def review_segment(persona, segment):
     """阶段1单题：一个题单片段（题目+回答+追问过程）→ 逐题点评。
 
     截断/垃圾自动重试一次（同汇总语义）：单题点评不该一次抽风就静默降级成占位。
+    segment.previous（错题强化场次挂的既往失分档案）存在时，点评先对照上次再常规点评。
     """
     from .model_transport import complete
     payload = dict(persona=dict(company=persona['company'], round=persona['round_label'], role=persona['role']['label']),
                    topic=segment['question'].get('topic', ''), question=segment['question'].get('question', ''),
                    focus=segment['question'].get('focus', ''), followups=segment['question'].get('followups', []),
                    answers=segment['answers'], interviewer_notes=segment.get('notes', []))
+    system = REVIEW_SYSTEM
+    previous = segment.get('previous')
+    if previous:
+        payload['previous'] = dict(question=previous.get('question', ''), problems=previous.get('problems') or [],
+                                   advice=previous.get('advice', ''), critique=previous.get('critique', ''))
+        system += _REVIEW_DRILL_RULE
     for attempt in (1, 2):
         config = get_config()
-        content, _ = complete(config, REVIEW_SYSTEM, json.dumps(payload, ensure_ascii=False),
+        content, _ = complete(config, system, json.dumps(payload, ensure_ascii=False),
                               temperature=.3, max_tokens=output_budget(config, REVIEW_MAX_TOKENS), timeout=300)
         try:
             return _coerce_review(_parse_json(content))
@@ -506,12 +588,22 @@ def _coerce_summary(raw):
     return dict(summary=summary, dimensions=dimensions, risk_list=risks, actions=actions)
 
 
+def _previous_problems(segment):
+    """片段挂了既往失分档案（错题强化）时返回上次失分点列表，否则 None——报告与进度事件据此逐题对照。"""
+    previous = segment.get('previous')
+    return list(previous.get('problems') or []) if previous else None
+
+
 def generate_report(persona, segments, material, should_stop=None, on_progress=None):
     """复盘全流程：逐题并行（线程池）→ 汇总总评/维度/高危清单；取消在题间边界生效。
 
     on_progress 三段事件（SSE → 前端渐进式复盘）：
     start（全部题目清单，前端先铺骨架卡）→ review×N（每条点评完成，带完整内容原位填充）
     → summary（汇总中）。done 事件带最终报告，替换渐进视图。
+
+    片段带 previous（错题强化场次，drill.attach_previous 挂的既往失分档案）时：逐题点评先
+    对照上次，报告题目带 previous_problems 与 drill_ref（重练的原错题引用，错题本据此回写
+    重练状态），汇总多一句重练效果。
     """
     from concurrent.futures import as_completed
     from .semantic import RunCancelled
@@ -522,7 +614,8 @@ def generate_report(persona, segments, material, should_stop=None, on_progress=N
     if on_progress:
         on_progress(dict(stage='start', total=len(segments),
                          items=[dict(index=index, topic=(seg.get('question') or {}).get('topic', ''),
-                                     question=(seg.get('question') or {}).get('question', ''))
+                                     question=(seg.get('question') or {}).get('question', ''),
+                                     **(dict(previous_problems=_previous_problems(seg)) if seg.get('previous') else {}))
                                 for index, seg in enumerate(segments)]))
     with ThreadPoolExecutor(max_workers=3) as pool:
         # contextvar 不跨线程：逐题点评跑在池子线程，use_config 挂在复盘 worker 上取不到，
@@ -545,13 +638,15 @@ def generate_report(persona, segments, material, should_stop=None, on_progress=N
         on_progress(dict(stage='summary', done=len(segments), total=len(segments)))
     payload = dict(
         persona=dict(company=persona['company'], round=persona['round_label'], role=persona['role']['label']),
-        reviews=[dict(topic=seg['question'].get('topic', ''), question=seg['question'].get('question', ''), review=review)
+        reviews=[dict(topic=seg['question'].get('topic', ''), question=seg['question'].get('question', ''), review=review,
+                      **(dict(previous_problems=_previous_problems(seg)) if seg.get('previous') else {}))
                  for seg, review in zip(segments, reviews)],
         evaluation_gaps=material.get('gaps') or [],
     )
+    system = _SUMMARY_SYSTEM + (_SUMMARY_DRILL_RULE if any(seg.get('previous') for seg in segments) else '')
     from .model_transport import complete
     for attempt in (1, 2):  # 软校验已兜住超长/多条；这里只剩真垃圾，自动重试一次再报错
-        content, _ = complete(get_config(), _SUMMARY_SYSTEM, json.dumps(payload, ensure_ascii=False),
+        content, _ = complete(get_config(), system, json.dumps(payload, ensure_ascii=False),
                               temperature=.3, max_tokens=output_budget(get_config(), SUMMARY_MAX_TOKENS), timeout=300)
         try:
             summary = _coerce_summary(_parse_json(content))
@@ -560,7 +655,13 @@ def generate_report(persona, segments, material, should_stop=None, on_progress=N
             logger.warning('复盘总评返回无效（第 %s 次）：%s', attempt, exc)
             if attempt == 2:
                 raise ValueError('复盘报告汇总无效，请重试') from None
+    questions = []
+    for seg, review in zip(segments, reviews):
+        entry = dict(topic=seg['question'].get('topic', ''), question=seg['question'].get('question', ''), **review)
+        previous = _previous_problems(seg)
+        if previous is not None:
+            # 错题强化：上次失分点 + 重练的原错题引用——前端逐题对照，错题本据此回写重练状态。
+            entry.update(previous_problems=previous, drill_ref=(seg['previous'] or {}).get('ref'))
+        questions.append(entry)
     return dict(summary=summary['summary'], dimensions=summary['dimensions'], risk_list=summary['risk_list'],
-                actions=summary['actions'], questions=[
-                    dict(topic=seg['question'].get('topic', ''), question=seg['question'].get('question', ''), **review)
-                    for seg, review in zip(segments, reviews)])
+                actions=summary['actions'], questions=questions)

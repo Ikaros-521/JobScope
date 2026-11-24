@@ -137,6 +137,13 @@ class AnalyzeInput(RequestModel):
     job_id: str = Field(min_length=1, max_length=100)
 
 
+class InterviewDrillRef(RequestModel):
+    """错题引用：来源记录（mock 模拟面试场次 / real 真实面试逐字稿）+ 该记录 report.questions 的下标。"""
+    source: Literal['mock', 'real']
+    session_id: str = Field(min_length=1, max_length=100)
+    index: int = Field(ge=0, le=500)
+
+
 class InterviewCreateInput(RequestModel):
     """模拟面试开场合：岗位专家卡 × 公司风格 × 轮次 × 强度。
 
@@ -153,6 +160,8 @@ class InterviewCreateInput(RequestModel):
     job_title: str = Field(default='', max_length=120)
     company: str = Field(default='', max_length=120)
     focus: str = Field(default='', max_length=120)  # 备战计划指定的专项主题，注入出题 weak_focus
+    # 错题强化（仅 reinforce 卡）：要重练的错题引用，每道错题出一道变式题，题量随错题数。
+    drill: list[InterviewDrillRef] = Field(default_factory=list, max_length=12)
 
 
 class InterviewTurnInput(RequestModel):

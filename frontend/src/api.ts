@@ -692,20 +692,28 @@ export type InterviewRound = { id: string; label: string }
 // 卡片=岗位角色（产品/运营/数据/研发/设计/HR/自定义），公司风格是独立开关，二者自由组合。
 export type InterviewPersonaCard = { id: string; name: string; blurb: string; tags: string[]; rounds: InterviewRound[]; default_round: string }
 export type InterviewStyle = { id: string; label: string }
-export type InterviewPlanQuestion = { topic: string; question: string; focus: string; followups: string[]; source: string }
-export type InterviewPlan = { opening: string; questions: InterviewPlanQuestion[] }
+// drill：错题强化场次里本题对应 material.drills 的下标（常规场次没有这个键）。
+export type InterviewPlanQuestion = { topic: string; question: string; focus: string; followups: string[]; source: string; drill?: number }
+export type InterviewPlan = { opening: string; questions: InterviewPlanQuestion[]; fallback?: boolean }
 // 进度片段：按题归档的回答/弱点信号/面试官内心评价；index=-1 是反问环节的 wrap 片段（不复盘）。
 export type InterviewSegment = { index: number; question: { topic: string; question: string; focus: string; followups: string[] }; answers: string[]; notes: string[]; signals: string[]; reviewable: boolean }
 export type InterviewProgress = { phase: 'opening' | 'questioning' | 'wrapup'; current_index: number; rounds: number; segments: InterviewSegment[] }
 export type InterviewDimension = { name: string; score: number; comment: string }
-export type InterviewReview = { topic: string; question: string; critique: string; missing: string[]; model_answer: string; bad_answer_note: string }
-export type InterviewReport = { summary: string; dimensions: InterviewDimension[]; risk_list: string[]; actions: string[]; questions: InterviewReview[]; reviewed?: number; generated_at?: string }
+// previous_problems：错题强化场次带上——这道题上次被点出的失分要素（复盘逐题对照上次）；
+// drill_ref：这道题重练的原错题引用（再练一轮要指回原题，而不是上次的变式题）。
+export type InterviewReview = { topic: string; question: string; critique: string; missing: string[]; model_answer: string; bad_answer_note: string; previous_problems?: string[]; drill_ref?: InterviewDrillRef }
+// 错题强化的纯计数对照：重练几道、几道本次没再被点出缺失要素、缺失要素 上次→本次 条数。
+export type InterviewDrillStats = { total: number; cleared: number; before: number; after: number }
+export type InterviewReport = { summary: string; dimensions: InterviewDimension[]; risk_list: string[]; actions: string[]; questions: InterviewReview[]; reviewed?: number; generated_at?: string; drill_stats?: InterviewDrillStats }
 export type InterviewIntensity = 'gentle' | 'standard' | 'stress'
+// 错题强化（2026-11-24）：drills 是建场时落下的重练目标快照（原题 + 上次失分点 + 上次高分示范；ref 指回原错题）；
+// habit_note 是既往复盘里反复出现的失分要素一句话（面试官每题都盯）。常规场次没有这两个键。
+export type InterviewDrill = { id: string; question: string; topic: string; problems: string[]; advice: string; critique: string; source: 'mock' | 'real'; session_id: string; label: string; job_id: string; ref: InterviewDrillRef }
 export type InterviewSession = {
   id: string; title: string; job_id: string; company: string; job_title: string
   persona: { preset_id: string; name: string; role_label: string; company: string; round: string; round_label: string; intensity_label: string; job_title: string; company_name: string }
   config: { question_count: number; intensity: InterviewIntensity; preset_id: string }
-  material: { resume_label?: string; resume_digest?: string; gaps?: string[]; jd_summary?: string; company_brief?: string }
+  material: { resume_label?: string; resume_digest?: string; gaps?: string[]; jd_summary?: string; company_brief?: string; drills?: InterviewDrill[]; habit_note?: string }
   question_plan: InterviewPlan | null
   progress: InterviewProgress
   status: 'planning' | 'ready' | 'live' | 'reporting' | 'done' | 'failed'
@@ -721,7 +729,23 @@ export function listInterviewSessions() { return api<{ sessions: InterviewSessio
 export function getInterviewSession(id: string) { return api<{ session: InterviewSession; active_run: InterviewRunStatus | null }>(`/interview/sessions/${encodeURIComponent(id)}`)
 }
 export function getInterviewMessages(id: string) { return api<{ messages: InterviewMessage[] }>(`/interview/sessions/${encodeURIComponent(id)}/messages`) }
-export function createInterviewSession(body: { persona_id: string; company_style?: string; round?: string; intensity?: InterviewIntensity; question_count?: number; job_id?: string; jd_text?: string; job_title?: string; company?: string; focus?: string }) {
+// 错题引用：来源记录（mock 模拟面试场次 / real 真实复盘逐字稿）+ 该记录 report.questions 的下标。
+export type InterviewDrillRef = { source: 'mock' | 'real'; session_id: string; index: number }
+// 错题本：既往复盘里被点了失分点的题，同一道题跨场合并（refs 是它每一次出现的引用，最近的在前）。
+// practice：最近一次重练的计数对照（before/after = 上次/本次缺失要素条数），没重练过为 null。
+export type InterviewWeakPoint = {
+  id: string; question: string; topic: string; problems: string[]; critique: string
+  source: 'mock' | 'real'; session_id: string; label: string; job_id: string; job_title: string; company: string
+  tags: string[]; occurrences: number; last_at: string
+  practice: { at: string; before: number; after: number; count: number } | null; practice_count: number
+  refs: InterviewDrillRef[]
+}
+export type InterviewWeakPoints = {
+  items: InterviewWeakPoint[]; patterns: { tag: string; label: string; count: number }[]; limitations: string[]; total: number
+  tags: { id: string; label: string }[]  // 失分要素标签字典：题上的 tags 是这里的 id
+}
+export function listInterviewWeakPoints() { return api<InterviewWeakPoints>('/interview/weak-points') }
+export function createInterviewSession(body: { persona_id: string; company_style?: string; round?: string; intensity?: InterviewIntensity; question_count?: number; job_id?: string; jd_text?: string; job_title?: string; company?: string; focus?: string; drill?: InterviewDrillRef[] }) {
   return post<{ session_id: string; run_id: string }>('/interview/sessions', body)
 }
 export function sendInterviewTurn(id: string, answer: string) { return post<{ run_id: string; session_id: string }>(`/interview/sessions/${encodeURIComponent(id)}/runs`, { answer }) }

@@ -12,6 +12,7 @@ import time
 import uuid
 
 from .chat_runs import RunHandle, sse_frame
+from . import drill
 from .interview import ADVANCE_TOOL, build_interviewer_system, build_persona, build_question_plan, generate_report
 from .model_transport import output_budget
 from .repository import now
@@ -34,6 +35,9 @@ def new_session(*, persona_id, round_id, intensity, question_count, material,
     """建场次：画像编译成三段式快照存进 payload（预设后续升级不影响已开场次）。
 
     岗位锚点优先级：材料（岗位库/粘贴JD）> 入参 job_title > 画像岗位类型。
+
+    错题强化场次（material.drills 非空）：题量=错题数，每道错题一道变式题；标题后缀
+    区分于常规场次。drills 是 drill.prepare 落下的快照，来源记录之后被删也不影响本场。
     """
     persona = build_persona(persona_id, round_id, intensity, company_style=company_style,
                             job_title=job_title or material.get('job_title', ''),
@@ -41,11 +45,15 @@ def new_session(*, persona_id, round_id, intensity, question_count, material,
     session_id = 'I-' + uuid.uuid4().hex
     label = ' · '.join(part for part in (material.get('company') or persona['company_name'],
                                          material.get('job_title') or persona['job_title']) if part)
+    drills = material.get('drills') or []
+    # 强化场把类型放在标题最前：侧栏很窄，放在末尾时长岗位名折行会把「错题强化」拆出孤字。
+    title = f'错题强化 · {label or persona["name"]}' if drills else f'{label or persona["name"]} 模拟面试'
     return dict(
-        id=session_id, title=f'{label or persona["name"]} 模拟面试',
+        id=session_id, title=title,
         job_id=material.get('job_id', ''), company=material.get('company', ''), job_title=material.get('job_title', ''),
         persona=persona, material=material,
-        config=dict(question_count=question_count, intensity=intensity, preset_id=persona_id, company_style=company_style),
+        config=dict(question_count=len(drills) if drills else question_count, intensity=intensity,
+                    preset_id=persona_id, company_style=company_style),
         question_plan=None, progress=dict(phase='opening', current_index=0, segments=[], rounds=0),
         status='planning', report=None, conversation_id='', created_at=now(),
     )
@@ -257,9 +265,12 @@ class InterviewManager:
     @staticmethod
     def _new_segment(index, questions):
         item = questions[index] if 0 <= index < len(questions) else {}
-        return dict(index=index, question=dict(topic=item.get('topic', ''), question=item.get('question', ''),
+        segment = dict(index=index, question=dict(topic=item.get('topic', ''), question=item.get('question', ''),
                                                focus=item.get('focus', ''), followups=item.get('followups', [])),
-                    answers=[], notes=[], signals=[], reviewable=bool(item))
+                       answers=[], notes=[], signals=[], reviewable=bool(item))
+        if item.get('drill') is not None:
+            segment['drill'] = item['drill']  # 错题强化：对应 material.drills 的下标，复盘据此挂上次失分档案
+        return segment
 
     def _record_answer(self, session, answer):
         """候选人的回答归档到当前题片段（复盘逐题对账的依据）；反问环节的落 wrap 片段。"""
@@ -280,12 +291,16 @@ class InterviewManager:
             segments = [seg for seg in session['progress'].get('segments', []) if seg.get('reviewable') and seg.get('answers')]
             if not segments:
                 raise ValueError('本场还没有可复盘的问答')
+            # 错题强化：片段挂上上次失分档案（新列表，不写回 progress），复盘逐题对照上次。
+            segments = drill.attach_previous(segments, (session.get('material') or {}).get('drills') or [])
             # 同出题：线程级配置必须显式挂到当前 worker（含「分析」绑定与对话模型回落）。
             with use_config(ModelSettings(self.repo).effective()):
                 report = generate_report(session['persona'], segments, session['material'],
                                          should_stop=handle.cancel.is_set,
                                          on_progress=lambda data: handle.push('progress', data))
-            session['report'] = dict(**report, reviewed=len(segments), generated_at=now())
+            stats = drill.compare_stats(report)  # 错题强化的纯计数对照；常规场次为 None 不落键
+            session['report'] = dict(report, reviewed=len(segments), generated_at=now(),
+                                     **(dict(drill_stats=stats) if stats else {}))
             session['status'] = 'done'
             session = self.repo.save_interview_session(session)
             logger.info('模拟面试复盘完成 session=%s 题数=%s 用时=%.0fs', session['id'], len(segments), time.time() - started)

@@ -25,6 +25,7 @@ from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
 from . import collect_service
 from . import company_merge
+from . import drill
 from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
 from .interview import assemble_material, company_brief_from, persona_cards
@@ -1480,7 +1481,18 @@ def create_app(data_dir=None):
         # 备战计划的当日专项（weak_focus）：出题时定向覆盖，第三层闭环在此接上。
         if (data.focus or '').strip():
             material['weak_focus'] = data.focus.strip()[:120]
+        if data.drill:
+            # 错题强化：引用解析成重练目标快照落进材料（来源记录之后被删也不影响本场），并带上跨场通病。
+            prepared = drill.prepare(repo, data.drill)
+            if not prepared['drills']:
+                raise ValueError('所选错题已不在复盘记录里（记录被删除或下标失效），请重新选择')
+            material.update(drills=prepared['drills'], habit_note=prepared['habit_note'])
         return material
+
+    @app.get('/api/interview/weak-points')
+    def interview_weak_points():
+        """错题本：既往复盘（模拟 + 真实）里被点了失分点的题，跨场合并、带重练状态。规则统计，不调模型。"""
+        return drill.weak_points(repo)
 
     @app.post('/api/interview/sessions')
     def create_interview_session(data: InterviewCreateInput):
@@ -1488,6 +1500,10 @@ def create_app(data_dir=None):
             raise HTTPException(400, '模拟面试需要先在设置中心绑定分析模型')
         if data.persona_id == 'custom' and not (data.job_id or data.jd_text.strip() or data.job_title.strip()):
             raise HTTPException(400, '自定义岗位需要先指明目标岗位：从岗位库选择、粘贴 JD 或填写岗位名称')
+        if data.persona_id == 'reinforce' and not data.drill:
+            raise HTTPException(400, '错题强化需要先选择要重练的错题')
+        if data.drill and data.persona_id != 'reinforce':
+            raise HTTPException(400, '错题只能在「错题强化官」下重练')
         try:
             material = interview_material(data)
             session = repo.save_interview_session(new_session(

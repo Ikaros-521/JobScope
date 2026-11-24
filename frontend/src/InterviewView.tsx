@@ -8,10 +8,10 @@ import {
   api, cancelInterviewRun, cancelTranscriptRun, createInterviewSession, date, deleteInterviewSession,
   deleteInterviewTranscript, finishInterview, generateTranscriptReport, getAttribution, getFailureMuseum, getInterviewMessages, getInterviewSession,
   getInterviewTranscript, importInterviewTranscript, listInterviewPersonas, listInterviewSessions,
-  listInterviewTranscripts, openInterviewStream, openTranscriptRunStream, relabelInterviewTranscript,
+  listInterviewTranscripts, listInterviewWeakPoints, openInterviewStream, openTranscriptRunStream, relabelInterviewTranscript,
   saveTranscriptSegments, sendInterviewTurn,
 } from './api'
-import type { AttributionRecord, InterviewMessage, InterviewPersonaCard, InterviewSession, InterviewSessionSummary, InterviewStyle, Transcript, TranscriptReport, TranscriptSegment, TranscriptSummary } from './api'
+import type { AttributionRecord, InterviewDrillRef, InterviewMessage, InterviewPersonaCard, InterviewReport, InterviewReview, InterviewSession, InterviewSessionSummary, InterviewStyle, InterviewWeakPoint, InterviewWeakPoints, Transcript, TranscriptReport, TranscriptSegment, TranscriptSummary } from './api'
 
 // 模拟面试工作区（2026-11-19）：左侧场次列表 + 右侧「面试间 | 复盘报告」。
 // 面试官是纯拟真的无工具 agent：对话中零提示零点评，评价全部在复盘页签。
@@ -25,12 +25,14 @@ type StreamState = { runId: string; answer: string } | null
 // 复盘等后台 run 的实时进度（SSE progress 事件）：stage=review 逐题点评 done/total，summary=汇总中。
 type RunProgress = { stage: 'review' | 'summary'; done: number; total: number; topic?: string } | null
 // 渐进式复盘 feed：start 事件铺全部题卡骨架，review 事件按题号原位填充内容，done 换终版报告。
-type ReportFeedItem = { index: number; topic: string; question: string; review?: { critique: string; missing: string[]; model_answer: string; bad_answer_note: string } }
+type ReportFeedItem = { index: number; topic: string; question: string; previous_problems?: string[]; review?: { critique: string; missing: string[]; model_answer: string; bad_answer_note: string } }
 type ReportFeed = { items: ReportFeedItem[]; done: number; total: number; stage: 'review' | 'summary' } | null
 
 const STATUS_NAMES: Record<string, string> = { planning: '出题中', ready: '待开始', live: '面试中', reporting: '复盘生成中', done: '已复盘', failed: '出题失败' }
 const INTENSITY_NAMES: Record<string, string> = { gentle: '温和', standard: '标准', stress: '压力面' }
-const SOURCE_NAMES: Record<string, string> = { jd: 'JD', gap: '评估缺口', resume: '简历', general: '通用' }
+const SOURCE_NAMES: Record<string, string> = { jd: 'JD', gap: '评估缺口', resume: '简历', general: '通用', weakness: '专项强化' }
+// 一场最多重练的错题数（与后端 InterviewCreateInput.drill 上限一致）。
+const MAX_DRILLS = 12
 const TRANSCRIPT_STATUS_NAMES: Record<string, string> = { imported: '待标注', labeling: '标注中', labeled: '待核对', reporting: '报告生成中', done: '已复盘', failed: '标注失败' }
 // 说话人固定选项（与后端归一化取值一致）：me=候选人，interviewer_N=第 N 位面试官。
 const SPEAKER_OPTIONS = ['me', 'interviewer_1', 'interviewer_2', 'interviewer_3', 'interviewer_4', 'interviewer_5']
@@ -67,6 +69,9 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   const [answer, setAnswer] = useState('')
   // 备战计划带来的当日专项：出题时作为 weak_focus 定向覆盖，并在新建面板顶部明示。
   const [focusHint, setFocusHint] = useState('')
+  // 错题强化：选中的错题引用（来源记录 + report.questions 下标）。由「错题强化官」卡片的错题本面板维护；
+  // 复盘页的「重练此题 / 强化重练本场错题」也带着引用打开新建面板（真实复盘页入口会切回模拟侧）。
+  const [drillSelection, setDrillSelection] = useState<InterviewDrillRef[]>([])
   // starting：点「开始出题」到场次建好之间的一次性闸门，防连点重场，也让按钮立刻进加载态。
   const [starting, setStarting] = useState(false)
   // 真实复盘：侧栏顶部分段切换 模拟/真实；逐字稿列表与选中 id 挂在本层，
@@ -137,6 +142,8 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
         if (data.stage === 'start' && Array.isArray(data.items)) {
           setReportFeed({ items: (data.items as Record<string, unknown>[]).map(item => ({
             index: Number(item.index ?? 0), topic: String(item.topic ?? ''), question: String(item.question ?? ''),
+            // 错题强化场次：骨架卡先带上次失分点，点评填入后即可对照（重放幂等：整表重建）。
+            previous_problems: Array.isArray(item.previous_problems) ? (item.previous_problems as string[]) : undefined,
           })), done: 0, total: Number(data.total ?? (data.items as unknown[]).length), stage: 'review' })
         } else if (data.stage === 'review' && data.index != null) {
           const index = Number(data.index)
@@ -225,6 +232,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
     const targetJobId = mode === 'job' ? jobId : ''
     if (mode === 'job' && !targetJobId) { setError('请从岗位库选择一个岗位'); return }
     if (card === 'custom' && mode === 'free' && !jobTitle.trim()) { setError('自定义岗位需要先填写目标岗位名称'); return }
+    if (card === 'reinforce' && !drillSelection.length) { setError('请先选择要重练的错题'); return }
     setStarting(true)
     try {
       const started = await createInterviewSession({
@@ -233,8 +241,10 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
         ...(mode === 'jd' ? { jd_text: jdText.trim(), company: companyName.trim(), ...(jobTitle.trim() ? { job_title: jobTitle.trim() } : {}) } : {}),
         ...(mode === 'free' ? { company: companyName.trim(), ...(card === 'custom' && jobTitle.trim() ? { job_title: jobTitle.trim() } : {}) } : {}),
         ...(focusHint ? { focus: focusHint } : {}),
+        // 错题强化：每道错题出一道变式题，题量随错题数（question_count 由服务端覆盖）。
+        ...(card === 'reinforce' ? { drill: drillSelection } : {}),
       })
-      setCreating(false); setJdText(''); setJobTitle(''); setCompanyName(''); setFocusHint('')
+      setCreating(false); setJdText(''); setJobTitle(''); setCompanyName(''); setFocusHint(''); setDrillSelection([])
       setTab('room')
       setSelected(started.session_id); selectedRef.current = started.session_id
       setSession(null); setMessages([])
@@ -292,11 +302,40 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
     } catch (err) { setError((err as Error).message) }
   }
 
+  // ---- 错题强化：从复盘页带着错题打开「错题强化官」的新建面板（真实复盘页入口会切回模拟侧） ----
+  function openDrill(refs: InterviewDrillRef[], job?: { id: string; label: string }) {
+    if (!refs.length) return
+    setError(''); setFocusHint('')
+    setSide('mock'); setCreating(true); setCard('reinforce'); setRound('business')
+    setDrillSelection(refs.slice(0, MAX_DRILLS))
+    // 来源岗位直接带上：同一岗位的 JD 再问一遍，变式题才贴岗；没有岗位锚点则留自由练。
+    if (job?.id) { setMode('job'); setJobId(job.id); setJobLabel(job.label) }
+    else { setMode('free'); setJobId(''); setJobLabel('') }
+  }
+
+  function defaultDrillSelection(book: InterviewWeakPoints) {
+    // 直接点卡片进来（没带预设）：默认勾最近一场复盘的错题，优先还没补齐的——读完复盘顺手就能练。
+    const first = book.items[0]
+    if (!first) return []
+    const group = book.items.filter(item => item.source === first.source && item.session_id === first.session_id)
+    const pending = group.filter(item => item.practice?.after !== 0)
+    return (pending.length ? pending : group).flatMap(item => item.refs.slice(0, 1)).slice(0, MAX_DRILLS)
+  }
+
+  // 场次复盘里一道题的错题引用。错题强化场次的题带 drill_ref（它重练的原错题）：再练一轮练的是
+  // 原题——强化场自己的变式题不进错题本，指过来会被服务端判为失效引用。
+  function drillTargetOf(session: InterviewSession, item: InterviewReview | undefined, index: number): InterviewDrillRef {
+    return item?.drill_ref ?? { source: 'mock', session_id: session.id, index }
+  }
+
   const plan = session?.question_plan
   const progress = session?.progress
   const askedCount = progress ? Math.min(progress.current_index + 1, plan?.questions.length ?? 0) : 0
   const busy = streamRef.current !== null
   const report = session?.report
+  // 错题强化入口只在后端支持时出现：dist 重建后前端先于后端生效（8765 后端要重启才换代码），
+  // 旧后端没有「错题强化官」，露出按钮只会点了报错。
+  const drillReady = personas.some(item => item.id === 'reinforce')
   // 场次记录导出（题单+对话实录+复盘+归因标注）：组装 Markdown，不经过后端。
   const exportable = Boolean(session && (session.question_plan || messages.length))
 
@@ -356,7 +395,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
     <div className="interview-main">
       {error && <div className="iv-error" role="alert"><span>{error}</span><button className="iv-error-close" onClick={() => setError('')} aria-label="关闭提示"><Icon name="close" size={14} /></button></div>}
       {side === 'real' ? <RealWorkspace transcriptId={selectedTranscript} modelConfigured={modelConfigured} onConfigureModel={onConfigureModel}
-          onCreated={setSelectedTranscript} onChanged={refreshTranscripts} />
+          onCreated={setSelectedTranscript} onChanged={refreshTranscripts} onDrill={drillReady ? openDrill : undefined} />
       : <>
       {focusHint && <div className="iv-focus-banner" role="status">
         <Icon name="target" size={16} />
@@ -374,6 +413,10 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
         jobTitle={jobTitle} onJobTitle={setJobTitle} companyName={companyName} onCompanyName={setCompanyName}
         jdText={jdText} onJdText={setJdText}
         modelConfigured={modelConfigured} onConfigureModel={onConfigureModel}
+        drillSelection={drillSelection}
+        onDrillSelection={setDrillSelection}
+        onDrillLoaded={book => { if (!drillSelection.length) setDrillSelection(defaultDrillSelection(book)) }}
+        onUseJob={(id, label) => { setMode('job'); setJobId(id); setJobLabel(label) }}
         busy={busy || starting} onStart={() => void startSession()} starting={starting} />}
       {session && !creating && <>
         <div className="iv-subtab-row">
@@ -396,7 +439,13 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
         : session.status === 'reporting'
           ? <ProgressiveReport feed={reportFeed} />
           : <><ReportPanel report={report ?? null} persona={session.persona}
-              onRegenerate={() => void finish()} busy={busy} />
+                onRegenerate={() => void finish()} busy={busy}
+                onDrillQuestion={drillReady ? index => openDrill([drillTargetOf(session, report?.questions[index], index)],
+                  { id: session.job_id, label: [session.company, session.job_title].filter(Boolean).join(' · ') }) : undefined}
+                onDrillWeak={drillReady ? () => openDrill(
+                  (session.report?.questions ?? []).map((item, index) => (item.missing.length ? drillTargetOf(session, item, index) : null))
+                    .filter((ref): ref is InterviewDrillRef => ref !== null),
+                  { id: session.job_id, label: [session.company, session.job_title].filter(Boolean).join(' · ') }) : undefined} />
             {/* 失败博物馆归因标注：复盘报告的自然延伸（可控/不可控分流，跨场报告在这里取数） */}
             <AttributionPanel source="mock" sessionId={session.id}
               signals={(progress?.segments ?? []).flatMap(item => item.signals ?? [])} /></>}
@@ -406,7 +455,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   </div>
 }
 
-function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRound, intensity, onIntensity, questionCount, onQuestionCount, mode, onMode, jobId, jobLabel, onPickJob, jobTitle, onJobTitle, companyName, onCompanyName, jdText, onJdText, modelConfigured, onConfigureModel, busy, starting, onStart }: {
+function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRound, intensity, onIntensity, questionCount, onQuestionCount, mode, onMode, jobId, jobLabel, onPickJob, jobTitle, onJobTitle, companyName, onCompanyName, jdText, onJdText, modelConfigured, onConfigureModel, drillSelection, onDrillSelection, onDrillLoaded, onUseJob, busy, starting, onStart }: {
   cards: InterviewPersonaCard[]; styles: InterviewStyle[]; card: string; onCard: (value: string) => void
   style: string; onStyle: (value: string) => void
   round: string; onRound: (value: string) => void
@@ -418,11 +467,16 @@ function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRou
   companyName: string; onCompanyName: (value: string) => void
   jdText: string; onJdText: (value: string) => void
   modelConfigured: boolean; onConfigureModel: () => void
+  // 错题强化（错题强化官卡片）：选中的错题引用、选题面板加载完的回调、一键带上错题来源岗位。
+  drillSelection: InterviewDrillRef[]; onDrillSelection: (next: InterviewDrillRef[]) => void
+  onDrillLoaded: (book: InterviewWeakPoints) => void; onUseJob: (id: string, label: string) => void
   busy: boolean; starting: boolean; onStart: () => void
 }) {
   const active = cards.find(item => item.id === card)
   const customNeedsTitle = card === 'custom' && mode === 'free' && !jobTitle.trim()
-  const startDisabled = !card || busy || !modelConfigured || customNeedsTitle || (mode === 'job' && !jobId)
+  // 错题强化：题量随选中的错题数（每道一道变式题），至少选一道才能开面。
+  const drilling = card === 'reinforce'
+  const startDisabled = !card || busy || !modelConfigured || customNeedsTitle || (mode === 'job' && !jobId) || (drilling && !drillSelection.length)
   return <section className="interview-create">
     <h2 className="sr-only">新建模拟面试</h2>
     {!modelConfigured && <div className="iv-model-hint">模拟面试需要先绑定分析模型。<button className="inline-button" onClick={onConfigureModel}>去设置中心</button></div>}
@@ -443,10 +497,14 @@ function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRou
       <label>强度<select value={intensity} onChange={event => onIntensity(event.target.value as 'gentle' | 'standard' | 'stress')} aria-label="面试强度">
         {(['gentle', 'standard', 'stress'] as const).map(value => <option key={value} value={value}>{INTENSITY_NAMES[value]}</option>)}
       </select></label>
-      <label>题量<select value={questionCount} onChange={event => onQuestionCount(Number(event.target.value))} aria-label="题量">
-        {[6, 8, 10].map(value => <option key={value} value={value}>{value} 题</option>)}
-      </select></label>
+      {drilling
+        ? <span className="tiny-label iv-drill-count" role="status">题量 = 已选 <b>{drillSelection.length}</b> 道错题，每道出一道变式题</span>
+        : <label>题量<select value={questionCount} onChange={event => onQuestionCount(Number(event.target.value))} aria-label="题量">
+          {[6, 8, 10].map(value => <option key={value} value={value}>{value} 题</option>)}
+        </select></label>}
     </div>}
+    {drilling && <DrillPicker selection={drillSelection} onSelection={onDrillSelection} onLoaded={onDrillLoaded}
+      jobId={jobId} onUseJob={onUseJob} />}
     <div className="iv-modes" role="tablist" aria-label="目标岗位来源">
       {([['job', '从岗位库选'], ['jd', '粘贴 JD'], ['free', '自由练']] as const).map(([value, label]) =>
         <button key={value} className={mode === value ? 'active' : ''} onClick={() => onMode(value)}>{label}</button>)}
@@ -473,7 +531,133 @@ function CreatePanel({ cards, styles, card, onCard, style, onStyle, round, onRou
     <div className="iv-create-actions">
       <button className="button primary" disabled={startDisabled} onClick={onStart}>{starting ? <span className="spinner" /> : <Icon name="mic" size={16} />}开始出题</button>
       {customNeedsTitle ? <span className="tiny-label iv-warn">先填目标岗位名称，面试官才知道面什么</span>
+        : drilling ? <span className="tiny-label">{drillSelection.length
+          ? '出题约需 1-2 分钟：每道错题换问法出一道变式题，面试中不提示，复盘时逐题对照上次'
+          : '先从下面的错题本勾选要重练的题'}</span>
         : <span className="tiny-label">出题约需 1-3 分钟（岗位 JD + 评估缺口 + 简历 + 公司资料 四源合一），完成后进入面试间</span>}
+    </div>
+  </section>
+}
+
+// ---- 错题本选题面板（错题强化官专用，2026-11-24）----
+// 既往复盘（模拟 + 真实）里被点了失分点的题，按来源场次分组。列表由后端规则统计秒出；
+// 勾选状态在外层（建场入参就是这串引用），这里只负责展示与切换。
+const DRILL_SOURCE_NAMES: Record<string, string> = { mock: '模拟面试', real: '真实复盘' }
+const refKey = (ref: InterviewDrillRef) => `${ref.source}|${ref.session_id}|${ref.index}`
+
+type DrillGroup = { key: string; source: string; label: string; at: string; items: InterviewWeakPoint[] }
+
+function groupWeakPoints(items: InterviewWeakPoint[]): DrillGroup[] {
+  // items 已按最近出现排好序：首次出现的顺序 = 最近场次在前
+  const groups = new Map<string, DrillGroup>()
+  for (const item of items) {
+    const key = `${item.source}|${item.session_id}`
+    if (!groups.has(key)) groups.set(key, {
+      key, source: item.source, at: item.last_at, items: [],
+      label: item.label || `${DRILL_SOURCE_NAMES[item.source]}（未挂岗位）`,
+    })
+    groups.get(key)!.items.push(item)
+  }
+  return [...groups.values()]
+}
+
+function DrillPicker({ selection, onSelection, onLoaded, jobId, onUseJob }: {
+  selection: InterviewDrillRef[]; onSelection: (next: InterviewDrillRef[]) => void
+  onLoaded: (book: InterviewWeakPoints) => void
+  jobId: string; onUseJob: (id: string, label: string) => void
+}) {
+  const [book, setBook] = useState<InterviewWeakPoints | null>(null)
+  const [error, setError] = useState('')
+  const [filter, setFilter] = useState('')
+
+  useEffect(() => {
+    let alive = true
+    listInterviewWeakPoints().then(data => { if (alive) { setBook(data); onLoaded(data) } })
+      .catch(err => { if (alive) setError((err as Error).message) })
+    return () => { alive = false }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  const items = book?.items ?? []
+  const selected = new Set(selection.map(refKey))
+  const isSelected = (item: InterviewWeakPoint) => item.refs.some(ref => selected.has(refKey(ref)))
+  const visible = filter ? items.filter(item => item.tags.includes(filter)) : items
+  const groups = groupWeakPoints(visible)
+  const listed = new Set(items.flatMap(item => item.refs.map(refKey)))
+  // 带进来的引用指向没被点过失分点的题（「重练此题」）：不在错题本里，单独计数说明。
+  const extra = selection.filter(ref => !listed.has(refKey(ref))).length
+  const full = selection.length >= MAX_DRILLS
+  const tagLabels = Object.fromEntries((book?.tags ?? []).map(tag => [tag.id, tag.label]))
+
+  const toggleItem = (item: InterviewWeakPoint) => {
+    const keys = item.refs.map(refKey)
+    if (isSelected(item)) onSelection(selection.filter(ref => !keys.includes(refKey(ref))))
+    else if (!full) onSelection([...selection, item.refs[0]])
+  }
+  const toggleGroup = (group: DrillGroup) => {
+    const keys = group.items.flatMap(item => item.refs.map(refKey))
+    if (group.items.every(isSelected)) onSelection(selection.filter(ref => !keys.includes(refKey(ref))))
+    else onSelection([...selection, ...group.items.filter(item => !isSelected(item)).map(item => item.refs[0])].slice(0, MAX_DRILLS))
+  }
+  // 全选/清空只作用于当前筛出来的题：被筛掉的分组里已勾的保留。
+  const visibleKeys = new Set(visible.flatMap(item => item.refs.map(refKey)))
+  const selectVisible = () => onSelection([...selection, ...visible.filter(item => !isSelected(item)).map(item => item.refs[0])].slice(0, MAX_DRILLS))
+  const clearVisible = () => onSelection(selection.filter(ref => !visibleKeys.has(refKey(ref))))
+
+  // 选中的错题都来自同一个岗位而目标还没选：一键带上来源岗位，变式题才贴着原 JD。
+  const chosen = items.filter(isSelected)
+  const commonJob = chosen.length && chosen.every(item => item.job_id === chosen[0].job_id) ? chosen[0] : null
+  const sessionCount = new Set(items.map(item => `${item.source}|${item.session_id}`)).size
+
+  return <section className="iv-drill" aria-label="错题本">
+    <div className="iv-drill-head">
+      <strong>错题本</strong>
+      {book && <span className="tiny-label">共 {book.total} 题 · 来自 {sessionCount} 份复盘{book.limitations.length ? `（${book.limitations.join('；')}）` : ''}</span>}
+      <span className="iv-progress iv-drill-selected" role="status">已选 {selection.length}/{MAX_DRILLS}</span>
+      {items.length > 0 && <span className="iv-drill-bulk">
+        <button className="text-button" onClick={selectVisible}>全选</button>
+        <button className="text-button" onClick={clearVisible} disabled={!visible.some(isSelected)}>清空</button>
+      </span>}
+    </div>
+    {error && <div className="iv-error" role="alert"><span>{error}</span><button className="iv-error-close" onClick={() => setError('')} aria-label="关闭提示"><Icon name="close" size={14} /></button></div>}
+    {book && book.patterns.length > 0 && <div className="iv-drill-filters" role="group" aria-label="按失分要素筛选">
+      <span className="tiny-label">失分要素</span>
+      <button className={!filter ? 'active' : ''} onClick={() => setFilter('')}>全部</button>
+      {book.patterns.map(item => <button key={item.tag} className={filter === item.tag ? 'active' : ''}
+        title={`在 ${item.count} 道错题里被点到的失分要素`} onClick={() => setFilter(filter === item.tag ? '' : item.tag)}>{item.label} {item.count}</button>)}
+    </div>}
+    {!jobId && commonJob?.job_id && <button className="iv-drill-job" onClick={() => onUseJob(commonJob.job_id, [commonJob.company, commonJob.job_title].filter(Boolean).join(' · '))}
+      title="带上来源岗位的 JD、评估缺口与简历存档出变式题"><Icon name="target" size={14} />选中的错题都来自「{[commonJob.company, commonJob.job_title].filter(Boolean).join(' · ')}」，带上它的 JD 重练</button>}
+    <div className="iv-drill-list">
+      {!book && !error && <div className="iv-state">正在整理错题本…<span className="spinner" /></div>}
+      {book && items.length === 0 && <div className="iv-drill-empty">还没有可强化的错题。完成一场模拟面试，或在「真实复盘」导入逐字稿并生成报告后，答得不好的题会自动收进这里。</div>}
+      {book && items.length > 0 && groups.length === 0 && <div className="iv-drill-empty">没有命中这项失分要素的错题。</div>}
+      {groups.map(group => <div key={group.key} className="iv-drill-group">
+        <label className="iv-drill-group-head">
+          <input type="checkbox" checked={group.items.every(isSelected)} onChange={() => toggleGroup(group)} aria-label={`选择「${group.label}」的全部错题`} />
+          <strong>{group.label}</strong>
+          <span className="tiny-label">{DRILL_SOURCE_NAMES[group.source]} · {date(group.at)} · {group.items.length} 题</span>
+        </label>
+        {group.items.map(item => <label key={item.id} className={`iv-drill-item${isSelected(item) ? ' selected' : ''}`}>
+          <input type="checkbox" checked={isSelected(item)} disabled={!isSelected(item) && full} onChange={() => toggleItem(item)}
+            aria-label={`重练：${item.question}`} />
+          <span className="iv-drill-body">
+            <span className="iv-drill-q">
+              <span className="iv-drill-text">{item.question}</span>
+              {item.occurrences > 1 && <em className="iv-drill-badge repeat" title="同一道题在多份复盘里都被点了失分点">{item.occurrences} 份复盘都出现</em>}
+              {item.practice && <em className={`iv-drill-badge ${item.practice.after === 0 ? 'cleared' : 'again'}`}
+                title={`最近一次重练（${date(item.practice.at)}）：缺失要素 上次 ${item.practice.before} 条 → 本次 ${item.practice.after} 条${item.practice.count > 1 ? `，共重练 ${item.practice.count} 次` : ''}`}>
+                {item.practice.after === 0 ? `重练过 · 本次没再被点出缺失` : `重练过 · 缺失要素 ${item.practice.before}→${item.practice.after}`}</em>}
+            </span>
+            <span className="iv-drill-problems" title={item.problems.join('；')}>{item.problems.length
+              ? <>上次失分：{item.problems.slice(0, 2).join('；')}{item.problems.length > 2 ? ` 等 ${item.problems.length} 条` : ''}</>
+              : '这道题没有被点出失分点，按原题考察点出变式题'}</span>
+            {item.tags.length > 0 && <span className="iv-drill-tags">{item.tags.slice(0, 3).map(tagId =>
+              <i key={tagId}>{tagLabels[tagId] ?? tagId}</i>)}</span>}
+          </span>
+        </label>)}
+      </div>)}
+      {extra > 0 && <p className="tiny-label iv-drill-extra">另有 {extra} 道题不在错题本里（没被点过失分点），已按「重练此题」带入。</p>}
     </div>
   </section>
 }
@@ -559,6 +743,7 @@ function PlanningWait({ session }: { session: InterviewSession }) {
   const elapsedLabel = elapsed >= 60 ? `${Math.floor(elapsed / 60)} 分 ${elapsed % 60} 秒` : `${elapsed} 秒`
   const material = session.material ?? {}
   const sources = [
+    material.drills?.length ? `错题 ${material.drills.length} 道` : '',
     material.jd_summary ? '岗位 JD' : '',
     material.gaps?.length ? '评估缺口' : '',
     material.resume_digest ? (material.resume_label ? `简历存档《${material.resume_label}》` : '简历') : '',
@@ -567,7 +752,9 @@ function PlanningWait({ session }: { session: InterviewSession }) {
   return <div className="iv-waiting">
     <div className="iv-waiting-head"><span className="spinner" />正在出题…已等待 {elapsedLabel}</div>
     {sources.length > 0 && <div className="iv-waiting-sources">出题材料已就位：{sources.map(item => <em key={item}>{item}</em>)}</div>}
-    <p className="iv-waiting-note">岗位专家正按材料定制 {session.config.question_count} 道题，约 1-3 分钟。留在本页出完自动进面试间；切去别的页面后，从左侧场次列表点开本场继续。</p>
+    <p className="iv-waiting-note">{material.drills?.length
+      ? `面试官正为 ${material.drills.length} 道错题各出一道变式题（换问法，防背答案），约 1-2 分钟。`
+      : `岗位专家正按材料定制 ${session.config.question_count} 道题，约 1-3 分钟。`}留在本页出完自动进面试间；切去别的页面后，从左侧场次列表点开本场继续。</p>
   </div>
 }
 
@@ -585,6 +772,9 @@ function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer
 }) {
   const total = plan?.questions.length ?? 0
   const ready = session.status === 'ready'
+  // 错题强化场次：题单里的 weakness 题标「错题重练」；失分点不进题单预览（面试中零提示，对照留给复盘）。
+  const drilling = Boolean(session.material?.drills?.length)
+  const sourceName = (item: { source: string }) => drilling && item.source === 'weakness' ? '错题重练' : SOURCE_NAMES[item.source] || '通用'
   return <div className="interview-room">
     <div className="interview-room-head">
       <div className="iv-room-meta">
@@ -605,10 +795,13 @@ function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer
       {ready && plan && <div className="iv-plan">
         <p className="iv-plan-opening">{plan.opening}</p>
         <ol>{plan.questions.map((item, index) => <li key={index}>
-          <span className="iv-topic">{item.topic}</span><span className="iv-source">{SOURCE_NAMES[item.source] || '通用'}</span>
+          <span className="iv-topic">{item.topic}</span><span className="iv-source">{sourceName(item)}</span>
           <p>{item.question}</p>
         </li>)}</ol>
-        <div className="iv-plan-note">面试官会按这份题单逐题追问（每题最多 3 层）；回答越真实，复盘越有价值。</div>
+        <div className="iv-plan-note">{drilling
+          ? '错题强化：每道题是一道错题的变式题，面试官会盯住你上次没答到位的地方追问（面试中不提示）；复盘时逐题对照上次。'
+          : '面试官会按这份题单逐题追问（每题最多 3 层）；回答越真实，复盘越有价值。'}</div>
+        {plan.fallback && <p className="tiny-label iv-warn">出题模型暂时不可用，本场按原题重问——追问仍会对准上次失分点。</p>}
         <button className="button primary" onClick={onSend}><Icon name="mic" size={16} />开始面试</button>
       </div>}
       {messages.map(item => <div key={item.id} className={`iv-msg ${item.role}`}>
@@ -651,6 +844,7 @@ function ProgressiveReport({ feed }: { feed: ReportFeed }) {
     {feed?.items.map(item => item.review
       ? <details key={item.index} open className="iv-review filled">
           <summary><span className="iv-topic">{item.topic}</span>{item.question}</summary>
+          {item.previous_problems?.length ? <p className="iv-previous">上次失分：{item.previous_problems.join('、')}</p> : null}
           <p className="iv-critique"><Markdown content={item.review.critique} /></p>
           {item.review.missing?.length > 0 && <p className="iv-missing">缺失要素：{item.review.missing.join('、')}</p>}
           {item.review.model_answer && <div className="iv-model-answer"><strong>高分示范</strong><Markdown content={item.review.model_answer} /></div>}
@@ -658,6 +852,7 @@ function ProgressiveReport({ feed }: { feed: ReportFeed }) {
         </details>
       : <div key={item.index} className="iv-review pending">
           <summary><span className="iv-topic">{item.topic}</span>{item.question}</summary>
+          {item.previous_problems?.length ? <p className="iv-previous">上次失分：{item.previous_problems.join('、')}</p> : null}
           <p className="iv-pending-note">点评生成中…</p>
           <span className="iv-skeleton"><i /><i /><i /></span>
         </div>)}
@@ -665,17 +860,42 @@ function ProgressiveReport({ feed }: { feed: ReportFeed }) {
   </div>
 }
 
-function ReportPanel({ report, persona, onRegenerate, busy }: {
+// 错题强化的纯计数对照条：只摆数字不下结论——点评模型几乎每题都会点出可改进处，「补齐」不等于「过关」。
+function DrillStatsLine({ stats }: { stats: NonNullable<InterviewReport['drill_stats']> }) {
+  return <p className="iv-drill-stats" role="status">
+    <Icon name="target" size={14} />
+    <span>错题强化对照：重练 {stats.total} 道错题，<b>{stats.cleared}</b> 道本次没再被点出缺失要素；缺失要素合计 上次 {stats.before} 条 → 本次 {stats.after} 条。</span>
+  </p>
+}
+
+// 逐题复盘底部的「重练此题」：把这题带去「错题强化官」（没被点失分点的题也能练）。
+function ReviewDrillAction({ onClick }: { onClick: () => void }) {
+  return <div className="iv-review-foot">
+    <button className="text-button" onClick={onClick}
+      title="把这题带去「错题强化官」：换问法重考一遍，面试官盯住上次的失分点追问，复盘对照这次的表现"><Icon name="mic" size={13} />重练此题</button>
+  </div>
+}
+
+// 终版复盘报告。错题强化场次多两样：总评下的计数对照条、每题的「上次失分」行；
+// 「重练此题 / 强化重练本场错题」把答得不好的题带去再开一场强化面。
+function ReportPanel({ report, persona, onRegenerate, busy, onDrillQuestion, onDrillWeak }: {
   report: InterviewSession['report']; persona: InterviewSession['persona']
   onRegenerate: () => void; busy: boolean
+  onDrillQuestion?: (index: number) => void; onDrillWeak?: () => void
 }) {
   if (!report) return <div className="iv-state">复盘还没有生成。回面试间点「结束并生成复盘」。</div>
+  const weakCount = report.questions.filter(item => item.missing?.length).length
   return <div className="interview-report">
     <section className="paper-panel">
       <div className="section-heading"><h2>本场总评</h2><span className="tiny-label">{persona.name} · {persona.round_label} · 复盘了 {report.reviewed ?? report.questions.length} 题</span>
-        <button className="button secondary small iv-regen" disabled={busy} onClick={onRegenerate} title="对同一批问答重新跑逐题点评与汇总，覆盖当前报告"><Icon name="source" size={14} />重新生成</button>
+        <div className="iv-report-actions">
+          {onDrillWeak && weakCount > 0 && <button className="button primary small" onClick={onDrillWeak}
+            title="把本场被点了缺失要素的题带去「错题强化官」：换问法重考一遍，复盘逐题对照这次"><Icon name="mic" size={14} />强化重练本场错题（{weakCount}）</button>}
+          <button className="button secondary small" disabled={busy} onClick={onRegenerate} title="对同一批问答重新跑逐题点评与汇总，覆盖当前报告"><Icon name="source" size={14} />重新生成</button>
+        </div>
       </div>
       <p className="iv-summary">{report.summary}</p>
+      {report.drill_stats && <DrillStatsLine stats={report.drill_stats} />}
       <div className="iv-dimensions">
         {report.dimensions.map(item => <div key={item.name} className="iv-dimension">
           <strong>{item.name}</strong>
@@ -689,10 +909,12 @@ function ReportPanel({ report, persona, onRegenerate, busy }: {
       <div className="iv-reviews">
         {report.questions.map((item, index) => <details key={index} open={index === 0} className="iv-review">
           <summary><span className="iv-topic">{item.topic}</span>{item.question}</summary>
+          {item.previous_problems?.length ? <p className="iv-previous">上次失分：{item.previous_problems.join('、')}</p> : null}
           <p className="iv-critique"><Markdown content={item.critique} /></p>
           {item.missing.length > 0 && <p className="iv-missing">缺失要素：{item.missing.join('、')}</p>}
           {item.model_answer && <div className="iv-model-answer"><strong>高分示范</strong><Markdown content={item.model_answer} /></div>}
           {item.bad_answer_note && <p className="iv-bad-answer"><strong>踩坑提醒</strong>{item.bad_answer_note}</p>}
+          {onDrillQuestion && <ReviewDrillAction onClick={() => onDrillQuestion(index)} />}
         </details>)}
       </div>
     </section>
@@ -727,9 +949,11 @@ type TranscriptFeedItem = { index: number; question: string; review?: { critique
 // 渐进式复盘 feed：start 铺题卡骨架，review 原位填充，done 换终版报告（同模拟面试复盘 feed）。
 type TranscriptReportFeed = { items: TranscriptFeedItem[]; done: number; total: number; stage: 'review' | 'summary' } | null
 
-function RealWorkspace({ transcriptId, modelConfigured, onConfigureModel, onCreated, onChanged }: {
+function RealWorkspace({ transcriptId, modelConfigured, onConfigureModel, onCreated, onChanged, onDrill }: {
   transcriptId: string; modelConfigured: boolean; onConfigureModel: () => void
   onCreated: (id: string) => void; onChanged: () => void
+  // 错题强化入口：带着真实复盘里的错题引用切到模拟侧开强化场（由外层 InterviewView 落地）；后端不支持时为 undefined。
+  onDrill?: (refs: InterviewDrillRef[], job?: { id: string; label: string }) => void
 }) {
   const [transcript, setTranscript] = useState<Transcript | null>(null)
   const [error, setError] = useState('')
@@ -966,7 +1190,13 @@ function RealWorkspace({ transcriptId, modelConfigured, onConfigureModel, onCrea
       : transcript.status === 'reporting'
         ? <TranscriptProgressiveReport feed={feed} />
         : <><TranscriptReportPanel report={transcript.report} jobLabel={jobLabelFull} stale={reportStale}
-            onRegenerate={() => void startReport()} busy={busy} />
+              onRegenerate={() => void startReport()} busy={busy}
+              onDrillQuestion={onDrill ? index => onDrill([{ source: 'real', session_id: transcript.id, index }],
+                { id: transcript.job_id, label: jobLabelFull }) : undefined}
+              onDrillWeak={onDrill ? () => onDrill(
+                (transcript.report?.questions ?? []).map((item, index) => (item.bad.length ? index : -1)).filter(index => index >= 0)
+                  .map(index => ({ source: 'real' as const, session_id: transcript.id, index })),
+                { id: transcript.job_id, label: jobLabelFull }) : undefined} />
           {/* 失败博物馆归因标注：真实面试失败是主要馆藏（有真实结果可归因） */}
           <AttributionPanel source="real" sessionId={transcript.id} onSaved={onChanged} /></>}
     {confirmRelabel && <ConfirmDialog danger title="重新标注" message="重新标注会覆盖当前段落，含已做的人工修正。"
@@ -1074,16 +1304,23 @@ function TranscriptProgressiveReport({ feed }: { feed: TranscriptReportFeed }) {
 }
 
 // 终版复盘报告：总评分/一句话总评 → 岗位匹配度 → 优点/问题两栏 → 逐题问答拆解 → 行动清单。
-function TranscriptReportPanel({ report, jobLabel, stale, onRegenerate, busy }: {
+// 「重练此题 / 强化重练本场错题」把真实面试里答得不好的题带去模拟侧开错题强化场。
+function TranscriptReportPanel({ report, jobLabel, stale, onRegenerate, busy, onDrillQuestion, onDrillWeak }: {
   report: TranscriptReport | null; jobLabel: string; stale: boolean; onRegenerate: () => void; busy: boolean
+  onDrillQuestion?: (index: number) => void; onDrillWeak?: () => void
 }) {
   if (!report) return <div className="iv-state">复盘报告还没有生成。回「说话人核对」页签点「生成复盘报告」。</div>
   const match = report.jd_match ?? { fit_score: 0, evidence: [], gaps: [] }
+  const weakCount = report.questions.filter(item => item.bad?.length).length
   return <div className="interview-report">
     <section className="paper-panel">
       <div className="section-heading"><h2>本场总评</h2>
         <span className="tiny-label">{jobLabel}{report.reviewed ? ` · 拆解了 ${report.reviewed} 题问答` : ''}</span>
-        <button className="button secondary small iv-regen" disabled={busy} onClick={onRegenerate} title="基于当前标注重新生成复盘报告"><Icon name="source" size={14} />重新生成</button>
+        <div className="iv-report-actions">
+          {onDrillWeak && weakCount > 0 && <button className="button primary small" onClick={onDrillWeak}
+            title="把本场被点了问题的题带去「错题强化官」：换问法重考一遍，复盘逐题对照这次"><Icon name="mic" size={14} />强化重练本场错题（{weakCount}）</button>}
+          <button className="button secondary small" disabled={busy} onClick={onRegenerate} title="基于当前标注重新生成复盘报告"><Icon name="source" size={14} />重新生成</button>
+        </div>
       </div>
       <p className="iv-summary"><span className="iv-score" data-score={report.overall_score}>{'★'.repeat(Math.max(report.overall_score, 0))}{'☆'.repeat(5 - Math.max(report.overall_score, 0))}</span>{report.summary}</p>
       {report.limitations?.length ? <p className="iv-missing">{report.limitations.join('；')}</p> : null}
@@ -1110,6 +1347,7 @@ function TranscriptReportPanel({ report, jobLabel, stale, onRegenerate, busy }: 
           {item.good.length > 0 && <p className="iv-good">亮点：{item.good.join('；')}</p>}
           {item.bad.length > 0 && <p className="iv-missing">问题：{item.bad.join('；')}</p>}
           {item.suggestion && <p className="iv-bad-answer"><strong>下次这样答</strong>{item.suggestion}</p>}
+          {onDrillQuestion && <ReviewDrillAction onClick={() => onDrillQuestion(index)} />}
         </details>)}
       </div>
     </section>
@@ -1176,6 +1414,9 @@ function buildInterviewMarkdown(session: InterviewSession, messages: InterviewMe
   }
   if (report) {
     lines.push('## 复盘报告', '', '### 总评', '', report.summary, '')
+    if (report.drill_stats) {
+      lines.push(`错题强化对照：重练 ${report.drill_stats.total} 道错题，${report.drill_stats.cleared} 道本次没再被点出缺失要素；缺失要素合计 上次 ${report.drill_stats.before} 条 → 本次 ${report.drill_stats.after} 条。`, '')
+    }
     if (report.dimensions.length) {
       lines.push('### 维度评分', '')
       for (const item of report.dimensions) {
@@ -1188,6 +1429,7 @@ function buildInterviewMarkdown(session: InterviewSession, messages: InterviewMe
       report.questions.forEach((item, index) => {
         lines.push(`#### ${index + 1}. 【${item.topic}】${item.question}`, '',
           `**点评：** ${item.critique}`)
+        if (item.previous_problems?.length) lines.push(`**上次失分要素：** ${item.previous_problems.join('、')}`)
         if (item.missing.length) lines.push(`**缺失要素：** ${item.missing.join('、')}`)
         if (item.model_answer) lines.push(`**高分示范：** ${item.model_answer}`)
         if (item.bad_answer_note) lines.push(`**踩坑提醒：** ${item.bad_answer_note}`)
