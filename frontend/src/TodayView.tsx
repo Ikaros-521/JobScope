@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { createBackup, date, getDashboard, relativeDays } from './api'
-import type { Dashboard, DashboardBriefing, DashboardDue, PipelineFunnel, PipelineFunnelBucket, PipelinePrescription, PipelineWeeklyWeek, TodayPlan } from './api'
+import type { Dashboard, DashboardBriefing, DashboardDue, PipelineFunnel, PipelineFunnelBucket, PipelinePrescription, PipelineWeeklyWeek, PrepBrief, TodayPlan } from './api'
 import { toast } from './toast'
 import { Icon } from './Icon'
 import { sourceNames } from './JobCard'
@@ -21,13 +21,14 @@ const BACKUP_REMIND_DAYS = 7
 const LOW_POWER_DAYS = 4
 
 export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJobs, onOpenSettings,
-  onPrescriptionNavigate }: {
+  onPrescriptionNavigate, onOpenPrepPlan }: {
   onOpenJob: (jobId: string) => void
   onOpenFavorites: () => void
   onOpenSources: () => void
   onOpenJobs: () => void
   onOpenSettings: () => void
   onPrescriptionNavigate?: (target: PipelinePrescription['target']) => void
+  onOpenPrepPlan: () => void
 }) {
   const [data, setData] = useState<Dashboard | null>(null)
   const [error, setError] = useState('')
@@ -85,6 +86,9 @@ export function TodayView({ onOpenJob, onOpenFavorites, onOpenSources, onOpenJob
 
       {/* 晨间简报（2026-11-23）：打开第一眼先看「自昨天以来发生了什么」，再决定今天做什么。 */}
       {briefing && <BriefingStrip briefing={briefing} onOpenSources={onOpenSources} />}
+
+      {/* 面试备战（2026-11-24）：今日页只展示今天的必做进度与连续天数，完整计划在工作区。 */}
+      <PrepCard brief={data.prep_plan} onOpen={onOpenPrepPlan} />
 
       {/* 最低功耗模式（2026-11-23）：静默 ≥4 天后的温和重入——替下目标行与处方卡，不弹欠账。 */}
       {lowPower ? <ReentryCard days={quietDays} onOpenFavorites={onOpenFavorites} /> :
@@ -160,6 +164,29 @@ function DueRow({ item, onOpen }: { item: DashboardDue; onOpen: (id: string) => 
       {PIPELINE_NAMES[item.status] || item.status}{item.note ? ` · ${item.note}` : ''}
     </span>
   </li>
+}
+
+// 面试备战（2026-11-24）：今日页只报「今天必做 X/Y」与连续天数，不摆整张计划欠账。
+// 没有计划时给一句入口说明——计划是主动选择，不在后台偷偷生成。
+function PrepCard({ brief, onOpen }: { brief?: PrepBrief | null; onOpen: () => void }) {
+  if (!brief) return <section className="paper-panel today-panel today-prep" aria-label="面试备战">
+    <div className="section-heading"><div><h2>面试备战</h2>
+      <p className="body-small muted">机会来了接不住，是最可惜的失败。把面试暴露的短板变成每天一两件小事。</p></div></div>
+    <button className="button secondary small" onClick={onOpen}>看看备战计划<Icon name="arrow" size={13} /></button>
+  </section>
+  const next = brief.today.tasks.find(task => task.status === 'pending') || brief.today.overdue[0]
+  const allDone = brief.today.required_total > 0 && brief.today.required_done >= brief.today.required_total
+  return <section className="paper-panel today-panel today-prep" aria-label="面试备战">
+    <div className="section-heading"><div><h2>今日备战</h2>
+      <p className="body-small muted">每天一场模拟面试，短板会自己浮出来——今天做一件就算推进。</p></div>
+      <span className="pp-streak" title={`历史最长连续 ${brief.progress.best_streak} 天`}>连续 {brief.progress.streak} 天</span></div>
+    <div className="pp-today-line">
+      <span className={allDone ? 'done' : ''}>必做 {brief.today.required_done}/{brief.today.required_total}</span>
+      {next && <span className="pp-next">{next.title}</span>}
+      {allDone && <span className="tiny-label">今天的必做已完成，做得不错。</span>}
+    </div>
+    <button className="text-button today-panel-link" onClick={onOpen}>打开备战计划<Icon name="arrow" size={13} /></button>
+  </section>
 }
 
 // 今日行动（2026-11-22）：行动处方引擎的今日页入口。目标数字与已投数并排，

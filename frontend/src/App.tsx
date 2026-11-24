@@ -33,6 +33,7 @@ import { ChatWorkspace } from './chat/ChatWorkspace'
 import { Icon } from './Icon'
 import InterviewView from './InterviewView'
 import type { InterviewDeepLink } from './InterviewView'
+import { PrepPlanView } from './PrepPlanView'
 import { NAV_GROUPS, NAV_STORAGE_KEY, hashQuery, viewFromHash } from './navigation'
 import type { SettingsTab, ViewId } from './navigation'
 
@@ -73,8 +74,9 @@ export default function App() {
   // 地址栏 ↔ 视图双向同步：切换压入历史（浏览器回退可走回上个视图），回退/前进/手改地址经 hashchange 生效。
   // 带查询参数的深链（#/interview?job=<id>）在进视图时转成请求信号，由目标工作区消费。
   const [interviewRequest, setInterviewRequest] = useState<InterviewDeepLink>(null)
-  function openInterview(jobId = '') {
-    setInterviewRequest(jobId ? { jobId, token: Date.now() } : null)
+  // focus 来自备战计划的当日专项：带着它进面试间，出题会定向覆盖这个主题（weak_focus）。
+  function openInterview(jobId = '', focus = '') {
+    setInterviewRequest(jobId || focus ? { jobId, focus, token: Date.now() } : null)
     setView('interview')
   }
   useEffect(() => {
@@ -82,8 +84,10 @@ export default function App() {
       const next = viewFromHash()
       if (next) setView(next)
       if (next === 'interview') {
-        const job = hashQuery().get('job') || ''
-        setInterviewRequest(job ? { jobId: job, token: Date.now() } : null)
+        const query = hashQuery()
+        const job = query.get('job') || ''
+        const focus = query.get('focus') || ''
+        setInterviewRequest(job || focus ? { jobId: job, focus, token: Date.now() } : null)
       }
     }
     window.addEventListener('hashchange', onHashChange)
@@ -99,10 +103,15 @@ export default function App() {
     else window.location.hash = `/${view}`
   }, [view])
   // 直接以深链打开应用（书签/刷新）时同样消费一次 #/interview?job=<id>。
+  // 空 job/focus 不发请求信号：普通刷新后进面试视图不该被误当深链（曾导致刷新后
+  // 点场次卡在新建面板、面试数据不加载）。
   useEffect(() => {
     if (view !== 'interview') return
-    const job = hashQuery().get('job') || ''
-    setInterviewRequest(job ? { jobId: job, token: Date.now() } : null)
+    const query = hashQuery()
+    const job = query.get('job') || ''
+    const focus = query.get('focus') || ''
+    if (!job && !focus) return
+    setInterviewRequest({ jobId: job, focus, token: Date.now() })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   // 岗位详情「优化简历」跳转工坊时的预填（工坊消费后清空，避免切回时重复生效）。
@@ -289,8 +298,8 @@ export default function App() {
       <div className="sidebar-bottom"><span className={`connection-dot ${online ? 'connected' : ''}`} />{online ? '本地工作区已连接' : '等待本地服务'}<button className="text-button sidebar-tutorial-button" onClick={() => setTutorialOpen(true)}>使用教程</button><span className="version">v0.1</span></div>
     </aside>
 
-    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'settings' || view === 'compare' || view === 'favorites' || view === 'knowledge' || view === 'logs' || view === 'profile' || view === 'today' || view === 'jd-assessment' || view === 'failure-museum' ? 'main main-compact' : 'main'}>
-      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'today' ? '今日概览' : view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'interview' ? '模拟面试' : view === 'jd-assessment' ? '反向JD测评' : view === 'failure-museum' ? '失败博物馆' : view === 'resume' ? '我的简历' : view === 'profile' ? '个人资料库' : view === 'workshop' ? '简历工坊' : view === 'runway' ? '生存跑道' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'knowledge' ? '知识库' : view === 'logs' ? '运行日志' : view === 'settings' ? '设置中心' : '数据与采集'}</div><div className="topbar-right"><button className="icon-button" aria-label="刷新工作区" title="刷新档案、元数据与收藏角标" onClick={() => setRefreshTick(tick => tick + 1)}><Icon name="source" size={17} /></button></div></header>
+    <main id="workspace-main" tabIndex={-1} className={view === 'jobs' || view === 'evidence' ? 'main main-workbench' : view === 'sources' || view === 'settings' || view === 'compare' || view === 'favorites' || view === 'knowledge' || view === 'logs' || view === 'profile' || view === 'today' || view === 'jd-assessment' || view === 'failure-museum' || view === 'prep-plan' ? 'main main-compact' : 'main'}>
+      <header className="topbar"><div className="breadcrumb">工作区<span>/</span>{view === 'today' ? '今日概览' : view === 'jobs' ? '岗位研究' : view === 'favorites' ? '收藏' : view === 'interview' ? '模拟面试' : view === 'jd-assessment' ? '反向JD测评' : view === 'failure-museum' ? '失败博物馆' : view === 'prep-plan' ? '备战计划' : view === 'resume' ? '我的简历' : view === 'profile' ? '个人资料库' : view === 'workshop' ? '简历工坊' : view === 'runway' ? '生存跑道' : view === 'evidence' ? '公司资料库' : view === 'compare' ? '数据分析' : view === 'global' ? '全局对话' : view === 'knowledge' ? '知识库' : view === 'logs' ? '运行日志' : view === 'settings' ? '设置中心' : '数据与采集'}</div><div className="topbar-right"><button className="icon-button" aria-label="刷新工作区" title="刷新档案、元数据与收藏角标" onClick={() => setRefreshTick(tick => tick + 1)}><Icon name="source" size={17} /></button></div></header>
       <div hidden={view !== 'evidence'} className="evidence-view"><EvidenceWorkspace active={view === 'evidence'} refreshMetadata={refreshMetadata} modelConfigured={modelConfigured} onConfigureModel={configureModel} navigation={chatNavigation} onNavigateConversation={navigateConversation} onOpened={chatOpened} onManageExtensions={() => openSettings('extensions')} onOpenCompare={() => setView('compare')} onOpenKnowledge={() => setView('knowledge')} openCompanyChat={companyChatRequest} onOpenJob={openJobFrom} onWorkshop={openWorkshop} /></div>
 
       {/* 岗位研究常驻挂载（hidden 切换）：筛选与选中状态在视图切换间保留；跨视图联动经下方信号。 */}
@@ -315,7 +324,8 @@ export default function App() {
         onOpenSources={() => { setSourcesTab('collect'); setView('sources') }}
         onOpenJobs={() => { setJobOpenRequest({ kind: 'list', token: Date.now() }); setView('jobs') }}
         onOpenSettings={() => openSettings('system')}
-        onPrescriptionNavigate={openPrescriptionTarget} />}
+        onPrescriptionNavigate={openPrescriptionTarget}
+        onOpenPrepPlan={() => setView('prep-plan')} />}
 
       {view === 'knowledge' && <KnowledgeView onCountChange={setKnowledgeTotal} />}
 
@@ -324,6 +334,8 @@ export default function App() {
       {view === 'compare' && <CompanyCompare />}
 
       {view === 'interview' && <InterviewView deepLink={interviewRequest} modelConfigured={modelConfigured} onConfigureModel={configureModel} />}
+
+      {view === 'prep-plan' && <PrepPlanView onOpenInterview={openInterview} />}
 
       {view === 'favorites' && <FavoritesView onOpenJob={openJobFrom} onOpenCompare={() => setView('compare')} onPrescriptionNavigate={openPrescriptionTarget} onOpenRunway={() => setView('runway')} onChange={() => {
         // 收藏变动：刷新角标并通知岗位研究（后者仅在「只看收藏」过滤时重刷列表）。

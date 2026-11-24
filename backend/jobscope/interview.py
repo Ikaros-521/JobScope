@@ -316,7 +316,8 @@ _PLAN_SYSTEM = '''你是大厂面试官的首席出题官。根据面试官画�
 6. JD 里明确要求但简历证据弱的能力要出题；source 标 jd。
 7. 每题给 focus（面试官想听到什么）和 2-3 个 followups（追问路径）。
 8. question 用面试官的真实口吻写，具体到场景，不要八股。
-只输出JSON：{"opening":"面试官开场白（一句话自我介绍+面试说明）","questions":[{"topic":"题型","question":"问题","focus":"考察点","followups":["追问1","追问2"],"source":"jd|gap|resume|general"}]}'''
+9. weak_focus（如有）是备战计划指定的当日专项：至少 1/3 的题围绕它展开，topic 或 focus 里明确体现，这些题的 source 标 weakness；其余题仍按画像配比。
+只输出JSON：{"opening":"面试官开场白（一句话自我介绍+面试说明）","questions":[{"topic":"题型","question":"问题","focus":"考察点","followups":["追问1","追问2"],"source":"jd|gap|resume|general|weakness"}]}'''
 
 
 def _parse_json(content):
@@ -329,10 +330,9 @@ def build_question_plan(persona, material, *, question_count=8):
 
     出题失败=整场判死（用户须删场重开），一次模型抽风不值得让用户买单。
 
-    第三层预留（失败博物馆闭环，2026-11-23 未实现）：material 里将来带
-    weak_focus（failure_museum.build_pattern_report 的 recurring 摘要，
-    如「细节追问卡壳 ×3」），payload 注入 weak_focus 键并在 _PLAN_SYSTEM
-    加一条「重复失分点定向出题、source 标 weakness」的规则即可闭环。
+    material.weak_focus 是备战计划的当日专项（也承接失败博物馆预留的
+    recurring 闭环）：注入 payload 后由 _PLAN_SYSTEM 第 9 条定向出题，
+    这些题的 source 标 weakness。没有专项时行为与之前一致。
     """
     from .model_transport import complete
     payload = dict(
@@ -346,6 +346,7 @@ def build_question_plan(persona, material, *, question_count=8):
         gap_entries=material.get('gap_digest') or '',
         resume=material.get('resume_digest') or '',
         company_brief=material.get('company_brief') or '',
+        weak_focus=material.get('weak_focus') or '',
     )
     for attempt in (1, 2):
         config = get_config()

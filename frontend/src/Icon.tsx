@@ -28,6 +28,7 @@ const paths: Record<string, ReactNode> = {
   mic: <><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3" /></>,
   wallet: <><rect x="3" y="6" width="18" height="13" rx="2" /><path d="M3 10h18M16 14.5h.01" /></>,
   museum: <><path d="M3 21h18M4 18h16M6 18v-8M10 18v-8M14 18v-8M18 18v-8" /><path d="M3 10 12 3l9 7Z" /></>,
+  target: <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="5" /><circle cx="12" cy="12" r="1.5" fill="currentColor" /></>,
 }
 
 export function Icon({ name, size = 18 }: { name: string; size?: number }) {

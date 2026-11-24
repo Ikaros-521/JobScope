@@ -1,0 +1,113 @@
+/* 面试备战计划（2026-11-24）：沿用 paper-panel / button / tiny-label 既有原子类，
+   这里只定义 pp-* 布局与面试间专项提示条。 */
+
+.prep-view { display: flex; flex-direction: column; gap: 14px; max-width: 1040px; }
+.prep-view .paper-panel h1 { font-size: 18px; margin: 0 0 6px; }
+.prep-view .paper-panel h2 { font-size: 14px; margin: 0 0 6px; }
+.pp-intro-note { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.65; }
+.pp-intro-note svg { flex: none; margin-top: 2px; }
+
+.pp-onboard { text-align: center; }
+.pp-onboard .empty { padding: 12px 0 4px; }
+.pp-generate { display: flex; align-items: center; justify-content: center; gap: 12px; flex-wrap: wrap; margin: 16px 0 12px; }
+.pp-generate .field-label { margin: 0; }
+.pp-generate select { min-height: 40px; }
+.pp-onboard > .tiny-label { display: block; }
+
+.pp-streak { flex: none; padding: 4px 12px; border-radius: 999px; background: var(--selected); color: var(--green); font-size: 12px; font-weight: 600; }
+.pp-progress-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0 12px; }
+.pp-stat { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.pp-stat b { font-size: 17px; color: var(--green); font-variant-numeric: tabular-nums; }
+.pp-stat span { font-size: 11.5px; color: var(--muted); }
+.pp-progress-bar { height: 7px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.pp-progress-bar span { display: block; height: 100%; background: var(--green); transition: width 240ms ease; }
+.pp-progress-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+.pp-inline-select { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.pp-inline-select select { min-height: 34px; padding: 4px 8px; }
+
+.pp-task-list { display: flex; flex-direction: column; gap: 10px; margin: 14px 0 0; padding: 0; list-style: none; }
+.pp-task { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 14px 16px; border: 1px solid var(--line); border-left: 3px solid var(--green); border-radius: 10px; background: var(--surface); }
+.pp-task.study { border-left-color: #2f6d8c; }
+.pp-task.review { border-left-color: #a8641a; }
+.pp-task.overdue { border-left-style: dashed; }
+.pp-task.done, .pp-task.skipped { opacity: .68; }
+.pp-task-main { min-width: 0; flex: 1; }
+.pp-task-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 5px; }
+.ppm-tag { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px; background: var(--selected); color: var(--green); font-size: 11px; font-weight: 600; }
+.pp-required { padding: 2px 8px; border-radius: 5px; background: var(--green); color: #fff; font-size: 11px; }
+.pp-overdue-label { font-size: 11px; color: #a8641a; }
+.pp-task-title { display: block; font-size: 13.5px; line-height: 1.5; margin-bottom: 4px; overflow-wrap: anywhere; }
+.pp-task-main p { margin: 0 0 5px; line-height: 1.65; }
+.pp-task-note { color: var(--green); }
+.pp-task-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: none; }
+.pp-task-state { font-size: 12px; color: var(--muted); }
+
+.pp-week { padding: 0; }
+.pp-week > summary { cursor: pointer; padding: 14px 24px; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; min-height: 44px; }
+.pp-week > summary svg { transform: rotate(90deg); }
+.pp-week[open] > summary svg { transform: rotate(-90deg); }
+.pp-week-list { margin: 0; padding: 0 24px 16px; list-style: none; display: flex; flex-direction: column; }
+.pp-week-list li { display: grid; grid-template-columns: 130px 88px minmax(0, 1fr); gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
+.pp-week-list li.current { background: var(--selected); }
+.pp-week-date { color: var(--green); font-weight: 600; }
+.pp-week-count { color: var(--muted); }
+.pp-week-titles { color: var(--muted); overflow-wrap: anywhere; }
+
+.pp-focus-list, .pp-history-list { display: flex; flex-direction: column; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.pp-focus-list li { padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
+.pp-focus-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 3px; }
+.pp-focus-head b { font-size: 13px; overflow-wrap: anywhere; }
+.pp-focus-list p { margin: 0 0 4px; }
+.pp-history-list li { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.pp-history-status { font-weight: 600; }
+.pp-history-status.active { color: var(--green); }
+
+.today-prep .pp-today-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 10px 0 4px; font-size: 12.5px; color: var(--muted); }
+.today-prep .pp-today-line > span:first-child { color: var(--green); font-weight: 700; }
+.today-prep .pp-today-line > span:first-child.done { color: #1f7a53; }
+.pp-next { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+
+.iv-focus-banner { display: flex; align-items: center; gap: 10px; padding: 9px 14px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--selected); color: var(--muted); font-size: 12.5px; }
+.iv-focus-banner b { color: var(--green); }
+.iv-focus-banner .text-button { margin-left: auto; flex: none; }
+
+/* 自定义表单与 AI 诊断（2026-11-24 第二轮） */
+.pp-diagnosis-text { margin: 8px 0 0; font-size: 13px; line-height: 1.75; color: var(--green); }
+.pp-focus-drill { margin: 6px 0 5px !important; padding: 6px 10px; border-left: 2px solid var(--green); border-radius: 0 6px 6px 0; background: var(--surface); }
+.pp-config { display: flex; flex-direction: column; gap: 12px; margin: 16px 0 0; padding: 14px 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); text-align: left; }
+.pp-config-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: end; }
+.pp-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.pp-field > span { font-size: 12px; font-weight: 600; color: var(--muted); }
+.pp-field textarea, .pp-field select { width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--green); font: inherit; font-size: 12.5px; resize: vertical; }
+.pp-field textarea:focus-visible, .pp-field select:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.pp-check { display: flex; align-items: center; gap: 7px; padding-bottom: 9px; font-size: 12px; color: var(--muted); }
+.pp-check input { accent-color: var(--green); }
+.pp-edit { margin-top: 14px; padding-top: 4px; border-top: 1px solid var(--line); }
+.pp-edit-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+
+/* 流式生成进度面板（2026-11-24 第三轮）：阶段清单 + 诊断逐字流 + 短板逐条浮现 */
+.pp-gen-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.pp-gen-head b { font-size: 14px; }
+.pp-gen-steps { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 0; padding: 0; list-style: none; }
+.pp-gen-steps li { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
+.pp-gen-steps li.wait { opacity: .55; }
+.pp-gen-steps li.done { color: var(--green); }
+.pp-gen-dot { flex: none; width: 8px; height: 8px; border-radius: 999px; border: 2px solid var(--line); }
+.pp-gen-steps li.active .pp-gen-dot { border-color: var(--green); animation: pp-gen-pulse 1.2s ease-in-out infinite; }
+.pp-gen-steps li.done .pp-gen-dot { border-color: var(--green); background: var(--green); }
+@keyframes pp-gen-pulse { 50% { opacity: .35; } }
+.pp-gen-note { font-size: 12px; color: var(--muted); }
+.pp-gen-diagnosis { margin: 10px 0 0; padding: 10px 12px; border-left: 2px solid var(--green); border-radius: 0 6px 6px 0; background: var(--surface); font-size: 12.5px; line-height: 1.7; color: var(--green); overflow-wrap: anywhere; }
+.pp-gen-caret { display: inline-block; width: 2px; height: 1em; margin-left: 2px; vertical-align: -0.15em; background: var(--green); animation: pp-gen-pulse .8s steps(1) infinite; }
+.pp-gen-focus { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+.pp-gen-chip { padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); font-size: 12px; color: var(--green); }
+.pp-gen-error { margin-top: 12px; }
+.pp-gen-error .button { margin-left: auto; }
+
+@media (max-width: 700px) {
+  .pp-progress-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pp-task { flex-direction: column; }
+  .pp-task-actions { width: 100%; }
+  .pp-week-list li { grid-template-columns: 1fr; gap: 2px; }
+  .pp-config-row { grid-template-columns: 1fr; }
+}

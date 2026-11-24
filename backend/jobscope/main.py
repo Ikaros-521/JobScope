@@ -29,11 +29,12 @@ from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
 from .interview import assemble_material, company_brief_from, persona_cards
 from .interview_runs import InterviewManager, interview_scope, new_session
+from .prep_plan_runs import PrepPlanManager
 from .transcript import parse_labeled_transcript
 from .transcript_runs import TranscriptManager, new_transcript
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, AttributionInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JdAssessmentInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, RunwayInput, ScopeExpansionInput, SignalSourceInput, SplitInput, StyleAssessmentInput, TranscriptImportInput, TranscriptSegmentsInput
+from .models import AnalysisStatusInput, AnalyzeInput, AttributionInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JdAssessmentInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, PrepPlanGenerateInput, PrepTaskNoteInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, RunwayInput, ScopeExpansionInput, SignalSourceInput, SplitInput, StyleAssessmentInput, TranscriptImportInput, TranscriptSegmentsInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -107,6 +108,7 @@ def create_app(data_dir=None):
     analyze_runs = AnalyzeManager(repo)
     interview_runs = InterviewManager(repo)
     transcript_runs = TranscriptManager(repo)
+    prep_plan_runs = PrepPlanManager(repo)
     scope_expansions = ScopeExpansionStore(repo)
     knowledge = KnowledgeStore(repo)
     knowledge_imports = KnowledgeImportManager(knowledge, repo)
@@ -115,6 +117,7 @@ def create_app(data_dir=None):
     app.state.analyze_runs = analyze_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     app.state.interview_runs = interview_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     app.state.transcript_runs = transcript_runs  # exposed for tests: join worker threads to avoid cross-test leaks
+    app.state.prep_plan_runs = prep_plan_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
     # 数据备份（2026-11-18）：`.data/` 是生产数据，备份/恢复能力是一等公民而非运维纪律。
@@ -677,6 +680,89 @@ def create_app(data_dir=None):
         from .prescription import build
         return build(repo)
 
+    # ── 面试备战计划（2026-11-24）：模型分析短板与练法 → 每日任务 → 打卡；模型不可用退规则。 ──
+
+    @app.get('/api/prep-plan')
+    def prep_plan_snapshot():
+        from .prep_plan import snapshot
+        active = prep_plan_runs.active()
+        return dict(snapshot(repo), model_configured=purpose_configured('analysis'),
+                    active_run=active.snapshot() if active else None)
+
+    @app.post('/api/prep-plan')
+    def prep_plan_generate(data: PrepPlanGenerateInput | None = None):
+        from .prep_plan import generate, normalize_prefs, snapshot
+        prefs = normalize_prefs(data.model_dump() if data else None)
+        plan = generate(repo, data.days if data else 14, prefs)
+        return dict(snapshot(repo), plan=plan, model_configured=purpose_configured('analysis'))
+
+    # ---- 流式生成：后台 run + SSE（同 analyze/interview 模式）。同步入口保留给规则快路径。 ----
+
+    @app.post('/api/prep-plan/runs')
+    def prep_plan_run_start(data: PrepPlanGenerateInput | None = None):
+        from .prep_plan import generate, idempotent_plan, normalize_prefs, snapshot
+        prefs = normalize_prefs(data.model_dump() if data else None)
+        days = data.days if data else 14
+        existing = idempotent_plan(repo, prefs)
+        if existing is not None:
+            # 同日同数据已生成：直接回快照，不起线程也不发 SSE。
+            return dict(run_id=None, reused=True, plan=existing,
+                        snapshot=dict(snapshot(repo), model_configured=purpose_configured('analysis')))
+        if not (prefs['use_llm'] and purpose_configured('analysis')):
+            # 规则快路径秒级完成：同步生成即可，不值得起 run。
+            plan = generate(repo, days, prefs)
+            return dict(run_id=None, reused=False, plan=plan,
+                        snapshot=dict(snapshot(repo), model_configured=purpose_configured('analysis')))
+        handle, reused = prep_plan_runs.start(days, prefs)
+        return dict(run_id=handle.id, reused=reused)
+
+    @app.get('/api/prep-plan/runs/{run_id}')
+    def prep_plan_run_status(run_id: str = PathParam(max_length=100)):
+        handle = prep_plan_runs.get(run_id)
+        if handle is None:
+            raise HTTPException(404, '运行不存在或已结束')
+        return handle.snapshot()
+
+    @app.get('/api/prep-plan/runs/{run_id}/stream')
+    def prep_plan_run_stream(run_id: str = PathParam(max_length=100)):
+        try:
+            generator = prep_plan_runs.stream(run_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return StreamingResponse(generator(), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+    @app.post('/api/prep-plan/tasks/{task_id}/done')
+    def prep_task_done(task_id: str, data: PrepTaskNoteInput | None = None):
+        from .prep_plan import set_task_status, snapshot
+        task = set_task_status(repo, task_id, 'done', data.note if data else '')
+        if task is None:
+            raise HTTPException(404, '备战任务不存在')
+        return dict(snapshot(repo), task=task)
+
+    @app.post('/api/prep-plan/tasks/{task_id}/skip')
+    def prep_task_skip(task_id: str):
+        from .prep_plan import set_task_status, snapshot
+        task = set_task_status(repo, task_id, 'skipped')
+        if task is None:
+            raise HTTPException(404, '备战任务不存在')
+        return dict(snapshot(repo), task=task)
+
+    @app.post('/api/prep-plan/tasks/{task_id}/reopen')
+    def prep_task_reopen(task_id: str):
+        from .prep_plan import set_task_status, snapshot
+        task = set_task_status(repo, task_id, 'pending')
+        if task is None:
+            raise HTTPException(404, '备战任务不存在')
+        return dict(snapshot(repo), task=task)
+
+    @app.delete('/api/prep-plan/{plan_id}')
+    def prep_plan_archive(plan_id: str):
+        from .prep_plan import archive
+        if not archive(repo, plan_id):
+            raise HTTPException(404, '计划不存在或已归档')
+        return {'archived': True}
+
     # ── 触达生成器（2026-11-22）：打招呼/跟进话术。模型不可用走规则兜底，生成即落版本。 ──
 
     @app.post('/api/jobs/{job_id}/outreach')
@@ -722,6 +808,8 @@ def create_app(data_dir=None):
         全部只读本库与本地备份目录，不发起联网采集；各区块的详细操作仍落在对应工作区
         （收藏/管线在收藏夹，采集在数据与采集，备份在设置中心）。"""
         from .prescription import build as build_prescriptions
+        from .prep_plan import snapshot as prep_snapshot
+        prep = prep_snapshot(repo)
         return {
             'date': now()[:10],
             'counts': repo.overview_counts(),
@@ -733,6 +821,8 @@ def create_app(data_dir=None):
             'briefing': repo.daily_briefing(),
             # 行动处方（2026-11-22）：漏斗数据 → 今日行动清单 + 处方卡，今日页直接消费。
             'prescriptions': build_prescriptions(repo),
+            # 面试备战计划（2026-11-24）：今日页只摆今天的任务与连续天数，完整计划在工作区。
+            'prep_plan': dict(plan=prep['plan'], today=prep['today'], progress=prep['progress']) if prep['plan'] else None,
             'new_jobs': repo.recent_first_seen(),
             'backup': backups.status(),
             'recent_tasks': repo.tasks()[:5],
@@ -993,7 +1083,6 @@ def create_app(data_dir=None):
             task.update(status='failed', message='后台任务未能启动，请重试')
             repo.update_task(task)
         return {"task": task}
-
 
     @app.post("/api/import/boss/browse/start")
     def boss_browse_start():
@@ -1331,6 +1420,9 @@ def create_app(data_dir=None):
             # 空窗期专题卡：把资料库启用的空窗经历条目注入材料，出题与面试官都以它为核实基准。
             from .gap_narrative import entries_block
             material['gap_digest'] = entries_block(repo)
+        # 备战计划的当日专项（weak_focus）：出题时定向覆盖，第三层闭环在此接上。
+        if (data.focus or '').strip():
+            material['weak_focus'] = data.focus.strip()[:120]
         return material
 
     @app.post('/api/interview/sessions')

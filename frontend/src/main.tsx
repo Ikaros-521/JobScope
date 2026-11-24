@@ -3,5 +3,6 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import { ToastHost } from './toast'
 import './styles.css'
+import './prepPlan.css'
 
 ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode><App /><ToastHost /></React.StrictMode>)

@@ -355,6 +355,7 @@ export type Dashboard = {
   weekly?: PipelineWeekly
   briefing?: DashboardBriefing
   prescriptions?: Prescriptions
+  prep_plan?: PrepBrief | null
   new_jobs: DashboardNewJob[]
   backup: BackupStatus
   recent_tasks: Task[]
@@ -720,7 +721,7 @@ export function listInterviewSessions() { return api<{ sessions: InterviewSessio
 export function getInterviewSession(id: string) { return api<{ session: InterviewSession; active_run: InterviewRunStatus | null }>(`/interview/sessions/${encodeURIComponent(id)}`)
 }
 export function getInterviewMessages(id: string) { return api<{ messages: InterviewMessage[] }>(`/interview/sessions/${encodeURIComponent(id)}/messages`) }
-export function createInterviewSession(body: { persona_id: string; company_style?: string; round?: string; intensity?: InterviewIntensity; question_count?: number; job_id?: string; jd_text?: string; job_title?: string; company?: string }) {
+export function createInterviewSession(body: { persona_id: string; company_style?: string; round?: string; intensity?: InterviewIntensity; question_count?: number; job_id?: string; jd_text?: string; job_title?: string; company?: string; focus?: string }) {
   return post<{ session_id: string; run_id: string }>('/interview/sessions', body)
 }
 export function sendInterviewTurn(id: string, answer: string) { return post<{ run_id: string; session_id: string }>(`/interview/sessions/${encodeURIComponent(id)}/runs`, { answer }) }
@@ -731,6 +732,62 @@ const INTERVIEW_STREAM_EVENTS = ['start', 'delta', 'reasoning_delta', 'progress'
 export function openInterviewStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
   return openStream(`/api/interview/runs/${encodeURIComponent(runId)}/stream`, INTERVIEW_STREAM_EVENTS, onEvent)
 }
+
+// ---- 面试备战计划（2026-11-24）：模型分析短板与练法 → 每日任务 → 打卡；模型不可用退规则 ----
+export type PrepFocus = {
+  topic: string; detail: string; source: string; weight: number
+  kind_hint: string; kind?: string; drill?: string; session_id: string; job_id?: string
+}
+export type PrepPrefs = { goal: string; job_id: string; minutes_per_day: number; use_llm: boolean }
+export type PrepPlan = {
+  id: string; status: 'active' | 'archived'; days: number; start_date: string; end_date: string
+  created_from: 'interview_report' | 'failure_museum' | 'jd_gaps' | 'generic'
+  origin: 'model' | 'rules'; diagnosis: string; prefs: PrepPrefs
+  focus: PrepFocus[]; source_sessions: string[]; created_at: string; updated_at: string
+}
+export type PrepTask = {
+  id: string; plan_id: string; day_index: number; date: string
+  kind: 'mock' | 'study' | 'drill' | 'review'
+  title: string; detail: string; topic: string; minutes: number; required: number
+  source: string; session_id: string; job_id: string; status: 'pending' | 'done' | 'skipped'
+  note: string; completed_at: string; overdue?: boolean
+}
+export type PrepWeekDay = {
+  day_index: number; date: string; total: number; done: number
+  tasks: { id: string; kind: PrepTask['kind']; title: string; status: PrepTask['status']; required: number }[]
+}
+export type PrepProgress = {
+  total: number; done: number; skipped: number; required_total: number; required_done: number
+  rate: number; streak: number; best_streak: number; last_done_at: string
+}
+export type PrepSnapshot = {
+  plan: PrepPlan | null
+  today: { date: string; tasks: PrepTask[]; overdue: PrepTask[]; done: number; required_total: number; required_done: number }
+  week: PrepWeekDay[]
+  progress: PrepProgress
+  history: { id: string; status: string; days: number; start_date: string; created_from: string }[]
+  generated_at: string; model_configured: boolean
+  active_run?: { run_id: string; done: boolean } | null
+}
+export type PrepBrief = { plan: PrepPlan; today: PrepSnapshot['today']; progress: PrepProgress }
+export type PrepGenerateInput = {
+  days?: number; goal?: string; job_id?: string; minutes_per_day?: number; use_llm?: boolean
+}
+export type PrepRunStart = { run_id: string | null; reused: boolean; plan?: PrepPlan; snapshot?: PrepSnapshot }
+export function getPrepPlan() { return api<PrepSnapshot>('/prep-plan') }
+export function generatePrepPlan(payload: PrepGenerateInput = {}) { return post<PrepSnapshot>('/prep-plan', payload) }
+export function startPrepPlanRun(payload: PrepGenerateInput = {}) { return post<PrepRunStart>('/prep-plan/runs', payload) }
+export function getPrepPlanRun(runId: string) { return api<{ run_id: string; done: boolean }>(`/prep-plan/runs/${encodeURIComponent(runId)}`) }
+
+// 备战计划流式生成：focus 阶段事件 + diagnosis_delta 逐字诊断 + focus_item 逐条短板，done 携带完整快照。
+const PREP_STREAM_EVENTS = ['start', 'focus', 'model_start', 'diagnosis_delta', 'model_done', 'model_fallback', 'focus_item', 'scheduled', 'done', 'error', 'end'] as const
+export function openPrepPlanStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
+  return openStream(`/api/prep-plan/runs/${encodeURIComponent(runId)}/stream`, PREP_STREAM_EVENTS, onEvent)
+}
+export function donePrepTask(id: string, note = '') { return post<PrepSnapshot>(`/prep-plan/tasks/${encodeURIComponent(id)}/done`, { note }) }
+export function skipPrepTask(id: string) { return post<PrepSnapshot>(`/prep-plan/tasks/${encodeURIComponent(id)}/skip`) }
+export function reopenPrepTask(id: string) { return post<PrepSnapshot>(`/prep-plan/tasks/${encodeURIComponent(id)}/reopen`) }
+export function archivePrepPlan(id: string) { return api<{ archived: boolean }>(`/prep-plan/${encodeURIComponent(id)}`, { method: 'DELETE' }) }
 
 // ---- 真实面试复盘：外部 ASR 逐字稿导入 → 模型初标说话人 + 人工核对 → 结合 JD 的复盘报告 ----
 // 说话人取值与后端归一化一致：me=候选人，interviewer_N=第 N 位面试官（1..5）。

@@ -289,6 +289,13 @@ class InterviewManager:
             session['status'] = 'done'
             session = self.repo.save_interview_session(session)
             logger.info('模拟面试复盘完成 session=%s 题数=%s 用时=%.0fs', session['id'], len(segments), time.time() - started)
+            # 备战计划自动打卡：今天从计划页开练的模拟面试，复盘完成即勾掉当日 mock 任务。
+            # 打卡失败不能反过来让面试复盘报错，因此单独吞掉异常并留日志。
+            try:
+                from .prep_plan import auto_complete_mock
+                auto_complete_mock(self.repo, session['id'])
+            except Exception:
+                logger.exception('备战计划自动打卡失败 session=%s', session['id'])
             handle.push('done', dict(kind='report', session=session))
         except RunCancelled:
             session['status'] = restore

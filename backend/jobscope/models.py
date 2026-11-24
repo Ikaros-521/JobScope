@@ -152,10 +152,25 @@ class InterviewCreateInput(RequestModel):
     jd_text: str = Field(default='', max_length=20000)
     job_title: str = Field(default='', max_length=120)
     company: str = Field(default='', max_length=120)
+    focus: str = Field(default='', max_length=120)  # 备战计划指定的专项主题，注入出题 weak_focus
 
 
 class InterviewTurnInput(RequestModel):
     answer: str = Field(default='', max_length=8000)  # 空=开场（面试官自我介绍+第一题）
+
+
+class PrepPlanGenerateInput(RequestModel):
+    """面试备战计划：周期 + 自定义重点。同日同数据同参数幂等返回原计划。"""
+    days: int = Field(default=14, ge=7, le=28)
+    goal: str = Field(default='', max_length=300)  # 用户自填的备战重点，注入模型分析
+    job_id: str = Field(default='', max_length=100)  # 目标岗位：JD/评估缺口进材料，任务深链预选
+    minutes_per_day: int = Field(default=20, ge=10, le=120)
+    use_llm: bool = True  # 关掉则强制走规则版（模型不可用时也自动回退）
+
+
+class PrepTaskNoteInput(RequestModel):
+    """备战任务打卡备注：可空，服务端再按 500 字护栏截断。"""
+    note: str = Field(default='', max_length=10000)  # 超长由服务层截到 500 字，不在这里 422
 
 
 class TranscriptImportInput(RequestModel):

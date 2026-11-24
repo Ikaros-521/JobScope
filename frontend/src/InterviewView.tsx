@@ -19,7 +19,7 @@ import type { AttributionRecord, InterviewMessage, InterviewPersonaCard, Intervi
 // 2026-11-21 增加并列的第二条链路「真实复盘」：外部 ASR 逐字稿导入 → 模型初标说话人
 // → 人工核对修正 → 结合 JD 的复盘报告（侧栏顶部分段切换，两套工作区互不干扰）。
 
-export type InterviewDeepLink = { jobId: string; token: number } | null
+export type InterviewDeepLink = { jobId: string; focus: string; token: number } | null
 
 type StreamState = { runId: string; answer: string } | null
 // 复盘等后台 run 的实时进度（SSE progress 事件）：stage=review 逐题点评 done/total，summary=汇总中。
@@ -65,6 +65,8 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   const [companyName, setCompanyName] = useState('')
   const [jdText, setJdText] = useState('')
   const [answer, setAnswer] = useState('')
+  // 备战计划带来的当日专项：出题时作为 weak_focus 定向覆盖，并在新建面板顶部明示。
+  const [focusHint, setFocusHint] = useState('')
   // starting：点「开始出题」到场次建好之间的一次性闸门，防连点重场，也让按钮立刻进加载态。
   const [starting, setStarting] = useState(false)
   // 真实复盘：侧栏顶部分段切换 模拟/真实；逐字稿列表与选中 id 挂在本层，
@@ -194,10 +196,14 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
     return closeStream
   }, [refreshSessions, closeStream])
 
-  // 岗位详情/评估缺口深链：打开新建面板、切到岗位库模式并预选岗位（#/interview?job=<id> 刷新同路径）。
+  // 岗位详情/评估缺口/备战计划深链：打开新建面板并预选岗位；focus 是备战专项，注入出题 weak_focus。
+  // 空 job+focus 的空深链不算深链（普通刷新后可能收到），忽略之，避免误开新建面板挡住面试间。
   useEffect(() => {
-    if (!deepLink) return
-    setCreating(true); setCard(''); setMode('job'); setJobId(deepLink.jobId); setJobLabel('')
+    if (!deepLink || (!deepLink.jobId && !deepLink.focus)) return
+    setFocusHint(deepLink.focus || '')
+    setCreating(true); setCard(''); setMode(deepLink.jobId ? 'job' : 'free')
+    setJobId(deepLink.jobId); setJobLabel('')
+    if (!deepLink.jobId) return
     void api<{ job: { title: string; company: string } }>(`/jobs/${encodeURIComponent(deepLink.jobId)}`)
       .then(data => setJobLabel(`${data.job.company} · ${data.job.title}`))
       .catch(() => setJobLabel(''))
@@ -226,8 +232,9 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
         ...(targetJobId ? { job_id: targetJobId } : {}),
         ...(mode === 'jd' ? { jd_text: jdText.trim(), company: companyName.trim(), ...(jobTitle.trim() ? { job_title: jobTitle.trim() } : {}) } : {}),
         ...(mode === 'free' ? { company: companyName.trim(), ...(card === 'custom' && jobTitle.trim() ? { job_title: jobTitle.trim() } : {}) } : {}),
+        ...(focusHint ? { focus: focusHint } : {}),
       })
-      setCreating(false); setJdText(''); setJobTitle(''); setCompanyName('')
+      setCreating(false); setJdText(''); setJobTitle(''); setCompanyName(''); setFocusHint('')
       setTab('room')
       setSelected(started.session_id); selectedRef.current = started.session_id
       setSession(null); setMessages([])
@@ -351,6 +358,11 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
       {side === 'real' ? <RealWorkspace transcriptId={selectedTranscript} modelConfigured={modelConfigured} onConfigureModel={onConfigureModel}
           onCreated={setSelectedTranscript} onChanged={refreshTranscripts} />
       : <>
+      {focusHint && <div className="iv-focus-banner" role="status">
+        <Icon name="target" size={16} />
+        <span>备战计划专项：<b>{focusHint}</b>——本场出题会定向覆盖这个主题。</span>
+        <button className="text-button" onClick={() => setFocusHint('')}>移除</button>
+      </div>}
       {(!session || creating) && <CreatePanel
         cards={personas} styles={styles} card={card}
         onCard={value => { setCard(value); const preset = personas.find(item => item.id === value); setRound(preset?.default_round ?? '') }}

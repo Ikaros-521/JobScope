@@ -71,6 +71,9 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS runway_profile (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS jd_assessments (id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS interview_attributions (id TEXT PRIMARY KEY, session_id TEXT UNIQUE NOT NULL, source TEXT NOT NULL, job_id TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', job_title TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '[]', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                -- 面试备战计划（2026-11-24）：计划头 + 每日任务，规则生成、本地打卡。日期口径 now()[:10]（UTC 日历日）。
+                CREATE TABLE IF NOT EXISTS prep_plans (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active', days INTEGER NOT NULL DEFAULT 14, start_date TEXT NOT NULL, end_date TEXT NOT NULL, created_from TEXT NOT NULL DEFAULT 'generic', focus TEXT NOT NULL DEFAULT '[]', source_sessions TEXT NOT NULL DEFAULT '[]', origin TEXT NOT NULL DEFAULT 'rules', diagnosis TEXT NOT NULL DEFAULT '', prefs TEXT NOT NULL DEFAULT '{}', conversation_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS prep_tasks (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, day_index INTEGER NOT NULL, date TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', topic TEXT NOT NULL DEFAULT '', minutes INTEGER NOT NULL DEFAULT 15, required INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '', job_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', note TEXT NOT NULL DEFAULT '', completed_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
             """)
             self._migrate_conversations(conn)
             # profile_entries.source 记录条目来源（笔记库导入的「规范化库根::相对路径」锚点），幂等重导靠它原位更新。
@@ -84,6 +87,20 @@ class Repository:
             # resume_versions.typography：排版设置 JSON（字体/字号/行距/页边距/一页纸），随版本保存。
             if 'typography' not in columns:
                 conn.execute("ALTER TABLE resume_versions ADD COLUMN typography TEXT NOT NULL DEFAULT '{}'")
+            # prep_tasks.job_id 是初版建表后补的列；CREATE TABLE IF NOT EXISTS 对既有库不加列，
+            # 缺列会让整批任务 INSERT 失败，只留下「有计划、0 任务」的空壳（进度全是 0/0）。
+            # 任何按列写入的新字段都必须走这里，不能只改上面的建表语句。
+            columns = {row['name'] for row in conn.execute('PRAGMA table_info(prep_tasks)')}
+            if 'job_id' not in columns:
+                conn.execute("ALTER TABLE prep_tasks ADD COLUMN job_id TEXT NOT NULL DEFAULT ''")
+            # prep_plans 的 AI 诊断/自定义参数：同样按既有库补列。
+            columns = {row['name'] for row in conn.execute('PRAGMA table_info(prep_plans)')}
+            for name, definition in (('origin', "TEXT NOT NULL DEFAULT 'rules'"),
+                                     ('diagnosis', "TEXT NOT NULL DEFAULT ''"),
+                                     ('prefs', "TEXT NOT NULL DEFAULT '{}'"),
+                                     ('conversation_id', "TEXT NOT NULL DEFAULT ''")):
+                if name not in columns:
+                    conn.execute(f'ALTER TABLE prep_plans ADD COLUMN {name} {definition}')
             # job_preferences 并入 profile_entries（2026-11-18）：偏好申报本就是个人资料的一种立场
             # 条目，category='preference' 承载；原 dimension 降为标签（模型注入只取 statement，无损），
             # title 用维度中文名，id 原样保留（已存报告的 fact_ids 引用不失效）。迁移后旧表退役删除。
@@ -109,6 +126,8 @@ class Repository:
                 CREATE INDEX IF NOT EXISTS idx_company_reliability_lookup ON company_reliability(company_id, created_at);
                 CREATE INDEX IF NOT EXISTS idx_company_signals_company ON company_signals(company_id);
                 CREATE INDEX IF NOT EXISTS idx_conversations_scope ON conversations(scope, updated_at);
+                CREATE INDEX IF NOT EXISTS idx_prep_tasks_plan_date ON prep_tasks(plan_id, date);
+                CREATE INDEX IF NOT EXISTS idx_prep_tasks_plan_status ON prep_tasks(plan_id, status);
             """)
             self._backfill_salary_numbers(conn)
             # A previous process can no longer complete its in-flight synchronous tasks.
@@ -496,6 +515,141 @@ class Repository:
     def delete_interview_session(self, session_id):
         with self.connection() as conn:
             return conn.execute('DELETE FROM interview_sessions WHERE id=?', (session_id,)).rowcount > 0
+
+    # ---- 面试备战计划（2026-11-24）：计划头 + 每日任务；归档不删除，历史打卡可回看 ----
+
+    @staticmethod
+    def _prep_plan_row(row):
+        if row is None:
+            return None
+        item = dict(row)
+        item['focus'] = json.loads(item.get('focus') or '[]')
+        item['source_sessions'] = json.loads(item.get('source_sessions') or '[]')
+        item['prefs'] = json.loads(item.get('prefs') or '{}')
+        return item
+
+    _PREP_PLAN_UPSERT = ('INSERT INTO prep_plans (id,status,days,start_date,end_date,created_from,focus,source_sessions,origin,diagnosis,prefs,conversation_id,created_at,updated_at) '
+                         'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET '
+                         'status=excluded.status, days=excluded.days, start_date=excluded.start_date, end_date=excluded.end_date, '
+                         'created_from=excluded.created_from, focus=excluded.focus, source_sessions=excluded.source_sessions, '
+                         'origin=excluded.origin, diagnosis=excluded.diagnosis, prefs=excluded.prefs, conversation_id=excluded.conversation_id, '
+                         'updated_at=excluded.updated_at')
+    _PREP_TASK_INSERT = ('INSERT INTO prep_tasks (id,plan_id,day_index,date,kind,title,detail,topic,minutes,required,source,session_id,job_id,status,note,completed_at,created_at) '
+                         'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+
+    @staticmethod
+    def _prep_plan_params(plan):
+        """显式列名参数：列序迁移后位置式插入会静默错位（项目已有教训）。"""
+        item = {**plan, 'origin': plan.get('origin') or 'rules', 'diagnosis': plan.get('diagnosis') or '',
+                'prefs': plan.get('prefs') or {}, 'conversation_id': plan.get('conversation_id') or '',
+                'updated_at': now()}
+        return item, (item['id'], item['status'], item['days'], item['start_date'], item['end_date'],
+                      item['created_from'], json.dumps(item['focus'], ensure_ascii=False),
+                      json.dumps(item['source_sessions'], ensure_ascii=False), item['origin'],
+                      item['diagnosis'], json.dumps(item['prefs'], ensure_ascii=False),
+                      item['conversation_id'], item['created_at'], item['updated_at'])
+
+    @staticmethod
+    def _prep_task_rows(tasks):
+        stamp = now()
+        return [dict(task, created_at=task.get('created_at') or stamp) for task in tasks]
+
+    @classmethod
+    def _prep_task_params(cls, rows):
+        return [(row['id'], row['plan_id'], row['day_index'], row['date'], row['kind'], row['title'],
+                 row['detail'], row['topic'], row['minutes'], row['required'], row['source'], row['session_id'],
+                 row.get('job_id', ''), row['status'], row['note'], row['completed_at'], row['created_at'])
+                for row in rows]
+
+    def save_prep_plan(self, plan):
+        item, params = self._prep_plan_params(plan)
+        with self.connection() as conn:
+            conn.execute(self._PREP_PLAN_UPSERT, params)
+        return dict(item)  # focus/source_sessions 已经是列表，不需要再解一次 JSON
+
+    def save_prep_plan_with_tasks(self, plan, tasks):
+        """计划头与任务同一事务：任何一列写失败都不能留下 0 任务的空壳计划。"""
+        item, plan_params = self._prep_plan_params(plan)
+        task_params = self._prep_task_params(self._prep_task_rows(tasks))
+        with self.connection() as conn:
+            conn.execute(self._PREP_PLAN_UPSERT, plan_params)
+            conn.executemany(self._PREP_TASK_INSERT, task_params)
+        return dict(item)
+
+    def get_prep_plan(self, plan_id):
+        with self.connection() as conn:
+            row = conn.execute('SELECT * FROM prep_plans WHERE id=?', (plan_id,)).fetchone()
+        return self._prep_plan_row(row)
+
+    def active_prep_plan(self):
+        with self.connection() as conn:
+            row = conn.execute("SELECT * FROM prep_plans WHERE status='active' ORDER BY created_at DESC, rowid DESC LIMIT 1").fetchone()
+        return self._prep_plan_row(row)
+
+    def prep_plans(self, limit=10):
+        with self.connection() as conn:
+            rows = conn.execute('SELECT * FROM prep_plans ORDER BY created_at DESC, rowid DESC LIMIT ?', (limit,)).fetchall()
+        return [self._prep_plan_row(row) for row in rows]
+
+    def archive_prep_plans(self, except_id=None):
+        """生成新计划前把其余 active 归档；同日幂等命中时不影响原计划。"""
+        with self.connection() as conn:
+            if except_id:
+                return conn.execute("UPDATE prep_plans SET status='archived', updated_at=? WHERE status='active' AND id!=?", (now(), except_id)).rowcount
+            return conn.execute("UPDATE prep_plans SET status='archived', updated_at=? WHERE status='active'", (now(),)).rowcount
+
+    def archive_prep_plan(self, plan_id):
+        with self.connection() as conn:
+            return conn.execute("UPDATE prep_plans SET status='archived', updated_at=? WHERE id=? AND status='active'", (now(), plan_id)).rowcount > 0
+
+    def save_prep_tasks(self, tasks):
+        """一次事务批量落任务，避免 14×2 条任务产生多次 WAL 提交。"""
+        params = self._prep_task_params(self._prep_task_rows(tasks))
+        with self.connection() as conn:
+            conn.executemany(self._PREP_TASK_INSERT, params)
+        return len(params)
+
+    def prep_tasks(self, plan_id):
+        with self.connection() as conn:
+            rows = conn.execute('SELECT * FROM prep_tasks WHERE plan_id=? ORDER BY day_index, kind, rowid', (plan_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def prep_task(self, task_id):
+        with self.connection() as conn:
+            row = conn.execute('SELECT * FROM prep_tasks WHERE id=?', (task_id,)).fetchone()
+        return dict(row) if row else None
+
+    def prep_tasks_for_date(self, plan_id, date):
+        with self.connection() as conn:
+            rows = conn.execute('SELECT * FROM prep_tasks WHERE plan_id=? AND date=? ORDER BY kind, rowid', (plan_id, date)).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_prep_task(self, task_id, status, note=None):
+        """状态流转：done/skip 记完成时刻，reopen 清空；note 仅在传入时覆盖。"""
+        task = self.prep_task(task_id)
+        if task is None or status not in ('pending', 'done', 'skipped'):
+            return None
+        stamp = now() if status in ('done', 'skipped') else ''
+        final_note = task['note'] if note is None else note
+        with self.connection() as conn:
+            conn.execute('UPDATE prep_tasks SET status=?, note=?, completed_at=? WHERE id=?',
+                         (status, final_note[:500], stamp, task_id))
+        return self.prep_task(task_id)
+
+    def edit_prep_task(self, task_id, fields):
+        """字段级修改（对话调整用）：白名单列显式拼 SET，其余字段一律拒绝。"""
+        allowed = ('title', 'detail', 'minutes', 'kind', 'date', 'day_index', 'required', 'topic')
+        sets = [(name, fields[name]) for name in allowed if name in fields]
+        if not sets:
+            return self.prep_task(task_id)
+        sql = 'UPDATE prep_tasks SET ' + ', '.join(f'{name}=?' for name, _ in sets) + ' WHERE id=?'
+        with self.connection() as conn:
+            conn.execute(sql, [value for _, value in sets] + [task_id])
+        return self.prep_task(task_id)
+
+    def delete_prep_task(self, task_id):
+        with self.connection() as conn:
+            return conn.execute('DELETE FROM prep_tasks WHERE id=?', (task_id,)).rowcount > 0
 
     # ---- 真实面试逐字稿：导入 → 标注 → 复盘（payload JSON 快照，interview_sessions 同款模式） ----
 
