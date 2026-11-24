@@ -968,6 +968,10 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 /* 权限升档确认框：比通用 640px 弹窗更小 */
 .mode-modal { width: 420px; }
 .mode-modal .modal-actions { margin-top: 16px; }
+/* ConfirmDialog 统一确认框（替代 window.confirm）：小面板，标题与正文间距收紧 */
+.confirm-modal { width: 420px; }
+.confirm-modal h2 { font-size: 17px; }
+.confirm-modal .modal-actions { margin-top: 16px; }
 .form-two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 12px; margin-top: 24px; }
 .alert { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; margin: 16px 0; border: 1px solid var(--line); border-radius: 8px; font-size: 14px; line-height: 1.8; overflow-wrap: anywhere; }
@@ -2632,6 +2636,73 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 /* 返回修改：底部导航条（已选高亮见 .jd-item-best / .jd-item-worst） */
 .jd-nav-row { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
 .jd-nav-note { font-size: 12px; color: var(--muted); }
+
+/* ── 测评双卷页签 + 工作风格卷（2026-11-24，ws-*）。页签复用 .management-tabs 的下划线样式，只压高度。 ──
+   两卷常驻挂载，靠全局 [hidden] 切换；作答页与报告页复用 jd-progress-row / jd-quality / jd-block-title / jd-nav-row。
+   全局 button 居中陷阱：.ws-scale-step 是列向弹性按钮，这里本就要居中，无需覆盖。 */
+.jd-tabs { margin: 10px 0 0; gap: 24px; }
+.jd-tabs button { min-height: 38px; font-size: 13px; }
+.jd-tabs button span { margin-left: 6px; font-size: 12px; color: var(--muted); font-weight: 400; }
+.jd-tabs button[aria-selected="true"] span { color: var(--green); }
+.ws-statement { display: grid; place-items: center; min-height: 108px; margin: 4px 0 16px; padding: 0 8px; font-size: 18px; line-height: 1.7; text-align: center; }
+.ws-scale { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.ws-scale-step { flex-direction: column; gap: 6px; padding: 12px 6px 10px; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; font-size: 13px; transition: border-color 120ms, background 120ms, box-shadow 120ms; }
+.ws-scale-step:hover:not(:disabled), .ws-scale-step:focus-visible { border-color: var(--green); outline: none; box-shadow: 0 3px 10px rgba(23, 62, 53, .12); }
+.ws-scale-step.is-on { border-color: var(--green); background: var(--selected); font-weight: 600; }
+.ws-scale-key { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 50%; background: var(--line); color: var(--muted); font-size: 12px; font-weight: 700; font-style: normal; }
+.ws-scale-step.is-on .ws-scale-key { background: var(--green); color: #fff; }
+.ws-type-card { background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 16px 18px; box-shadow: var(--shadow-panel); margin-bottom: 20px; }
+.ws-kicker { display: block; font-size: 12px; color: var(--muted); }
+.ws-headline { margin: 2px 0 6px; font-size: 22px; line-height: 1.4; letter-spacing: -.3px; }
+.ws-shorthand { margin: 0 0 10px; font-size: 13px; color: var(--muted); }
+.ws-shorthand b { color: var(--green); }
+.ws-rank { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; }
+.ws-rank-chip { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 2px 10px; font-size: 12px; }
+.ws-rank-chip em { font-style: normal; color: var(--muted); }
+.ws-band { flex: none; border-radius: 4px; padding: 1px 7px; font-size: 12px; white-space: nowrap; }
+.ws-band-clear { background: #e4f1ec; color: #1f5a4a; font-weight: 600; }
+.ws-band-slight { background: #eef2f6; color: #40566b; }
+.ws-band-even { background: var(--surface); color: var(--muted); }
+.ws-essence { margin: 0; font-size: 13px; line-height: 1.8; }
+.ws-fit { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 24px; margin: 12px 0 0; padding-top: 12px; border-top: 1px solid var(--line); }
+.ws-fit dt { margin-bottom: 3px; font-size: 12px; color: var(--muted); }
+.ws-fit dd { margin: 0; font-size: 13px; line-height: 1.7; }
+.ws-retake { margin: 10px 0 0; font-size: 12px; color: var(--muted); cursor: help; }
+.ws-axes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px 28px; margin-bottom: 20px; }
+.ws-axis-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 14px; }
+.ws-axis-label { font-size: 13px; font-weight: 600; }
+.ws-slider { position: relative; height: 6px; border-radius: 3px; background: var(--line); }
+.ws-slider-mid { position: absolute; left: 50%; top: -3px; width: 2px; height: 12px; border-radius: 1px; background: #fff; box-shadow: 0 0 0 1px var(--line); transform: translateX(-50%); }
+.ws-slider-fill { position: absolute; top: 0; height: 100%; }
+.ws-slider-thumb { position: absolute; top: 50%; width: 14px; height: 14px; border-radius: 50%; background: #fff; border: 3px solid; box-shadow: 0 1px 3px rgba(23, 62, 53, .25); transform: translate(-50%, -50%); }
+.ws-axis-poles { display: flex; justify-content: space-between; margin-top: 6px; font-size: 12px; color: var(--muted); }
+.ws-axis-poles .is-on { color: #1e302b; font-weight: 600; }
+.ws-pole-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 20px; }
+.ws-pole-card { min-width: 0; background: var(--paper); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; box-shadow: var(--shadow-panel); }
+.ws-pole-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.ws-pole-head b { font-size: 15px; }
+.ws-axis-tag { margin-left: auto; font-size: 12px; color: var(--muted); }
+.ws-tagline { margin: 0 0 10px; font-size: 13px; line-height: 1.7; }
+.ws-pole-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.ws-pole-cols h4 { margin: 0 0 4px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.ws-pole-cols ul { margin: 0; padding-left: 16px; font-size: 12px; line-height: 1.7; }
+.ws-cues { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.ws-cue-label { font-size: 12px; font-weight: 700; cursor: help; }
+.ws-cue-label.is-seek { color: #2f7d5a; }
+.ws-cue-label.is-caution { color: #a8641a; }
+.ws-cue { border-radius: 4px; padding: 1px 8px; font-size: 12px; background: #edf5f0; color: #2f5d49; }
+.ws-cue.is-caution { background: #faf3e8; color: #8a5519; }
+.ws-axis-even { padding: 10px 2px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); line-height: 1.7; }
+.ws-axis-even b { color: #1e302b; }
+.ws-cross-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.ws-cross-note { display: flex; align-items: flex-start; gap: 10px; }
+.ws-cross-note > div { min-width: 0; }
+.ws-cross-note p { font-size: 13px; line-height: 1.7; }
+.ws-cross-evidence { display: block; margin-top: 2px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+.ws-cross-cta { display: flex; align-items: center; flex-wrap: wrap; gap: 10px 14px; }
+.ws-cross-cta p { font-size: 12px; color: var(--muted); line-height: 1.7; }
+@media (max-width: 900px) { .ws-axes, .ws-pole-grid, .ws-fit { grid-template-columns: 1fr; } }
+@media (max-width: 640px) { .ws-scale { gap: 4px; } .ws-scale-step { padding: 10px 2px 8px; font-size: 12px; } .ws-pole-cols { grid-template-columns: 1fr; } .ws-statement { font-size: 16px; } }
 
 /* ── 失败博物馆（2026-11-23）：归因标注组件（attr-*，两处复盘报告共用）+ 博物馆视图（fm-*）。 ── */
 /* 作用域纪律：全局没有裸 label/input 样式；全局 button 居中陷阱对本组件无影响（chips 本就要居中）。 */

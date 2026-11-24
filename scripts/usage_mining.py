@@ -92,7 +92,10 @@ def module_streams(m: Mine) -> dict[str, list[datetime]]:
     add("空窗叙事 gap", m.col("gap_narratives", "created_at"))
     add("调研 runs", m.col("research_runs", "created_at"))
     if m.has("jd_assessments"):
-        add("反向测评 jd", m.col("jd_assessments", "created_at"))
+        # 两种考卷同表：payload.kind = bws（JD 取舍卷）/ style（工作风格卷）；改版前的记录没有 kind，按 bws 算。
+        kind = "coalesce(json_extract(payload,'$.kind'),'bws')"
+        add("反向测评 jd", m.col("jd_assessments", "created_at", f"{kind}='bws'"))
+        add("工作风格测评 style", m.col("jd_assessments", "created_at", f"{kind}='style'"))
     return streams
 
 
@@ -239,8 +242,12 @@ def section_misc(m: Mine, streams: dict[str, list[datetime]] | None = None) -> l
         total = m.rows("select count(*) n from outreach_versions")[0]["n"]
         lines.append(f"- 触达话术：生成 {total}，标记已使用 {used}")
     if m.has("runway_profile"):
-        r = m.rows("select updated_at from runway_profile")[0]
-        lines.append(f"- 跑道档案最近更新：{r['updated_at'][:10]}")
+        # 表在但一行没有（从没存过跑道档案）时不能直接取 [0]，否则整份报告在这里崩掉。
+        runway = m.rows("select updated_at from runway_profile")
+        if runway:
+            lines.append(f"- 跑道档案最近更新：{runway[0]['updated_at'][:10]}")
+        else:
+            lines.append("- 跑道档案：尚未填写")
     return lines
 
 

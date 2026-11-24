@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 from pathlib import Path
+from typing import Literal
 from urllib.parse import quote, urlsplit
 
 import httpx
@@ -32,7 +33,7 @@ from .transcript import parse_labeled_transcript
 from .transcript_runs import TranscriptManager, new_transcript
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, AttributionInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JdAssessmentInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, RunwayInput, ScopeExpansionInput, SignalSourceInput, SplitInput, TranscriptImportInput, TranscriptSegmentsInput
+from .models import AnalysisStatusInput, AnalyzeInput, AttributionInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JdAssessmentInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, RunwayInput, ScopeExpansionInput, SignalSourceInput, SplitInput, StyleAssessmentInput, TranscriptImportInput, TranscriptSegmentsInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -993,6 +994,7 @@ def create_app(data_dir=None):
             repo.update_task(task)
         return {"task": task}
 
+
     @app.post("/api/import/boss/browse/start")
     def boss_browse_start():
         return load_module("boss_import").browse_start(data_dir=data_dir)
@@ -1696,7 +1698,7 @@ def create_app(data_dir=None):
         return {'narratives': repo.gap_narratives()}
 
     # ── 反向JD测评（2026-11-22；2026-11-24 改 best-worst 选题）：每题 4 段真实 JD 片段点「最想投」「最不想投」
-    # → 隐性筛选条件报告。纯规则，无 LLM。 ──
+    # → 隐性筛选条件报告。纯规则，无 LLM。同页还有第二种考卷「工作风格卷」（见下），两卷同表分卷别存储。 ──
 
     @app.get('/api/jd-assessment/trials')
     def jd_assessment_trials(seed: int | None = None):
@@ -1704,8 +1706,8 @@ def create_app(data_dir=None):
         return trial_list(seed)
 
     @app.get('/api/jd-assessment')
-    def list_jd_assessments():
-        return {'assessments': repo.jd_assessments()}
+    def list_jd_assessments(kind: Literal['bws', 'style'] | None = None):
+        return {'assessments': repo.jd_assessments(kind=kind)}
 
     @app.post('/api/jd-assessment')
     def submit_jd_assessment(data: JdAssessmentInput):
@@ -1715,7 +1717,40 @@ def create_app(data_dir=None):
             report = score_responses(responses, data.seed)
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
-        return repo.save_jd_assessment({'responses': responses, 'report': report, 'seed': data.seed})
+        return repo.save_jd_assessment({'kind': 'bws', 'responses': responses, 'report': report, 'seed': data.seed})
+
+    # ── 工作风格卷（2026-11-24，第二种考卷）：陈述句 + 五级同意度（MBTI 式自陈题）→ 工作风格报告。
+    # 纯规则，无 LLM；测「你适合怎么工作」，与取舍卷的「你要什么」互补。 ──
+
+    @app.get('/api/jd-assessment/style/trials')
+    def work_style_trials(seed: int | None = None):
+        from .work_style import paper
+        return paper(seed)
+
+    @app.post('/api/jd-assessment/style')
+    def submit_work_style(data: StyleAssessmentInput):
+        from .work_style import score_style
+        responses = [item.model_dump() for item in data.responses]
+        try:
+            report = score_style(responses, data.seed)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+        return repo.save_jd_assessment({'kind': 'style', 'responses': responses, 'report': report, 'seed': data.seed})
+
+    @app.get('/api/jd-assessment/cross')
+    def jd_assessment_cross():
+        """两卷各自最新一份报告的互证：读时计算、不回写旧报告，所以谁后做都能立刻互证。
+        missing 列出还没做过的卷；legacy 列出仍是旧版题型报告的卷（改 best-worst 之前的取舍卷报告没有判定字段）。"""
+        from .work_style import cross_report
+        latest = {}
+        for item in repo.jd_assessments():
+            payload = item['payload']
+            latest.setdefault(payload.get('kind') or 'bws', payload.get('report') or {})
+        cross = cross_report(latest.get('style'), latest.get('bws'))
+        missing = [kind for kind in ('bws', 'style') if kind not in latest]
+        # 两卷都在却算不出互证 → 取舍卷那份是旧版（两张岗位卡二选一）报告，没有判定字段。
+        legacy = ['bws'] if cross is None and not missing else []
+        return {'cross': cross, 'missing': missing, 'legacy': legacy}
 
     # ── 生存跑道（2026-11-22 P2）：月支出/存款/社保/失业金 → 决策参考。 ──
     # 隐私硬底线：只存本机单行表、绝不进任何模型素材路径；跨页只出推导值。

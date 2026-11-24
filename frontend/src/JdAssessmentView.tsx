@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { date, getJdAssessments, getJdAssessmentTrials, submitJdAssessment } from './api'
-import type { JdAnswer, JdAssessmentItem, JdAssessmentReport, JdTrial } from './api'
+import { date, getJdAssessments, getJdAssessmentCross, getJdAssessmentTrials, submitJdAssessment } from './api'
+import type { AssessmentRecord, JdAnswer, JdAssessmentCrossState, JdAssessmentItem, JdAssessmentReport, JdTrial, StyleAssessmentItem } from './api'
 import { toast } from './toast'
 import { Button } from './ui'
+import { ConfirmDialog } from './ConfirmDialog'
+import { navigateTabs } from './tabNavigation'
+import { AssessmentCrossSection, WorkStylePaper } from './WorkStyleAssessment'
 
-// 反向JD测评（2026-11-22 首版，2026-11-24 题型改 best-worst 选题）：每题 4 段真实 JD 片段，点出
-// 「最想投」「最不想投」各一条，反推「你的隐性筛选条件」。报告只输出可操作的结论（每段片段被选为
-// 最想/最不想的比例 + 优先/回避筛选关键词），不输出人格标签——避开 MBTI 式巴纳姆效应。
-// 计分在服务端确定性完成（无 LLM）。
+// 反向JD测评页（2026-11-22 首版；2026-11-24 取舍卷题型改 best-worst 选题，并新增第二种考卷「工作风格卷」）。
+// 页面是「双卷页签」容器，两卷都常驻挂载（hidden 切换）——切换页签不丢状态，作答中页签禁用：
+//   JD 取舍卷（BwsPaper，本文件）：每题 4 段真实 JD 片段点出「最想投」「最不想投」各一条，反推「你的隐性筛选条件」；
+//   工作风格卷（WorkStyleAssessment.tsx）：陈述句 + 五级同意度，出工作风格剖面。
+// 两份报告末尾各有一块「互证」，数据来自 /jd-assessment/cross（读时计算，谁后做都能立刻互证），任一卷提交后整页刷新。
+//
+// JD 取舍卷：报告只输出可操作的结论（每段片段被选为最想/最不想的比例 + 优先/回避筛选关键词），不输出人格标签
+// ——避开 MBTI 式巴纳姆效应。计分在服务端确定性完成（无 LLM）。
 // 交互约定（借 jsPsych 规范）：每题强制点两下（先最想投、再最不想投），点完自动前进；可返回修改，
 // 回到已答的题后点任意一条即重新选择；反应时 = 本题这次停留到点完第二下，<800ms 判无效，误触后
 // 回改不会被质检闸门误杀；卷内含 1 道注意力校验题与 3 道重复校验题，质检不过的报告会明确标注。
@@ -26,6 +33,63 @@ const DIM_COLORS: Record<string, string> = {
 }
 
 type Phase = 'loading' | 'intro' | 'test' | 'submitting' | 'report'
+type Paper = 'bws' | 'style'
+type Latest = { bws: JdAssessmentItem | null; style: StyleAssessmentItem | null }
+
+// 列表按时间倒序、两卷混排：每种卷取最新一份（展示）和上一份（风格卷重测对比用）。
+function splitHistory(records: AssessmentRecord[]): { latest: Latest; previous: Latest } {
+  const latest: Latest = { bws: null, style: null }
+  const previous: Latest = { bws: null, style: null }
+  for (const record of records) {
+    if (record.payload.kind === 'style') {
+      if (!latest.style) latest.style = record as StyleAssessmentItem
+      else if (!previous.style) previous.style = record as StyleAssessmentItem
+    } else if (!latest.bws) latest.bws = record as JdAssessmentItem
+    else if (!previous.bws) previous.bws = record as JdAssessmentItem
+  }
+  return { latest, previous }
+}
+
+export function JdAssessmentView() {
+  const [paper, setPaper] = useState<Paper>('bws')
+  const [history, setHistory] = useState<{ latest: Latest; previous: Latest } | null>(null)
+  const [cross, setCross] = useState<JdAssessmentCrossState | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const load = useCallback(async () => {
+    const [listing, crossState] = await Promise.all([
+      getJdAssessments(),
+      getJdAssessmentCross().catch(() => null),       // 旧后端没有互证接口：不渲染互证区块
+    ])
+    setHistory(splitHistory(listing.assessments))
+    setCross(crossState)
+  }, [])
+  useEffect(() => {
+    void load().catch((err: Error) => { toast(err.message, 'error'); setHistory(splitHistory([])) })
+  }, [load])
+
+  const onBusy = useCallback((value: boolean) => setBusy(value), [])
+  const onSubmitted = useCallback(() => {
+    void load().catch((err: Error) => toast(err.message, 'error'))
+  }, [load])
+  const go = useCallback((next: Paper) => { if (!busy) setPaper(next) }, [busy])
+
+  return <section className="jd-wrap" aria-label="反向JD测评">
+    <div className="jd-tabs management-tabs" role="tablist" aria-label="选择考卷" onKeyDown={navigateTabs}>
+      {([['bws', 'JD 取舍卷', '你要什么'], ['style', '工作风格卷', '你适合怎么工作']] as const).map(([id, label, note]) =>
+        <button key={id} id={`jd-paper-${id}-tab`} role="tab" aria-selected={paper === id} tabIndex={paper === id ? 0 : -1}
+          disabled={busy} onClick={() => setPaper(id)}>{label}<span>{note}</span></button>)}
+    </div>
+    <div className="jd-paper" hidden={paper !== 'bws'}>
+      <BwsPaper ready={history !== null} latest={history?.latest.bws ?? null} cross={cross}
+        onSubmitted={onSubmitted} onBusy={onBusy} onSwitchPaper={() => go('style')} />
+    </div>
+    <div className="jd-paper" hidden={paper !== 'style'}>
+      <WorkStylePaper ready={history !== null} latest={history?.latest.style ?? null} previous={history?.previous.style ?? null}
+        cross={cross} onSubmitted={onSubmitted} onBusy={onBusy} onSwitchPaper={() => go('bws')} />
+    </div>
+  </section>
+}
 
 function percent(value: number) { return `${Math.round(value * 100)}%` }
 
@@ -38,31 +102,39 @@ function isLegacyReport(report: JdAssessmentReport) {
 
 const hasItems = (trials: JdTrial[]) => trials.length > 0 && trials.every(t => Array.isArray(t.items) && t.items.length === 4)
 
-export function JdAssessmentView() {
+function BwsPaper({ ready, latest, cross, onSubmitted, onBusy, onSwitchPaper }: {
+  ready: boolean; latest: JdAssessmentItem | null; cross: JdAssessmentCrossState | null
+  onSubmitted: (item: JdAssessmentItem) => void; onBusy: (busy: boolean) => void; onSwitchPaper: () => void
+}) {
   const [phase, setPhase] = useState<Phase>('loading')
   const [trials, setTrials] = useState<JdTrial[]>([])
-  const [latest, setLatest] = useState<JdAssessmentItem | null>(null)
   const [index, setIndex] = useState(0)
   // 按题序存全量作答（初始顺序作答逐步填满）；返回修改只改对应槽位，反应时按最终选择的重看时间重计，
   // 误触后回改不会被 800ms 质检闸门误杀。
   const [answers, setAnswers] = useState<(JdAnswer | null)[]>([])
-  // 当前题已点出的「最想投」（还没点「最不想投」，所以尚未写入 answers）。
+  const [confirmRetake, setConfirmRetake] = useState(false)  // 当前题已点出的「最想投」（还没点「最不想投」，所以尚未写入 answers）。
   const [pending, setPending] = useState<number | null>(null)
   const trialShownAt = useRef(0)
   // 会话种子：开卷时随机生成，交卷回传同值（服务端靠它复现题序与锚点配对）；重测换种子 = 换一张卷。
   const seedRef = useRef(-1)
+  const latestRef = useRef(latest)
+  latestRef.current = latest
 
-  const load = useCallback(async () => {
-    try {
-      if (seedRef.current < 0) seedRef.current = Math.floor(Math.random() * 2147483647)
-      const [trialData, history] = await Promise.all([getJdAssessmentTrials(seedRef.current), getJdAssessments()])
-      // 前端已更新而后端没重启时，旧接口还返回「岗位卡二选一」的卷面：明确提示，别渲染成空白。
-      setTrials(hasItems(trialData.trials) ? trialData.trials : [])
-      setLatest(history.assessments[0] || null)
-      setPhase(history.assessments[0] ? 'report' : 'intro')
-    } catch (err) { toast((err as Error).message, 'error'); setPhase('intro') }
-  }, [])
-  useEffect(() => { void load() }, [load])
+  // 两卷都常驻挂载，所以只在历史就绪时取一次卷；之后报告的变化走提交回调，不重新取卷。
+  useEffect(() => {
+    if (!ready) return
+    if (seedRef.current < 0) seedRef.current = Math.floor(Math.random() * 2147483647)
+    getJdAssessmentTrials(seedRef.current)
+      .then(data => {
+        // 前端已更新而后端没重启时，旧接口还返回「岗位卡二选一」的卷面：明确提示，别渲染成空白。
+        setTrials(hasItems(data.trials) ? data.trials : [])
+        setPhase(latestRef.current ? 'report' : 'intro')
+      })
+      .catch((err: Error) => { toast(err.message, 'error'); setPhase('intro') })
+  }, [ready])
+
+  const testing = phase === 'test' || phase === 'submitting'
+  useEffect(() => { onBusy(testing) }, [testing, onBusy])
   useEffect(() => { setPending(null) }, [index, phase])
 
   const answeredCount = answers.filter(Boolean).length
@@ -95,15 +167,16 @@ export function JdAssessmentView() {
     if (phase !== 'test' || !allDone) return
     setPhase('submitting')
     submitJdAssessment(answers.filter(Boolean) as JdAnswer[], seedRef.current)
-      .then(item => { setLatest(item); setPhase('report'); toast('测评完成，报告已保存在本机', 'notice') })
+      .then(item => { onSubmitted(item); setPhase('report'); toast('测评完成，报告已保存在本机', 'notice') })
       .catch((err: Error) => { toast(err.message, 'error'); setPhase('test') })
   }
 
   // 键盘作答（1–4 = 点对应那条，Backspace = 取消刚点的最想投）：给键盘通路，但以点击为主通路。
+  // 按住不放的重复触发不认，否则一题答完会顺势答掉下一题。
   useEffect(() => {
     if (phase !== 'test') return
     const onKey = (event: KeyboardEvent) => {
-      if (event.ctrlKey || event.metaKey || event.altKey) return
+      if (event.repeat || event.ctrlKey || event.metaKey || event.altKey) return
       if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return
       if (['1', '2', '3', '4'].includes(event.key)) pick(Number(event.key) - 1)
       else if (event.key === 'Backspace' && !answers[index] && pending !== null) setPending(null)
@@ -116,7 +189,7 @@ export function JdAssessmentView() {
     setAnswers([]); setIndex(0); setPending(null); trialShownAt.current = performance.now(); setPhase('test')
   }
   function retake() {
-    if (!window.confirm('重新测一次？新报告完成后会取代当前展示（历史仍保留在数据库）。')) return
+    setConfirmRetake(false)
     // 换种子换卷：新题序 + 新变体 + 新块内顺序，重测不是重做同一张卷。
     seedRef.current = Math.floor(Math.random() * 2147483647)
     setPhase('loading')
@@ -128,17 +201,17 @@ export function JdAssessmentView() {
       .catch((err: Error) => { toast(err.message, 'error'); setPhase('report') })
   }
 
-  if (phase === 'loading') return null
+  if (!ready || phase === 'loading') return null
   const report = latest?.payload.report
   const legacy = report ? isLegacyReport(report) : false
   const trial = trials[index]
   const scored = report ? report.quality.total_trials - report.quality.anchors - 1 : 0
-  const testing = phase === 'test' || phase === 'submitting'      // 作答中不显示「上次测评」，免得误会成当前结果
+  // 作答中不显示「上次测评」，免得误会成当前结果
   const heading = report && !legacy && !testing
     ? `上次测评 ${date(latest!.created_at)} · ${report.quality.grade === 'ok' ? '质检通过' : '质检有警示'}`
     : '约 4 分钟 · 结果只存本机'
 
-  return <section className="jd-wrap" aria-label="反向JD测评">
+  return <>
     <section className="page-intro compact"><h1 className="sr-only">反向JD测评</h1>
       <span className="revision-label">{heading}</span></section>
 
@@ -146,7 +219,7 @@ export function JdAssessmentView() {
       <div className="section-heading"><div><h2>用你的选择，反推你的筛选条件</h2>
         <p className="body-small muted">每题给你 4 段真实 JD 里的片段，点出最想投的一条和最不想投的一条。做完立刻得到一份「隐性筛选条件报告」：不是人格标签，而是每段片段被你选为最想投 / 最不想投的比例，和下一轮投递直接能用的筛选 / 回避关键词。</p></div></div>
       <ul className="jd-intro-list">
-        <li><b>{trials.length} 题</b>，约 4 分钟，凭直觉选，不用想太久——直觉才是要测的东西。</li>
+        <li><b>{trials.length || 40} 题</b>，约 4 分钟，凭直觉选，不用想太久——直觉才是要测的东西。</li>
         <li>每题点两下：先点最想投的，再点最不想投的。没有对错；点错随时「← 上一题」改，全部答完还能从头检查一遍再交卷。中途离开即作废。</li>
         <li>卷内含注意力校验与重复校验题：质检不过的报告会如实标注可信度。</li>
       </ul>
@@ -193,12 +266,12 @@ export function JdAssessmentView() {
       ? <section className="paper-panel jd-panel">
         <div className="section-heading"><div><h2>你的隐性筛选条件报告</h2>
           <p className="body-small muted">这份报告来自旧版题型（两张岗位卡二选一），新版报告按「最想投 / 最不想投」计分，重新测评后即可查看。</p></div>
-          <Button className="button secondary" onClick={retake}>重新测评</Button></div>
+          <Button className="button secondary" onClick={() => setConfirmRetake(true)}>重新测评</Button></div>
       </section>
       : <section className="paper-panel jd-panel">
       <div className="section-heading"><div><h2>你的隐性筛选条件报告</h2>
         <p className="body-small muted">按「最想投率 − 最不想投率」排序：越靠右越常被你选为最想投，越靠左越常被你选为最不想投。</p></div>
-        <Button className="button secondary" onClick={retake}>重新测评</Button></div>
+        <Button className="button secondary" onClick={() => setConfirmRetake(true)}>重新测评</Button></div>
 
       <div className={`jd-quality${report.quality.grade === 'weak' ? ' jd-quality-warn' : ''}`}
         title={report.quality.grade === 'ok' ? '注意力、重复一致性与作答速度三项质检全部通过' : '存在质检验证未通过的项，结论可信度打折'}>
@@ -251,6 +324,8 @@ export function JdAssessmentView() {
         </div>
       </div>
 
+      <AssessmentCrossSection cross={cross} side="bws" step={4} onGo={onSwitchPaper} />
+
       <h3 className="jd-block-title jd-detail-title">全部片段一览</h3>
       <div className="jd-detail-grid">
         {report.features.map(f => {
@@ -266,7 +341,9 @@ export function JdAssessmentView() {
 
       <p className="jd-note">{report.note}</p>
     </section>)}
-  </section>
+    {confirmRetake && <ConfirmDialog title="重新测评" message="新报告完成后会取代当前展示，历史仍保留在数据库。"
+      confirmLabel="开始重测" onConfirm={retake} onCancel={() => setConfirmRetake(false)} />}
+  </>
 }
 
 function rateTitle(f: JdAssessmentReport['features'][number]) {

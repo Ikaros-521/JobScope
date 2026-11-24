@@ -404,6 +404,22 @@ class JdAssessmentInput(RequestModel):
     seed: int | None = Field(default=None, ge=0, le=2147483647)
 
 
+class StyleAssessmentResponse(RequestModel):
+    """工作风格卷单句作答（2026-11-24）：item_id 对应卷面题目编号；value 是五级选项下标 0–4
+    （非常不同意 … 非常同意；布尔值会被宽松转换成整数，所以计分入口再按「必须是 int」拒绝一遍）；
+    rt_ms 本句反应时（过快进质检）。"""
+    item_id: str = Field(min_length=1, max_length=10)
+    value: int = Field(ge=0, le=4)
+    rt_ms: int = Field(default=0, ge=0, le=600000)
+
+
+class StyleAssessmentInput(RequestModel):
+    """工作风格卷提交：全量作答一次落库，服务端确定性计分并生成报告（无 LLM）。
+    seed 是取卷时的会话种子（只决定题序），计分按题目编号，与题序无关；省略走默认卷。"""
+    responses: list[StyleAssessmentResponse] = Field(min_length=1, max_length=120)
+    seed: int | None = Field(default=None, ge=0, le=2147483647)
+
+
 class AttributionTagInput(RequestModel):
     """失败博物馆单条归因标注：scope=controlled/uncontrolled，tag 对应分类学常量 id。"""
     scope: Literal['controlled', 'uncontrolled']

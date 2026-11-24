@@ -1225,27 +1225,41 @@ class Repository:
             items.append(item)
         return items
 
-    # ── 反向JD测评（2026-11-22）：全卷作答 + 确定性报告（payload 不限定题型版本），只留最近 5 份供回看。 ──
+    # ── 反向JD测评（2026-11-22）：全卷作答 + 确定性报告（payload 不限定题型版本），只留最近 5 份供回看。
+    # 2026-11-24 起同一张表存两种考卷：payload.kind = bws（JD 取舍卷）/ style（工作风格卷），各留最近 5 份；
+    # 改版前的记录没有 kind，按 bws 算。 ──
+
+    _ASSESSMENT_KIND = "COALESCE(json_extract(payload,'$.kind'),'bws')"
 
     def save_jd_assessment(self, payload):
-        """每次完整作答落一份版本；payload = {responses, report}，报告在提交时确定性算好。"""
-        item = {'id': 'JD-' + uuid.uuid4().hex[:20], 'payload': payload, 'created_at': now()}
+        """每次完整作答落一份版本；payload = {kind, responses, report}，报告在提交时确定性算好。"""
+        kind = 'style' if payload.get('kind') == 'style' else 'bws'
+        payload = dict(payload, kind=kind)
+        item = {'id': ('WS-' if kind == 'style' else 'JD-') + uuid.uuid4().hex[:20],
+                'payload': payload, 'created_at': now()}
         with self.connection() as conn:
             # INSERT 一律显式列名（迁移教训：位置式插入在追加列后静默错位）。
             conn.execute('INSERT INTO jd_assessments (id,payload,created_at) VALUES (?,?,?)',
                          (item['id'], json.dumps(payload, ensure_ascii=False), item['created_at']))
-            stale = conn.execute('SELECT id FROM jd_assessments ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET 5').fetchall()
+            stale = conn.execute(f'SELECT id FROM jd_assessments WHERE {self._ASSESSMENT_KIND} = ? '
+                                 'ORDER BY created_at DESC, rowid DESC LIMIT -1 OFFSET 5', (kind,)).fetchall()
             for row in stale:
                 conn.execute('DELETE FROM jd_assessments WHERE id=?', (row['id'],))
         return item
 
-    def jd_assessments(self, limit=5):
+    def jd_assessments(self, limit=5, kind=None):
+        """kind = bws / style 只取该卷；省略则两卷各取最近 limit 份，合并后按时间倒序。"""
         with self.connection() as conn:
-            rows = conn.execute('SELECT id,payload,created_at FROM jd_assessments '
-                                'ORDER BY created_at DESC, rowid DESC LIMIT ?', (limit,)).fetchall()
+            rows = []
+            for one in ([kind] if kind else ('bws', 'style')):
+                rows += conn.execute(f'SELECT id,payload,created_at,rowid FROM jd_assessments '
+                                     f'WHERE {self._ASSESSMENT_KIND} = ? '
+                                     'ORDER BY created_at DESC, rowid DESC LIMIT ?', (one, limit)).fetchall()
+        rows = sorted(rows, key=lambda row: (row['created_at'], row['rowid']), reverse=True)
         items = []
         for row in rows:
             item = dict(row)
+            del item['rowid']
             item['payload'] = json.loads(item['payload'] or '{}')
             items.append(item)
         return items

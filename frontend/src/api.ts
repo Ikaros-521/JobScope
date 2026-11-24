@@ -85,8 +85,10 @@ export function getRunway() { return api<RunwayPayload>('/runway') }
 export function saveRunway(body: { monthly_expense?: number | null; savings?: number | null; social_security_last_month?: string; unemployment_claim?: RunwayClaim; notes?: string }) {
   return api<RunwayPayload>('/runway', { method: 'PUT', body: JSON.stringify(body) })
 }
-// 反向JD测评（2026-11-22 首版；2026-11-24 题型改 best-worst 选题）：每题 4 段真实 JD 片段，点出「最想投」
-// 「最不想投」各一条 → 隐性筛选条件报告。纯规则计分，无 LLM。
+// 测评（2026-11-22 首版；2026-11-24 取舍卷题型改 best-worst 选题，并新增第二种考卷「工作风格卷」）。
+// 两卷同页分页签、同一存储各留最近 5 份，payload.kind 区分：bws = JD 取舍卷，style = 工作风格卷
+//（改版前的记录没有 kind，按 bws 算）。两卷都走服务端纯规则计分，无 LLM。
+// JD 取舍卷：每题 4 段真实 JD 片段，点出「最想投」「最不想投」各一条 → 隐性筛选条件报告。
 // verdict: strong_like/like/neutral/avoid/strong_avoid/uncertain；score = 最想投率 − 最不想投率（-1–1）。
 export type JdTrial = { id: string; items: string[] }
 export type JdAnswer = { trial_id: string; best: number; worst: number; rt_ms: number }
@@ -108,12 +110,60 @@ export type JdAssessmentReport = {
   actions: { prefer: string[]; avoid: string[]; prefer_line: string; avoid_line: string }
   note: string
 }
-export type JdAssessmentItem = { id: string; payload: { responses: JdAnswer[]; report: JdAssessmentReport }; created_at: string }
+export type JdAssessmentItem = { id: string; created_at: string; payload: { kind?: 'bws' | 'style'; responses: JdAnswer[]; report: JdAssessmentReport } }
+// 工作风格卷（2026-11-24）：陈述句 + 五级同意度（value 0–4）→ 四轴剖面 + 逐轴三档 + 原型速记。
+// band：clear = 明显（重测稳定）/ slight = 略偏（方向大概率正确，重测可能归为不明显）/ even = 不明显。
+// d 是轴分 [-2, 2]，单位是量表上的「格」：正 = 偏 b 极，负 = 偏 a 极。
+export type WorkStyleBand = 'clear' | 'slight' | 'even'
+export type WorkStylePoleKey = 'solo' | 'team' | 'grounded' | 'vision' | 'logic' | 'empathy' | 'order' | 'agile'
+export type StyleItem = { id: string; text: string }
+export type StyleAnswer = { item_id: string; value: number; rt_ms: number }
+export type WorkStyleTrial = { items: StyleItem[]; scale: { value: number; label: string }[]; model: string }
+export type WorkStyleAxisReport = {
+  key: string; label: string; question: string
+  pole_a: WorkStylePoleKey; pole_a_name: string; pole_b: WorkStylePoleKey; pole_b_name: string
+  d: number; se: number; band: WorkStyleBand; band_label: string
+  pole: WorkStylePoleKey | null; pole_name: string | null; n_items: number
+}
+export type WorkStylePole = {
+  key: WorkStylePoleKey; name: string; band: WorkStyleBand; band_label: string; d: number
+  tagline: string; strengths: string[]; watch_outs: string[]; seek: string[]; caution: string[]
+}
+export type WorkStyleReport = {
+  kind: 'style'; model: string
+  quality: { attention_pass: boolean; straight: boolean; fast_items: number; items: number; agree_bias: number; flags: string[]; grade: 'ok' | 'weak' }
+  axes: WorkStyleAxisReport[]
+  // poles 是判型极（≥ 略偏）的完整画像，按强度排序；type.name 只是前两极的原型速记，以 axes 为准。
+  type: {
+    poles: WorkStylePoleKey[]; names: string[]; headline: string; name: string
+    essence: string; fits: string; drains: string
+    rank: { pole: WorkStylePoleKey; name: string; band: WorkStyleBand; band_label: string }[]
+  }
+  poles: WorkStylePole[]
+  note: string
+}
+export type StyleAssessmentItem = { id: string; created_at: string; payload: { kind: 'style'; responses: StyleAnswer[]; report: WorkStyleReport } }
+// 列表接口不筛卷别时两卷混排，用联合类型；窄化用 payload.kind。
+export type AssessmentRecord = { id: string; created_at: string; payload: { kind?: 'bws' | 'style'; responses: (JdAnswer | StyleAnswer)[]; report: JdAssessmentReport | WorkStyleReport } }
+// 两卷互证（读时计算，谁后做都能立刻互证）：风格极 × 取舍卷构念判定 → 印证（match）或取舍（tradeoff）。
+// missing = 还没做过的卷；legacy = 仍是旧版题型报告的卷；cross 为 null 时看这两个字段说明原因。
+export type JdAssessmentCrossNote = {
+  kind: 'match' | 'tradeoff'; kind_label: string; text: string
+  style_pole: WorkStylePoleKey; style_name: string; style_band: WorkStyleBand
+  bws_key: string; bws_label: string; bws_phrase: string; bws_best: number; bws_worst: number; bws_n: number
+}
+export type JdAssessmentCross = { notes: JdAssessmentCrossNote[]; matches: number; tradeoffs: number; summary: string }
+export type JdAssessmentCrossState = { cross: JdAssessmentCross | null; missing: ('bws' | 'style')[]; legacy: ('bws' | 'style')[] }
 export function getJdAssessmentTrials(seed?: number) { return api<{ trials: JdTrial[] }>(`/jd-assessment/trials${seed != null ? `?seed=${seed}` : ''}`) }
-export function getJdAssessments() { return api<{ assessments: JdAssessmentItem[] }>('/jd-assessment') }
+export function getJdAssessments(kind?: 'bws' | 'style') { return api<{ assessments: AssessmentRecord[] }>(`/jd-assessment${kind ? `?kind=${kind}` : ''}`) }
 export function submitJdAssessment(responses: JdAnswer[], seed?: number) {
   return post<JdAssessmentItem>('/jd-assessment', { responses, seed })
 }
+export function getWorkStyleTrials(seed?: number) { return api<WorkStyleTrial>(`/jd-assessment/style/trials${seed != null ? `?seed=${seed}` : ''}`) }
+export function submitWorkStyle(responses: StyleAnswer[], seed?: number) {
+  return post<StyleAssessmentItem>('/jd-assessment/style', { responses, seed })
+}
+export function getJdAssessmentCross() { return api<JdAssessmentCrossState>('/jd-assessment/cross') }
 // 触达话术（2026-11-22）：生成即落版本，A/B 靠 used_at 使用标记；平台发送由用户在招聘站手动完成。
 export type OutreachVersion = { id: string; job_id: string; kind: 'greeting' | 'followup'; text: string; origin: string; created_at: string; used_at: string }
 export function getOutreachVersions(jobId: string) { return api<{ versions: OutreachVersion[] }>(`/jobs/${encodeURIComponent(jobId)}/outreach`) }
