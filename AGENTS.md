@@ -32,3 +32,11 @@
 - `scripts/smoke_*.py` 默认打 `http://127.0.0.1:8766` 测试实例，新增 smoke 脚本保持此约定。
 - 现有 pytest 套件全部 tmp_path 隔离，新增测试照做。
 - 对 8765 只做**只读**操作（GET、页面浏览）不在此限。
+
+## 前端交互约定
+
+- **确认类交互一律用 `frontend/src/ConfirmDialog.tsx`，禁用 `window.confirm` / `alert` / `prompt`
+  原生弹窗**（2026-11-24 全站替换后定规）。原生弹窗阻塞页面 JS 主线程——自动化验收里点到它
+  evaluate 永不返回——样式也不随主题。不可逆 / 覆盖类操作传 `danger`（确认键红色、默认聚焦「取消」）。
+  弹窗面板沿用 `.modal-backdrop` / `.modal paper-panel` 既有样式约定，冒烟脚本按
+  `.confirm-modal` 定位确认按钮。

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Markdown } from './chat/Markdown'
 import { Icon } from './Icon'
+import { ConfirmDialog } from './ConfirmDialog'
 import { toast } from './toast'
 import AttributionPanel from './AttributionPanel'
 import {
@@ -728,6 +729,7 @@ function RealWorkspace({ transcriptId, modelConfigured, onConfigureModel, onCrea
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
   const [importing, setImporting] = useState(false)
+  const [confirmRelabel, setConfirmRelabel] = useState(false)
   const [jobId, setJobId] = useState('')
   const [jobLabel, setJobLabel] = useState('')
   const [text, setText] = useState('')
@@ -888,7 +890,7 @@ function RealWorkspace({ transcriptId, modelConfigured, onConfigureModel, onCrea
 
   async function relabel() {
     if (!transcript || run) return
-    if (!window.confirm('重新标注会覆盖当前段落（含人工修正），确定吗？')) return
+    setConfirmRelabel(false)
     try {
       const started = await relabelInterviewTranscript(transcript.id)
       pendingRef.current = transcript.id
@@ -948,13 +950,15 @@ function RealWorkspace({ transcriptId, modelConfigured, onConfigureModel, onCrea
     {tab === 'labels' ? <LabelReviewPanel
         transcript={transcript} segments={segments} live={labelSegs} dirty={dirty} saving={saving} busy={busy}
         onSegment={(index, patch) => { setSegments(current => current.map(item => item.index === index ? { ...item, ...patch } : item)); setDirty(true) }}
-        onSave={() => void saveSegments()} onReport={() => void startReport()} onRelabel={() => void relabel()} />
+        onSave={() => void saveSegments()} onReport={() => void startReport()} onRelabel={() => setConfirmRelabel(true)} />
       : transcript.status === 'reporting'
         ? <TranscriptProgressiveReport feed={feed} />
         : <><TranscriptReportPanel report={transcript.report} jobLabel={jobLabelFull} stale={reportStale}
             onRegenerate={() => void startReport()} busy={busy} />
           {/* 失败博物馆归因标注：真实面试失败是主要馆藏（有真实结果可归因） */}
           <AttributionPanel source="real" sessionId={transcript.id} onSaved={onChanged} /></>}
+    {confirmRelabel && <ConfirmDialog danger title="重新标注" message="重新标注会覆盖当前段落，含已做的人工修正。"
+      confirmLabel="重新标注" onConfirm={() => void relabel()} onCancel={() => setConfirmRelabel(false)} />}
   </div>
 }
 
