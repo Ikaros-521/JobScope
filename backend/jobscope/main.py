@@ -29,12 +29,12 @@ from . import resume_workshop as workshop
 from .bindings import ModelBindings, normalise_binding
 from .interview import assemble_material, company_brief_from, persona_cards
 from .interview_runs import InterviewManager, interview_scope, new_session
-from .prep_plan_runs import PrepPlanManager
+from .prep_plan_runs import PrepAdjustManager, PrepPlanManager
 from .transcript import parse_labeled_transcript
 from .transcript_runs import TranscriptManager, new_transcript
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, AttributionInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JdAssessmentInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, PrepPlanGenerateInput, PrepTaskNoteInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, RunwayInput, ScopeExpansionInput, SignalSourceInput, SplitInput, StyleAssessmentInput, TranscriptImportInput, TranscriptSegmentsInput
+from .models import AnalysisStatusInput, AnalyzeInput, AttributionInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JdAssessmentInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, PrepAdjustInput, PrepPlanGenerateInput, PrepTaskNoteInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, RunwayInput, ScopeExpansionInput, SignalSourceInput, SplitInput, StyleAssessmentInput, TranscriptImportInput, TranscriptSegmentsInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -109,6 +109,7 @@ def create_app(data_dir=None):
     interview_runs = InterviewManager(repo)
     transcript_runs = TranscriptManager(repo)
     prep_plan_runs = PrepPlanManager(repo)
+    prep_adjust_runs = PrepAdjustManager(repo)
     scope_expansions = ScopeExpansionStore(repo)
     knowledge = KnowledgeStore(repo)
     knowledge_imports = KnowledgeImportManager(knowledge, repo)
@@ -118,6 +119,7 @@ def create_app(data_dir=None):
     app.state.interview_runs = interview_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     app.state.transcript_runs = transcript_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     app.state.prep_plan_runs = prep_plan_runs  # exposed for tests: join worker threads to avoid cross-test leaks
+    app.state.prep_adjust_runs = prep_adjust_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
     # 数据备份（2026-11-18）：`.data/` 是生产数据，备份/恢复能力是一等公民而非运维纪律。
@@ -686,8 +688,10 @@ def create_app(data_dir=None):
     def prep_plan_snapshot():
         from .prep_plan import snapshot
         active = prep_plan_runs.active()
+        adjusting = prep_adjust_runs.active()
         return dict(snapshot(repo), model_configured=purpose_configured('analysis'),
-                    active_run=active.snapshot() if active else None)
+                    active_run=active.snapshot() if active else None,
+                    active_adjust=adjusting.snapshot() if adjusting else None)
 
     @app.post('/api/prep-plan')
     def prep_plan_generate(data: PrepPlanGenerateInput | None = None):
@@ -703,17 +707,25 @@ def create_app(data_dir=None):
         from .prep_plan import generate, idempotent_plan, normalize_prefs, snapshot
         prefs = normalize_prefs(data.model_dump() if data else None)
         days = data.days if data else 14
-        existing = idempotent_plan(repo, prefs)
-        if existing is not None:
-            # 同日同数据已生成：直接回快照，不起线程也不发 SSE。
-            return dict(run_id=None, reused=True, plan=existing,
-                        snapshot=dict(snapshot(repo), model_configured=purpose_configured('analysis')))
+        force = bool(data.force) if data else False
+        if force:
+            # 整轮重排继承当前计划已调整过的 prefs（对话 set_prefs 后的最新意图），
+            # 请求体里没带显式参数时不回落缺省值把用户的调整洗掉。
+            stored = repo.active_prep_plan()
+            if stored and (stored.get('prefs') or {}).get('minutes_per_day'):
+                prefs = normalize_prefs(stored.get('prefs'))
+        if not force:
+            existing = idempotent_plan(repo, prefs)
+            if existing is not None:
+                # 同日同数据已生成：直接回快照，不起线程也不发 SSE。
+                return dict(run_id=None, reused=True, plan=existing,
+                            snapshot=dict(snapshot(repo), model_configured=purpose_configured('analysis')))
         if not (prefs['use_llm'] and purpose_configured('analysis')):
             # 规则快路径秒级完成：同步生成即可，不值得起 run。
-            plan = generate(repo, days, prefs)
+            plan = generate(repo, days, prefs, force=force)
             return dict(run_id=None, reused=False, plan=plan,
                         snapshot=dict(snapshot(repo), model_configured=purpose_configured('analysis')))
-        handle, reused = prep_plan_runs.start(days, prefs)
+        handle, reused = prep_plan_runs.start(days, prefs, force=force)
         return dict(run_id=handle.id, reused=reused)
 
     @app.get('/api/prep-plan/runs/{run_id}')
@@ -727,6 +739,51 @@ def create_app(data_dir=None):
     def prep_plan_run_stream(run_id: str = PathParam(max_length=100)):
         try:
             generator = prep_plan_runs.stream(run_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from None
+        return StreamingResponse(generator(), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+
+    # ---- 对话式调整：自然语言说改哪，模型给结构化指令，规则层护栏落库（同 run + SSE 模式）。 ----
+
+    @app.post('/api/prep-plan/adjust')
+    def prep_plan_adjust_start(data: PrepAdjustInput):
+        if repo.active_prep_plan() is None:
+            raise HTTPException(404, '当前没有进行中的备战计划')
+        if not purpose_configured('analysis'):
+            raise HTTPException(400, '调整对话需要先在设置中心绑定分析模型')
+        if prep_plan_runs.active() or prep_adjust_runs.active():
+            raise HTTPException(409, '计划正在生成或调整中，请等它完成')
+        handle, reused = prep_adjust_runs.start(data.message)
+        return dict(run_id=handle.id, reused=reused)
+
+    @app.get('/api/prep-plan/adjust/conversation')
+    def prep_plan_adjust_conversation():
+        """调整对话历史（含已执行摘要 meta），前端刷新后重建气泡。"""
+        plan = repo.active_prep_plan()
+        if plan is None or not plan.get('conversation_id'):
+            return dict(conversation_id=None, messages=[])
+        scope = dict(kind='prep-plan', plan_id=plan['id'])
+        try:
+            stored = repo.get_conversation(plan['conversation_id'], scope)
+        except ValueError:
+            return dict(conversation_id=None, messages=[])
+        messages = [dict(id=item.get('id'), role=item.get('role'), content=item.get('content', ''),
+                         changes=item.get('changes'), rebuild_pending=item.get('rebuild_pending'))
+                    for item in stored['messages'] if item.get('role') in ('user', 'assistant')]
+        return dict(conversation_id=stored['id'], messages=messages)
+
+    @app.get('/api/prep-plan/adjust/runs/{run_id}')
+    def prep_plan_adjust_status(run_id: str = PathParam(max_length=100)):
+        handle = prep_adjust_runs.get(run_id)
+        if handle is None:
+            raise HTTPException(404, '运行不存在或已结束')
+        return handle.snapshot()
+
+    @app.get('/api/prep-plan/adjust/runs/{run_id}/stream')
+    def prep_plan_adjust_stream(run_id: str = PathParam(max_length=100)):
+        try:
+            generator = prep_adjust_runs.stream(run_id)
         except ValueError as exc:
             raise HTTPException(404, str(exc)) from None
         return StreamingResponse(generator(), media_type='text/event-stream',

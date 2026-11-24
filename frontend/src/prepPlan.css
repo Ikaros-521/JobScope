@@ -104,6 +104,23 @@
 .pp-gen-error { margin-top: 12px; }
 .pp-gen-error .button { margin-left: auto; }
 
+/* 对话式调整（2026-11-24 第四轮）：教练回复逐字流 + 修改逐条亮出 */
+.pp-adjust-turns { display: flex; flex-direction: column; gap: 12px; margin: 14px 0 0; padding: 0; list-style: none; }
+.pp-adjust-turn { display: flex; gap: 10px; align-items: flex-start; }
+.pp-adjust-role { flex: none; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--selected); color: var(--muted); }
+.pp-adjust-turn.user .pp-adjust-role { color: var(--green); }
+.pp-adjust-body { min-width: 0; flex: 1; }
+.pp-adjust-body p { margin: 0; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.pp-adjust-applied { display: flex; align-items: center; gap: 6px; margin-top: 6px; padding: 6px 10px; border-left: 2px solid var(--green); border-radius: 0 6px 6px 0; background: var(--surface); font-size: 12px; color: var(--green); overflow-wrap: anywhere; }
+.pp-adjust-applied svg { flex: none; }
+.pp-adjust-skipped { margin-top: 6px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.pp-adjust-error { margin-top: 6px; padding: 6px 10px; border-radius: 6px; background: var(--surface); font-size: 12px; color: #a8641a; overflow-wrap: anywhere; }
+.pp-adjust-input { display: flex; align-items: flex-end; gap: 10px; margin-top: 14px; }
+.pp-adjust-input textarea { flex: 1; min-height: 38px; max-height: 120px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--green); font: inherit; font-size: 12.5px; resize: none; }
+.pp-adjust-input textarea:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
+.pp-adjust-input textarea:disabled { opacity: .6; }
+.pp-adjust-input .button { flex: none; }
+
 @media (max-width: 700px) {
   .pp-progress-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .pp-task { flex-direction: column; }

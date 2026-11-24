@@ -139,6 +139,16 @@ flowchart TD
 - 快路径不起 run：同日幂等命中（`idempotent_plan` 抽出独立函数供 run 入口与 `generate` 共用，含「规则版可升级模型」判断）或 `use_llm=false`/模型未配置时同步生成、直接回快照（`run_id=null`）。
 - 前端 `PrepPlanView` 生成时渲染渐进面板：三步清单逐项点亮、诊断文本打字机式浮现、短板 chips 逐条替换规则版清单；生成中途刷新/切页回来经快照里的 `active_run` 续接（SSE 从头重放重建进度）。不做取消：整条管线只有一次有超时上限的模型调用，中途放弃留不下任何计划。
 
+## 6.7 对话式动态调整（2026-11-24 第四轮）
+
+生成后计划不是死的：用户觉得不合理可以直接跟教练说，模型解释意图并产出结构化修改指令，规则层护栏落库——延续「模型做分析、规则做排期」的切分。
+
+- 入口 `POST /api/prep-plan/adjust`（`PrepAdjustManager`，与生成共用 run+SSE 模式；生成与调整互斥，同时只允许一个活动 run）。一次流式调用同时产出：`===CHANGES===` 标记前的回复文本（逐字推 `delta` 给前端）+ 标记后的 JSON 指令数组（对用户隐藏，解析失败只丢指令不阻断回复）。
+- 五类指令，`prep_plan.apply_adjustments` 逐条护栏执行：`set_prefs`（预算/重点/岗位；预算变化按同一口径重估全部 pending 的 drill/study 时长）、`edit_task` / `remove_task`（只动 pending，done/skipped 不动以保打卡记录）、`add_task`（day_index 必须在计划范围内）、`rebuild`（**不直接执行**：只落同批 `set_prefs`，其余丢弃，推 `confirm_required` 由用户在确认框点头后走 `force=True` 强制重新生成——覆盖类操作走 ConfirmDialog 是全站红线）。
+- 多轮上下文挂在计划自己的 conversation（`prep_plans.conversation_id` 新列，既有库 `ALTER TABLE` 迁移）；每轮把「教练回复 + 已执行摘要」落库，递进说法（「再轻一点」）可用。先落库再推 `done`。
+- `done` 携带 `{reply, applied, skipped, confirm_required, snapshot}`；快照 GET 带 `active_adjust` 供刷新续接。前端调整对话面板：轮次气泡 + 流式回复（打字机光标）+ applied 逐条亮出 + Enter 发送；未绑模型时输入框禁用并提示。
+- `force=True` 重排继承当前计划已调整过的 prefs（对话 set_prefs 后的最新意图），不回落请求体缺省值；事件照走 §6.6 的生成管线。
+
 ## 7. 反怠惰机制
 
 | 机制 | 实现 |
@@ -161,9 +171,13 @@ flowchart TD
 | --- | --- | --- |
 | GET | `/api/prep-plan` | 当前计划 + 今日任务 + 周视图 + 进度 + 历史计划摘要；无计划时 `plan=null`；生成中有 `active_run` 供前端续接 |
 | POST | `/api/prep-plan` | 同步生成计划（body 可选 `days`）；同日同数据幂等返回原计划 |
-| POST | `/api/prep-plan/runs` | 流式生成入口：幂等命中或规则快路径同步回快照（`run_id=null`），否则起后台 run 返回 `run_id` |
+| POST | `/api/prep-plan/runs` | 流式生成入口：幂等命中或规则快路径同步回快照（`run_id=null`），否则起后台 run 返回 `run_id`；`force=true` 跳幂等（整轮重排确认后） |
 | GET | `/api/prep-plan/runs/{run_id}` | run 状态（done 标志） |
 | GET | `/api/prep-plan/runs/{run_id}/stream` | SSE：从事件日志头部重放全部进度事件 |
+| POST | `/api/prep-plan/adjust` | 对话式调整：`{message}` 起后台 run；无计划 404、未绑模型 400、生成/调整进行中 409 |
+| GET | `/api/prep-plan/adjust/conversation` | 当前计划的调整对话历史（含已执行摘要） |
+| GET | `/api/prep-plan/adjust/runs/{run_id}` | 调整 run 状态 |
+| GET | `/api/prep-plan/adjust/runs/{run_id}/stream` | SSE：delta 逐字回复 + applied/skipped + confirm_required + done |
 | POST | `/api/prep-plan/tasks/{task_id}/done` | 完成任务，可选 `note` |
 | POST | `/api/prep-plan/tasks/{task_id}/skip` | 跳过任务 |
 | POST | `/api/prep-plan/tasks/{task_id}/reopen` | 撤销完成/跳过，回到 pending |
@@ -173,7 +187,7 @@ flowchart TD
 
 | 文件 | 改动 |
 | --- | --- |
-| `frontend/src/PrepPlanView.tsx`（新增） | 今日任务卡、周视图、进度条与连续天数、生成/归档入口、任务操作；生成时的流式进度面板（阶段清单 + 诊断逐字流 + 短板 chips） |
+| `frontend/src/PrepPlanView.tsx`（新增） | 今日任务卡、周视图、进度条与连续天数、生成/归档入口、任务操作；生成时的流式进度面板（阶段清单 + 诊断逐字流 + 短板 chips）；生成后的对话调整面板（轮次气泡 + 流式回复 + applied 逐条结果 + rebuild 确认） |
 | `frontend/src/navigation.ts` | `ViewId` 增加 `prep-plan`，导航组「岗位研究」加一项 |
 | `frontend/src/App.tsx` | 视图装配、`main-compact` 分支、面包屑；`openInterview` 扩展支持 `focus` |
 | `frontend/src/InterviewView.tsx` | `InterviewDeepLink` 增加 `focus`，新建面板顶部显示专项提示 |

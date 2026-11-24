@@ -166,6 +166,12 @@ class PrepPlanGenerateInput(RequestModel):
     job_id: str = Field(default='', max_length=100)  # 目标岗位：JD/评估缺口进材料，任务深链预选
     minutes_per_day: int = Field(default=20, ge=10, le=120)
     use_llm: bool = True  # 关掉则强制走规则版（模型不可用时也自动回退）
+    force: bool = False  # 跳过同日幂等：对话调整里用户确认整轮重排后使用
+
+
+class PrepAdjustInput(RequestModel):
+    """备战计划对话调整：用户用自然语言说要怎么改，模型产出结构化修改指令。"""
+    message: str = Field(min_length=1, max_length=2000)
 
 
 class PrepTaskNoteInput(RequestModel):

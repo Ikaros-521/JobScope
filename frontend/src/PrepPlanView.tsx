@@ -1,9 +1,9 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  api, archivePrepPlan, donePrepTask, getPrepPlan, openPrepPlanStream, reopenPrepTask, skipPrepTask,
-  startPrepPlanRun,
+  api, archivePrepPlan, donePrepTask, getPrepAdjustConversation, getPrepPlan, openPrepAdjustStream,
+  openPrepPlanStream, reopenPrepTask, skipPrepTask, startPrepAdjust, startPrepPlanRun,
 } from './api'
-import type { Job, PageInfo, PrepFocus, PrepSnapshot, PrepTask } from './api'
+import type { Job, PageInfo, PrepAdjustApplied, PrepAdjustTurn, PrepFocus, PrepSnapshot, PrepTask } from './api'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Icon } from './Icon'
 import { toast } from './toast'
@@ -12,6 +12,8 @@ import { toast } from './toast'
 // 首屏只有「今天做什么」；诊断、周视图与短板清单折叠/后置，避免变成一张大欠账表。
 // 完成/跳过/撤销无破坏性；只有「重新生成 / 归档」会覆盖当前计划，走 ConfirmDialog。
 // 生成走后台 run + SSE：阶段清单逐项点亮、诊断逐字流式、短板逐条浮现（同评估适配管线）。
+// 生成后可继续跟教练对话调整（2026-11-24 第四轮）：回复逐字流、修改逐条亮出；
+// 「整轮重排」是覆盖类操作，模型只提请、用户在确认框点头后才走强制重新生成。
 
 const CREATED_FROM_LABELS: Record<string, string> = {
   interview_report: '依据最近模拟面试报告中暴露的短板',
@@ -68,6 +70,10 @@ function reduceGen(prev: GenState | null, event: string, data: Record<string, un
   }
 }
 
+// ---- 调整对话（SSE 事件驱动的草稿态；done 收尾时并入正式轮次） ----
+type AdjustDraft = { reply: string; applied: PrepAdjustApplied[]; skipped: PrepAdjustApplied[]; error: string }
+const BLANK_DRAFT: AdjustDraft = { reply: '', applied: [], skipped: [], error: '' }
+
 export function PrepPlanView({ onOpenInterview }: { onOpenInterview: (jobId?: string, focus?: string) => void }) {
   const [data, setData] = useState<PrepSnapshot | null>(null)
   const [error, setError] = useState('')
@@ -79,6 +85,12 @@ export function PrepPlanView({ onOpenInterview }: { onOpenInterview: (jobId?: st
   const [confirm, setConfirm] = useState<'regenerate' | 'archive' | null>(null)
   const [gen, setGen] = useState<GenState | null>(null)
   const [runId, setRunId] = useState('')
+  const [turns, setTurns] = useState<PrepAdjustTurn[]>([])
+  const [draft, setDraft] = useState<AdjustDraft | null>(null)
+  const [adjustRunId, setAdjustRunId] = useState('')
+  const [adjustInput, setAdjustInput] = useState('')
+  const [rebuildAsk, setRebuildAsk] = useState('')
+  const pendingTurn = useRef<PrepAdjustTurn | null>(null) // 发出但还没落库的用户消息，done 时并入轮次
 
   const load = useCallback(async () => {
     try {
@@ -88,6 +100,11 @@ export function PrepPlanView({ onOpenInterview }: { onOpenInterview: (jobId?: st
       if (next.active_run && !next.active_run.done && next.active_run.run_id) {
         setGen(null); setRunId(next.active_run.run_id)
       }
+      if (next.active_adjust && !next.active_adjust.done && next.active_adjust.run_id) {
+        setDraft(null); setAdjustRunId(next.active_adjust.run_id)
+      }
+      void getPrepAdjustConversation()
+        .then(result => setTurns(result.messages || [])).catch(() => setTurns([]))
     } catch (err) { setError((err as Error).message) }
   }, [])
   useEffect(() => { void load() }, [load])
@@ -118,6 +135,44 @@ export function PrepPlanView({ onOpenInterview }: { onOpenInterview: (jobId?: st
     return () => source.close()
   }, [runId])
 
+  useEffect(() => {
+    if (!adjustRunId) return
+    const source = openPrepAdjustStream(adjustRunId, (event, frame) => {
+      if (event === 'done') {
+        const payload = frame as unknown as { reply: string; applied: PrepAdjustApplied[]; snapshot: PrepSnapshot; confirm_required: { reason: string } | null }
+        setData(payload.snapshot); setDraft(null); setAdjustRunId('')
+        setTurns(prev => [...prev,
+          ...(pendingTurn.current ? [pendingTurn.current] : []),
+          { role: 'assistant', content: payload.reply,
+            changes: payload.applied.map(item => item.summary || '').filter(Boolean).join('；') || undefined }])
+        pendingTurn.current = null
+        return
+      }
+      if (event === 'confirm_required') {
+        setRebuildAsk(String((frame as { reason?: string }).reason || '按最新资料重新生成整轮计划'))
+        return
+      }
+      if (event === 'delta') {
+        setDraft(prev => ({ ...(prev ?? BLANK_DRAFT), reply: (prev?.reply || '') + String((frame as { text?: string }).text || '') }))
+        return
+      }
+      if (event === 'applied' || event === 'skipped') {
+        setDraft(prev => {
+          const next = prev ?? BLANK_DRAFT
+          const item = frame as unknown as PrepAdjustApplied
+          return event === 'applied'
+            ? { ...next, applied: [...next.applied, item] }
+            : { ...next, skipped: [...next.skipped, item] }
+        })
+        return
+      }
+      if (event === 'error') {
+        setDraft(prev => ({ ...(prev ?? BLANK_DRAFT), error: String((frame as { message?: string }).message || '调整对话失败') }))
+      }
+    })
+    return () => source.close()
+  }, [adjustRunId])
+
   async function act(key: string, action: () => Promise<PrepSnapshot>) {
     setBusy(key)
     try { setData(await action()) } catch (err) { toast((err as Error).message, 'error') }
@@ -130,10 +185,10 @@ export function PrepPlanView({ onOpenInterview }: { onOpenInterview: (jobId?: st
   }
 
   const payload = { days, ...form }
-  async function startGeneration() {
+  async function startGeneration(force = false) {
     if (runId) return // 生成已在进行中：避免重复发起把进度面板打回重放起点
     try {
-      const start = await startPrepPlanRun(payload)
+      const start = await startPrepPlanRun({ ...payload, force })
       if (start.run_id) {
         setGen(null); setRunId(start.run_id); setEditing(false)
       } else if (start.snapshot) {
@@ -141,6 +196,30 @@ export function PrepPlanView({ onOpenInterview }: { onOpenInterview: (jobId?: st
         setData(start.snapshot); setEditing(false)
         toast(start.reused ? '今天的计划已存在，直接沿用。' : '已生成新计划（规则版）。')
       }
+    } catch (err) { toast((err as Error).message, 'error') }
+  }
+
+  async function sendAdjust() {
+    const message = adjustInput.trim()
+    if (!message || adjustRunId || runId) return
+    try {
+      const start = await startPrepAdjust(message)
+      setAdjustInput('')
+      if (!start.reused) {
+        pendingTurn.current = { role: 'user', content: message }
+        setDraft(null); setAdjustRunId(start.run_id)
+      }
+    } catch (err) { toast((err as Error).message, 'error') }
+  }
+
+  async function confirmRebuild() {
+    setRebuildAsk('')
+    // 重排只带 days + force：prefs 用服务端存的已调整值（表单可能是旧状态）。
+    const planDays = data?.plan?.days || 14
+    try {
+      const start = await startPrepPlanRun({ days: planDays, force: true })
+      if (start.run_id) { setGen(null); setRunId(start.run_id); setEditing(false) }
+      else if (start.snapshot) { setData(start.snapshot); setEditing(false) }
     } catch (err) { toast((err as Error).message, 'error') }
   }
 
@@ -276,6 +355,42 @@ export function PrepPlanView({ onOpenInterview }: { onOpenInterview: (jobId?: st
             onOpenInterview={() => onOpenInterview(task.job_id || '', task.topic)} />)}</ul>}
       </div>
 
+      {plan && <div className="paper-panel pp-adjust">
+        <div className="section-heading"><div><h2>跟教练说，随时调整</h2>
+          <p className="body-small muted">觉得哪天太重、哪条不对、想换个重点，直接说；改完立刻生效，打卡记录不动。</p></div>
+          <span className="tiny-label">大改（整轮重排）会先跟你确认</span></div>
+        {(turns.length > 0 || draft) && <ul className="pp-adjust-turns">
+          {turns.map((item, index) => <li key={item.id || `t-${index}`} className={`pp-adjust-turn ${item.role}`}>
+            <span className="pp-adjust-role">{item.role === 'user' ? '你' : '教练'}</span>
+            <div className="pp-adjust-body">
+              <p>{item.content}</p>
+              {item.changes && <div className="pp-adjust-applied"><Icon name="check" size={13} />{item.changes}</div>}
+            </div>
+          </li>)}
+          {draft && <li className="pp-adjust-turn assistant streaming">
+            <span className="pp-adjust-role">教练</span>
+            <div className="pp-adjust-body">
+              {draft.reply && <p>{draft.reply}{!draft.error && <span className="pp-gen-caret" />}</p>}
+              {draft.applied.length > 0 && <div className="pp-adjust-applied"><Icon name="check" size={13} />
+                {draft.applied.map(item => item.summary || '').filter(Boolean).join('；')}</div>}
+              {draft.skipped.length > 0 && <div className="pp-adjust-skipped">
+                {draft.skipped.map((item, index) => <span key={index}>{item.note}</span>).join('；')}</div>}
+              {draft.error && <div className="pp-adjust-error">{draft.error}</div>}
+            </div>
+          </li>}
+        </ul>}
+        <div className="pp-adjust-input">
+          <textarea rows={1} value={adjustInput} maxLength={2000}
+            placeholder={configured ? '例：周三太忙换到周五 / 每天只想花 10 分钟 / 重新聊聊项目深挖怎么练'
+              : '调整对话需要先在「设置 → 模型」绑定分析模型'}
+            disabled={!configured || generating || Boolean(adjustRunId)}
+            onChange={event => setAdjustInput(event.target.value)}
+            onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendAdjust() } }} />
+          <button className="button primary small" disabled={!configured || !adjustInput.trim() || generating || Boolean(adjustRunId)}
+            onClick={() => void sendAdjust()}>发送</button>
+        </div>
+      </div>}
+
       {data.week.length > 0 && <details className="paper-panel pp-week">
         <summary><Icon name="chevron" size={14} />整周安排（{data.week.length} 天，折叠查看）</summary>
         <ul className="pp-week-list">{data.week.map(day => <li key={day.date} className={day.date === data.today.date ? 'current' : ''}>
@@ -314,6 +429,12 @@ export function PrepPlanView({ onOpenInterview }: { onOpenInterview: (jobId?: st
       confirmLabel={confirm === 'regenerate' ? '重新生成' : '归档'}
       danger={confirm === 'archive'} busy={busy === 'confirm'}
       onConfirm={() => void confirmAction()} onCancel={() => setConfirm(null)} />}
+
+    {rebuildAsk && <ConfirmDialog
+      title="整轮重排备战计划"
+      message={`教练建议按最新资料重新生成整轮计划（${rebuildAsk}）。当前计划会归档保留，历史打卡不删除，但未完成的任务安排会重新排。`}
+      confirmLabel="确认重排" busy={generating}
+      onConfirm={() => void confirmRebuild()} onCancel={() => setRebuildAsk('')} />}
   </section>
 }
 

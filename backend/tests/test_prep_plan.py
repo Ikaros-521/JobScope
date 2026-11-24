@@ -16,7 +16,8 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from jobscope.main import create_app
 from jobscope import prep_plan_llm
-from jobscope.prep_plan import auto_complete_mock, collect_focus, generate, idempotent_plan, snapshot
+from jobscope.prep_plan import apply_adjustments, auto_complete_mock, collect_focus, generate, idempotent_plan, snapshot
+from jobscope.prep_plan_adjust import MARKER, parse_changes
 from jobscope.prep_plan_llm import DiagnosisProbe
 from jobscope.repository import Repository, now
 
@@ -320,7 +321,7 @@ def test_legacy_prep_plans_schema_is_migrated(tmp_path):
     repo = Repository(legacy_dir)
     with repo.connection() as conn:
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(prep_plans)')}
-    assert {'origin', 'diagnosis', 'prefs'} <= columns
+    assert {'origin', 'diagnosis', 'prefs', 'conversation_id'} <= columns
     plan = generate(repo, 7, prefs=dict(goal='旧库迁移', use_llm=False))
     assert repo.get_prep_plan(plan['id'])['prefs']['goal'] == '旧库迁移'
 
@@ -517,4 +518,214 @@ def test_run_endpoint_reuses_active_run(model_client, monkeypatch):
     handle = model_client.app.state.prep_plan_runs.get(first['run_id'])
     if handle and handle.thread is not None:
         handle.thread.join(timeout=5)
+
+
+# ---- 对话式调整（2026-11-24 第四轮）：指令护栏 / 解析 / run + SSE / rebuild 确认 ----
+
+def test_apply_adjustments_guards(repo):
+    """护栏逐条校验：done 任务不动、越界/空标题拒绝、rebuild 不直接执行、未知类型跳过。"""
+    plan = generate(repo, 7, prefs=dict(use_llm=False))
+    done_task = next(task for task in repo.prep_tasks(plan['id']) if task['kind'] == 'mock')
+    repo.update_prep_task(done_task['id'], 'done')
+
+    applied, skipped = apply_adjustments(repo, plan, [
+        dict(action='edit_task', task_id=done_task['id'], title='不该生效'),
+        dict(action='add_task', day_index=3, kind='study', title='补一个数据结构要点', detail='写 200 字要点'),
+        dict(action='add_task', day_index=99, title='越界'),
+        dict(action='add_task', day_index=2, title='  '),
+        dict(action='rebuild', reason='重排'),
+        dict(action='whatever'),
+    ])
+    notes = [item['note'] for item in skipped]
+    assert any('不再改动' in note for note in notes)
+    assert any('超出计划范围' in note for note in notes)
+    assert any('必须有标题' in note for note in notes)
+    assert any('需要你确认' in note for note in notes)
+    assert any('未知' in note for note in notes)
+    added = [item for item in applied if item['action'] == 'add_task']
+    assert len(added) == 1
+    row = repo.prep_task(added[0]['task_id'])
+    assert row['kind'] == 'study' and row['day_index'] == 3 and row['required'] == 0
+    assert row['date'] == (datetime.fromisoformat(plan['start_date']) + timedelta(days=2)).date().isoformat()
+    assert repo.prep_task(done_task['id'])['title'] == done_task['title']  # done 任务没被改
+
+
+def test_apply_adjustments_set_prefs_rebudgets(repo):
+    """改每日预算：prefs 落库，且 pending 的 drill/study 按同一口径重估时长。"""
+    plan = generate(repo, 7, prefs=dict(use_llm=False))
+    applied, _ = apply_adjustments(repo, plan, [dict(action='set_prefs', minutes_per_day=60)])
+    assert any('每日预算' in (item.get('summary') or '') for item in applied)
+    stored = repo.get_prep_plan(plan['id'])
+    assert stored['prefs']['minutes_per_day'] == 60
+    for task in repo.prep_tasks(plan['id']):
+        if task['status'] == 'pending' and task['kind'] in ('drill', 'study'):
+            assert task['minutes'] == 25
+        if task['kind'] == 'mock':
+            assert task['minutes'] == 18  # mock 固定不受预算影响
+
+
+def test_parse_adjust_changes():
+    """标记拆分：回复与指令分离；垃圾指令段容忍为空；无标记时全文是回复。"""
+    reply, changes = parse_changes(f'已改好。{MARKER}\n[{{"action":"set_prefs","minutes_per_day":10}}]')
+    assert reply == '已改好。' and changes[0]['action'] == 'set_prefs'
+    reply, changes = parse_changes(f'解释一下。{MARKER}\n不是json')
+    assert reply == '解释一下。' and changes == []
+    reply, changes = parse_changes('只是聊天，没有标记')
+    assert reply == '只是聊天，没有标记' and changes == []
+
+
+def test_adjust_endpoint_guards(client):
+    """无计划 404；有计划但未绑模型 400。"""
+    assert client.post('/api/prep-plan/adjust', json=dict(message='改一下')).status_code == 404
+    generate(client.app.state.repo, 7, prefs=dict(use_llm=False))
+    assert client.post('/api/prep-plan/adjust', json=dict(message='改一下')).status_code == 400
+    assert client.post('/api/prep-plan/adjust', json=dict(message='')).status_code == 422
+    assert client.get('/api/prep-plan/adjust/conversation').json()['messages'] == []
+
+
+def test_adjust_run_streams_applies_and_persists(model_client, monkeypatch):
+    """SSE 全链路：回复逐字流 → applied/skipped 逐条 → done(快照)；对话落库供下一轮。"""
+    repo = model_client.app.state.repo
+    generate(repo, 7, prefs=dict(use_llm=False))
+    plan = repo.active_prep_plan()
+    target = next(task for task in repo.prep_tasks(plan['id'])
+                  if task['kind'] == 'drill' and task['status'] == 'pending')
+    reply = '已把任务改轻，预算也降了。\n' + MARKER + '\n' + json.dumps([
+        dict(action='edit_task', task_id=target['id'], title='练一版轻量表达'),
+        dict(action='set_prefs', minutes_per_day=10),
+        dict(action='remove_task', task_id='T-bogus'),
+    ], ensure_ascii=False)
+    monkeypatch.setattr('jobscope.model_transport.stream_complete', _fake_stream(reply, piece_size=11))
+
+    run_id = model_client.post('/api/prep-plan/adjust', json=dict(message='周三太重了，改轻一点')).json()['run_id']
+    assert run_id
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if model_client.get(f'/api/prep-plan/adjust/runs/{run_id}').json().get('done'):
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError('调整对话超时未完成')
+    handle = model_client.app.state.prep_adjust_runs.get(run_id)
+    if handle and handle.thread is not None:
+        handle.thread.join(timeout=5)
+
+    frames = []
+    with model_client.stream('GET', f'/api/prep-plan/adjust/runs/{run_id}/stream') as response:
+        assert response.status_code == 200
+        event = None
+        for line in response.iter_lines():
+            if line.startswith('event: '):
+                event = line[7:].strip()
+            elif line.startswith('data: '):
+                frames.append((event, json.loads(line[6:])))
+    kinds = [kind for kind, _ in frames]
+    assert kinds[0] == 'start' and kinds[-1] == 'end'
+    for expected in ('delta', 'applied', 'skipped', 'done'):
+        assert expected in kinds
+    done = next(payload for kind, payload in frames if kind == 'done')
+    assert done['reply'].startswith('已把任务改轻')
+    assert done['confirm_required'] is None
+    assert any('不存在' in item['note'] for item in done['skipped'])
+    snapshot = done['snapshot']
+    assert snapshot['plan']['prefs']['minutes_per_day'] == 10
+    assert any(task['title'] == '练一版轻量表达' for task in snapshot['today']['tasks'] + snapshot['week'][0]['tasks'])
+
+    # 对话已落库（先落库再推送 done）：用户消息 + 教练回复 + 已执行摘要 meta。
+    stored = model_client.get('/api/prep-plan/adjust/conversation').json()
+    assert stored['conversation_id']
+    assert stored['messages'][0]['role'] == 'user' and stored['messages'][0]['content'] == '周三太重了，改轻一点'
+    assert stored['messages'][1]['role'] == 'assistant'
+    assert '预算' in stored['messages'][1]['changes']
+    assert repo.get_prep_plan(snapshot['plan']['id'])['conversation_id'] == stored['conversation_id']
+    # 第二轮对话带 history 上下文（materials 只在模型层组装，这里验证端点不再 409/404）。
+    second = model_client.post('/api/prep-plan/adjust', json=dict(message='再轻一点'))
+    assert second.status_code == 200 and second.json()['reused'] is False
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if model_client.get(f"/api/prep-plan/adjust/runs/{second.json()['run_id']}").json().get('done'):
+            break
+        time.sleep(0.05)
+    handle = model_client.app.state.prep_adjust_runs.get(second.json()['run_id'])
+    if handle and handle.thread is not None:
+        handle.thread.join(timeout=5)
+
+
+def test_adjust_rebuild_confirms_then_force_regenerates(model_client, monkeypatch):
+    """rebuild 独占：只落同批 set_prefs，edit 丢弃；确认后 force 重新生成换新计划。"""
+    repo = model_client.app.state.repo
+    old = generate(repo, 7, prefs=dict(use_llm=False))
+    victim = next(task for task in repo.prep_tasks(old['id']) if task['status'] == 'pending')
+    reply = '整体确实偏重，建议重排。\n' + MARKER + '\n' + json.dumps([
+        dict(action='edit_task', task_id=victim['id'], title='不该生效'),
+        dict(action='set_prefs', minutes_per_day=40),
+        dict(action='rebuild', reason='节奏整体偏重'),
+    ], ensure_ascii=False)
+    monkeypatch.setattr('jobscope.model_transport.stream_complete', _fake_stream(reply))
+    run_id = model_client.post('/api/prep-plan/adjust', json=dict(message='整轮都太重了')).json()['run_id']
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if model_client.get(f'/api/prep-plan/adjust/runs/{run_id}').json().get('done'):
+            break
+        time.sleep(0.05)
+    handle = model_client.app.state.prep_adjust_runs.get(run_id)
+    if handle and handle.thread is not None:
+        handle.thread.join(timeout=5)
+
+    frames = None
+    with model_client.stream('GET', f'/api/prep-plan/adjust/runs/{run_id}/stream') as response:
+        event = None
+        collected = []
+        for line in response.iter_lines():
+            if line.startswith('event: '):
+                event = line[7:].strip()
+            elif line.startswith('data: '):
+                collected.append((event, json.loads(line[6:])))
+    kinds = [kind for kind, _ in collected]
+    assert 'confirm_required' in kinds
+    confirm = next(payload for kind, payload in collected if kind == 'confirm_required')
+    assert confirm['reason'] == '节奏整体偏重'
+    done = next(payload for kind, payload in collected if kind == 'done')
+    assert done['confirm_required']['reason'] == '节奏整体偏重'
+    applied = '；'.join(item.get('summary') or '' for item in done['applied'])
+    assert '预算' in applied and '不该生效' not in applied
+    assert repo.prep_task(victim['id'])['title'] == victim['title']  # rebuild 批里的 edit 被丢弃
+    assert repo.get_prep_plan(old['id'])['prefs']['minutes_per_day'] == 40  # set_prefs 已落库
+
+    # 用户确认 → force 重新生成：换新计划，旧计划归档，新计划沿用更新后的 prefs。
+    # 继承的 prefs 可能是 use_llm=False（规则版计划）→ 走同步快路径 run_id=None；两种路径都合法。
+    gen_reply = json.dumps(dict(diagnosis='按新预算重排。', focus=[
+        dict(topic='量化表达', detail='', source='报告', drill='补一页测算', kind='study', weight=2),
+        dict(topic='项目深挖', detail='', source='报告', drill='画链路图', kind='drill', weight=3),
+    ]), ensure_ascii=False)
+    monkeypatch.setattr('jobscope.model_transport.stream_complete', _fake_stream(gen_reply))
+    result = model_client.post('/api/prep-plan/runs', json=dict(days=7, force=True)).json()
+    if result.get('run_id'):
+        deadline = time.time() + 15
+        while time.time() < deadline:
+            if model_client.get(f"/api/prep-plan/runs/{result['run_id']}").json().get('done'):
+                break
+            time.sleep(0.05)
+        handle = model_client.app.state.prep_plan_runs.get(result['run_id'])
+        if handle and handle.thread is not None:
+            handle.thread.join(timeout=5)
+        new_plan = repo.active_prep_plan()
+    else:
+        assert result['reused'] is False
+        new_plan = result['plan']
+    assert new_plan['id'] != old['id']
+    assert new_plan['prefs']['minutes_per_day'] == 40
+    assert repo.get_prep_plan(old['id'])['status'] == 'archived'
+
+
+def test_force_run_skips_idempotent(model_client, monkeypatch):
+    """force=True 同日同参数也重新生成（rebuild 确认后的路径）。"""
+    monkeypatch.setattr('jobscope.settings.purpose_configured', lambda purpose: False)
+    first = model_client.post('/api/prep-plan/runs', json=dict(days=7, use_llm=False)).json()
+    assert first['run_id'] is None and first['reused'] is False
+    second = model_client.post('/api/prep-plan/runs', json=dict(days=7, use_llm=False)).json()
+    assert second['reused'] is True  # 幂等命中
+    third = model_client.post('/api/prep-plan/runs', json=dict(days=7, use_llm=False, force=True)).json()
+    assert third['run_id'] is None and third['reused'] is False
+    assert third['plan']['id'] != first['plan']['id']
 

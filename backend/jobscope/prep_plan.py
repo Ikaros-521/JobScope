@@ -181,6 +181,19 @@ def normalize_prefs(prefs=None):
                 use_llm=bool(prefs.get('use_llm', True)))
 
 
+def _budget_minutes(budget, kind):
+    """按每日预算档给任务估时；生成与对话调整共用同一口径，改预算不会出现两套时长。"""
+    if kind == 'mock':
+        return 18
+    if kind == 'review':
+        return 10
+    if budget <= 20:
+        return 12 if kind == 'drill' else 15
+    if budget <= 40:
+        return 18 if kind == 'drill' else 20
+    return 25
+
+
 def _tasks_for(plan, focus):
     """按计划头与短板清单生成全部任务；生成与空计划自愈共用，保证进度口径一致。
 
@@ -192,8 +205,6 @@ def _tasks_for(plan, focus):
     prefs = plan.get('prefs') or {}
     diagnosis = str(plan.get('diagnosis') or '')
     budget = prefs.get('minutes_per_day') or 20
-    drill_minutes = 12 if budget <= 20 else 18 if budget <= 40 else 25
-    study_minutes = 15 if budget <= 20 else 20 if budget <= 40 else 25
     tasks = []
     start = date.fromisoformat(plan['start_date'])
     for index in range(plan['days']):
@@ -209,28 +220,29 @@ def _tasks_for(plan, focus):
                        + (f' 当日专项练法：{drill}' if drill else '') + ' 复盘生成后这一项会自动打卡。')
         tasks.append(_make_task(
             plan['id'], day_index, day, 'mock', f'完成一场模拟面试：{topic}',
-            mock_detail, topic, 18, True, source, sid, jid))
+            mock_detail, topic, _budget_minutes(budget, 'mock'), True, source, sid, jid))
         if (item.get('kind_hint') or item.get('kind')) == 'study':
             tasks.append(_make_task(
                 plan['id'], day_index, day, 'study',
                 drill[:40] if drill else f'补一个知识点：{topic}',
                 (drill + ' 产出一份能回看的笔记或例子。') if drill else
                 f'找 1 份资料或笔记，围绕「{topic}」写 200 字要点 + 1 个自己能讲出来的例子。',
-                topic, study_minutes, False, source, sid, jid))
+                topic, _budget_minutes(budget, 'study'), False, source, sid, jid))
         else:
             tasks.append(_make_task(
                 plan['id'], day_index, day, 'drill',
                 drill[:40] if drill else f'练一版表达：{topic}',
                 (drill + ' 做完回听一遍，确认自己能讲清楚。') if drill else
                 f'把「{topic}」按 STAR 重写一版，补上 2 个数字；90 秒内讲完并回听一遍。',
-                topic, drill_minutes, True, source, sid, jid))
+                topic, _budget_minutes(budget, 'drill'), True, source, sid, jid))
         if day_index % 7 == 0:
             review_detail = '回看这周的模拟面试报告，勾出仍然薄弱的 1 点；下一轮专项会优先练它。'
             if diagnosis:
                 review_detail += f' 对照教练诊断：{diagnosis[:160]}'
             tasks.append(_make_task(
                 plan['id'], day_index, day, 'review', '本周复盘：挑出还卡的一点',
-                review_detail, topic, 10, False, '每周一次的回看，不要求全做完'))
+                review_detail, topic, _budget_minutes(budget, 'review'), False,
+                '每周一次的回看，不要求全做完'))
     return tasks
 
 
@@ -309,15 +321,149 @@ def idempotent_plan(repo, prefs=None, allow_llm=True):
     return existing
 
 
-def generate(repo, days=DEFAULT_DAYS, prefs=None, allow_llm=True, on_event=None):
-    """生成入口：同日同数据重复调用返回原计划，不产出第二份。"""
+def generate(repo, days=DEFAULT_DAYS, prefs=None, allow_llm=True, on_event=None, force=False):
+    """生成入口：同日同数据重复调用返回原计划，不产出第二份；force=True 跳过幂等（对话调整里用户确认的整轮重排）。"""
     prefs = normalize_prefs(prefs)
-    existing = idempotent_plan(repo, prefs, allow_llm)
-    if existing is not None:
-        return existing
+    if not force:
+        existing = idempotent_plan(repo, prefs, allow_llm)
+        if existing is not None:
+            return existing
     plan = build_plan(repo, days, prefs, allow_llm, on_event=on_event)
     repo.archive_prep_plans(except_id=plan['id'])
     return plan
+
+
+_PREP_KINDS = ('mock', 'study', 'drill', 'review')
+
+
+def apply_adjustments(repo, plan, changes):
+    """执行模型给出的结构化修改指令；逐条护栏校验，坏的跳过并写明理由。
+
+    返回 (applied, skipped)。rebuild 不在这里执行——它由 run 层转成 confirm_required，
+    用户确认后走 force 重新生成；这里只会收到它被过滤后的剩余指令。
+    """
+    applied, skipped = [], []
+    prefs = dict(plan.get('prefs') or {})
+    plan_changed = False
+
+    for change in changes or []:
+        action = str(change.get('action') or '')
+        if action not in ('set_prefs', 'edit_task', 'remove_task', 'add_task'):
+            # rebuild 已被 run 层拦截，到这里同样不执行；其余未知类型跳过。
+            skipped.append(dict(action=action, note='整轮重排需要你确认后才会执行' if action == 'rebuild' else '未知的修改类型'))
+            continue
+        if action == 'set_prefs':
+            touched = []
+            if change.get('minutes_per_day') is not None:
+                try:
+                    minutes = int(change['minutes_per_day'])
+                except (TypeError, ValueError):
+                    minutes = None
+                if minutes is not None and 10 <= minutes <= 120:
+                    if minutes != prefs.get('minutes_per_day'):
+                        prefs['minutes_per_day'] = minutes
+                        touched.append(f'每日预算改为 {minutes} 分钟')
+            if 'goal' in change and change['goal'] is not None:
+                goal = _clip(change.get('goal'), 300)
+                if goal != prefs.get('goal'):
+                    prefs['goal'] = goal
+                    touched.append('备战重点已更新')
+            if 'job_id' in change and change['job_id'] is not None:
+                job_id = _clip(change.get('job_id'), 100)
+                if job_id != prefs.get('job_id'):
+                    prefs['job_id'] = job_id
+                    touched.append('目标岗位已更新')
+            if touched:
+                plan_changed = True
+                applied.append(dict(action=action, summary='，'.join(touched)))
+                # 预算变了就按同一口径重估全部 pending 的专项任务时长（mock/复盘固定）。
+                if any('预算' in item for item in touched):
+                    for task in repo.prep_tasks(plan['id']):
+                        if task['status'] == 'pending' and task['kind'] in ('drill', 'study'):
+                            minutes = _budget_minutes(prefs['minutes_per_day'], task['kind'])
+                            if minutes != task['minutes']:
+                                repo.edit_prep_task(task['id'], {'minutes': minutes})
+                                applied.append(dict(action=action, task_id=task['id'],
+                                                    summary=f'「{task["title"][:20]}」时长调整为约 {minutes} 分钟'))
+            else:
+                skipped.append(dict(action=action, note='没有产生任何变化'))
+            continue
+
+        if action == 'add_task':
+            try:
+                day_index = int(change.get('day_index'))
+            except (TypeError, ValueError):
+                skipped.append(dict(action=action, note='缺少有效的 day_index'))
+                continue
+            if not 1 <= day_index <= plan['days']:
+                skipped.append(dict(action=action, note=f'day_index 超出计划范围 1–{plan["days"]}'))
+                continue
+            title = _clip(change.get('title'), MAX_TITLE)
+            if not title:
+                skipped.append(dict(action=action, note='新任务必须有标题'))
+                continue
+            kind = change.get('kind') if change.get('kind') in _PREP_KINDS else 'drill'
+            try:
+                minutes = int(change.get('minutes') or _budget_minutes(prefs.get('minutes_per_day') or 20, kind))
+            except (TypeError, ValueError):
+                minutes = _budget_minutes(prefs.get('minutes_per_day') or 20, kind)
+            minutes = max(5, min(120, minutes))
+            day = (date.fromisoformat(plan['start_date']) + timedelta(days=day_index - 1)).isoformat()
+            row = dict(id='T-' + uuid.uuid4().hex[:20], plan_id=plan['id'], day_index=day_index, date=day,
+                       kind=kind, title=title, detail=_clip(change.get('detail'), MAX_DETAIL),
+                       topic=_clip(change.get('topic') or title, 80), minutes=minutes,
+                       required=1 if change.get('required') else 0,
+                       source='对话调整：你与教练的修改约定', session_id='',
+                       job_id=prefs.get('job_id') or '', status='pending', note='', completed_at='')
+            repo.save_prep_tasks([row])
+            applied.append(dict(action=action, task_id=row['id'],
+                                summary=f'第 {day_index} 天新增「{title[:24]}」'))
+            continue
+
+        # edit/remove 才需要落到具体任务上。
+        task_id = _clip(change.get('task_id'), 60)
+        task = repo.prep_task(task_id) if task_id else None
+        if task is None or task['plan_id'] != plan['id']:
+            skipped.append(dict(action=action, task_id=task_id, note='任务不存在或不属于当前计划'))
+            continue
+        if action == 'edit_task':
+            if task['status'] != 'pending':
+                skipped.append(dict(action=action, task_id=task_id, note='已完成/已跳过的任务不再改动'))
+                continue
+            fields = {}
+            if change.get('title'):
+                fields['title'] = _clip(change.get('title'), MAX_TITLE)
+            if change.get('detail'):
+                fields['detail'] = _clip(change.get('detail'), MAX_DETAIL)
+            if change.get('kind') in _PREP_KINDS:
+                fields['kind'] = change['kind']
+            if change.get('minutes') is not None:
+                try:
+                    minutes = int(change['minutes'])
+                    if 5 <= minutes <= 120:
+                        fields['minutes'] = minutes
+                except (TypeError, ValueError):
+                    pass
+            if change.get('required') is not None:
+                fields['required'] = 1 if change['required'] else 0
+            if not fields:
+                skipped.append(dict(action=action, task_id=task_id, note='没有可用的修改字段'))
+                continue
+            updated = repo.edit_prep_task(task_id, fields)
+            applied.append(dict(action=action, task_id=task_id,
+                                summary=f'已修改「{updated["title"][:24]}」'))
+        elif action == 'remove_task':
+            if task['status'] != 'pending':
+                skipped.append(dict(action=action, task_id=task_id, note='已完成/已跳过的任务不删除，打卡记录要保留'))
+                continue
+            repo.delete_prep_task(task_id)
+            applied.append(dict(action=action, task_id=task_id,
+                                summary=f'已删除「{task["title"][:24]}」'))
+
+    if plan_changed:
+        plan = dict(plan, prefs=prefs)
+        repo.save_prep_plan(plan)
+    return applied, skipped
 
 
 def _streak(tasks):

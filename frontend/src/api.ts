@@ -768,10 +768,11 @@ export type PrepSnapshot = {
   history: { id: string; status: string; days: number; start_date: string; created_from: string }[]
   generated_at: string; model_configured: boolean
   active_run?: { run_id: string; done: boolean } | null
+  active_adjust?: { run_id: string; done: boolean } | null
 }
 export type PrepBrief = { plan: PrepPlan; today: PrepSnapshot['today']; progress: PrepProgress }
 export type PrepGenerateInput = {
-  days?: number; goal?: string; job_id?: string; minutes_per_day?: number; use_llm?: boolean
+  days?: number; goal?: string; job_id?: string; minutes_per_day?: number; use_llm?: boolean; force?: boolean
 }
 export type PrepRunStart = { run_id: string | null; reused: boolean; plan?: PrepPlan; snapshot?: PrepSnapshot }
 export function getPrepPlan() { return api<PrepSnapshot>('/prep-plan') }
@@ -783,6 +784,22 @@ export function getPrepPlanRun(runId: string) { return api<{ run_id: string; don
 const PREP_STREAM_EVENTS = ['start', 'focus', 'model_start', 'diagnosis_delta', 'model_done', 'model_fallback', 'focus_item', 'scheduled', 'done', 'error', 'end'] as const
 export function openPrepPlanStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
   return openStream(`/api/prep-plan/runs/${encodeURIComponent(runId)}/stream`, PREP_STREAM_EVENTS, onEvent)
+}
+
+// ---- 备战计划对话式调整：自然语言说改哪，教练回复逐字流 + applied/skipped 逐条结果；rebuild 推 confirm_required。 ----
+export type PrepAdjustTurn = { id?: string; role: 'user' | 'assistant'; content: string; changes?: string; rebuild_pending?: boolean }
+export type PrepAdjustApplied = { action: string; task_id?: string; summary?: string; note?: string }
+export type PrepAdjustDone = {
+  reply: string; applied: PrepAdjustApplied[]; skipped: PrepAdjustApplied[]
+  confirm_required: { reason: string } | null; snapshot: PrepSnapshot
+}
+export function startPrepAdjust(message: string) { return post<{ run_id: string; reused: boolean }>('/prep-plan/adjust', { message }) }
+export function getPrepAdjustConversation() {
+  return api<{ conversation_id: string | null; messages: PrepAdjustTurn[] }>('/prep-plan/adjust/conversation')
+}
+const PREP_ADJUST_EVENTS = ['start', 'delta', 'applied', 'skipped', 'confirm_required', 'done', 'error', 'end'] as const
+export function openPrepAdjustStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
+  return openStream(`/api/prep-plan/adjust/runs/${encodeURIComponent(runId)}/stream`, PREP_ADJUST_EVENTS, onEvent)
 }
 export function donePrepTask(id: string, note = '') { return post<PrepSnapshot>(`/prep-plan/tasks/${encodeURIComponent(id)}/done`, { note }) }
 export function skipPrepTask(id: string) { return post<PrepSnapshot>(`/prep-plan/tasks/${encodeURIComponent(id)}/skip`) }
