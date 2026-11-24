@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { api, date, getPipelineReview, patchJobs, post, startDetailBatch } from './api'
+import { api, date, getPipelineReview, getTask, patchJobs, post, startAppliedImport, startDetailBatch } from './api'
 import type { Job, OfferComparison, PageInfo, PipelineFunnel, PipelineFunnelBucket, PipelineFunnelCohort, PipelineFunnelStep, PipelineFunnelTrack, PipelineFunnelWeekday, PipelinePrescription, PipelineReview, Task } from './api'
 import { emptyPage, Pagination } from './Pagination'
 import { toast } from './toast'
@@ -196,6 +196,9 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange, onPrescripti
   const [busy, setBusy] = useState('')
   const [recheckTask, setRecheckTask] = useState<Task | null>(null)
   const recheckTimer = useRef(0)
+  // Boss 投递记录同步（2026-11-23）：后台任务，进行中只禁用入口，不锁整条工具条。
+  const [appliedSyncing, setAppliedSyncing] = useState(false)
+  const appliedTimer = useRef(0)
   const [review, setReview] = useState<PipelineReview | null>(null)
   // 跟进编辑弹窗的目标岗位（2026-11-18）：下一步行动 + 截止日。
   const [followJob, setFollowJob] = useState<Job | null>(null)
@@ -225,7 +228,7 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange, onPrescripti
   useEffect(() => {
     void load().finally(() => setLoading(false))
     void loadReview()
-    return () => window.clearInterval(recheckTimer.current)
+    return () => { window.clearInterval(recheckTimer.current); window.clearTimeout(appliedTimer.current) }
   }, [load, loadReview])
 
   function run(key: string, action: () => Promise<void>) {
@@ -250,6 +253,32 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange, onPrescripti
         }
       }).catch(() => window.clearInterval(recheckTimer.current))
     }, 2000)
+  }
+
+  // Boss 投递记录同步：读「已投递」列表，库里已有的岗位回填管线状态（Boss 记录的投递时间），
+  // 不在库的进捕获篮。轮询到终态后刷新列表与回顾；设轮询上限，后端重启时不无限等。
+  async function syncApplied() {
+    setAppliedSyncing(true)
+    const poll = (taskId: string, tries: number) => {
+      appliedTimer.current = window.setTimeout(async () => {
+        try {
+          const task = (await getTask(taskId)).task
+          if (['running', 'pending'].includes(task.status) && tries < 600) { poll(taskId, tries + 1); return }
+          setAppliedSyncing(false)
+          toast(task.message || '投递记录同步结束', task.status === 'completed' ? 'notice' : 'error')
+          if (task.status === 'completed') { void load(); void loadReview(); onChange() }
+        } catch {
+          setAppliedSyncing(false)
+        }
+      }, 2500)
+    }
+    try {
+      const task = (await startAppliedImport()).task
+      poll(task.id, 0)
+    } catch (error) {
+      setAppliedSyncing(false)
+      toast((error as Error).message, 'error')
+    }
   }
 
   function toggleSelection(id: string) {
@@ -344,6 +373,9 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange, onPrescripti
           <button className="button secondary small" type="submit" disabled={busy === 'filter'}>筛选</button>
         </form>
         <div className="favorites-batch">
+          <button type="button" className="button secondary small" disabled={appliedSyncing || Boolean(busy)}
+            title="读取 Boss「已投递」列表：库里已有的岗位标记为已投递（按 Boss 记录的投递时间），不在库的进入捕获篮；已是面试中 / Offer / 归档的只补记投递时间，不改状态"
+            onClick={() => void syncApplied()}>{appliedSyncing ? '投递同步中…' : '同步 Boss 投递'}</button>
           <label className="agent-checkbox"><input type="checkbox" checked={allPageSelected} disabled={Boolean(busy)} onChange={togglePageSelection} />本页全选</label>
           {selectedIds.size > 0 && <>
             <span className="tiny-label">跨页已选 {selectedIds.size} 项（本页 {jobs.filter(item => selectedIds.has(item.id)).length} 项）</span>

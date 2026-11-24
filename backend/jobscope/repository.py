@@ -208,9 +208,12 @@ class Repository:
             # 收藏标记是用户意图不是采集数据：重采集整包覆盖 payload 时必须幸存，
             # 否则一次日常刷新就把用户标过的岗位全部静默取消收藏。
             # 机会管线状态与跟进信息（2026-11-17/18）、去重标记（2026-11-19）同为用户意图，随收藏一起幸存。
+            # 求职线标记（2026-11-22 P1）与平台投递溯源（2026-11-23）同理（2026-11-24 补入：此前漏了
+            # pipeline_track，一次重采集就把「转型线」静默抹掉）。
             if previous:
                 for field in ('starred', 'starred_at', 'pipeline_status', 'pipeline_status_changed_at',
-                              'pipeline_note', 'pipeline_due', 'duplicate_of'):
+                              'pipeline_note', 'pipeline_due', 'pipeline_track', 'applied_at', 'applied_source',
+                              'duplicate_of'):
                     if field in previous:
                         item[field] = previous[field]
             item['platform_tags'] = list(dict.fromkeys(data.get('platform_tags', data.get('tags', []))))
@@ -693,6 +696,74 @@ class Repository:
                                  (job_id, previous_status, final_status, now()))
                 updated += 1
         return updated
+
+    @staticmethod
+    def _applied_stamp(applied_at):
+        """平台投递时刻的合法性闸：返回 (时刻, 是否平台给的)。
+
+        解析不了、早得离谱、晚于现在（时钟/脏数据）一律按现在记并标为「未知」——未知时刻只用于
+        新落的事件，绝不拿「现在」去改写库里已有的「已投递」事件。
+        """
+        try:
+            moment = datetime.fromisoformat(str(applied_at or ''))
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+            if datetime(2010, 1, 1, tzinfo=timezone.utc) <= moment <= datetime.now(timezone.utc) + timedelta(minutes=5):
+                return moment.isoformat(), True
+        except (TypeError, ValueError):
+            pass
+        return now(), False
+
+    def sync_applied(self, records, source='boss'):
+        """平台投递记录回填（2026-11-23）：Boss「已投递」同步的唯一落库出口。
+
+        records = [(job_id, applied_at)]，applied_at 是平台记录的投递时刻（ISO，'' = 未知，按现在记）。
+        状态只升不降、时间以平台为准：
+        - 无状态/意向 → 已投递（自动收藏，与 update_jobs 同语义）。状态变化时间记真实投递时刻——
+          跟进提醒该按「投递了几天」算，不是按「哪天导入的」算；
+        - 已投递/面试中/Offer/归档 → 状态不动。平台数据只到「发了简历」这一步，用户手工推进的
+          面试/Offer 与主动归档是更晚的事实，不能被平台数据拉回已投递；但补一条回溯的「已投递」
+          事件，漏斗分母（曾到达已投递）与推进周期才算得到这批岗位；
+        - 库里已有「已投递」事件且平台给了时刻 → 首条事件对齐平台时刻（纠正手工标记的时间）。
+        不走 save_job：那是整包覆盖；状态回填只改状态位，档案正文、跟进信息与证据快照原样保留。
+        """
+        changed = kept = archived = events = 0
+        for job_id, applied_at in records:
+            stamp, known = self._applied_stamp(applied_at)
+            with self.connection() as conn:
+                conn.execute('BEGIN IMMEDIATE')
+                row = conn.execute('SELECT payload FROM jobs WHERE id=?', (job_id,)).fetchone()
+                if row is None:
+                    continue
+                item = json.loads(row['payload'])
+                previous = str(item.get('pipeline_status') or '')
+                item['applied_at'] = stamp
+                item['applied_source'] = source
+                if previous in ('', 'interested'):
+                    item['pipeline_status'] = 'applied'
+                    item['pipeline_status_changed_at'] = stamp
+                    if not item.get('starred'):
+                        item['starred'] = True
+                        item['starred_at'] = now()
+                    changed += 1
+                elif previous == 'archived':
+                    archived += 1
+                else:
+                    kept += 1
+                # 首条「已投递」事件：没有就补一条回溯事件；有且平台给了时刻就对齐（未知时刻不动历史）。
+                event = conn.execute("SELECT id, created_at FROM job_pipeline_events WHERE job_id=? AND to_status='applied' "
+                                     "ORDER BY created_at, id LIMIT 1", (job_id,)).fetchone()
+                if event is None:
+                    conn.execute('INSERT INTO job_pipeline_events (job_id,from_status,to_status,created_at) VALUES (?,?,?,?)',
+                                 (job_id, previous if previous in ('', 'interested') else '', 'applied', stamp))
+                    events += 1
+                elif known and event['created_at'] != stamp:
+                    conn.execute('UPDATE job_pipeline_events SET created_at=? WHERE id=?', (stamp, event['id']))
+                    events += 1
+                item['updated_at'] = now()
+                conn.execute('UPDATE jobs SET payload=?, updated_at=? WHERE id=?',
+                             (json.dumps(item, ensure_ascii=False), item['updated_at'], job_id))
+        return {'changed': changed, 'kept': kept, 'archived': archived, 'events': events}
 
     def delete_jobs(self, ids):
         """连同岗位的专属证据、报告与岗位对话一并删除；多岗位共享的公司证据保留。"""
@@ -1460,13 +1531,20 @@ class Repository:
                     primary['starred_at'] = dup.get('starred_at') or primary.get('starred_at') or now()
                     carried['starred'] = True
                 if dup.get('pipeline_status') and not primary.get('pipeline_status'):
-                    for field in ('pipeline_status', 'pipeline_status_changed_at', 'pipeline_note', 'pipeline_due'):
+                    for field in ('pipeline_status', 'pipeline_status_changed_at', 'pipeline_note', 'pipeline_due',
+                                  'pipeline_track'):
                         if dup.get(field):
                             primary[field] = dup[field]
                     carried['pipeline'] = True
+                # 平台投递溯源是既成事实：主记录没有就上提（与管线状态独立，主记录可能只缺这一项）。
+                if dup.get('applied_at') and not primary.get('applied_at'):
+                    primary['applied_at'] = dup['applied_at']
+                    if dup.get('applied_source'):
+                        primary['applied_source'] = dup['applied_source']
+                    carried['applied'] = True
                 dup['duplicate_of'] = primary_id
                 for field in ('starred', 'starred_at', 'pipeline_status', 'pipeline_status_changed_at',
-                              'pipeline_note', 'pipeline_due'):
+                              'pipeline_note', 'pipeline_due', 'pipeline_track', 'applied_at', 'applied_source'):
                     dup.pop(field, None)
                 conn.execute('UPDATE jobs SET payload=? WHERE id=?', (json.dumps(dup, ensure_ascii=False), job_id))
             primary['updated_at'] = now()

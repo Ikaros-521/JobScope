@@ -1,9 +1,14 @@
 """Boss 捕获篮导入（boss_import）的解析、篮子幂等与端点契约测试。
 
-全程 tmp_path 隔离数据库；不触碰 DrissionPage / 真实浏览器（tabs/capture 在无连接时必须优雅降级）。
+全程 tmp_path 隔离数据库；不触碰 DrissionPage / 真实浏览器（tabs/capture 在无连接时必须优雅降级；
+投递记录同步用假标签页回放预置的接口响应）。
 """
+import json
 import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 from fastapi.testclient import TestClient
 import pytest
@@ -316,4 +321,288 @@ def test_p1_endpoints_contract(client, tmp_path, monkeypatch):
     assert status['running'] is False and 'message' in status
     opened = client.post('/api/import/boss/open', json={'company': '某数据公司'}).json()
     assert opened['status'] == 'needs_browser'
-    empty = client.post('/api/import/boss/open', json={'company': ' '}).status_code == 422
+    # 2026-11-24：此前这行只是赋值没有 assert，「空公司名应 422」的校验一直空转。
+    assert client.post('/api/import/boss/open', json={'company': ' '}).status_code == 422
+
+
+# ---- 投递记录同步（2026-11-23）：接住页面自己的 geekDeliverList 响应 ------------------------
+
+# 实测响应形态（output/diag_applied_net.json）：cardList 每条带 encryptJobId 与投递时刻 happenTime（毫秒）。
+def _deliver_page(cards, has_more=False, code=0):
+    return {'code': code, 'zpData': {'hasMore': has_more, 'cardList': cards}}
+
+
+def _deliver_card(external_id, happen_ms=1795173303000, **fields):
+    # 1795173303000 = 2026-11-20 19:15:03（北京时间）= 2026-11-20T11:15:03+00:00
+    return dict(encryptJobId=external_id, jobName='AI Agent 工程师', brandName='某科技公司', salaryDesc='20-40K',
+                jobSalary='20-40K', cityName='杭州', areaDistrict='西湖区', unifyLocationDetail='杭州·西湖区·文二路',
+                jobLabels=['Agent', 'Python'], happenTime=happen_ms, **fields)
+
+
+class _FakeListen:
+    def __init__(self):
+        self.queue, self.started, self.stopped = [], None, False
+
+    def start(self, target):
+        self.started = target
+
+    def wait(self, count=1, timeout=2, raise_err=False):
+        return self.queue.pop(0) if self.queue else False
+
+    def stop(self):
+        self.stopped = True
+
+
+class _FakeAppliedTab:
+    """按 URL 的 page 参数回放预置的投递记录响应（页面未发该请求的页传 None）；run_js 回放 DOM 卡片。
+
+    tab_state 是「已投递」页签查询（_personal_tab_js）的回放值：默认 'ok'（页面已停在该页签）。
+    """
+
+    def __init__(self, pages, dom_cards=None, tab_state='ok'):
+        self.pages, self.dom_cards, self.tab_state = pages, dom_cards or [], tab_state
+        self.listen, self.visited, self.closed, self.url = _FakeListen(), [], False, ''
+
+    def get(self, url, timeout=20):
+        self.visited.append(url)
+        self.url = url
+        page = int(parse_qs(urlsplit(url).query)['page'][0])
+        body = self.pages.get(page)
+        if body is not None:
+            self.listen.queue.append(SimpleNamespace(
+                url=f'https://www.zhipin.com/wapi/zprelation/resume/geekDeliverList?page={page}',
+                response=SimpleNamespace(body=json.dumps(body))))
+
+    def run_js(self, script):
+        if 'user-jobs-tab-nav' in script:
+            return self.tab_state() if callable(self.tab_state) else self.tab_state
+        return {'page_url': self.url, 'cards': self.dom_cards}
+
+    def close(self):
+        self.closed = True
+
+
+@pytest.fixture
+def fake_applied_browser(tmp_path, monkeypatch):
+    """项目浏览器「已在运行」+ DrissionPage 换成回放桩；等待上限与翻页间隔压到 0，用例不空等。"""
+    state = {'tab': None, 'fronted': []}
+
+    def install(tab):
+        state['tab'] = tab
+        # Chromium(address).new_tab() 两级调用链：都换成回放桩。
+        monkeypatch.setitem(sys.modules, 'DrissionPage', SimpleNamespace(
+            Chromium=lambda _address: SimpleNamespace(new_tab=lambda: tab)))
+
+    monkeypatch.setattr(browser, '_connection', lambda data_dir=None: 9222)
+    monkeypatch.setattr(browser, '_front', lambda tab: state['fronted'].append(tab))
+    monkeypatch.setattr(boss_import, 'APPLIED_WAIT', 0.2)
+    monkeypatch.setattr(boss_import.random, 'uniform', lambda low, high: 0)
+    return install, state
+
+
+def test_applied_at_converts_platform_timestamp_and_rejects_bad_values():
+    assert boss_import._applied_at(1795173303000) == '2026-11-20T11:15:03+00:00'
+    # 与 repository.now() 同口径：UTC、带时区后缀，事件表里按字符串排序即时序。
+    assert boss_import._applied_at(1795427461000).endswith('+00:00')
+    # 非毫秒级（秒/脏数据）、未来时刻、非数字一律视为未知。
+    assert boss_import._applied_at(1795173303) == ''
+    assert boss_import._applied_at(time.time() * 1000 + 3600 * 1000) == ''
+    assert boss_import._applied_at(None) == '' and boss_import._applied_at('abc') == ''
+
+
+def test_record_from_deliver_builds_basket_item_with_applied_time():
+    record = boss_import._record_from_deliver(_deliver_card('deliverJob001'), 'Boss 投递记录 · 页')
+    assert record['external_id'] == 'deliverJob001'
+    assert record['imported_via'] == 'applied' and record['applied_at'] == '2026-11-20T11:15:03+00:00'
+    assert record['title'] == 'AI Agent 工程师' and record['company'] == '某科技公司'
+    assert record['salary'] == '20-40K' and record['location'] == '杭州·西湖区·文二路'
+    assert record['url'] == 'https://www.zhipin.com/job_detail/deliverJob001.html'
+    assert record['description_status'] == 'listing'
+    # 没有 unifyLocationDetail 时城市+区拼接；encryptJobId 非法整条丢弃。
+    sparse = boss_import._record_from_deliver(dict(_deliver_card('deliverJob002'), unifyLocationDetail=''), '')
+    assert sparse['location'] == '杭州·西湖区'
+    assert boss_import._record_from_deliver(_deliver_card('带 空格的 id'), '') is None
+
+
+def test_import_applied_backfills_library_and_baskets_the_rest(tmp_path, fake_applied_browser):
+    repo = Repository(tmp_path)
+    tracked = repo.save_job(dict(title='意向岗', company='甲公司', description='原文', external_id='libApplied01'), 'boss')
+    repo.update_jobs([tracked['id']], {'pipeline_status': 'interested'})
+    plain = repo.save_job(dict(title='未收藏岗', company='乙公司', description='原文', external_id='plainApplied1'), 'boss')
+    tab = _FakeAppliedTab({1: _deliver_page([_deliver_card('libApplied01'), _deliver_card('plainApplied1')], has_more=True),
+                           2: _deliver_page([_deliver_card('newApplied001', happen_ms=1795427461000)], has_more=False)})
+    fake_applied_browser[0](tab)
+    task = repo.create_task('boss', 'Boss 投递记录同步')
+
+    outcome = boss_import.import_applied(repo, task, data_dir=tmp_path)
+
+    assert outcome['status'] == 'completed'
+    # 直进实测入口；hasMore=true 才翻下一页（URL page 参数），翻页后收停；标签页用完即关。
+    assert tab.visited == [boss_import.APPLIED_PRIMARY, boss_import.APPLIED_PRIMARY.replace('page=1', 'page=2')]
+    assert tab.listen.started == boss_import.APPLIED_LISTEN and tab.listen.stopped is True and tab.closed is True
+    # 库内岗位：意向 → 已投递，状态变化时间与事件都是 Boss 记录的真实投递时刻（不是导入当天）。
+    synced = repo.job(tracked['id'])
+    assert synced['pipeline_status'] == 'applied' and synced['applied_source'] == 'boss'
+    assert synced['applied_at'] == '2026-11-20T11:15:03+00:00'
+    assert synced['pipeline_status_changed_at'] == synced['applied_at']
+    assert synced['description'] == '原文'  # 状态回填不覆盖档案正文
+    with repo.connection() as conn:
+        rows = conn.execute('SELECT from_status,to_status,created_at FROM job_pipeline_events WHERE job_id=?',
+                            (tracked['id'],)).fetchall()
+    # 设「意向」时已落一条事件；投递事件排在末尾，from_status 承接上一状态。
+    assert [(row['from_status'], row['to_status'], row['created_at']) for row in rows] == [
+        ('', 'interested', rows[0]['created_at']), ('interested', 'applied', '2026-11-20T11:15:03+00:00')]
+    # 未收藏的库内岗位：设状态即自动收藏（与 update_jobs 同语义）。
+    starred = repo.job(plain['id'])
+    assert starred['pipeline_status'] == 'applied' and starred['starred'] is True
+    # 不在库的投递岗位进捕获篮待确认，带上平台投递时刻。
+    basket = boss_import.basket_view(repo)
+    assert basket['total'] == 1
+    pending = basket['items'][0]
+    assert pending['external_id'] == 'newApplied001' and pending['imported_via'] == 'applied'
+    assert pending['applied_at'] == '2026-11-23T09:51:01+00:00'
+    assert '共 3 条' in outcome['message'] and '库里 2 条：新标记已投递 2 条' in outcome['message']
+    assert '1 条不在库' in outcome['message'] and '投递时间取自 Boss 记录' in outcome['message']
+    assert outcome['truncated'] is False and '还有更多' not in outcome['message']  # hasMore=false 正常读完
+    # 函数内只回写进度（终态文案由端点的 worker 回写，见端点契约用例）。
+    assert task['count'] == 3 and '已读取 3 条' in task['message']
+
+
+def test_import_applied_reports_truncation_when_paging_stops_early(tmp_path, fake_applied_browser):
+    repo = Repository(tmp_path)
+    # 第 1 页 hasMore=true，第 2 页页面没有再发投递记录请求（翻页不生效/被缓存）→ 退回 DOM 且与第 1 页同批 → 收停。
+    # 已读部分照常回填，但结果必须明示「还有更多未同步」，不能让人以为投递记录就这么多。
+    dom_card = {'id': 'pageOneJob001', 'title': '平台工程师', 'company': '丙公司', 'salary': '25K', 'area': '北京',
+                'link_text': '', 'text': '', 'tags': []}
+    tab = _FakeAppliedTab({1: _deliver_page([_deliver_card('pageOneJob001')], has_more=True), 2: None},
+                          dom_cards=[dom_card])
+    fake_applied_browser[0](tab)
+    outcome = boss_import.import_applied(repo, repo.create_task('boss', 'Boss 投递记录同步'), data_dir=tmp_path)
+    assert outcome['status'] == 'completed' and outcome['truncated'] is True
+    assert '仅读取了前 2 页，Boss 上还有更多投递记录未同步' in outcome['message']
+    assert '共 1 条' in outcome['message']
+    assert boss_import.basket_view(repo)['items'][0]['applied_at'] == '2026-11-20T11:15:03+00:00'  # 第 1 页的接口数据没丢
+
+
+def test_import_applied_refuses_data_unless_applied_tab_is_confirmed(tmp_path, fake_applied_browser):
+    # 防污染闸：个人中心默认停在上次看的页签，深链一旦失效页面上可能是收藏/沟通过列表。
+    # 页签找不到、或点了也确认不了当前页签时，一条数据都不采信——宁可同步失败，不能把别的列表标成已投递。
+    install, _ = fake_applied_browser
+    repo = Repository(tmp_path)
+    dom_card = {'id': 'favLookAlike1', 'title': '其实是收藏岗', 'company': '丙公司', 'salary': '25K', 'area': '北京',
+                'link_text': '', 'text': '', 'tags': []}
+    missing = _FakeAppliedTab({1: None}, dom_cards=[dom_card], tab_state='missing')
+    install(missing)
+    outcome = boss_import.import_applied(repo, repo.create_task('boss', 'Boss 投递记录同步'), data_dir=tmp_path)
+    assert outcome['status'] == 'failed' and '没有找到 Boss「已投递」页签' in outcome['message']
+    assert boss_import.basket_view(repo)['total'] == 0 and missing.closed is True
+    # 页签点得动但一直确认不了「当前页签是已投递」：DOM 里纵然有卡片也不采信。
+    unconfirmed = _FakeAppliedTab({1: None}, dom_cards=[dom_card], tab_state='clicked')
+    install(unconfirmed)
+    outcome = boss_import.import_applied(repo, repo.create_task('boss', 'Boss 投递记录同步'), data_dir=tmp_path)
+    assert outcome['status'] == 'failed' and '未能确认页面停在 Boss「已投递」页签' in outcome['message']
+    assert boss_import.basket_view(repo)['total'] == 0
+
+
+def test_select_personal_tab_retries_through_page_reload():
+    calls = {'n': 0}
+
+    class FlakyTab:
+        def run_js(self, script):
+            calls['n'] += 1
+            if calls['n'] <= 2:
+                raise RuntimeError('页面被刷新，请操作前尝试等待页面刷新或加载完成。')  # DrissionPage ContextLost
+            return 'ok'
+
+    assert boss_import._select_personal_tab(FlakyTab(), 'personal_top_submitted') == 'ok'
+    assert calls['n'] == 3
+    assert 'personal_top_submitted' in boss_import._personal_tab_js('personal_top_submitted')
+
+
+def test_open_favorites_falls_back_to_personal_center_tab(monkeypatch):
+    # 收藏主入口打不开时：进个人中心点「感兴趣」页签（2026-11-24 实测可达收藏页）。
+    # 点完必须确认当前页签确实是「感兴趣」才采信卡片——个人中心默认停在上次的页签。
+    monkeypatch.setattr(boss_import.time, 'sleep', lambda seconds: None)  # 探针轮询不空等
+    visited, tab_states = [], iter(['clicked', 'ok'])
+
+    class FakeTab:
+        url = ''
+        title = 'BOSS直聘'
+
+        def get(self, url, timeout=20):
+            visited.append(url)
+            self.url = url
+            return True
+
+        def run_js(self, script):
+            if 'user-jobs-tab-nav' in script:
+                return next(tab_states)
+            # 主入口没有卡片；个人中心点完页签后出现收藏卡。
+            cards = [{'id': 'fallbackFav01', 'title': 'x', 'link_text': 'x', 'text': '', 'tags': []}] \
+                if self.url == boss_import.USER_CENTER else []
+            return {'page_url': self.url, 'cards': cards}
+
+    tab = FakeTab()
+    assert boss_import._open_favorites(tab) == boss_import.USER_CENTER
+    assert visited == [boss_import.FAVORITE_PRIMARY, boss_import.USER_CENTER]  # 主入口仍先试，再走兜底
+    # 页签怎么都确认不了：不采信卡片，如实报没找到。
+    tab_states = iter(['clicked', 'clicked'])
+    assert boss_import._open_favorites(FakeTab()) == ''
+
+
+def test_import_applied_falls_back_to_dom_cards_without_timestamp(tmp_path, fake_applied_browser):
+    repo = Repository(tmp_path)
+    dom_card = {'id': 'domApplied01', 'title': '平台工程师', 'company': '丙公司', 'salary': '25K', 'area': '北京',
+                'link_text': '', 'text': '', 'tags': []}
+    # 页面没有发投递记录接口请求（接口改版/被缓存）：退回 DOM 抽卡；第 2 页同一批卡片 → 没有新记录收停。
+    tab = _FakeAppliedTab({1: None, 2: None}, dom_cards=[dom_card])
+    fake_applied_browser[0](tab)
+
+    outcome = boss_import.import_applied(repo, repo.create_task('boss', 'Boss 投递记录同步'), data_dir=tmp_path)
+
+    assert outcome['status'] == 'completed' and len(tab.visited) == 2
+    assert '未取到 Boss 投递时间' in outcome['message']
+    item = boss_import.basket_view(repo)['items'][0]
+    assert item['external_id'] == 'domApplied01' and item['imported_via'] == 'applied' and item['applied_at'] == ''
+
+
+def test_import_applied_reports_login_wall_and_keeps_tab(tmp_path, fake_applied_browser):
+    repo = Repository(tmp_path)
+    install, state = fake_applied_browser
+    # 接口回 code 7（实测登录失效码）→ needs_login，标签页留给用户登录（不关、拉到前台）。
+    tab = _FakeAppliedTab({1: _deliver_page([], code=7)})
+    install(tab)
+    outcome = boss_import.import_applied(repo, repo.create_task('boss', 'Boss 投递记录同步'), data_dir=tmp_path)
+    assert outcome['status'] == 'needs_login' and tab.closed is False and state['fronted'] == [tab]
+    assert boss_import.basket_view(repo)['total'] == 0
+    # 空列表（接口正常但没有投递）：如实报空，不产垃圾条目。
+    empty = _FakeAppliedTab({1: _deliver_page([])})
+    install(empty)
+    outcome = boss_import.import_applied(repo, repo.create_task('boss', 'Boss 投递记录同步'), data_dir=tmp_path)
+    assert outcome['status'] == 'completed' and '还没有投递记录' in outcome['message']
+    assert boss_import.basket_view(repo)['total'] == 0 and empty.closed is True
+
+
+def test_confirm_marks_basket_items_from_applied_records(tmp_path):
+    repo = Repository(tmp_path)
+    boss_import.basket_add([boss_import._record_from_deliver(_deliver_card('basketApplied1'), 'x')], data_dir=tmp_path)
+    outcome = boss_import.confirm(repo)
+    job = repo.job(outcome['jobs'][0]['id'])
+    assert job['pipeline_status'] == 'applied' and job['starred'] is True
+    assert job['applied_at'] == '2026-11-20T11:15:03+00:00'
+    assert '按 Boss 投递记录标记为已投递' in outcome['message']
+    # 再同步一次同一条：幂等，不重复落事件。
+    again = repo.sync_applied([(job['id'], '2026-11-20T11:15:03+00:00')])
+    assert again == {'changed': 0, 'kept': 1, 'archived': 0, 'events': 0}
+
+
+def test_applied_endpoint_runs_as_background_task(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(browser, 'start', lambda data_dir=None, source='boss': {'installed': True, 'running': False, 'message': 'stub-start'})
+    started = client.post('/api/import/boss/applied').json()['task']
+    for _ in range(100):
+        task = client.get(f"/api/tasks/{started['id']}").json()['task']
+        if task['status'] != 'running':
+            break
+        time.sleep(0.05)
+    assert task['status'] == 'needs_browser' and task['message'] == 'stub-start'
+    assert task['kind'] == 'boss_import'

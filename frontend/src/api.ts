@@ -316,7 +316,9 @@ export type BossTab = { id: string; url: string; title: string }
 // 篮子条目：in_library 表示库里已有同一条岗位（source=boss + encryptJobId 幂等归并）。
 export type BasketItem = {
   external_id: string; title: string; company: string; location: string; salary: string; url: string;
-  tags: string[]; imported_via: 'link' | 'current_page' | 'favorite' | 'browse' | 'script'; captured_at: string; in_library: boolean
+  tags: string[]; imported_via: 'link' | 'current_page' | 'favorite' | 'browse' | 'script' | 'applied'; captured_at: string; in_library: boolean
+  // 投递记录通道专用：Boss 记录的投递时刻（ISO；DOM 兜底没取到时为空串）。入库时据此回填「已投递」。
+  applied_at?: string
 }
 export function listBossImportTabs() { return api<{ status: string; tabs: BossTab[]; message: string }>('/import/boss/tabs') }
 export function captureBossPage(tabId: string) { return post<{ status: string; added: number; updated?: number; message: string }>('/import/boss/page', { tab_id: tabId }) }
@@ -329,6 +331,9 @@ export function confirmImport(ids: string[] | null, autoStar: boolean) {
 // P1：一键收藏导入（后台任务，轮询 /tasks/{id}）；逛即采集开关；公司快查联动「在 Boss 打开」。
 export function getTask(id: string) { return api<{ task: Task }>(`/tasks/${encodeURIComponent(id)}`) }
 export function startFavoritesImport() { return post<{ task: Task }>('/import/boss/favorites', {}) }
+// 投递记录同步（2026-11-23）：读 Boss「已投递」列表——库里已有的岗位回填「已投递」（Boss 记录的投递时刻），
+// 不在库的进捕获篮；同样是后台任务，轮询 /tasks/{id}。
+export function startAppliedImport() { return post<{ task: Task }>('/import/boss/applied', {}) }
 export type BrowseCaptureStatus = { status: string; running: boolean; captured: number; message: string }
 export function getBrowseStatus() { return api<BrowseCaptureStatus>('/import/boss/browse') }
 export function startBrowseCapture() { return post<BrowseCaptureStatus>('/import/boss/browse/start', {}) }

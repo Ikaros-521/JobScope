@@ -970,6 +970,29 @@ def create_app(data_dir=None):
             repo.update_task(task)
         return {"task": task}
 
+    @app.post("/api/import/boss/applied")
+    def boss_import_applied():
+        # Boss「已投递」同步：接住页面自己的投递记录响应（带真实投递时刻）→ 回填管线状态与事件流，
+        # 不在库的入捕获篮。后台线程 + 任务轮询，与收藏导入同模式。
+        module = load_module("boss_import")
+        task = repo.create_task('boss', 'Boss 投递记录同步')
+
+        def worker():
+            try:
+                outcome = module.import_applied(repo, task, data_dir=data_dir)
+            except Exception:
+                logger.exception('Boss 投递记录同步中断')
+                outcome = {'status': 'failed', 'message': '投递记录同步中断；库里已回填的记录不受影响。'}
+            task.update(kind='boss_import', status=outcome['status'], message=outcome['message'])
+            repo.update_task(task)
+
+        try:
+            threading.Thread(target=worker, daemon=True).start()
+        except Exception:
+            task.update(status='failed', message='后台任务未能启动，请重试')
+            repo.update_task(task)
+        return {"task": task}
+
     @app.post("/api/import/boss/browse/start")
     def boss_browse_start():
         return load_module("boss_import").browse_start(data_dir=data_dir)

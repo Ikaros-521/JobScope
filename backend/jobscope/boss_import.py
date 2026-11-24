@@ -13,6 +13,7 @@ import random
 import re
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
@@ -277,17 +278,25 @@ def basket_add(items, data_dir=None):
     return {'added': added, 'updated': updated}
 
 
+def _library_ids(repo, job_ids):
+    """批量查这批岗位主键里哪些已在库（单连接分批，替代逐条 repo.job() 的 N 次连接）。"""
+    wanted = list(dict.fromkeys(job_ids))
+    known = set()
+    if wanted:
+        with repo.connection() as conn:
+            for start in range(0, len(wanted), 500):
+                chunk = wanted[start:start + 500]
+                placeholders = ','.join('?' * len(chunk))
+                known.update(row['id'] for row in conn.execute(f'SELECT id FROM jobs WHERE id IN ({placeholders})', chunk))
+    return known
+
+
 def basket_view(repo):
     with _basket_lock:
         items = [dict(entry) for entry in _store(repo.data_dir).values()]
     if items:
-        # 单连接分批查「已在库」，替代逐条 repo.job() 的 N 次连接；逛即采集轮询会高频调用。
-        known = set()
-        with repo.connection() as conn:
-            for start in range(0, len(items), 500):
-                chunk = [job_id_for(item['external_id']) for item in items[start:start + 500]]
-                placeholders = ','.join('?' * len(chunk))
-                known.update(row['id'] for row in conn.execute(f'SELECT id FROM jobs WHERE id IN ({placeholders})', chunk))
+        # 「已在库」标记：逛即采集轮询会高频调用，必须走批量查询。
+        known = _library_ids(repo, [job_id_for(item['external_id']) for item in items])
         for item in items:
             item['in_library'] = job_id_for(item['external_id']) in known
     return {'items': items, 'total': len(items)}
@@ -313,6 +322,7 @@ def confirm(repo, ids=None, auto_star=False):
     """确认入库：逐条 save_job(source='boss') 幂等落库；可选中加星；入库条目移出篮子。
 
     导入时顺带读取过详情的条目带公司自述证据，入库时与「补全详情」同一通路落证据与规模信号。
+    投递记录通道的条目带 applied_at：入库后直接回填「已投递」（真实投递时刻），不必再手工标。
     """
     wanted = set(ids) if ids else None
     with _basket_lock:
@@ -325,16 +335,22 @@ def confirm(repo, ids=None, auto_star=False):
         persist_company_statement(repo, job, entry.get('company_evidence'))
     if auto_star:
         repo.update_jobs([job['id'] for job in saved], {'starred': True})
+    applied = sum(1 for entry in selected.values() if 'applied_at' in entry)
+    if applied:
+        repo.sync_applied([(job['id'], entry.get('applied_at') or '')
+                           for entry, job in zip(selected.values(), saved) if 'applied_at' in entry])
     with _basket_lock:
         store = _store(repo.data_dir)
         for key in selected:
             store.pop(key, None)
     _save_basket(repo.data_dir)
     complete = sum(1 for entry in selected.values() if entry.get('description_status') == 'complete')
-    logger.info('捕获篮确认入库：%s 条（加星=%s 详情完整=%s）', len(saved), bool(auto_star), complete)
+    logger.info('捕获篮确认入库：%s 条（加星=%s 详情完整=%s 投递记录=%s）',
+                len(saved), bool(auto_star), complete, applied)
     tail = '详情已随导入读取，可直接评估' if complete else '可继续「补全详情」读取完整 JD'
+    applied_note = f'，其中 {applied} 条按 Boss 投递记录标记为已投递' if applied else ''
     return {'status': 'ok', 'imported': len(saved), 'jobs': saved,
-            'message': f'已导入 {len(saved)} 条 Boss 岗位；重复岗位自动归并，{tail}。'}
+            'message': f'已导入 {len(saved)} 条 Boss 岗位{applied_note}；重复岗位自动归并，{tail}。'}
 
 
 def list_tabs(data_dir=None):
@@ -562,10 +578,18 @@ def browse_status():
 
 # ---- P1：一键收藏导入-------------------------------------------------------------
 # 收藏页 = 推荐中心（web/geek/recommend）的第 4 个页签，2026-11-20 首跑实测校准：
-# 直接进 FAVORITE_PRIMARY；打不开再回个人中心做「收藏/感兴趣」链接发现与历史候选兜底。
+# 直接进 FAVORITE_PRIMARY；打不开再回个人中心点「感兴趣」页签，最后才做链接发现与历史候选兜底。
 # 入口再改版时把实测 URL 换进 FAVORITE_PRIMARY 即可。
+#
+# 个人中心（2026-11-24 受控实验校准，output/diag_personal_tab_state.py）：web/geek/recommend?tab=2，
+# 顶部页签是 JS 切换的 span（ka=personal_top_added 沟通过 / personal_top_submitted 已投递 /
+# personal_top_interview 面试 / personal_top_interest 感兴趣），不是链接。实测三条：
+# 1) 旧个人中心地址 /web/user/ 现已跳首页，不再是可用入口（旧兜底因此一直是死路）；
+# 2) URL 的 tag 只对部分页签有效：tag=1 → 已投递是可靠深链（能覆盖「上次停留的页签」）；
+#    tag=2 / tag=4 不切页签，落到上次停留的那个——不能当深链用；
+# 3) 点「感兴趣」页签会跳到 tab=4&sub=1&tag=4（即 FAVORITE_PRIMARY）。所以兜底与同步都按 ka 点页签。
 
-USER_CENTER = 'https://www.zhipin.com/web/user/'
+USER_CENTER = 'https://www.zhipin.com/web/geek/recommend?tab=2&page=1'
 FAVORITE_PRIMARY = 'https://www.zhipin.com/web/geek/recommend?tab=4&sub=1&page=1&tag=4'
 FAVORITE_CANDIDATES = (
     FAVORITE_PRIMARY,
@@ -609,6 +633,32 @@ def _snapshot_cards(tab, tries=5, interval=2):
     return snapshot if isinstance(snapshot, dict) else {}
 
 
+def _personal_tab_js(ka):
+    """个人中心顶部页签是 span（非链接），按 ka 点选：'ok'=已是当前页签，'clicked'=已点，'missing'=页面上没有。"""
+    return ('const cur = document.querySelector(\'.user-jobs-tab-nav span.current\'); '
+            f'if (cur && cur.getAttribute("ka") === "{ka}") return "ok"; '
+            f'const target = document.querySelector(\'.user-jobs-tab-nav span[ka="{ka}"]\'); '
+            'if (!target) return "missing"; target.click(); return "clicked";')
+
+
+def _select_personal_tab(tab, ka, tries=5):
+    """确保个人中心停在指定页签；返回 'ok' / 'clicked'，''=重试后页面上始终没有该页签。
+
+    导航完成瞬间页面常在二次跳转（run_js 抛 ContextLost），页签栏也要等异步渲染——所以带重试。
+    个人中心默认停在上次看的页签，深链失效时只能靠这一步把页面带到正确的列表。
+    """
+    for attempt in range(tries):
+        try:
+            state = tab.run_js(_personal_tab_js(ka))
+        except Exception:
+            state = ''
+        if state in ('ok', 'clicked'):
+            return state
+        if attempt < tries - 1:
+            time.sleep(2)
+    return ''
+
+
 def _open_favorites(tab):
     """定位收藏列表页并确认有岗位卡片；返回实际页面 URL，''=没找到，'login'=被登录墙拦住。"""
     def probe(candidate):
@@ -623,13 +673,20 @@ def _open_favorites(tab):
             return str(snapshot.get('page_url') or candidate)
         return ''
 
-    # 实测收藏入口直进（推荐中心 tab=4）；打不开再回个人中心做链接发现与历史候选兜底。
+    # 实测收藏入口直进（推荐中心 tab=4）；打不开再回个人中心点「感兴趣」页签，最后做链接发现与历史候选兜底。
     outcome = probe(FAVORITE_PRIMARY)
     if outcome:
         return outcome
+    # 兜底一：进个人中心点「感兴趣」页签（2026-11-24 实测可达收藏页）；点完必须确认当前页签
+    # 确实是「感兴趣」才采信卡片——个人中心默认停在上次的页签（已投递/沟通过），误采会把别的列表当收藏入篮。
     tab.get(USER_CENTER, timeout=20)
     if _login_wall(tab):
         return 'login'
+    if _select_personal_tab(tab, 'personal_top_interest'):
+        snapshot = _snapshot_cards(tab)
+        if snapshot.get('cards') and _select_personal_tab(tab, 'personal_top_interest') == 'ok':
+            return str(snapshot.get('page_url') or USER_CENTER)
+    # 兜底二：个人中心链接发现与历史候选。
     for candidate in [str(tab.run_js(FAVORITE_LINK_JS) or '')] + list(FAVORITE_CANDIDATES[1:]):
         if not candidate.startswith('https://www.zhipin.com'):
             continue
@@ -834,6 +891,253 @@ def import_favorites(repo, task, data_dir=None, max_pages=10):
                 tab.close()
             except Exception:
                 pass
+        browser._lock.release()
+
+
+# ---- P1：投递记录同步（2026-11-23）--------------------------------------------------
+# 「已投递」是个人中心（web/geek/recommend，tab=2）顶部的页签之一，2026-11-23 实测直达
+# tab=2&page=1&tag=1（同栏：沟通过 tag=3 / 感兴趣 tag=4 / 面试）。列表数据由页面自己请求
+# wapi/zprelation/resume/geekDeliverList?page=N 取回（zpData.cardList + hasMore），这里只被动接住
+# 该响应——与逛即采集同一纪律，不代发请求。选接口而不是 DOM 的原因：接口带平台记录的投递时刻
+# happenTime（毫秒，实测与页面 actionDateDesc 逐条吻合），卡片 DOM 里没有时间；而漏斗的推进天数、
+# 投递批次、周几投递都按事件时间算，没有真实时刻就只能全记成「导入当天」。
+# 接不到响应（接口改版/被缓存）时退回 DOM 抽卡（与收藏卡同为 li.item-boss），时刻按同步时间记。
+
+APPLIED_PRIMARY = 'https://www.zhipin.com/web/geek/recommend?tab=2&page=1&tag=1'
+APPLIED_LISTEN = 'wapi/zprelation/resume/geekDeliverList'
+APPLIED_WAIT = 15  # 秒：进页后等投递记录响应的上限（SPA 异步渲染约 2-4s）
+
+
+def _applied_at(happen_time):
+    """平台投递时刻（毫秒时间戳）→ 与 repository.now() 同口径的 ISO；无效或在未来返回 ''。"""
+    try:
+        value = int(happen_time)
+    except (TypeError, ValueError):
+        return ''
+    if value < 10 ** 11:  # 毫秒级时间戳不可能早于 2001 年
+        return ''
+    try:
+        moment = datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return ''
+    if moment > datetime.now(timezone.utc) + timedelta(minutes=5):
+        return ''
+    return moment.isoformat()
+
+
+def _record_from_deliver(card, captured_from=''):
+    """geekDeliverList 的 cardList 条目 → 投递记录（篮子条目字段 + applied_at）。字段缺失就留空，不猜值。"""
+    identifier = plain(card.get('encryptJobId'))
+    if not ID_PATTERN.fullmatch(identifier):
+        return None
+    title = plain(card.get('jobName'))[:300] or f'Boss岗位 {identifier[:8]}'
+    company = plain(card.get('brandName'))[:300]
+    salary = (plain(card.get('salaryDesc')) or plain(card.get('jobSalary')))[:300]
+    location = plain(card.get('unifyLocationDetail')) or '·'.join(
+        part for part in (plain(card.get('cityName')), plain(card.get('areaDistrict'))) if part)
+    tags = [plain(t) for t in (card.get('jobLabels') or []) if isinstance(t, str) and plain(t)][:8]
+    return {
+        'external_id': identifier,
+        'title': title,
+        'company': company,
+        'location': location[:300],
+        'salary': salary,
+        'url': _canonical_url(identifier),
+        'tags': tags,
+        'imported_via': 'applied',
+        'captured_from': captured_from[:500],
+        'captured_at': now(),
+        'description': _listing_description(title, company, location, salary, tags),
+        'description_status': 'listing',
+        'applied_at': _applied_at(card.get('happenTime')),
+    }
+
+
+def _drain_deliver(tab):
+    """等并收当前页的投递记录接口响应：({external_id: record}, has_more, codes)。只被动接页面自己发的请求。"""
+    cards, codes, has_more = {}, [], False
+    deadline = time.monotonic() + APPLIED_WAIT
+    while time.monotonic() < deadline:
+        try:
+            packet = tab.listen.wait(count=1, timeout=2, raise_err=False)
+        except Exception:
+            packet = False
+        if not packet:
+            time.sleep(0.05)  # wait 异常/提前返回时不空转吃满一个核
+        for part in (packet if isinstance(packet, list) else [packet]):
+            if not part:
+                continue
+            try:
+                data = loads_payload(part.response.body) if getattr(part, 'response', None) is not None else None
+            except Exception:
+                data = None
+            if not isinstance(data, dict):
+                continue
+            codes.append(data.get('code'))
+            payload = data.get('zpData')
+            if data.get('code') != 0 or not isinstance(payload, dict):
+                continue
+            has_more = has_more or bool(payload.get('hasMore'))
+            for card in payload.get('cardList') or []:
+                record = _record_from_deliver(card, 'Boss 投递记录') if isinstance(card, dict) else None
+                if record:
+                    cards[record['external_id']] = record
+            deadline = min(deadline, time.monotonic() + 1.5)  # 收到有效响应后再等一小会儿收尾即返回
+    return cards, has_more, codes
+
+
+def _read_applied_page(tab, attempts=2):
+    """读当前页的投递记录：(records, has_more, state)。
+
+    state：'network' 接口响应（带投递时刻，has_more 可信）/ 'dom' 退回 DOM 抽卡（时刻未知）/
+    'needs_login' / 'needs_verification' / 'unverified' 'missing' 页签无法确认、页面数据不采信 /
+    'empty' 两路都没读到。
+    DOM 兜底只在确认当前页签是「已投递」时采信：个人中心默认停在上次看的页签，深链一旦失效，
+    页面上可能是收藏/沟通过列表，照单全收会把它们全标成已投递。
+    """
+    for attempt in range(attempts):
+        cards, has_more, codes = _drain_deliver(tab)
+        if any(code == 0 for code in codes):
+            return list(cards.values()), has_more, 'network'
+        if codes and codes[-1] in (7, 8, 9):
+            return [], False, 'needs_login'
+        if codes and codes[-1] in (37, 35):
+            return [], False, 'needs_verification'
+        # 接口没来：页面可能没停在「已投递」。点中页签后页面会重发投递记录请求，再等一轮。
+        state = _select_personal_tab(tab, 'personal_top_submitted')
+        if state == 'clicked' and attempt < attempts - 1:
+            continue
+        break
+    if state != 'ok':
+        return [], False, 'missing' if not state else 'unverified'
+    snapshot = _snapshot_cards(tab)
+    page_url = str(snapshot.get('page_url') or '')
+    items = [item for item in (_card_to_item(card, 'applied', f'Boss 投递记录 · {page_url}')
+                               for card in (snapshot.get('cards') or []) if isinstance(card, dict)) if item]
+    for item in items:
+        item['applied_at'] = ''
+    return items, False, 'dom' if items else 'empty'
+
+
+def import_applied(repo, task, data_dir=None, max_pages=10):
+    """Boss 投递记录同步：「已投递」逐页读取 → 库里的岗位回填「已投递」（真实投递时刻）→ 不在库的入篮。
+
+    库内回填走 repository.sync_applied（状态只升不降 + 事件回溯），不经捕获篮——平台说「简历已发送」
+    是既成事实，不需要再确认一次；不在库的岗位进捕获篮（imported_via='applied'），确认入库时落库并标记。
+    """
+    port = browser._connection(data_dir)
+    if not port:
+        started = browser.start(data_dir, 'boss')
+        port = browser._connection(data_dir)
+        if not port:
+            return {'status': 'needs_browser', 'message': started.get('message') or '请先启动项目浏览器并登录 Boss。'}
+    if not browser._lock.acquire(blocking=False):
+        return {'status': 'backoff', 'message': '浏览器任务正在运行，请等待完成。'}
+    tab = None
+    outcome = {'status': 'failed', 'message': '投递记录同步未完成。'}
+    try:
+        with browser.session_lock(data_dir) as acquired:
+            if not acquired:
+                return {'status': 'backoff', 'message': '另一个进程正在使用项目浏览器。'}
+            from DrissionPage import Chromium
+            tab = Chromium(f'127.0.0.1:{port}').new_tab()
+            tab.listen.start(APPLIED_LISTEN)
+            records: dict[str, dict] = {}
+            transport = 'network'
+            known_more = False  # 最近一次接口响应说「还有下一页」：循环结束后仍为真 = 本轮没读完
+            pages = 0
+            current = APPLIED_PRIMARY
+            while pages < max_pages:
+                tab.get(current, timeout=20)
+                if _login_wall(tab):
+                    browser._front(tab)
+                    outcome = {'status': 'needs_login',
+                               'message': '投递记录页要求登录；请在项目浏览器完成登录后重试。'}
+                    return outcome
+                # 个人中心默认停在上次看的页签：深链 tag=1 实测可靠，但仍按 ka 把页面钉到「已投递」，
+                # 深链哪天失效也不会读到别的列表。
+                if not _select_personal_tab(tab, 'personal_top_submitted'):
+                    outcome = {'status': 'failed',
+                               'message': '没有找到 Boss「已投递」页签：页面结构可能已变化，本次未读取任何投递记录。'}
+                    return outcome
+                page_records, has_more, state = _read_applied_page(tab)
+                if state in ('needs_login', 'needs_verification'):
+                    browser._front(tab)
+                    outcome = {'status': state,
+                               'message': f'已读取 {len(records)} 条后 Boss 要求登录/验证；请在项目浏览器处理后重新执行（已回填的不受影响）。'}
+                    return outcome
+                if state in ('unverified', 'missing'):
+                    outcome = {'status': 'failed',
+                               'message': '未能确认页面停在 Boss「已投递」页签，为避免把别的列表误标为已投递，本次未采信页面数据。'}
+                    return outcome
+                if state == 'network':
+                    known_more = has_more
+                fresh = [record for record in page_records if record['external_id'] not in records]
+                for record in fresh:
+                    records[record['external_id']] = record
+                if state == 'dom':
+                    transport = 'dom'
+                pages += 1
+                logger.info('投递记录同步进度：第 %s 页 读取=%s 新增=%s 累计=%s 通道=%s 还有更多=%s',
+                            pages, len(page_records), len(fresh), len(records), state, known_more)
+                task.update(count=len(records),
+                            message=f'投递记录同步中：已读取 {len(records)} 条（第 {pages} 页）')
+                repo.update_task(task)
+                # 收停四条件：到页数上限；两路都没读到；接口通道 hasMore=false；翻到没有新记录的一页
+                # （URL 的 page 参数不被响应时每页都是同一批，DOM 通道也靠这条收停）。
+                if (pages >= max_pages or state == 'empty' or (state == 'network' and not has_more)
+                        or (pages > 1 and not fresh)):
+                    break
+                next_url = _page_url(current, pages + 1)
+                if not next_url:
+                    break
+                current = next_url
+                time.sleep(random.uniform(2, 4))
+            if not records:
+                outcome = {'status': 'completed', 'message': 'Boss「已投递」列表里还没有投递记录。'}
+                return outcome
+            # 截断如实报告：接口说还有下一页，本轮却因页数上限 / 翻页不生效 / URL 不能翻页而停了。
+            # 不报的话用户会以为「已投递」就这么多，后面的记录永远同步不到。
+            truncated_note = f'；仅读取了前 {pages} 页，Boss 上还有更多投递记录未同步' if known_more else ''
+            known = _library_ids(repo, [job_id_for(record['external_id']) for record in records.values()])
+            in_library = [record for record in records.values() if job_id_for(record['external_id']) in known]
+            fresh = [record for record in records.values() if job_id_for(record['external_id']) not in known]
+            result = repo.sync_applied([(job_id_for(record['external_id']), record['applied_at']) for record in in_library])
+            added = basket_add(fresh, data_dir=data_dir)['added'] if fresh else 0
+            source_note = '投递时间取自 Boss 记录' if all(record['applied_at'] for record in records.values()) \
+                else '未取到 Boss 投递时间的按同步时间记'
+            parts = []
+            if in_library:
+                detail = f'新标记已投递 {result["changed"]} 条'
+                if result['kept']:
+                    detail += f'、已是已投递或更后阶段 {result["kept"]} 条（仅补记投递时间）'
+                if result['archived']:
+                    detail += f'、已归档 {result["archived"]} 条（状态未改）'
+                parts.append(f'库里 {len(in_library)} 条：{detail}')
+            if fresh:
+                parts.append(f'{len(fresh)} 条不在库，已入捕获篮（确认入库时标记已投递）')
+            logger.info('投递记录同步完成：共=%s 库内=%s 回填=%s 入篮=%s 通道=%s 截断=%s',
+                        len(records), len(in_library), result, added, transport, known_more)
+            outcome = {'status': 'completed', 'truncated': known_more,
+                       'message': f'Boss 投递记录同步完成：共 {len(records)} 条（{source_note}）；'
+                                  + '；'.join(parts) + truncated_note + '。'}
+            return outcome
+    except Exception:
+        logger.exception('投递记录同步中断')
+        outcome = {'status': 'failed', 'message': '投递记录同步中断；库里已回填的记录不受影响。'}
+        return outcome
+    finally:
+        wall = outcome['status'] in ('needs_login', 'needs_verification')
+        if tab is not None:
+            try:
+                tab.listen.stop()
+            except Exception:
+                pass
+            if not wall:
+                try:
+                    tab.close()
+                except Exception:
+                    pass
         browser._lock.release()
 
 

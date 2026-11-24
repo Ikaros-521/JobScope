@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from 'react'
 import { toast } from './toast'
-import { post, startCompanyResearch } from './api'
+import { date, post, startCompanyResearch } from './api'
 import type { BossTab, BasketItem, Task } from './api'
 import { listBossImportTabs, captureBossPage, parseImportLinks, getImportBasket, clearImportBasket, confirmImport,
-  getTask, startFavoritesImport, getBrowseStatus, startBrowseCapture, stopBrowseCapture } from './api'
+  getTask, startFavoritesImport, startAppliedImport, getBrowseStatus, startBrowseCapture, stopBrowseCapture } from './api'
 import type { BrowseCaptureStatus } from './api'
 
 // 通道名（与后端 boss_import.imported_via 对应）。
-const viaNames: Record<string, string> = { link: '链接', current_page: '当前页', favorite: '收藏', browse: '逛即采集', script: '油猴脚本' }
+const viaNames: Record<string, string> = { link: '链接', current_page: '当前页', favorite: '收藏', browse: '逛即采集', script: '油猴脚本', applied: '投递记录' }
 
 // 「Boss 导入中心」面板（docs/design/boss-import.md）：
-// 捕获当前页 + 一键收藏导入 + 逛即采集 + 粘贴链接 → 捕获篮 → 确认入库（可选加星）→ 一键后处理。
+// 捕获当前页 + 一键收藏导入 + 投递记录同步 + 逛即采集 + 粘贴链接 → 捕获篮 → 确认入库（可选加星）→ 一键后处理。
 export function BossImport({ onClose, onImported }: { onClose: () => void; onImported: () => void }) {
   const [tabs, setTabs] = useState<BossTab[]>([])
   const [tabsNote, setTabsNote] = useState('')
@@ -60,6 +60,7 @@ export function BossImport({ onClose, onImported }: { onClose: () => void; onImp
 
   const selected = items.filter(item => !unchecked.has(item.external_id))
   const newCount = selected.filter(item => !item.in_library).length
+  const appliedCount = selected.filter(item => item.applied_at !== undefined).length
 
   async function capture(tab: BossTab) {
     setBusy(`capture-${tab.id}`)
@@ -75,18 +76,19 @@ export function BossImport({ onClose, onImported }: { onClose: () => void; onImp
     }
   }
 
-  // 一键收藏导入：后台任务自动翻页捕获，前端轮询到终态；完成默认勾选「导入后加星」。
-  async function runFavorites() {
-    setBusy('favorites')
+  // 后台导入任务（收藏导入 / 投递记录同步）：前端轮询到终态；完成后同步篮子。
+  // 不依赖 toast 增强（taskSucceeded/failedTaskToast 尚未合入），状态判断就地内联。
+  // 轮询设上限：后端重启会让任务永远停在 running，不能让弹窗无限等。
+  async function runImportTask(key: string, start: () => Promise<{ task: Task }>, onDone?: (task: Task) => void) {
+    setBusy(key)
     try {
-      let current = (await startFavoritesImport()).task
-      while (current.status === 'running') {
+      let current = (await start()).task
+      for (let polls = 0; current.status === 'running' && polls < 600; polls += 1) {
         await new Promise(resolve => setTimeout(resolve, 2500))
         current = (await getTask(current.id)).task
       }
-      // 不依赖 toast 增强（taskSucceeded/failedTaskToast 尚未合入），状态判断就地内联。
-      if (current.status === 'completed') { toast(current.message); setAutoStar(true) }
-      else toast(current.message || '收藏导入未完成', 'error')
+      if (current.status === 'completed') { toast(current.message); onDone?.(current) }
+      else toast(current.message || '导入未完成', 'error')
       const basket = await getImportBasket()
       setItems(basket.items)
     } catch (error) {
@@ -95,6 +97,12 @@ export function BossImport({ onClose, onImported }: { onClose: () => void; onImp
       setBusy('')
     }
   }
+
+  // 一键收藏导入：完成后默认勾选「导入后加星」。
+  const runFavorites = () => runImportTask('favorites', startFavoritesImport, () => setAutoStar(true))
+
+  // 投递记录同步：库内岗位的管线状态被回填，通知外层刷新岗位列表与收藏。
+  const runApplied = () => runImportTask('applied', startAppliedImport, () => onImported())
 
   async function toggleBrowse(next: boolean) {
     setBusy('browse')
@@ -199,6 +207,8 @@ export function BossImport({ onClose, onImported }: { onClose: () => void; onImp
         <h3 id="boss-import-page-heading">捕获当前页</h3>
         <div className="boss-import-heading-buttons">
           <button className="button secondary small" disabled={Boolean(busy)} onClick={() => void runFavorites()}>{busy === 'favorites' ? '收藏导入中…' : '一键导入收藏'}</button>
+          <button className="button secondary small" disabled={Boolean(busy)} title="读取 Boss「已投递」列表：库里已有的岗位标记为已投递（按 Boss 记录的投递时间），不在库的进入捕获篮；已是面试中/Offer/归档的只补记投递时间，不改状态"
+            onClick={() => void runApplied()}>{busy === 'applied' ? '投递同步中…' : '同步投递记录'}</button>
           <button className="text-button" disabled={Boolean(busy)} onClick={() => void refresh()}>刷新标签页</button>
         </div>
       </div>
@@ -231,18 +241,18 @@ export function BossImport({ onClose, onImported }: { onClose: () => void; onImp
           <div className="boss-import-item-body">
             <strong>{item.title}</strong>
             <span>{[item.company || '公司待补全', item.salary, item.location].filter(Boolean).join(' · ')}</span>
-            <span className="boss-import-item-meta">{viaNames[item.imported_via] || item.imported_via}{item.in_library ? ' · 已在库（导入会刷新归并）' : ''}</span>
+            <span className="boss-import-item-meta">{viaNames[item.imported_via] || item.imported_via}{item.applied_at !== undefined ? ` · Boss 已投递${item.applied_at ? ` ${date(item.applied_at)}` : '（时间未取到）'}` : ''}{item.in_library ? ' · 已在库（导入会刷新归并）' : ''}</span>
           </div>
         </label>)}</div>
         <div className="boss-import-footer">
           <label className="agent-checkbox" title="导入后在岗位档案里统一标记收藏（收藏导入默认勾选，与 Boss 侧收藏意图对齐）"><input type="checkbox" checked={autoStar} onChange={event => setAutoStar(event.target.checked)} />导入后加星</label>
-          <span className="tiny-label">{selected.length > 0 ? `将导入 ${selected.length} 条（${newCount} 条新增）` : '未选择任何条目'}</span>
+          <span className="tiny-label">{selected.length > 0 ? `将导入 ${selected.length} 条（${newCount} 条新增${appliedCount ? `，${appliedCount} 条按 Boss 投递记录标记已投递` : ''}）` : '未选择任何条目'}</span>
           <div className="boss-import-footer-buttons">
             <button className="text-button" disabled={Boolean(busy) || !items.length} onClick={() => void clearBasket()}>清空篮子</button>
             <button className="button primary" disabled={Boolean(busy) || !selected.length} onClick={() => void confirmBasket()}>{busy === 'confirm' ? '导入中…' : `导入 ${selected.length} 条`}</button>
           </div>
         </div>
-      </> : <p className="tiny-label boss-import-note">篮子是空的：先「捕获本页」「一键导入收藏」或粘贴链接；重复捕获自动按岗位去重，重启服务后篮子清空（已导入的不受影响）。</p>}
+      </> : <p className="tiny-label boss-import-note">篮子是空的：先「捕获本页」「一键导入收藏」「同步投递记录」或粘贴链接；重复捕获自动按岗位去重，确认入库后条目出篮。</p>}
     </section>
 
     {done && <div className="boss-import-done">
