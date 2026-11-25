@@ -50,7 +50,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   const [runProgress, setRunProgress] = useState<RunProgress>(null)
   const [reportFeed, setReportFeed] = useState<ReportFeed>(null)
   const [error, setError] = useState('')
-  const [tab, setTab] = useState<'room' | 'report'>('room')
+  const [tab, setTab] = useState<'room' | 'report' | 'attribution'>('room')
   // 新建面板：卡片=岗位专家（细分到岗位类型），公司风格是独立开关；目标岗位三模式：
   // 岗位库选择（自动带 JD/评估缺口/简历存档/公司资料）｜粘贴 JD｜自由练（自定义卡必须填岗位名）。
   const [creating, setCreating] = useState(false)
@@ -432,6 +432,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
           <div className="interview-subtabs" role="tablist" aria-label="面试分区">
             <button role="tab" aria-selected={tab === 'room'} className={tab === 'room' ? 'active' : ''} onClick={() => setTab('room')}>面试间</button>
             <button role="tab" aria-selected={tab === 'report'} className={tab === 'report' ? 'active' : ''} onClick={() => setTab('report')} disabled={!report}>复盘报告{report ? '' : '（结束后生成）'}</button>
+            <button role="tab" aria-selected={tab === 'attribution'} className={tab === 'attribution' ? 'active' : ''} onClick={() => setTab('attribution')} disabled={!report}>归因标注{report ? '' : '（结束后可标注）'}</button>
           </div>
           <div className="iv-subtabs-actions">
             <button className="button secondary small" disabled={!exportable} onClick={() => void copyRecord()}
@@ -445,19 +446,19 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
           streamAnswer={stream?.answer ?? ''} busy={busy} answer={answer} onAnswer={setAnswer}
           onSend={() => void send()} onFinish={() => void finish()} onStop={() => void stop()} threadRef={threadRef}
           reportProgress={runProgress} />
-        : session.status === 'reporting'
-          ? <ProgressiveReport feed={reportFeed} />
-          : <><ReportPanel report={report ?? null} persona={session.persona}
+        : tab === 'attribution'
+          ? <AttributionPanel source="mock" sessionId={session.id} className="attr-standalone"
+              signals={(progress?.segments ?? []).flatMap(item => item.signals ?? [])} />
+          : session.status === 'reporting'
+            ? <ProgressiveReport feed={reportFeed} />
+            : <ReportPanel report={report ?? null} persona={session.persona}
                 onRegenerate={() => void finish()} busy={busy}
                 onDrillQuestion={drillReady ? index => openDrill([drillTargetOf(session, report?.questions[index], index)],
                   { id: session.job_id, label: [session.company, session.job_title].filter(Boolean).join(' · ') }) : undefined}
                 onDrillWeak={drillReady ? () => openDrill(
                   (session.report?.questions ?? []).map((item, index) => (item.missing.length ? drillTargetOf(session, item, index) : null))
                     .filter((ref): ref is InterviewDrillRef => ref !== null),
-                  { id: session.job_id, label: [session.company, session.job_title].filter(Boolean).join(' · ') }) : undefined} />
-            {/* 失败博物馆归因标注：复盘报告的自然延伸（可控/不可控分流，跨场报告在这里取数） */}
-            <AttributionPanel source="mock" sessionId={session.id}
-              signals={(progress?.segments ?? []).flatMap(item => item.signals ?? [])} /></>}
+                  { id: session.job_id, label: [session.company, session.job_title].filter(Boolean).join(' · ') }) : undefined} />}
       </>}
       </>}
     </div>
@@ -969,7 +970,7 @@ function RealWorkspace({ transcriptId, modelConfigured, onConfigureModel, onCrea
   const [run, setRun] = useState('')  // 挂接中的逐字稿 run id（'' = 无流）
   const [feed, setFeed] = useState<TranscriptReportFeed>(null)
   const [labelSegs, setLabelSegs] = useState<TranscriptSegment[]>([])  // 标注流式实况：段闭合即点亮
-  const [tab, setTab] = useState<'labels' | 'report'>('labels')
+  const [tab, setTab] = useState<'labels' | 'report' | 'attribution'>('labels')
   const [segments, setSegments] = useState<TranscriptSegment[]>([])
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -1186,6 +1187,7 @@ function RealWorkspace({ transcriptId, modelConfigured, onConfigureModel, onCrea
       <div className="interview-subtabs" role="tablist" aria-label="逐字稿分区">
         <button role="tab" aria-selected={tab === 'labels'} className={tab === 'labels' ? 'active' : ''} onClick={() => setTab('labels')}>说话人核对</button>
         <button role="tab" aria-selected={tab === 'report'} className={tab === 'report' ? 'active' : ''} onClick={() => setTab('report')} disabled={!hasReport}>复盘报告{hasReport ? '' : '（核对后生成）'}</button>
+        <button role="tab" aria-selected={tab === 'attribution'} className={tab === 'attribution' ? 'active' : ''} onClick={() => setTab('attribution')} disabled={!hasReport}>归因标注{hasReport ? '' : '（生成后标注）'}</button>
       </div>
       <div className="iv-subtabs-actions">
         {busy && <button className="button secondary small" onClick={() => void stopRun()}>停止</button>}
@@ -1196,18 +1198,18 @@ function RealWorkspace({ transcriptId, modelConfigured, onConfigureModel, onCrea
         transcript={transcript} segments={segments} live={labelSegs} dirty={dirty} saving={saving} busy={busy}
         onSegment={(index, patch) => { setSegments(current => current.map(item => item.index === index ? { ...item, ...patch } : item)); setDirty(true) }}
         onSave={() => void saveSegments()} onReport={() => void startReport()} onRelabel={() => setConfirmRelabel(true)} />
-      : transcript.status === 'reporting'
-        ? <TranscriptProgressiveReport feed={feed} />
-        : <><TranscriptReportPanel report={transcript.report} jobLabel={jobLabelFull} stale={reportStale}
+      : tab === 'attribution'
+        ? <AttributionPanel source="real" sessionId={transcript.id} className="attr-standalone" onSaved={onChanged} />
+        : transcript.status === 'reporting'
+          ? <TranscriptProgressiveReport feed={feed} />
+          : <TranscriptReportPanel report={transcript.report} jobLabel={jobLabelFull} stale={reportStale}
               onRegenerate={() => void startReport()} busy={busy}
               onDrillQuestion={onDrill ? index => onDrill([{ source: 'real', session_id: transcript.id, index }],
                 { id: transcript.job_id, label: jobLabelFull }) : undefined}
               onDrillWeak={onDrill ? () => onDrill(
                 (transcript.report?.questions ?? []).map((item, index) => (item.bad.length ? index : -1)).filter(index => index >= 0)
                   .map(index => ({ source: 'real' as const, session_id: transcript.id, index })),
-                { id: transcript.job_id, label: jobLabelFull }) : undefined} />
-          {/* 失败博物馆归因标注：真实面试失败是主要馆藏（有真实结果可归因） */}
-          <AttributionPanel source="real" sessionId={transcript.id} onSaved={onChanged} /></>}
+                { id: transcript.job_id, label: jobLabelFull }) : undefined} />}
     {confirmRelabel && <ConfirmDialog danger title="重新标注" message="重新标注会覆盖当前段落，含已做的人工修正。"
       confirmLabel="重新标注" onConfirm={() => void relabel()} onCancel={() => setConfirmRelabel(false)} />}
   </div>

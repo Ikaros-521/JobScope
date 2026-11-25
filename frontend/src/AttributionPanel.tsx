@@ -28,8 +28,8 @@ const OUTCOME_OPTIONS: Record<string, { value: string; label: string }[]> = {
   ],
 }
 
-export default function AttributionPanel({ source, sessionId, signals, onSaved }: {
-  source: 'mock' | 'real'; sessionId: string; signals?: string[]; onSaved?: () => void
+export default function AttributionPanel({ source, sessionId, signals, onSaved, className = '' }: {
+  source: 'mock' | 'real'; sessionId: string; signals?: string[]; onSaved?: () => void; className?: string
 }) {
   const [defs, setDefs] = useState<{ controlled: AttributionTagDef[]; uncontrolled: AttributionTagDef[] } | null>(null)
   const [selected, setSelected] = useState<Record<string, string>>({})  // tagId → 一句话备注
@@ -106,7 +106,7 @@ export default function AttributionPanel({ source, sessionId, signals, onSaved }
       ]
     : []
 
-  return <section className="paper-panel attr-panel" aria-label="失败博物馆归因标注">
+  return <section className={`paper-panel attr-panel ${className}`.trim()} aria-label="失败博物馆归因标注">
     <div className="section-heading">
       <h3>归因标注</h3>
       <span className="tiny-label">这场里发生了什么：勾选 + 可选一句话备注{savedAt ? ` · 上次归档 ${date(savedAt)}` : ''}</span>

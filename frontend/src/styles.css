@@ -2749,6 +2749,8 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 
 /* ── 失败博物馆（2026-11-23）：归因标注组件（attr-*，两处复盘报告共用）+ 博物馆视图（fm-*）。 ── */
 /* 作用域纪律：全局没有裸 label/input 样式；全局 button 居中陷阱对本组件无影响（chips 本就要居中）。 */
+/* 独立归因页签：占满主区并自身滚动，不再挂在报告下方（margin-top 覆盖 16px 基线）。 */
+.attr-panel.attr-standalone { flex: 1; min-height: 0; overflow-y: auto; margin-top: 12px; }
 .attr-panel { margin-top: 16px; }
 .attr-panel .section-heading { flex-wrap: wrap; }
 .attr-panel .section-heading .button { flex: none; }
