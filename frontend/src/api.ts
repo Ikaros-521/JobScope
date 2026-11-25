@@ -385,6 +385,17 @@ export function startFavoritesImport() { return post<{ task: Task }>('/import/bo
 // 投递记录同步（2026-11-23）：读 Boss「已投递」列表——库里已有的岗位回填「已投递」（Boss 记录的投递时刻），
 // 不在库的进捕获篮；同样是后台任务，轮询 /tasks/{id}。
 export function startAppliedImport() { return post<{ task: Task }>('/import/boss/applied', {}) }
+// 投递记录定时同步（2026-11-24）：设置中心的开关 + 周期 + 时间点；下次 / 上次同步由后端按本机时间算好。
+export type AppliedSyncPeriod = { value: string; label: string; hourly: boolean }
+export type AppliedSyncSchedule = {
+  enabled: boolean; period: string; time: string; periods: AppliedSyncPeriod[]
+  next_run_at: string | null; overdue: boolean; running: boolean
+  last: { at: string; status: string; message: string } | null
+}
+export function getAppliedSyncSchedule() { return api<AppliedSyncSchedule>('/settings/applied-sync') }
+export function saveAppliedSyncSchedule(settings: { enabled: boolean; period: string; time: string }) {
+  return api<AppliedSyncSchedule>('/settings/applied-sync', { method: 'PUT', body: JSON.stringify(settings) })
+}
 export type BrowseCaptureStatus = { status: string; running: boolean; captured: number; message: string }
 export function getBrowseStatus() { return api<BrowseCaptureStatus>('/import/boss/browse') }
 export function startBrowseCapture() { return post<BrowseCaptureStatus>('/import/boss/browse/start', {}) }

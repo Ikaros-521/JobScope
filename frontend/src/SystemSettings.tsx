@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { updateSystemSettings, useSystemSettings } from './systemSettingsStore'
-import { createBackup, date, deleteBackup, downloadBackup, getBackupStatus, restoreBackup } from './api'
-import type { AgentLimits, BackupStatus, SystemSettings as SystemSettingsPayload } from './api'
+import { createBackup, date, deleteBackup, downloadBackup, getAppliedSyncSchedule, getBackupStatus, restoreBackup, saveAppliedSyncSchedule } from './api'
+import type { AgentLimits, AppliedSyncSchedule, BackupStatus, SystemSettings as SystemSettingsPayload } from './api'
 import { toast } from './toast'
 import { Icon } from './Icon'
 
@@ -108,6 +108,84 @@ function BackupPanel() {
   </div>
 }
 
+// Boss 投递记录定时同步（2026-11-24）：开关 + 周期 + 时间点，改动即存；下次 / 上次同步由后端按本机时间算好。
+// 与收藏页「同步 Boss 投递」是同一条通路，这里只决定「什么时候跑」。
+const SYNC_NEEDS_ATTENTION = new Set(['needs_login', 'needs_verification', 'failed', 'backoff'])
+
+function clockLabel(iso: string) {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return iso
+  const day = (value: Date) => `${value.getFullYear()}-${value.getMonth() + 1}-${value.getDate()}`
+  const now = new Date()
+  const clock = `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+  if (day(at) === day(now)) return `今天 ${clock}`
+  if (day(at) === day(new Date(now.getTime() + 24 * 3600 * 1000))) return `明天 ${clock}`
+  return `${at.getMonth() + 1}月${at.getDate()}日 ${clock}`
+}
+
+function AppliedSyncPanel() {
+  const [schedule, setSchedule] = useState<AppliedSyncSchedule | null>(null)
+  const [timeDraft, setTimeDraft] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { setTimeDraft(schedule?.time || '') }, [schedule?.time])
+  // 到点后「下次 / 上次同步」要跟着变：每分钟拉一次，面板卸载即停。
+  useEffect(() => {
+    let active = true
+    const refresh = () => getAppliedSyncSchedule().then(next => { if (active) setSchedule(next) }).catch(() => { /* 面板失败不阻塞其他设置 */ })
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 60000)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [])
+
+  async function save(patch: Partial<Pick<AppliedSyncSchedule, 'enabled' | 'period' | 'time'>>) {
+    if (!schedule || busy) return
+    const previous = schedule
+    setSchedule({ ...schedule, ...patch })
+    setBusy(true)
+    try {
+      setSchedule(await saveAppliedSyncSchedule({ enabled: previous.enabled, period: previous.period, time: previous.time, ...patch }))
+    } catch (error) {
+      setSchedule(previous)
+      toast((error as Error).message || '设置保存失败，请稍后重试', 'error')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  // 时间点是逐字输入的，不能每敲一下就保存（每次保存都会重排下一次同步）：失焦且格式完整才提交。
+  function commitTime() {
+    if (schedule && /^\d{2}:\d{2}$/.test(timeDraft) && timeDraft !== schedule.time) void save({ time: timeDraft })
+    else setTimeDraft(schedule?.time || '')
+  }
+
+  const hourly = schedule?.periods.find(item => item.value === schedule.period)?.hourly ?? false
+  const last = schedule?.last
+  const needsAttention = Boolean(last && SYNC_NEEDS_ATTENTION.has(last.status))
+  return <div className="paper-panel system-panel" aria-label="Boss 投递自动同步">
+    <div className="section-heading"><div><h2>Boss 投递自动同步</h2><p className="body-small muted">到点自动读取 Boss「已投递」，把库里的岗位标为已投递（投递时间取 Boss 记录）；与收藏页的「同步 Boss 投递」是同一条通路。JobScope 运行期间生效，错过的同步在恢复后补跑一次。</p></div></div>
+    <label className="agent-checkbox system-reasoning-toggle">
+      <input type="checkbox" checked={Boolean(schedule?.enabled)} disabled={!schedule || busy} onChange={event => void save({ enabled: event.target.checked })} />
+      <span>定时同步 <span className="muted">项目浏览器没开时会自动打开；Boss 登录失效时会把页面留给你处理，下个周期再试</span></span>
+    </label>
+    {schedule?.enabled && <div className="system-limits-grid">
+      <div className="system-limit-field">
+        <label className="field-label" htmlFor="applied-sync-period">同步周期</label>
+        <select id="applied-sync-period" value={schedule.period} disabled={busy} onChange={event => void save({ period: event.target.value })}>
+          {schedule.periods.map(item => <option key={item.value} value={item.value}>{item.label}</option>)}
+        </select>
+      </div>
+      {!hourly && <div className="system-limit-field">
+        <label className="field-label" htmlFor="applied-sync-time">时间点</label>
+        <input id="applied-sync-time" type="time" value={timeDraft} disabled={busy} onChange={event => setTimeDraft(event.target.value)} onBlur={commitTime} />
+      </div>}
+    </div>}
+    {schedule?.enabled && <p className="body-small muted" role="status">
+      {schedule.overdue ? '已到同步时间，即将同步' : schedule.next_run_at ? `下次同步 ${clockLabel(schedule.next_run_at)}` : ''}
+      {last ? <> · 上次自动同步 {date(last.at)}：<span className={needsAttention ? 'danger-text' : undefined}>{last.message}</span></> : ' · 还没有自动同步过'}
+    </p>}
+  </div>
+}
+
 export function SystemSettings() {
   const settings = useSystemSettings()
   const [limits, setLimits] = useState<AgentLimits>(settings.agent_limits)
@@ -172,6 +250,8 @@ export function SystemSettings() {
         <button type="button" className="button primary" disabled={!limitsDirty || savingLimits} onClick={() => void saveLimits()}>{savingLimits ? '正在保存…' : '保存限额'}</button>
       </div>
     </div>
+
+    <AppliedSyncPanel />
 
     <BackupPanel />
   </section>

@@ -1142,6 +1142,10 @@ def create_app(data_dir=None):
             repo.update_task(task)
         return {"task": task}
 
+    # Boss 投递记录定时同步（docs/design/boss-import.md §11）：端点与随应用启停的调度线程都在
+    # sync_schedule 模块里，这里只留一行注册。
+    load_module("sync_schedule").register(app, repo, data_dir)
+
     @app.post("/api/import/boss/browse/start")
     def boss_browse_start():
         return load_module("boss_import").browse_start(data_dir=data_dir)
