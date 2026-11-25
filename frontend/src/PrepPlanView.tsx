@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  api, archivePrepPlan, donePrepTask, getPrepAdjustConversation, getPrepPlan, openPrepAdjustStream,
-  openPrepPlanStream, reopenPrepTask, skipPrepTask, startPrepAdjust, startPrepPlanRun,
+  api, archivePrepPlan, donePrepTask, getPrepAdjustConversation, getPrepPlan, listInterviewWeakPoints,
+  openPrepAdjustStream, openPrepPlanStream, reopenPrepTask, skipPrepTask, startPrepAdjust, startPrepPlanRun,
 } from './api'
-import type { Job, PageInfo, PrepAdjustApplied, PrepAdjustTurn, PrepFocus, PrepSnapshot, PrepTask } from './api'
+import type { InterviewDrillRef, Job, PageInfo, PrepAdjustApplied, PrepAdjustTurn, PrepFocus, PrepSnapshot, PrepTask } from './api'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Icon } from './Icon'
 import { toast } from './toast'
@@ -74,7 +74,10 @@ function reduceGen(prev: GenState | null, event: string, data: Record<string, un
 type AdjustDraft = { reply: string; applied: PrepAdjustApplied[]; skipped: PrepAdjustApplied[]; error: string }
 const BLANK_DRAFT: AdjustDraft = { reply: '', applied: [], skipped: [], error: '' }
 
-export function PrepPlanView({ onOpenInterview }: { onOpenInterview: (jobId?: string, focus?: string) => void }) {
+export function PrepPlanView({ onOpenInterview }: {
+  // drill：错题强化直达（题目级）——带着错题引用进「错题强化官」，空数组=用户自选。
+  onOpenInterview: (jobId?: string, focus?: string, drill?: InterviewDrillRef[]) => void
+}) {
   const [data, setData] = useState<PrepSnapshot | null>(null)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState('')
@@ -182,6 +185,16 @@ export function PrepPlanView({ onOpenInterview }: { onOpenInterview: (jobId?: st
   function onDone(task: PrepTask) {
     // 备注是可选的；不在交互里弹原生窗口（AGENTS.md 禁用 prompt），需要时可在后端扩展。
     void act(`done-${task.id}`, () => donePrepTask(task.id))
+  }
+
+  // 错题强化直达（题目级）：按任务来源场次预选错题；拉不到/没有就空选进面板，用户在错题本自选。
+  async function drillTask(task: PrepTask) {
+    let refs: InterviewDrillRef[] = []
+    try {
+      const book = await listInterviewWeakPoints()
+      refs = book.items.flatMap(item => item.refs).filter(ref => ref.session_id === task.session_id)
+    } catch { /* 错题本拉不到不拦跳转 */ }
+    onOpenInterview(task.job_id || '', '', refs)
   }
 
   const payload = { days, ...form }
@@ -352,7 +365,8 @@ export function PrepPlanView({ onOpenInterview }: { onOpenInterview: (jobId?: st
           : <ul className="pp-task-list">{activeTasks.map(task => <TaskCard key={task.id} task={task} busy={busy}
             onDone={() => onDone(task)} onSkip={() => void act(`skip-${task.id}`, () => skipPrepTask(task.id))}
             onReopen={() => void act(`reopen-${task.id}`, () => reopenPrepTask(task.id))}
-            onOpenInterview={() => onOpenInterview(task.job_id || '', task.topic)} />)}</ul>}
+            onOpenInterview={() => onOpenInterview(task.job_id || '', task.topic)}
+            onDrill={() => void drillTask(task)} />)}</ul>}
       </div>
 
       {plan && <div className="paper-panel pp-adjust">
@@ -477,9 +491,9 @@ function PrepConfig({ days, onDays, form, onForm, jobs, configured }: {
   </div>
 }
 
-function TaskCard({ task, busy, onDone, onSkip, onReopen, onOpenInterview }: {
+function TaskCard({ task, busy, onDone, onSkip, onReopen, onOpenInterview, onDrill }: {
   task: PrepTask; busy: string
-  onDone: () => void; onSkip: () => void; onReopen: () => void; onOpenInterview: () => void
+  onDone: () => void; onSkip: () => void; onReopen: () => void; onOpenInterview: () => void; onDrill: () => void
 }) {
   const pending = task.status === 'pending'
   return <li className={`pp-task ${task.kind}${pending ? '' : ' ' + task.status}${task.overdue ? ' overdue' : ''}`}>
@@ -495,8 +509,11 @@ function TaskCard({ task, busy, onDone, onSkip, onReopen, onOpenInterview }: {
     </div>
     <div className="pp-task-actions">
       {pending ? <>
-        {task.kind === 'mock' && <button className="button primary small" disabled={Boolean(busy)} onClick={onOpenInterview}>
-          <Icon name="mic" size={14} />开始模拟面试</button>}
+        {task.kind === 'mock' && <>
+          <button className="button primary small" disabled={Boolean(busy)} onClick={onOpenInterview}>
+            <Icon name="mic" size={14} />开始模拟面试</button>
+          <button className="button secondary small" disabled={Boolean(busy)} title="把这场复盘里答得不好的题带去「错题强化官」，换问法重考一遍" onClick={onDrill}>错题强化</button>
+        </>}
         <button className="button secondary small" disabled={Boolean(busy)} onClick={onDone}>完成</button>
         <button className="text-button" disabled={Boolean(busy)} onClick={onSkip}>跳过</button>
       </> : <>

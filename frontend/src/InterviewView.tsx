@@ -19,7 +19,7 @@ import type { AttributionRecord, InterviewDrillRef, InterviewMessage, InterviewP
 // 2026-11-21 增加并列的第二条链路「真实复盘」：外部 ASR 逐字稿导入 → 模型初标说话人
 // → 人工核对修正 → 结合 JD 的复盘报告（侧栏顶部分段切换，两套工作区互不干扰）。
 
-export type InterviewDeepLink = { jobId: string; focus: string; token: number } | null
+export type InterviewDeepLink = { jobId: string; focus: string; drill?: InterviewDrillRef[]; token: number } | null
 
 type StreamState = { runId: string; answer: string } | null
 // 复盘等后台 run 的实时进度（SSE progress 事件）：stage=review 逐题点评 done/total，summary=汇总中。
@@ -204,12 +204,21 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   }, [refreshSessions, closeStream])
 
   // 岗位详情/评估缺口/备战计划深链：打开新建面板并预选岗位；focus 是备战专项，注入出题 weak_focus。
-  // 空 job+focus 的空深链不算深链（普通刷新后可能收到），忽略之，避免误开新建面板挡住面试间。
+  // drill（失败博物馆/备战计划任务卡的「错题强化」直达）进「错题强化官」并预选错题——数组字段
+  // 存在即算深链，空数组=这场没有可预选的错题，让用户在错题本里自选。
+  // 三者全空的深链不算深链（普通刷新后可能收到），忽略之，避免误开新建面板挡住面试间。
   useEffect(() => {
-    if (!deepLink || (!deepLink.jobId && !deepLink.focus)) return
-    setFocusHint(deepLink.focus || '')
-    setCreating(true); setCard(''); setMode(deepLink.jobId ? 'job' : 'free')
+    if (!deepLink) return
+    const drills = deepLink.drill
+    if (!deepLink.jobId && !deepLink.focus && !drills) return
+    setCreating(true); setMode(deepLink.jobId ? 'job' : 'free')
     setJobId(deepLink.jobId); setJobLabel('')
+    if (drills) {
+      setFocusHint(''); setSide('mock'); setCard('reinforce'); setRound('business'); setError('')
+      setDrillSelection(drills.slice(0, MAX_DRILLS))
+    } else {
+      setFocusHint(deepLink.focus || ''); setCard('')
+    }
     if (!deepLink.jobId) return
     void api<{ job: { title: string; company: string } }>(`/jobs/${encodeURIComponent(deepLink.jobId)}`)
       .then(data => setJobLabel(`${data.job.company} · ${data.job.title}`))

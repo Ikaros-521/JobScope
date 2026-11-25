@@ -33,6 +33,7 @@ import { ChatWorkspace } from './chat/ChatWorkspace'
 import { Icon } from './Icon'
 import InterviewView from './InterviewView'
 import type { InterviewDeepLink } from './InterviewView'
+import type { InterviewDrillRef } from './api'
 import { PrepPlanView } from './PrepPlanView'
 import { NAV_GROUPS, NAV_STORAGE_KEY, hashQuery, viewFromHash } from './navigation'
 import type { SettingsTab, ViewId } from './navigation'
@@ -75,8 +76,9 @@ export default function App() {
   // 带查询参数的深链（#/interview?job=<id>）在进视图时转成请求信号，由目标工作区消费。
   const [interviewRequest, setInterviewRequest] = useState<InterviewDeepLink>(null)
   // focus 来自备战计划的当日专项：带着它进面试间，出题会定向覆盖这个主题（weak_focus）。
-  function openInterview(jobId = '', focus = '') {
-    setInterviewRequest(jobId || focus ? { jobId, focus, token: Date.now() } : null)
+  // drill 来自失败博物馆/备战计划任务卡的「错题强化」直达：数组存在即进错题强化官（空数组=用户自选）。
+  function openInterview(jobId = '', focus = '', drill?: InterviewDrillRef[]) {
+    setInterviewRequest(jobId || focus || drill ? { jobId, focus, drill, token: Date.now() } : null)
     setView('interview')
   }
   useEffect(() => {
@@ -353,7 +355,7 @@ export default function App() {
 
       {view === 'jd-assessment' && <JdAssessmentView />}
 
-      {view === 'failure-museum' && <FailureMuseumView />}
+      {view === 'failure-museum' && <FailureMuseumView onOpenInterview={openInterview} />}
 
       {view === 'sources' && <SourcesView active={view === 'sources'} tab={sourcesTab} onTabChange={setSourcesTab}
         sources={sources} loading={loading} jobsTotal={jobsTotal} browser={browser} onBrowserStatus={setBrowser}

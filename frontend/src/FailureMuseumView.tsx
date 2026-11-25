@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react'
-import { date, getFailureMuseum } from './api'
-import type { FailureMuseum } from './api'
+import { Icon } from './Icon'
+import { date, getFailureMuseum, listInterviewWeakPoints } from './api'
+import type { FailureMuseum, InterviewDrillRef } from './api'
 
 // 失败博物馆（2026-11-23）：跨场次失分模式报告（规则版）+ 已标注场次一览。
 // 价值主张：孤立的失败是消耗，重复的失败被看见才是信号——报告只点名重复，
 // 不给人打分；不可控因素列出来只为「这不是你的问题」。
+// 2026-11-25：馆藏行加「错题强化」直达——把这场复盘里答得不好的题带去错题强化官重考。
 
 const OUTCOME_NAMES: Record<string, string> = {
   self_positive: '自评满意', self_neutral: '自评一般', self_negative: '自评不满意',
@@ -12,7 +14,9 @@ const OUTCOME_NAMES: Record<string, string> = {
 }
 const SOURCE_NAMES: Record<string, string> = { mock: '模拟', real: '真实' }
 
-export function FailureMuseumView() {
+export function FailureMuseumView({ onOpenInterview }: {
+  onOpenInterview: (jobId?: string, focus?: string, drill?: InterviewDrillRef[]) => void
+}) {
   const [data, setData] = useState<FailureMuseum | null>(null)
   const [error, setError] = useState('')
 
@@ -30,13 +34,31 @@ export function FailureMuseumView() {
     </section>
     {error && <div className="iv-error" role="alert"><span>{error}</span></div>}
     {!data && !error && <div className="iv-state">加载博物馆…<span className="spinner" /></div>}
-    {data && <PatternBoard data={data} />}
+    {data && <PatternBoard data={data} onOpenInterview={onOpenInterview} />}
   </div>
 }
 
-function PatternBoard({ data }: { data: FailureMuseum }) {
+function PatternBoard({ data, onOpenInterview }: {
+  data: FailureMuseum
+  onOpenInterview: (jobId?: string, focus?: string, drill?: InterviewDrillRef[]) => void
+}) {
   const report = data.report
   const records = data.records
+  const [drilling, setDrilling] = useState('')
+
+  // 错题强化直达：取这场归档对应复盘里的错题引用带去面试间；拉不到就空选进面板让用户自选。
+  async function drillRecord(item: FailureMuseum['records'][number]) {
+    if (drilling) return
+    setDrilling(item.id)
+    let refs: InterviewDrillRef[] = []
+    try {
+      const book = await listInterviewWeakPoints()
+      refs = book.items.flatMap(entry => entry.refs).filter(ref => ref.session_id === item.session_id)
+    } catch { /* 错题本不可用不拦跳转 */ }
+    setDrilling('')
+    onOpenInterview(item.job_id || '', '', refs)
+  }
+
   // 归档行只存 tag id，显示名从分类学解析（失败时退回 id 本身）。
   const labels = new Map<string, string>(
     [...data.controlled, ...data.uncontrolled].map(item => [item.id, item.label]))
@@ -78,6 +100,11 @@ function PatternBoard({ data }: { data: FailureMuseum }) {
           <strong className="fm-record-title">{[item.company, item.job_title].filter(Boolean).join(' · ') || '未命名场次'}</strong>
           {item.outcome && <span className="fm-outcome">{OUTCOME_NAMES[item.outcome] ?? item.outcome}</span>}
           <span className="tiny-label">{date(item.updated_at)}</span>
+          <button className="fm-record-drill text-button" disabled={drilling === item.id}
+            title="把这场复盘里答得不好的题带去「错题强化官」，换问法重考一遍"
+            onClick={() => void drillRecord(item)}>
+            {drilling === item.id ? <span className="spinner" /> : <Icon name="mic" size={13} />}错题强化
+          </button>
           <div className="fm-record-tags">
             {item.tags.map(tag => <span key={tag.tag} className={`fm-tag-chip small${tag.scope === 'uncontrolled' ? ' muted-chip' : ''}`}
               title={tag.note || undefined}>{labels.get(tag.tag) ?? tag.tag}{tag.note ? `：${tag.note}` : ''}</span>)}
