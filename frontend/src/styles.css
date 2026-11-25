@@ -2378,6 +2378,14 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .iv-msg.assistant .iv-content { background: var(--chip, #f6f4ee); border-radius: 12px 12px 12px 3px; padding: 9px 12px; font-size: 13.5px; }
 .iv-msg.assistant.streaming .iv-content::after { content: '▍'; animation: iv-blink 1s step-end infinite; color: var(--accent, #8a6d3b); }
 @keyframes iv-blink { 50% { opacity: 0; } }
+/* 提交回答后首字未到：spinner + 文案 + 跳动圆点，明确"正在生成"，别让人以为卡死 */
+.iv-msg.assistant.generating .iv-content { display: flex; align-items: center; gap: 8px; color: var(--muted, #777); font-size: 12.5px; }
+.iv-msg.assistant.generating .spinner { width: 13px; height: 13px; border-width: 2px; color: var(--accent, #8a6d3b); }
+.iv-typing-dots { display: inline-flex; align-items: center; gap: 3px; }
+.iv-typing-dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent, #8a6d3b); animation: iv-typing 1.2s ease-in-out infinite; }
+.iv-typing-dots i:nth-child(2) { animation-delay: .15s; }
+.iv-typing-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes iv-typing { 0%, 60%, 100% { opacity: .25; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
 .iv-who { font-size: 11px; color: var(--muted, #999); }
 .interview-composer { border-top: 1px solid var(--line, #e3e0d8); padding: 10px 14px; display: flex; flex-direction: column; gap: 8px; }
 /* 反问收尾条：结束出口必须显眼，不再藏底部小字（用户看不见就一直等「怎么还没结束」） */

@@ -47,6 +47,8 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   const [session, setSession] = useState<InterviewSession | null>(null)
   const [messages, setMessages] = useState<InterviewMessage[]>([])
   const [stream, setStream] = useState<StreamState>(null)
+  // 提交回答到 SSE 首字之间的空窗：请求在途时 streamRef 还没挂上，单独记一笔让"生成中"动画立刻出现，同时防重复提交。
+  const [awaitingReply, setAwaitingReply] = useState(false)
   const [runProgress, setRunProgress] = useState<RunProgress>(null)
   const [reportFeed, setReportFeed] = useState<ReportFeed>(null)
   const [error, setError] = useState('')
@@ -102,7 +104,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
     } catch (err) { setError((err as Error).message) }
   }
 
-  const closeStream = useCallback(() => { streamRef.current?.close(); streamRef.current = null; setStream(null); setRunProgress(null); setReportFeed(null) }, [])
+  const closeStream = useCallback(() => { streamRef.current?.close(); streamRef.current = null; setStream(null); setRunProgress(null); setReportFeed(null); setAwaitingReply(false) }, [])
 
   // 待首装场次的 id：新建后先拉 planning 态场次当等待区；若 SSE done 抢先换装了题单，
   // 迟到的 GET 结果不得拿旧 planning 态把就绪场覆盖回去（否则等待区永远卡住）。
@@ -226,10 +228,10 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   }, [deepLink])
 
   // 流式期间贴底：新 delta 与新消息都把面试间滚到最下。
-  useEffect(() => { threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight }) }, [messages, stream?.answer])
+  useEffect(() => { threadRef.current?.scrollTo({ top: threadRef.current.scrollHeight }) }, [messages, stream?.answer, awaitingReply])
 
   const selectSession = useCallback((id: string) => {
-    closeStream(); setError(''); setAnswer(''); setTab('room')
+    closeStream(); setError(''); setAnswer(''); setTab('room'); setCreating(false)
     setSelected(id); selectedRef.current = id; setSession(null); setMessages([])
     void loadSession(id)
   }, [closeStream, loadSession])
@@ -270,10 +272,11 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
   }
 
   async function send() {
-    if (!session || streamRef.current) return
+    if (!session || streamRef.current || awaitingReply) return
     const content = answer.trim()
     if (session.status === 'ready' ? false : !content) return
     const optimistic = content
+    setAwaitingReply(true)
     setAnswer('')
     if (optimistic) setMessages(current => [...current, { id: `tmp-${Date.now()}`, ts: '', role: 'user', content: optimistic }])
     try {
@@ -282,6 +285,9 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
     } catch (err) {
       setError((err as Error).message)
       if (optimistic) setMessages(current => current.filter(item => !item.id.startsWith('tmp-')))
+    } finally {
+      // attach 已挂上流：后续由 busy + 首字驱动动画，这里只收请求在途的旗标。
+      setAwaitingReply(false)
     }
   }
 
@@ -443,7 +449,7 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
         </div>
         {tab === 'room' ? <RoomPanel
           session={session} plan={plan ?? null} progress={progress ?? { phase: 'opening', current_index: 0, rounds: 0, segments: [] }} askedCount={askedCount} messages={messages}
-          streamAnswer={stream?.answer ?? ''} busy={busy} answer={answer} onAnswer={setAnswer}
+          streamAnswer={stream?.answer ?? ''} busy={busy} awaitingReply={awaitingReply} answer={answer} onAnswer={setAnswer}
           onSend={() => void send()} onFinish={() => void finish()} onStop={() => void stop()} threadRef={threadRef}
           reportProgress={runProgress} />
         : tab === 'attribution'
@@ -768,13 +774,13 @@ function PlanningWait({ session }: { session: InterviewSession }) {
   </div>
 }
 
-function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer, busy, answer, onAnswer, onSend, onFinish, onStop, threadRef, reportProgress }: {
+function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer, busy, awaitingReply, answer, onAnswer, onSend, onFinish, onStop, threadRef, reportProgress }: {
   session: InterviewSession
   plan: InterviewSession['question_plan']
   progress: InterviewSession['progress']
   askedCount: number
   messages: InterviewMessage[]
-  streamAnswer: string; busy: boolean
+  streamAnswer: string; busy: boolean; awaitingReply: boolean
   answer: string; onAnswer: (value: string) => void
   onSend: () => void; onFinish: () => void; onStop: () => void
   threadRef: React.RefObject<HTMLDivElement | null>
@@ -785,6 +791,9 @@ function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer
   // 错题强化场次：题单里的 weakness 题标「错题重练」；失分点不进题单预览（面试中零提示，对照留给复盘）。
   const drilling = Boolean(session.material?.drills?.length)
   const sourceName = (item: { source: string }) => drilling && item.source === 'weakness' ? '错题重练' : SOURCE_NAMES[item.source] || '通用'
+  // 首字到达前给个可见的"对方在生成"信号：请求在途看 awaitingReply，流已挂上看 busy。
+  // 出题/复盘阶段各有自己的等待区，不在这里重复提示。
+  const generating = !streamAnswer && (awaitingReply || busy) && (ready || session.status === 'live')
   return <div className="interview-room">
     <div className="interview-room-head">
       <div className="iv-room-meta">
@@ -822,6 +831,10 @@ function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer
         <span className="iv-who">{session.persona.name}</span>
         <div className="iv-content"><Markdown content={streamAnswer} /></div>
       </div>}
+      {generating && <div className="iv-msg assistant generating" role="status" aria-live="polite">
+        <span className="iv-who">{session.persona.name}</span>
+        <div className="iv-content"><span className="spinner" /><span>正在生成回答…</span><span className="iv-typing-dots" aria-hidden="true"><i /><i /><i /></span></div>
+      </div>}
     </div>
     {progress?.phase === 'wrapup' && session.status === 'live' && <div className="iv-wrapup-bar">
       <span>面试官已进入反问收尾，随时可结束本场</span>
@@ -835,7 +848,7 @@ function RoomPanel({ session, plan, progress, askedCount, messages, streamAnswer
       />
       <div className="iv-composer-actions">
         <span className="tiny-label">面试中不剧透不点评 · 评价看复盘</span>
-        <button className="button primary" disabled={busy || !answer.trim()} onClick={onSend}>提交回答</button>
+        <button className="button primary" disabled={busy || awaitingReply || !answer.trim()} onClick={onSend}>提交回答</button>
       </div>
     </div>}
   </div>
