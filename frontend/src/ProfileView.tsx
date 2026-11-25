@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
-import { PROFILE_CATEGORY_NAMES, createProfileEntry, deleteProfileEntry, listProfileEntries, patchProfileEntry, replaceProfileEntry } from './api'
-import type { ProfileCategory, ProfileEntry } from './api'
+import { PROFILE_CATEGORY_NAMES, clearChatMemories, createProfileEntry, date, deleteChatMemory, deleteProfileEntry, listChatMemories, listProfileEntries, patchChatMemory, patchProfileEntry, replaceProfileEntry } from './api'
+import type { ChatMemory, ProfileCategory, ProfileEntry } from './api'
 import { toast } from './toast'
+import { updateSystemSettings, useSystemSettings } from './systemSettingsStore'
 import { Icon } from './Icon'
 import { GapNarrativeEditor } from './GapNarrativeEditor'
 
@@ -22,6 +23,84 @@ function importPrompt(path: string) {
     '工作法：先用 vault_list 列出该目录的 .md 笔记清单；挑与个人经历（项目/工作/教育/技能/证书/奖项）相关的笔记用 vault_read 读取；' +
     '把每篇提炼为一条资料条目——背景、做了什么、怎么做、结果与数字，忠于笔记原文不虚构，标题/组织/时间段从原文归纳；' +
     '先向我展示提炼要点，确认后用 profile_import_write 写入（rel_path 用清单里的相对路径，同一笔记重导会原位更新），最后给导入汇总。'
+}
+
+// 对话记忆分区（2026-11-25，s09 借鉴）：Agent 对话完成后自动提取的跨会话事实/约束，
+// 新会话注入 system prompt。独立于手写材料类别——preference 类有评估事实池的专属读取器，
+// 自动提取的条目语义与读取器都不同，不混入。行操作带两步确认（自动生成的条目防误删）。
+function ChatMemorySection() {
+  const settings = useSystemSettings()
+  const [memories, setMemories] = useState<ChatMemory[] | null>(null)
+  const [busy, setBusy] = useState('')
+  const [armed, setArmed] = useState('')
+
+  const load = useCallback(async () => {
+    try { setMemories((await listChatMemories()).memories) }
+    catch { setMemories([]) /* 记忆列表失败不阻塞资料库主列表 */ }
+  }, [])
+  useEffect(() => { void load() }, [load])
+
+  function run(key: string, action: () => Promise<void>) {
+    setBusy(key)
+    void action().catch(err => toast((err as Error).message, 'error')).finally(() => setBusy(''))
+  }
+
+  function toggleAutoExtract(value: boolean) {
+    void updateSystemSettings({ chat_memory_enabled: value })
+      .then(() => toast(value ? '对话记忆自动提取已开启' : '已关闭自动提取；已存记忆仍按下方开关注入'))
+      .catch(err => toast((err as Error).message || '设置保存失败，请稍后重试', 'error'))
+  }
+
+  const toggleMemory = (item: ChatMemory) => run(`toggle-${item.id}`, async () => {
+    await patchChatMemory(item.id, { enabled: !item.enabled })
+    await load()
+  })
+  const removeMemory = (item: ChatMemory) => {
+    if (armed !== item.id) { setArmed(item.id); return }
+    run(`delete-${item.id}`, async () => {
+      await deleteChatMemory(item.id)
+      setArmed('')
+      await load()
+    })
+  }
+  const clearAll = () => {
+    if (armed !== 'clear') { setArmed('clear'); return }
+    run('clear', async () => {
+      const result = await clearChatMemories()
+      setArmed('')
+      toast(`已清空 ${result.cleared} 条记忆。`)
+      await load()
+    })
+  }
+
+  return <div className="profile-group chat-memory-group">
+    <h3 className="profile-group-title">对话记忆<span>{memories?.length ?? '…'}</span></h3>
+    <div className="chat-memory-head">
+      <label className="agent-checkbox" title="关闭后对话不再自动提取新记忆；已存记忆仍按下方开关注入对话">
+        <input type="checkbox" checked={settings.chat_memory_enabled} onChange={event => toggleAutoExtract(event.target.checked)} />自动提取
+      </label>
+      <span className="tiny-label">对话里说过的长期偏好与约束会自动沉淀，之后每个新会话自动带上；停用/删除即时生效。</span>
+      {memories && memories.length > 0 && <button type="button" className={`text-button${armed === 'clear' ? ' danger-text' : ''}`}
+        disabled={busy === 'clear'} onClick={clearAll}>{armed === 'clear' ? '再点一次确认清空' : '清空'}</button>}
+    </div>
+    {memories === null
+      ? <div className="loading-state"><span className="spinner" />正在读取…</div>
+      : memories.length === 0
+        ? <p className="tiny-label chat-memory-empty">还没有沉淀的记忆。和全局对话聊过几轮后，长期偏好与约束会出现在这里；任意一条都可停用或删除。</p>
+        : memories.map(item => <article key={item.id} className={`profile-entry${item.enabled ? '' : ' disabled'}`}>
+          <div className="profile-entry-head">
+            <div><span>{item.content}</span>{item.tag && <span className="tiny-label">（{item.tag}）</span>}</div>
+            <div className="profile-entry-actions">
+              <label className="agent-checkbox" title="停用后该条不再注入新会话的对话上下文">
+                <input type="checkbox" checked={item.enabled} disabled={busy === `toggle-${item.id}`} onChange={() => void toggleMemory(item)} />注入
+              </label>
+              <button type="button" className={`text-button${armed === item.id ? ' danger-text' : ''}`} disabled={busy === `delete-${item.id}`}
+                onClick={() => removeMemory(item)}>{armed === item.id ? '再点一次确认' : '删除'}</button>
+            </div>
+          </div>
+          <span className="tiny-label">{date(item.created_at)}{item.source_conversation_id ? ' · 来自对话沉淀' : ''}</span>
+        </article>)}
+  </div>
 }
 
 export function ProfileView({ onImportViaChat }: { onImportViaChat?: (prompt: string) => void }) {
@@ -145,6 +224,8 @@ export function ProfileView({ onImportViaChat }: { onImportViaChat?: (prompt: st
           <button type="button" className="button primary" disabled={busy === 'save'} onClick={() => void submitDraft()}>{busy === 'save' ? <span className="spinner" /> : null}{editingId ? '保存修改' : '保存条目'}</button>
         </div>
       </div>}
+
+      <ChatMemorySection />
 
       {entries === null
         ? <div className="loading-state"><span className="spinner" />正在读取资料库…</div>

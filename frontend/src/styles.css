@@ -564,6 +564,11 @@ button.today-stat { cursor: pointer; text-align: left; }
 .profile-group { margin-bottom: 16px; }
 .profile-group-title { font-size: 13px; color: var(--green); margin: 0 0 8px; display: flex; gap: 8px; align-items: baseline; }
 .profile-group-title span { font-size: 11px; color: var(--muted); }
+/* 对话记忆分区（2026-11-25）：行样式复用 .profile-entry；头部横排开关+说明+清空 */
+.chat-memory-group { margin-bottom: 20px; }
+.chat-memory-head { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; margin-bottom: 8px; }
+.chat-memory-head .tiny-label { flex: 1; min-width: 200px; }
+.chat-memory-empty { margin: 4px 0 0; }
 .profile-entry { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); padding: 10px 12px; margin-bottom: 8px; }
 .profile-entry.disabled { opacity: .55; }
 .profile-entry-head { display: flex; flex-wrap: wrap; gap: 6px 12px; justify-content: space-between; align-items: baseline; }

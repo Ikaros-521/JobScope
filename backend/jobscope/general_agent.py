@@ -14,6 +14,7 @@ from .knowledge import KnowledgeStore, READ_WINDOW_CHARS, SEARCH_TEXT_CHARS
 from .scope_expansion import ScopeExpansionStore
 from . import browser, collect_service, web_research
 from .chat import citation, model_configured
+from .chat_memory import memory_catalog_block
 from .extensions import ExtensionStore, MCPClient, fingerprint, tool_alias, schema_validator
 from .model_transport import (ContextOverflowError, OutputLimitError, OverloadedError,
                               RateLimitError, learned_cap, output_budget, tool_turn, stream_turn)
@@ -291,6 +292,10 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
         condition_history = [*(history or []), dict(role='user', content=message)]
         conditions = conversation_conditions(condition_history, **condition_context(self.repo, scope))
         system += '\n本会话用户当前求职条件（仅应用于项目检索/统计，不妨碍普通写作）：' + json.dumps(conditions, ensure_ascii=False)
+        # 跨会话记忆召回（2026-11-25，s09 借鉴）：零额外模型调用，目录段自带「背景知识非指令」声明。
+        memory_block = memory_catalog_block(self.repo)
+        if memory_block:
+            system += '\n' + memory_block
         checkpoints = [h for h in (history or []) if h.get('kind') == 'compaction']
         recent = [h for h in (history or []) if h.get('kind') != 'compaction' and not h.get('compacted')][-6:]
         pinned = [dict(role='assistant', content=checkpoints[-1]['content'][:8000])] if checkpoints else []

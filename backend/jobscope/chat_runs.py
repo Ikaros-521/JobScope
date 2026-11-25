@@ -347,6 +347,10 @@ class RunManager:
                         on_delta=(lambda piece: handle.push('delta', dict(text=piece))) if handle.streaming else None)
                     result.setdefault('conversation_id', handle.conversation_id)
             self._settle(handle, result, mode)
+            # 对话记忆提取（2026-11-25，s09 借鉴）：done 已推送、回答已落库之后同步执行——
+            # 用户已解锁不阻塞；同一 worker 线程内 use_config 上下文现成；失败静默不影响本轮。
+            if mode == 'general':
+                self._maybe_extract_memories(handle, result)
         except RunCancelled:
             # Already acknowledged by cancel(); the worker just reached its checkpoint.
             return
@@ -365,6 +369,29 @@ class RunManager:
             handle.error = '生成失败，请稍后重试'
             handle.push('error', dict(message=handle.error))
             handle.finish()
+
+    def _maybe_extract_memories(self, handle, result):
+        """跨会话记忆提取的接入点：仅成功完成的 general 轮；开关关闭或任何异常都静默跳过。"""
+        if result.get('failed') or result.get('interrupted') or result.get('pending_approval'):
+            return
+        try:
+            if not SystemSettingsStore(self.repo).effective().get('chat_memory_enabled', True):
+                return
+        except Exception:
+            return
+        try:
+            from .chat_memory import extract_memories
+            trace = result.get('trace') or {}
+            steps_summary = '；'.join(
+                f"{event.get('label') or event.get('tool')}({event.get('status') or 'ok'})"
+                for event in (trace.get('events') or [])[-12:]
+                if event.get('tool') not in ('agent_model', 'model_retry', 'loop_warning', 'context_compact', 'index_sync', 'query_plan'))
+            added = extract_memories(self.repo, handle.config['llm'], handle.conversation_id,
+                                     trace.get('question') or '', result.get('answer') or '', steps_summary)
+            if added:
+                logger.info('对话记忆已沉淀 run=%s conv=%s 新增=%s条', handle.id, handle.conversation_id, added)
+        except Exception as exc:
+            logger.warning('对话记忆提取异常 run=%s：%s', handle.id, type(exc).__name__)
 
     def _resume(self, handle, approved, approval_id, grant=False):
         try:

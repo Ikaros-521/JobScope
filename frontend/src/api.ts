@@ -225,7 +225,7 @@ export type ToolStep = { step: number; tool: string; duration_ms: number; label?
 export type ChatSegment = { kind: 'reasoning' | 'text'; text: string } | { kind: 'step'; step?: ToolStep; event?: ToolStep }
 // 系统设置：存服务端（跨浏览器一致），含聊天显示模式、思维链显隐、Agent 执行限额与市场检索源。
 export type AgentLimits = { max_model_calls: number; max_tool_calls: number; context_characters: number; max_seconds: number }
-export type SystemSettings = { chat_display_mode: 'merged' | 'sequential'; show_reasoning: boolean; agent_limits: AgentLimits; market_source: 'official' | 'china' ; agent_fallback_channel: string }
+export type SystemSettings = { chat_display_mode: 'merged' | 'sequential'; show_reasoning: boolean; agent_limits: AgentLimits; market_source: 'official' | 'china' ; agent_fallback_channel: string; chat_memory_enabled: boolean }
 export type ApprovalRequest = { approval_id: string; tool: string; arguments: Record<string, unknown>; reason: string; run_id?: string }
 export type ChatRunStatus = { run_id: string; conversation_id: string; done: boolean; cancelled: boolean; awaiting_approval: boolean; pending_approval: ApprovalRequest | null }
 export type ChatScope = { kind: 'global' } | { kind: 'company'; company: string } | { kind: 'job'; jobId: string; company: string; title?: string }
@@ -642,6 +642,24 @@ export function patchProfileEntry(id: string, patch: Partial<{ category: Profile
 }
 export function deleteProfileEntry(id: string) {
   return api<{ deleted: string }>(`/profile-entries/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+// 对话记忆（2026-11-25）：Agent 对话完成后自动提取的跨会话事实/约束，新会话注入 system prompt；
+// 管理分区在个人资料库页。独立于 profile_entries——preference 类有评估事实池/工坊取材的专属读取器。
+export type ChatMemory = {
+  id: string; content: string; tag: string; source_conversation_id: string;
+  enabled: boolean; created_at: string; updated_at: string
+}
+export function listChatMemories() {
+  return api<{ memories: ChatMemory[] }>('/chat-memories')
+}
+export function patchChatMemory(id: string, patch: Partial<{ enabled: boolean; content: string; tag: string }>) {
+  return api<ChatMemory>(`/chat-memories/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) })
+}
+export function deleteChatMemory(id: string) {
+  return api<{ ok: boolean }>(`/chat-memories/${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+export function clearChatMemories() {
+  return api<{ ok: boolean; cleared: number }>('/chat-memories', { method: 'DELETE' })
 }
 export function exportResumeVersion(id: number, format: 'pdf' | 'docx' | 'html' | 'md', filename: string) {
   return download(`/resume-versions/${id}/export?format=${format}`, filename)

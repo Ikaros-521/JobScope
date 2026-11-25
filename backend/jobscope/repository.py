@@ -77,6 +77,10 @@ class Repository:
                 -- Agent 工具结果存档（2026-11-25）：响应式压缩把长工具结果正文落档，短桩带 tool_call_id 指回，
                 -- archive_read 工具取回原文；只存「模型曾看到」的截断后正文，不做无限备份。
                 CREATE TABLE IF NOT EXISTS agent_tool_archives (conversation_id TEXT NOT NULL, tool_call_id TEXT NOT NULL, content TEXT NOT NULL, chars INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(conversation_id, tool_call_id));
+                -- 对话记忆（2026-11-25，s09 借鉴）：对话完成后自动提取的跨会话用户事实/约束，
+                -- 新会话召回注入 system prompt。独立于 profile_entries：preference 类会被评估
+                -- 事实池（preference_statements）与工坊取材按 category 捞取，语义与读取器都不同。
+                CREATE TABLE IF NOT EXISTS chat_memories (id TEXT PRIMARY KEY, content TEXT NOT NULL, tag TEXT NOT NULL DEFAULT '', source_conversation_id TEXT NOT NULL DEFAULT '', enabled INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
             """)
             self._migrate_conversations(conn)
             # profile_entries.source 记录条目来源（笔记库导入的「规范化库根::相对路径」锚点），幂等重导靠它原位更新。
@@ -1984,6 +1988,71 @@ class Repository:
             row = conn.execute('SELECT content FROM agent_tool_archives WHERE conversation_id=? AND tool_call_id=?',
                                (conversation_id, tool_call_id)).fetchone()
         return row['content'] if row else None
+
+    # -- 对话记忆（2026-11-25）：提取/召回/整理的存储侧，供 chat_memory.py 与管理端点使用 --
+
+    def chat_memories(self, enabled_only=False):
+        """全部对话记忆，按创建时间与插入顺序稳定排序（整表替换后同批条目保持合并清单顺序）。"""
+        where = 'WHERE enabled=1' if enabled_only else ''
+        with self.connection() as conn:
+            rows = conn.execute(f'SELECT * FROM chat_memories {where} ORDER BY created_at, rowid', ()).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_chat_memories(self, entries):
+        """批量新增提取出的记忆（id/时间戳服务端生成；调用方已做过守卫与去重）。"""
+        stamped = now()
+        with self.connection() as conn:
+            for item in entries:
+                conn.execute('INSERT INTO chat_memories VALUES (?,?,?,?,?,?,?)',
+                             ('M-' + uuid.uuid4().hex[:20], item['content'], str(item.get('tag') or '')[:40],
+                              str(item.get('source_conversation_id') or '')[:100], 1, stamped, stamped))
+        return self.chat_memories()
+
+    def patch_chat_memory(self, memory_id, patch):
+        """行级更新（目前只有 enabled 开关）；字段白名单防注入未知键。"""
+        allowed = {key: patch[key] for key in ('enabled', 'content', 'tag') if key in patch}
+        if not allowed:
+            raise ValueError('没有可更新的字段')
+        with self.connection() as conn:
+            row = conn.execute('SELECT id FROM chat_memories WHERE id=?', (memory_id,)).fetchone()
+            if row is None:
+                raise ValueError('记忆不存在')
+            if 'enabled' in allowed:
+                conn.execute('UPDATE chat_memories SET enabled=? WHERE id=?', (1 if allowed['enabled'] else 0, memory_id))
+            if 'content' in allowed:
+                conn.execute('UPDATE chat_memories SET content=? WHERE id=?', (str(allowed['content'])[:300], memory_id))
+            if 'tag' in allowed:
+                conn.execute('UPDATE chat_memories SET tag=? WHERE id=?', (str(allowed['tag'])[:40], memory_id))
+            conn.execute('UPDATE chat_memories SET updated_at=? WHERE id=?', (now(), memory_id))
+        return self.chat_memory(memory_id)
+
+    def chat_memory(self, memory_id):
+        with self.connection() as conn:
+            row = conn.execute('SELECT * FROM chat_memories WHERE id=?', (memory_id,)).fetchone()
+        return dict(row) if row else None
+
+    def delete_chat_memory(self, memory_id):
+        with self.connection() as conn:
+            cursor = conn.execute('DELETE FROM chat_memories WHERE id=?', (memory_id,))
+            if cursor.rowcount == 0:
+                raise ValueError('记忆不存在')
+
+    def clear_chat_memories(self):
+        """一键清空（管理入口用）；返回删除条数。"""
+        with self.connection() as conn:
+            cursor = conn.execute('DELETE FROM chat_memories')
+        return cursor.rowcount
+
+    def replace_chat_memories(self, entries):
+        """整理合并的原子写入：整表替换为合并后的清单。调用方必须先留快照、失败时用旧清单重放本方法恢复。"""
+        stamped = now()
+        with self.connection() as conn:
+            conn.execute('DELETE FROM chat_memories')
+            for item in entries:
+                conn.execute('INSERT INTO chat_memories VALUES (?,?,?,?,?,?,?)',
+                             (item.get('id') or 'M-' + uuid.uuid4().hex[:20], item['content'],
+                              str(item.get('tag') or '')[:40], str(item.get('source_conversation_id') or '')[:100],
+                              1 if item.get('enabled', True) else 0, item.get('created_at') or stamped, stamped))
 
     @staticmethod
     def normalise_name(name):

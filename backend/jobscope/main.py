@@ -35,7 +35,7 @@ from .transcript import parse_labeled_transcript
 from .transcript_runs import TranscriptManager, new_transcript
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
-from .models import AnalysisStatusInput, AnalyzeInput, AttributionInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JdAssessmentInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, PrepAdjustInput, PrepPlanGenerateInput, PrepTaskNoteInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, RunwayInput, ScopeExpansionInput, SignalSourceInput, SplitInput, StyleAssessmentInput, TranscriptImportInput, TranscriptSegmentsInput
+from .models import AnalysisStatusInput, AnalyzeInput, AttributionInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatMemoryPatch, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JdAssessmentInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, PrepAdjustInput, PrepPlanGenerateInput, PrepTaskNoteInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, RunwayInput, ScopeExpansionInput, SignalSourceInput, SplitInput, StyleAssessmentInput, TranscriptImportInput, TranscriptSegmentsInput
 from .repository import Repository, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
@@ -1820,6 +1820,35 @@ def create_app(data_dir=None):
     @app.get('/api/profile-entries')
     def list_profile_entries(enabled_only: bool = Query(default=False)):
         return {'entries': repo.profile_entries(enabled_only=enabled_only)}
+
+    # -- 对话记忆管理（2026-11-25）：列表/启停/删除/清空；提取与召回在对话运行时内，无端点 --
+
+    @app.get('/api/chat-memories')
+    def list_chat_memories():
+        return {'memories': repo.chat_memories()}
+
+    @app.patch('/api/chat-memories/{memory_id}')
+    def patch_chat_memory(data: ChatMemoryPatch, memory_id: str = PathParam(min_length=1, max_length=40)):
+        patch = {key: value for key, value in data.model_dump(exclude_none=True).items()}
+        if not patch:
+            raise HTTPException(422, '没有可更新的字段')
+        try:
+            return repo.patch_chat_memory(memory_id, patch)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+
+    @app.delete('/api/chat-memories/{memory_id}')
+    def delete_chat_memory(memory_id: str = PathParam(min_length=1, max_length=40)):
+        try:
+            repo.delete_chat_memory(memory_id)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc)) from exc
+        return dict(ok=True)
+
+    @app.delete('/api/chat-memories')
+    def clear_chat_memories():
+        """一键清空：自动提取的条目可整批废弃；启用中的记忆同样清除，需用户在两步确认后触发。"""
+        return dict(ok=True, cleared=repo.clear_chat_memories())
 
     @app.get('/api/profile-entries/{entry_id}')
     def read_profile_entry(entry_id: str = PathParam(min_length=1, max_length=40)):

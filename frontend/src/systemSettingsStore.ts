@@ -10,6 +10,7 @@ const DEFAULTS: SystemSettings = {
   agent_limits: { max_model_calls: 60, max_tool_calls: 50, context_characters: 160000, max_seconds: 900 },
   market_source: 'official',
   agent_fallback_channel: '',
+  chat_memory_enabled: true,
 }
 
 let current: SystemSettings = { ...DEFAULTS, agent_limits: { ...DEFAULTS.agent_limits } }

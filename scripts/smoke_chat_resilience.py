@@ -10,6 +10,7 @@
 8766 被占用时直接拒绝启动（不与别人的测试实例抢端口）。
 """
 import json
+import os
 import socket
 import sys
 import threading
@@ -20,6 +21,10 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'backend'))
+
+# 必须「先设环境变量再 import jobscope.main」：main.py 在 import 时执行模块级 create_app()
+# （conftest 同款规避）——不预设会打开生产 .data 并跑建表迁移。
+os.environ['JOBSCOPE_DATA_DIR'] = str(Path(tempfile.mkdtemp(prefix='jobscope-smoke-resilience-import-')).resolve())
 
 import httpx
 import uvicorn

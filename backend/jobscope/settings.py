@@ -63,6 +63,9 @@ class SystemSettingsInput(BaseModel):
     # 对话备用渠道（2026-11-25）：529 连续过载时 Agent 自动切换到的 llm_channels 渠道 id；
     # 空=不降级。渠道可后删——运行时解析失败只跳过降级，不拦截对话，所以保存时不做存在性硬校验。
     agent_fallback_channel: str = ''
+    # 对话记忆（2026-11-25）：对话完成后自动提取跨会话用户事实/约束并在新会话召回注入；
+    # 管理入口在「个人资料库」页的对话记忆分区（列表/启停/删除/清空）。
+    chat_memory_enabled: bool = True
 
 
 class LlmChannelInput(BaseModel):
@@ -564,7 +567,7 @@ class SystemSettingsStore:
 
     def effective(self):
         result = dict(chat_display_mode='merged', show_reasoning=True, agent_limits=dict(AGENT_LIMIT_DEFAULTS),
-                      market_source='official', agent_fallback_channel='')
+                      market_source='official', agent_fallback_channel='', chat_memory_enabled=True)
         with self.repo.connection() as conn:
             for row in conn.execute('SELECT key,payload FROM system_settings'):
                 saved = json.loads(row[1])
@@ -590,4 +593,6 @@ class SystemSettingsStore:
                          ('market_source', json.dumps(data.market_source)))
             conn.execute('INSERT OR REPLACE INTO system_settings VALUES (?,?)',
                          ('agent_fallback_channel', json.dumps(fallback_channel)))
+            conn.execute('INSERT OR REPLACE INTO system_settings VALUES (?,?)',
+                         ('chat_memory_enabled', json.dumps(bool(data.chat_memory_enabled))))
         return self.effective()

@@ -401,6 +401,13 @@ class ProfileEntryPatch(RequestModel):
     enabled: bool | None = None
 
 
+class ChatMemoryPatch(RequestModel):
+    """对话记忆行级更新（2026-11-25）：启停开关与手工微调；缺省字段保持不变。"""
+    content: str | None = Field(default=None, min_length=1, max_length=300)
+    tag: str | None = Field(default=None, max_length=40)
+    enabled: bool | None = None
+
+
 class GapNarrativeInput(RequestModel):
     """空窗期叙事生成：素材固定取资料库启用的 gap 条目；目标岗位可选（对齐 JD 用语与措辞）。"""
     job_id: str = Field(default='', max_length=100)
