@@ -60,6 +60,9 @@ class SystemSettingsInput(BaseModel):
     agent_limits: AgentLimitsInput
     # 扩展市场在线检索源：official 走官方接口，china 走国内镜像；缺省 official 兼容旧客户端。
     market_source: Literal['official', 'china'] = 'official'
+    # 对话备用渠道（2026-11-25）：529 连续过载时 Agent 自动切换到的 llm_channels 渠道 id；
+    # 空=不降级。渠道可后删——运行时解析失败只跳过降级，不拦截对话，所以保存时不做存在性硬校验。
+    agent_fallback_channel: str = ''
 
 
 class LlmChannelInput(BaseModel):
@@ -561,7 +564,7 @@ class SystemSettingsStore:
 
     def effective(self):
         result = dict(chat_display_mode='merged', show_reasoning=True, agent_limits=dict(AGENT_LIMIT_DEFAULTS),
-                      market_source='official')
+                      market_source='official', agent_fallback_channel='')
         with self.repo.connection() as conn:
             for row in conn.execute('SELECT key,payload FROM system_settings'):
                 saved = json.loads(row[1])
@@ -575,6 +578,7 @@ class SystemSettingsStore:
         if data.chat_display_mode not in self.DISPLAY_MODES:
             raise ValueError('未知的聊天显示模式')
         limits = self._sanitize_limits(data.agent_limits.model_dump())
+        fallback_channel = str(data.agent_fallback_channel or '').strip()[:200]
         with self.repo.connection() as conn:
             conn.execute('INSERT OR REPLACE INTO system_settings VALUES (?,?)',
                          ('chat_display_mode', json.dumps(data.chat_display_mode)))
@@ -584,4 +588,6 @@ class SystemSettingsStore:
                          ('agent_limits', json.dumps(limits, ensure_ascii=False)))
             conn.execute('INSERT OR REPLACE INTO system_settings VALUES (?,?)',
                          ('market_source', json.dumps(data.market_source)))
+            conn.execute('INSERT OR REPLACE INTO system_settings VALUES (?,?)',
+                         ('agent_fallback_channel', json.dumps(fallback_channel)))
         return self.effective()

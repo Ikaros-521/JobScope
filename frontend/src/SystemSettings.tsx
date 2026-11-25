@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { updateSystemSettings, useSystemSettings } from './systemSettingsStore'
-import { createBackup, date, deleteBackup, downloadBackup, getAppliedSyncSchedule, getBackupStatus, restoreBackup, saveAppliedSyncSchedule } from './api'
-import type { AgentLimits, AppliedSyncSchedule, BackupStatus, SystemSettings as SystemSettingsPayload } from './api'
+import { createBackup, date, deleteBackup, downloadBackup, getAppliedSyncSchedule, getBackupStatus, listLlmChannels, restoreBackup, saveAppliedSyncSchedule } from './api'
+import type { AgentLimits, AppliedSyncSchedule, BackupStatus, LlmChannel, SystemSettings as SystemSettingsPayload } from './api'
 import { toast } from './toast'
 import { Icon } from './Icon'
 
@@ -190,8 +190,23 @@ export function SystemSettings() {
   const settings = useSystemSettings()
   const [limits, setLimits] = useState<AgentLimits>(settings.agent_limits)
   const [savingLimits, setSavingLimits] = useState(false)
+  // 对话备用渠道（2026-11-25）：529 连续过载时 Agent 自动降级到的渠道；空=不降级。
+  const [channels, setChannels] = useState<LlmChannel[]>([])
+  const [fallbackChannel, setFallbackChannel] = useState(settings.agent_fallback_channel)
   useEffect(() => { setLimits(settings.agent_limits) }, [settings.agent_limits])
+  useEffect(() => { setFallbackChannel(settings.agent_fallback_channel) }, [settings.agent_fallback_channel])
+  useEffect(() => { void listLlmChannels().then(res => setChannels(res.channels)).catch(() => { /* 渠道列表失败不阻塞设置页 */ }) }, [])
   const limitsDirty = JSON.stringify(limits) !== JSON.stringify(settings.agent_limits)
+
+  function pickFallbackChannel(value: string) {
+    setFallbackChannel(value)
+    void updateSystemSettings({ agent_fallback_channel: value })
+      .then(() => toast(value ? '对话备用渠道已保存：连续过载时自动切换' : '对话备用渠道已停用'))
+      .catch(err => {
+        setFallbackChannel(settings.agent_fallback_channel)
+        toast((err as Error).message || '设置保存失败，请稍后重试', 'error')
+      })
+  }
 
   function pickMode(mode: SystemSettingsPayload['chat_display_mode']) {
     if (settings.chat_display_mode === mode) return
@@ -248,6 +263,14 @@ export function SystemSettings() {
         <span className="body-small muted">{limitsDirty ? '有未保存的更改' : '与已保存设置一致'}</span>
         <button type="button" className="button secondary" disabled={!limitsDirty && JSON.stringify(settings.agent_limits) === JSON.stringify(DEFAULT_LIMITS)} onClick={() => setLimits({ ...DEFAULT_LIMITS })}>恢复默认</button>
         <button type="button" className="button primary" disabled={!limitsDirty || savingLimits} onClick={() => void saveLimits()}>{savingLimits ? '正在保存…' : '保存限额'}</button>
+      </div>
+      <div className="system-limit-field system-fallback-field">
+        <label className="field-label" htmlFor="agent-fallback-channel">对话备用渠道</label>
+        <select id="agent-fallback-channel" value={fallbackChannel} onChange={event => pickFallbackChannel(event.target.value)}>
+          <option value="">不降级（默认）</option>
+          {channels.map(channel => <option key={channel.id} value={channel.id}>{channel.name || channel.model}（{channel.model}）</option>)}
+        </select>
+        <p className="field-help">当前对话渠道连续过载（529）退避无效时，自动切换到该渠道完成本轮回答，切换在「执行过程」可见；留空则不降级。选择后立即生效。</p>
       </div>
     </div>
 

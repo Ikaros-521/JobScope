@@ -1,6 +1,7 @@
 """Bounded tool loop with server-owned global, company and job retrieval scopes."""
 import json
 import logging
+import random
 import re
 import threading
 import time
@@ -14,7 +15,8 @@ from .scope_expansion import ScopeExpansionStore
 from . import browser, collect_service, web_research
 from .chat import citation, model_configured
 from .extensions import ExtensionStore, MCPClient, fingerprint, tool_alias, schema_validator
-from .model_transport import tool_turn, stream_turn
+from .model_transport import (ContextOverflowError, OutputLimitError, OverloadedError,
+                              RateLimitError, learned_cap, output_budget, tool_turn, stream_turn)
 from .repository import Repository, now
 from .settings import AGENT_LIMIT_DEFAULTS, SystemSettingsStore, get_model_config
 from .research.index import ResearchIndex
@@ -31,15 +33,25 @@ logger = logging.getLogger(__name__)
 #   副作用类内置工具与全部 MCP 串行（外部会话与审批语义）。
 # - 失控检测用签名熔断：同名同参连续 LOOP_STREAK_LIMIT 次只发可见警告并注入 system-reminder，
 #   不抛错、不禁用工具、不结束本轮——纠偏判断交还模型。
-# - 上下文触达预算先做响应式压缩（改写最早工具结果为短桩，配对与 ID 不动），压缩成功就继续；
-#   硬停止只留给取消、权限、审批、不可恢复溢出与 run 级预算。
+# - 上下文触达预算先做响应式压缩（改写最早工具结果为短桩，配对与 ID 不动；长正文先存档可经
+#   archive_read 取回），压缩成功就继续；硬停止只留给取消、权限、审批、不可恢复溢出与 run 级预算。
+# - 模型轮次失败按型分策（learn-claude-code s15 对齐）：429 退避重试、529 连续过载切备用渠道、
+#   超长 400 压缩后重试、输出截断升级预算重试；全部有界、可取消、step 事件可见。
 MAX_PARALLEL_WIDTH = 10
 LOOP_STREAK_LIMIT = 3
 COMPACT_KEEP = 6
+# 压缩存档阈值：正文超过它先落 agent_tool_archives 再改短桩（短桩指回 tool_call_id），
+# 更短的直接短桩——存档读取本身也要花一轮调用，不值得为小正文付出。
+COMPACT_ARCHIVE_THRESHOLD = 2000
+# 429/529 指数退避：基数/封顶做成模块常量，测试打桩为 0 免等待；退避按切片轮询取消点。
+MODEL_RETRY_BACKOFF_BASE = 0.5
+MODEL_RETRY_BACKOFF_CAP = 8.0
+MODEL_BACKOFF_SLICE = 0.2
+MODEL_TURN_MAX_RETRIES = 2
 READ_CLASS_BUILTINS = frozenset({
     'project_search', 'project_read', 'project_salary', 'knowledge_search', 'knowledge_read',
     'skill_read', 'skill_resource', 'company_profile', 'company_detail', 'vault_list', 'vault_read',
-    'web_search', 'web_read', 'pipeline_funnel',
+    'web_search', 'web_read', 'pipeline_funnel', 'archive_read',
 })
 
 # 高危内置工具（2026-11-23）：副作用不可逆（取消收藏连带清管线状态/跟进信息），与 MCP destructive
@@ -63,13 +75,15 @@ def schema(properties, required=()):
 class RunHooks:
     """Optional live callbacks for run-based execution; None keeps the synchronous path unchanged."""
 
-    def __init__(self, on_event=None, on_delta=None, on_reasoning=None, should_stop=None, register_abort=None):
+    def __init__(self, on_event=None, on_delta=None, on_reasoning=None, should_stop=None, register_abort=None, on_restart=None):
         self.on_event = on_event
         self.on_delta = on_delta
         self.on_reasoning = on_reasoning
         self.should_stop = should_stop
         # register_abort(fn)->unregister：把「从取消线程关闭底层连接」的钩子挂到运行上。
         self.register_abort = register_abort
+        # on_restart()：输出截断升级重试前把已流出的半截增量作废（SSE 重发 start，前端重置实时气泡）。
+        self.on_restart = on_restart
 
 
 QUERY = dict(type='string', minLength=1, maxLength=1500, description='独立完整的查询，包含公司/技能/薪资条件')
@@ -125,6 +139,7 @@ BUILTINS = [
     dict(name='signal_extract', description='把该公司已存材料（非岗位材料+完整JD）喂给抽取器生成规则信号（团队规模自述、公告营收/人数同比等），与信号抽取页面同一条管线；消耗抽取模型调用，材料为空时返回skipped。抽取后用reliability_refresh重算分数。', parameters=schema({'company': dict(type='string', minLength=1, maxLength=300), 'limit': dict(type='integer', minimum=1, maximum=40, default=12), 'max_tokens': dict(type='integer', minimum=256, maximum=4000, default=1200), 'credit_code': dict(type='string', maxLength=40)}, ['company'])),
     dict(name='reliability_refresh', description='重算该公司参考分（连带刷新本地统计源），返回各维度新分数、缺口文案与上一份快照的差分。补分流程的最后一步：company_profile看缺口→采集/抽取→本工具重算→如实转述新分数与仍缺的口径。分数只能按「主观参考」口径转述。', parameters=schema({'company': dict(type='string', minLength=1, maxLength=300), 'credit_code': dict(type='string', maxLength=40)}, ['company'])),
     dict(name='pipeline_funnel', description='读取本机机会管线的漏斗转化与归因统计：各阶段累计到达数、各段转化率与中位推进天数（含四分位区间）、按来源/是否定制简历/公司可靠度分带的约面率切片、按投递周分批的批次追踪、周几投递的约面率。投递复盘、求职策略、回复率类问题先调用它取真实数据，绝不让用户手工报数；只读，无参数。', parameters=schema({})),
+    dict(name='archive_read', description='按 tool_call_id 取回一条被上下文压缩存档的早期工具结果完整正文（会话内归属校验）。只在本轮历史里出现「[已压缩] …已存档」短桩且确需原文时调用；能凭已有摘要继续作答就不要取回。', parameters=schema({'tool_call_id': dict(type='string', minLength=4, maxLength=200, description='被压缩短桩里标注的 tool_call_id')}, ['tool_call_id'])),
     dict(name='vault_list', description='列出用户指定的本地笔记目录（Obsidian 库或任意 markdown 目录）内的 .md 笔记清单（相对路径+大小），用于把已有笔记导入个人资料库。只读，跳过隐藏目录与超限文件；目录路径必须由用户提供。导入工作法：vault_list 拿清单 → 挑与个人经历相关的笔记 vault_read 逐篇读取 → 提炼为资料条目并向用户展示要点 → profile_import_write 写入。', parameters=schema({'path': dict(type='string', minLength=2, maxLength=500, description='笔记库根目录的完整路径，由用户提供')}, ['path'])),
     dict(name='vault_read', description='读取笔记库内单篇 .md 笔记正文（UTF-8；超过8000字符用offset翻页）。rel_path 用 vault_list 返回的相对路径；只读不修改。', parameters=schema({'path': dict(type='string', minLength=2, maxLength=500), 'rel_path': dict(type='string', minLength=1, maxLength=400), 'offset': dict(type='integer', minimum=0, maximum=200000)}, ['path', 'rel_path'])),
     dict(name='profile_import_write', description='把从笔记提炼出的条目批量写入个人资料库。entries 每条带 rel_path（该笔记在库内的相对路径，作幂等锚点：同一文件重导原位更新）与结构化字段；content 是提炼后的完整条目内容，title/org/period 从笔记原文归纳，没有就留空。写入前先向用户展示提炼要点；一次最多50条，更多分批调用。', parameters=schema({'path': dict(type='string', minLength=2, maxLength=500, description='笔记库根目录，须与vault_list/vault_read用的同一目录'), 'entries': dict(type='array', minItems=1, maxItems=50, items=schema({'rel_path': dict(type='string', minLength=1, maxLength=400), 'category': dict(type='string', enum=['project', 'work', 'education', 'skill', 'cert', 'award', 'preference', 'other'], description='条目类别'), 'title': dict(type='string', minLength=1, maxLength=200), 'org': dict(type='string', maxLength=200), 'period': dict(type='string', maxLength=100), 'content': dict(type='string', minLength=1, maxLength=20000), 'tags': dict(type='array', items=dict(type='string', minLength=1, maxLength=50), maxItems=20), 'enabled': dict(type='boolean')}, ['rel_path', 'category', 'title', 'content']))}, ['path', 'entries'])),
@@ -240,7 +255,7 @@ class GeneralAgent:
             return '当前会话为「完全访问」模式：MCP工具将自动执行，无需用户逐次确认。'
         return '当前会话为「自主」模式：只读或已标记自动执行的MCP工具直接执行，其余调用参数会展示给用户确认。'
 
-    def start(self, message, history, conversation_id, hooks=None, run_id=None, scope=None, permission_mode='autonomous'):
+    def start(self, message, history, conversation_id, hooks=None, run_id=None, scope=None, permission_mode='autonomous', fallback_config=None):
         scope = resolve_scope(self.repo, conversation_id, scope).as_dict()
         if permission_mode not in self.PERMISSION_MODES:
             raise ValueError('未知的工具权限模式')
@@ -283,6 +298,12 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
         run = dict(id=run_id or 'R-' + uuid.uuid4().hex, status='running', scope=dict(scope), question=message, created_at=now(), events=[], strategy='agent', degraded=[], duration_ms=0, context_characters=0, limits=dict(limits))
         state = dict(run=run, scope=dict(scope), scope_binding=fingerprint(scope), actions=[], messages=messages, tools=tools, registry=registry, evidence={}, metrics=None, calls=0, turns=0, context_chars=0, conversation_id=conversation_id, question=message, resume_loaded=self.extensions.is_private(conversation_id), config_binding=self._model_binding(), started=time.time(), partial='', permission_mode=permission_mode, timeline=[], limits=dict(limits))
         state['condition_history'] = condition_history
+        # 备用渠道（529 连续过载时切换）：config 显式进 state——contextvar 不跨审批暂停的持久化往返。
+        if fallback_config:
+            state['fallback_config'] = dict(fallback_config)
+        # 上下文预算按全量消息 content 估算（system/历史/正文/工具结果都计入）：旧口径只算 tool 消息，
+        # 长 system + 历史下会低估真实占用，本地不触顶而上游判超长。
+        state['context_chars'] = sum(len(m.get('content') or '') for m in messages)
         self._save(run)
         logger.info('Agent 开始 run=%s conv=%s 权限=%s 工具=%s', run['id'], conversation_id, permission_mode, len(tools))
         return self._loop(state, hooks)
@@ -351,6 +372,17 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                             '不做因果推断。推进天数给中位与四分位区间，任何切片样本 <10 条时都要向用户'
                             '说明「样本小、参考有限」。可靠度分带的约面率若明显偏离分数高低序，提示评分'
                             '规则可能失准。'}
+        if name == 'archive_read':
+            # 压缩存档取回（2026-11-25）：被压缩的长工具结果按 tool_call_id 取回原文。
+            # 归属校验在 read 侧（会话不匹配与缺失同返回「未找到」，不区分——不向模型泄露会话边界信息）。
+            call_id = str(args.get('tool_call_id') or '').strip()
+            content = self.repo.read_tool_archive(state['conversation_id'], call_id) if call_id else None
+            if content is None:
+                return dict(error='没有找到该 tool_call_id 的存档：可能该结果未被压缩存档、ID 抄错，或属于其他会话。')
+            if len(content) > 30000:
+                content = content[:30000] + f'\n…（存档共 {len(content)} 字符，已截断显示前 30000）'
+            return dict(status='ok', tool_call_id=call_id, chars=len(content), content=content,
+                        note='以上是被压缩前的完整工具结果正文；请基于它继续此前的分析，不要重复发起相同检索。')
         if name in {'project_search', 'project_salary'}:
             self._sync_index()
             with self.repo.connection() as conn:
@@ -1019,25 +1051,74 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                     label=call['function']['name'], status='error')
         self._bump_loop_streak(state, call, hooks)
 
-    def _compact_tool_results(self, state):
+    @staticmethod
+    def _refresh_context_chars(state):
+        """上下文预算按全量消息 content 估算（system/历史/正文/工具结果都计入）。
+
+        旧口径只算 tool 消息，长 system + 历史下会低估真实占用；字符仍是 token 的近似，
+        上游判超长时由 ContextOverflowError 分支兜底补救。
+        """
+        state['context_chars'] = sum(len(m.get('content') or '') for m in state['messages'])
+
+    def _compact_tool_results(self, state, hooks=None):
         """响应式上下文压缩（对齐 ZCode）：预算触顶时把最早的工具结果正文改写为短桩再继续，
-        tool_call/tool_result 配对与 ID 保持不动；短桩是模型可见的诚实占位，不是静默丢弃。
+        tool_call/tool_result 配对与 ID 保持不动。超过 COMPACT_ARCHIVE_THRESHOLD 的正文先落
+        agent_tool_archives（幂等），短桩带 tool_call_id 指回存档——模型可用 archive_read 取回
+        原文，压缩不再是不可逆丢弃；短桩是模型可见的诚实占位，不是静默丢弃。
         返回是否释放了空间；不可恢复时返回 False，由调用方按硬边界优雅收尾。"""
         tool_messages = [m for m in state['messages'] if m.get('role') == 'tool']
         if len(tool_messages) <= COMPACT_KEEP:
             return False
-        freed = 0
+        freed = archived = compacted = 0
         for message in tool_messages[:-COMPACT_KEEP]:
             content = message.get('content') or ''
             if content.startswith('[已压缩'):
                 continue
+            call_id = str(message.get('tool_call_id') or '')
+            if len(content) > COMPACT_ARCHIVE_THRESHOLD and call_id:
+                # 存的是模型曾看到的截断后正文（_append_result 已按 12000 封顶）；写档失败不阻断压缩，
+                # 退回普通短桩口径——压缩的价值在释放空间，存档是增强而非前置条件。
+                try:
+                    self.repo.archive_tool_result(state['conversation_id'], call_id, content)
+                    archived += 1
+                    message['content'] = (f'[已压缩] 本条工具结果完整正文（{len(content)} 字符）已存档；'
+                                          f'确需原文时调用 archive_read 工具，tool_call_id="{call_id}"。')
+                except Exception:
+                    logger.warning('Agent 工具结果存档失败 run=%s call=%s（退回普通短桩）',
+                                   state['run']['id'], call_id)
+                    message['content'] = '[已压缩] 早期工具结果正文已收进执行过程记录；需要原文时用检索/读取类工具重新获取。'
+            else:
+                message['content'] = '[已压缩] 早期工具结果正文已收进执行过程记录；需要原文时用检索/读取类工具重新获取。'
             freed += len(content)
-            message['content'] = '[已压缩] 早期工具结果正文已收进执行过程记录；需要原文时用检索/读取类工具重新获取。'
+            compacted += 1
         if not freed:
             return False
-        state['context_chars'] = sum(len(m.get('content') or '') for m in state['messages'] if m.get('role') == 'tool')
-        logger.info('Agent 响应式压缩 run=%s 释放=%s字符', state['run']['id'], freed)
+        self._refresh_context_chars(state)
+        logger.info('Agent 响应式压缩 run=%s 释放=%s字符 压缩=%s条 存档=%s条', state['run']['id'], freed, compacted, archived)
+        self._event(state, 'context_compact', time.perf_counter(), hooks=hooks, label='上下文压缩',
+                    note=f'压缩早期工具结果 {compacted} 条（存档 {archived} 条），释放 {freed} 字符')
         return True
+
+    def _backoff_seconds(self, retries, retry_after=None):
+        """429/529 退避秒数：指数 0.5·2ⁿ⁻¹ 封顶 8s + 0~25% 抖动；上游 Retry-After 有效则取较大值（同样封顶）。"""
+        base = min(MODEL_RETRY_BACKOFF_BASE * (2 ** (retries - 1)), MODEL_RETRY_BACKOFF_CAP)
+        try:
+            if retry_after and float(retry_after) > 0:
+                base = max(base, min(float(retry_after), MODEL_RETRY_BACKOFF_CAP))
+        except (TypeError, ValueError):
+            pass
+        return base + random.uniform(0, base * 0.25)
+
+    @staticmethod
+    def _sleep_cancellable(delay, hooks):
+        """退避等待按切片轮询取消：用户停止立即让位（下一轮 should_stop 检查收尾），不做无人应答的硬等。"""
+        waited = 0.0
+        while waited < delay:
+            if hooks and hooks.should_stop and hooks.should_stop():
+                return
+            slice_wait = min(MODEL_BACKOFF_SLICE, delay - waited)
+            time.sleep(slice_wait)
+            waited += slice_wait
 
     def _invoke_read(self, state, name, args):
         """读类内置工具的线程工作体：只读仓库 + 锁保护的共享状态写；返回 (result, started)。"""
@@ -1121,7 +1202,7 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
             if hooks and hooks.should_stop and hooks.should_stop():
                 return 'interrupted'
             # 上下文触达预算：先压缩再判桩，压缩释放了空间就继续执行，不提前收尾。
-            if state['context_chars'] >= limits['context_characters'] and self._compact_tool_results(state):
+            if state['context_chars'] >= limits['context_characters'] and self._compact_tool_results(state, hooks=hooks):
                 state['run']['degraded'].append('上下文触达预算，已压缩最早工具结果后继续')
             batch = self._take_read_batch(state, limits)
             if batch:
@@ -1220,29 +1301,105 @@ Skill先看目录，相关时用skill_read加载；带resources的Skill可用ski
                     return self._interrupt(state)
                 # 上下文管理替代回合预算（ZCode 对齐）：触顶先响应式压缩，压缩成功就继续；不可恢复才收尾。
                 if state['context_chars'] >= limits['context_characters']:
-                    if not self._compact_tool_results(state):
+                    if not self._compact_tool_results(state, hooks=hooks):
                         break
                     state['run']['degraded'].append('上下文触达预算，已压缩最早工具结果后继续')
                 started = time.perf_counter()
                 reasoning = ''
-                # 模型单轮响应异常（格式/截断/断流）有界重试一次：调用无副作用，属幂等；
-                # 已流出的增量照实保留，重试步骤单独可见，不静默吞掉首次响应。
-                for attempt in (1, 2):
+                # 模型轮次失败按型分策（learn-claude-code s15 对齐）：全部有界、可取消、step 事件可见。
+                # 调用无副作用属幂等；已流出的增量照实保留，重试步骤单独可见，不静默吞掉首次响应。
+                # model_config 落局部变量：529 切备用渠道后同轮续用，审批暂停经 state 快照带到 resume。
+                model_config = state.get('model_config') or get_model_config()
+                rate_retries = overloaded_retries = generic_retries = 0
+                overflow_compacted = False
+                while True:
                     try:
                         if hooks and (hooks.on_delta or hooks.on_reasoning):
                             state['partial'] = ''
-                            assistant, usage, reasoning = stream_turn(get_model_config(), state['messages'], state['tools'],
+                            assistant, usage, reasoning = stream_turn(model_config, state['messages'], state['tools'],
                                                                       on_delta=on_delta, on_reasoning=on_reasoning,
                                                                       should_stop=hooks.should_stop,
-                                                                      register_abort=hooks.register_abort)
+                                                                      register_abort=hooks.register_abort,
+                                                                      max_tokens=state.get('turn_budget'))
                         else:
-                            assistant, usage = tool_turn(get_model_config(), state['messages'], state['tools'])
+                            assistant, usage = tool_turn(model_config, state['messages'], state['tools'],
+                                                         max_tokens=state.get('turn_budget'))
                             # 非流式路径没有增量回调：整轮正文一次性记为一段，保证 timeline 完整。
                             self._timeline_text(state, 'text', assistant.get('content') or '')
                         break
-                    except ValueError as exc:
-                        if attempt == 2 or (hooks and hooks.should_stop and hooks.should_stop()):
+                    except OutputLimitError:
+                        # 输出截断：预算升级重试（每 run 一次）。已流出半截先经 on_restart 作废——
+                        # SSE 重发 start 让前端重置实时气泡，避免两段回答拼接；不升级必然截断收尾。
+                        if (hooks and hooks.should_stop and hooks.should_stop()) or state.get('budget_escalated'):
                             raise
+                        base = state.get('turn_budget') or output_budget(model_config, 8000)
+                        cap = learned_cap(model_config) or output_budget(model_config, 32768)
+                        lifted = min(max(base * 2, 8192), cap)
+                        if lifted <= base:
+                            raise
+                        state['budget_escalated'] = True
+                        state['turn_budget'] = lifted
+                        logger.warning('Agent 输出触达上限 run=%s，max_tokens %s→%s 升级重试',
+                                       state['run']['id'], base, lifted)
+                        self._event(state, 'model_retry', time.perf_counter(), hooks=hooks, status='error',
+                                    note=f'输出达单次上限，已提升到 {lifted} tokens 重试')
+                        if state.get('partial') and hooks and hooks.on_restart:
+                            hooks.on_restart()
+                            state['partial'] = ''
+                    except ContextOverflowError:
+                        # 上游判定上下文超长（本地字符估算漏了真实占用）：响应式压缩后重试一次；
+                        # 没有可压缩空间就按失败收尾——不再原样重发必然再炸的请求。
+                        if (hooks and hooks.should_stop and hooks.should_stop()) or overflow_compacted:
+                            raise
+                        overflow_compacted = True
+                        if not self._compact_tool_results(state, hooks=hooks):
+                            raise
+                        logger.warning('Agent 上游判定上下文超长 run=%s，已压缩早期工具结果后重试', state['run']['id'])
+                        self._event(state, 'model_retry', time.perf_counter(), hooks=hooks, status='error',
+                                    note='上游判定上下文超长，已压缩早期工具结果后重试')
+                    except RateLimitError as exc:
+                        # 429 限流：指数退避（尊重 Retry-After，封顶 8s）后重试，每轮上限 2 次；
+                        # 退避切片轮询取消点，用户停止立即让位。
+                        if hooks and hooks.should_stop and hooks.should_stop():
+                            raise
+                        if rate_retries >= MODEL_TURN_MAX_RETRIES:
+                            raise
+                        rate_retries += 1
+                        delay = self._backoff_seconds(rate_retries, exc.retry_after)
+                        logger.warning('Agent 模型限流 run=%s，%.1fs 后重试（%s/%s）',
+                                       state['run']['id'], delay, rate_retries, MODEL_TURN_MAX_RETRIES)
+                        self._sleep_cancellable(delay, hooks)
+                        self._event(state, 'model_retry', time.perf_counter(), hooks=hooks, status='error',
+                                    note=f'429 限流，已退避 {delay:.1f}s 后重试（第 {rate_retries}/{MODEL_TURN_MAX_RETRIES} 次）')
+                    except OverloadedError as exc:
+                        # 529 过载：同样退避重试；连续失败且配置了备用渠道时切换一次（每 run 至多一次，
+                        # 不抖回——来回切换只会让回答前后文风割裂）。未配置备用渠道则退避到上限后失败。
+                        if hooks and hooks.should_stop and hooks.should_stop():
+                            raise
+                        overloaded_retries += 1
+                        if overloaded_retries > MODEL_TURN_MAX_RETRIES:
+                            if state.get('fallback_config') and not state.get('fallback_used'):
+                                state['fallback_used'] = True
+                                model_config = state['fallback_config']
+                                state['model_config'] = model_config
+                                overloaded_retries = 0
+                                logger.warning('Agent 渠道持续过载 run=%s，切换备用渠道 model=%s',
+                                               state['run']['id'], model_config.get('model', ''))
+                                self._event(state, 'model_retry', time.perf_counter(), hooks=hooks, status='error',
+                                            note=f'渠道持续过载（529），已切换备用渠道（{model_config.get("model", "")}）继续')
+                                continue
+                            raise
+                        delay = self._backoff_seconds(overloaded_retries, exc.retry_after)
+                        logger.warning('Agent 渠道过载 run=%s，%.1fs 后重试（%s/%s）',
+                                       state['run']['id'], delay, overloaded_retries, MODEL_TURN_MAX_RETRIES)
+                        self._sleep_cancellable(delay, hooks)
+                        self._event(state, 'model_retry', time.perf_counter(), hooks=hooks, status='error',
+                                    note=f'渠道过载（529），已退避 {delay:.1f}s 后重试（第 {overloaded_retries}/{MODEL_TURN_MAX_RETRIES} 次）')
+                    except ValueError as exc:
+                        # 其余模型轮次异常（格式/断流等）：有界重试一次；取消引发的断流走中断收尾。
+                        if generic_retries >= 1 or (hooks and hooks.should_stop and hooks.should_stop()):
+                            raise
+                        generic_retries += 1
                         logger.warning('Agent 模型轮次失败 run=%s：%s（自动重试）', state['run']['id'], exc)
                         self._event(state, 'model_retry', time.perf_counter(), hooks=hooks, status='error', note=str(exc))
                 state['turns'] += 1

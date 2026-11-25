@@ -10,6 +10,8 @@ const toolNames: Record<string, string> = {
   favorite_add: '收藏岗位', favorite_remove: '取消收藏岗位', match_jobs: '按偏好匹配岗位',
   assess_job: '生成评估卡片', optimize_resume: '生成简历优化卡片',
   tool_approval: '等待工具确认', tool_denied: '用户拒绝调用', tool_error: '工具调用失败',
+  archive_read: '读取存档结果', pipeline_funnel: '读取投递漏斗',
+  context_compact: '上下文压缩', vault_list: '列出笔记清单', vault_read: '读取笔记',
   model_retry: '模型响应异常，已自动重试', loop_warning: '重复调用告警',
 }
 

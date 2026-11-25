@@ -54,7 +54,7 @@ def state_for(agent, scope):
 
 def run_script(agent, monkeypatch, conversation_id, replies, **kwargs):
     captured = []
-    def turn(config, messages, tools):
+    def turn(config, messages, tools, max_tokens=None):
         captured.append(copy.deepcopy(messages))
         assert replies, 'Unexpected additional model turn'
         return replies.pop(0), {}

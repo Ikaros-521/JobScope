@@ -1955,8 +1955,10 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .system-limits-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
 .system-limit-field { display: flex; flex-direction: column; gap: 4px; }
 .system-limit-field input { min-height: 40px; }
+.system-limit-field select { min-height: 40px; }
 .system-limit-field .field-help { margin: 0; }
 .system-limits-actions { margin-top: 12px; }
+.system-fallback-field { margin-top: 12px; max-width: 420px; }
 @media (max-width: 800px) {
   .system-limits-grid { grid-template-columns: 1fr 1fr; }
 }

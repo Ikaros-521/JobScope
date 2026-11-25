@@ -207,7 +207,7 @@ def test_collect_jobs_direct_success_skips_browser_channel(agent, job, monkeypat
 def test_system_prompt_routes_business_facts_to_project_lookup(agent, monkeypatch):
     captured = []
 
-    def turn(config, messages, tools):
+    def turn(config, messages, tools, max_tokens=None):
         captured.append(copy.deepcopy(messages))
         return dict(role='assistant', content='好的'), {}
 

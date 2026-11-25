@@ -74,6 +74,9 @@ class Repository:
                 -- 面试备战计划（2026-11-24）：计划头 + 每日任务，规则生成、本地打卡。日期口径 now()[:10]（UTC 日历日）。
                 CREATE TABLE IF NOT EXISTS prep_plans (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active', days INTEGER NOT NULL DEFAULT 14, start_date TEXT NOT NULL, end_date TEXT NOT NULL, created_from TEXT NOT NULL DEFAULT 'generic', focus TEXT NOT NULL DEFAULT '[]', source_sessions TEXT NOT NULL DEFAULT '[]', origin TEXT NOT NULL DEFAULT 'rules', diagnosis TEXT NOT NULL DEFAULT '', prefs TEXT NOT NULL DEFAULT '{}', conversation_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS prep_tasks (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, day_index INTEGER NOT NULL, date TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', topic TEXT NOT NULL DEFAULT '', minutes INTEGER NOT NULL DEFAULT 15, required INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '', job_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', note TEXT NOT NULL DEFAULT '', completed_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+                -- Agent 工具结果存档（2026-11-25）：响应式压缩把长工具结果正文落档，短桩带 tool_call_id 指回，
+                -- archive_read 工具取回原文；只存「模型曾看到」的截断后正文，不做无限备份。
+                CREATE TABLE IF NOT EXISTS agent_tool_archives (conversation_id TEXT NOT NULL, tool_call_id TEXT NOT NULL, content TEXT NOT NULL, chars INTEGER NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY(conversation_id, tool_call_id));
             """)
             self._migrate_conversations(conn)
             # profile_entries.source 记录条目来源（笔记库导入的「规范化库根::相对路径」锚点），幂等重导靠它原位更新。
@@ -1963,6 +1966,24 @@ class Repository:
             messages = messages[:boundary] + [stamped] + messages[boundary:]
             conn.execute('UPDATE conversations SET messages=?, updated_at=? WHERE id=?', (json.dumps(messages, ensure_ascii=False), now(), conversation_id))
         return dict(compacted_count=folded, summary_message_id=stamped['id'], message_count=len(messages))
+
+    def archive_tool_result(self, conversation_id, tool_call_id, content):
+        """响应式压缩的存档侧：把被改写为短桩的工具结果正文按 (会话, tool_call_id) 幂等落档。
+
+        同一键重复压缩写同内容是 no-op；会话删除后残留行因 read 侧归属校验而不可达，
+        由压缩动作的写入频率决定其体量（只存模型曾看到的截断后正文，≤12000 字符/条）。
+        """
+        with self.connection() as conn:
+            conn.execute('INSERT INTO agent_tool_archives VALUES (?,?,?,?,?) '
+                         'ON CONFLICT(conversation_id, tool_call_id) DO NOTHING',
+                         (conversation_id, tool_call_id, content, len(content), now()))
+
+    def read_tool_archive(self, conversation_id, tool_call_id):
+        """按会话归属读一条存档正文；不存在或会话不匹配返回 None（越权与缺失同口径，不区分）。"""
+        with self.connection() as conn:
+            row = conn.execute('SELECT content FROM agent_tool_archives WHERE conversation_id=? AND tool_call_id=?',
+                               (conversation_id, tool_call_id)).fetchone()
+        return row['content'] if row else None
 
     @staticmethod
     def normalise_name(name):

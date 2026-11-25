@@ -89,6 +89,67 @@ class OutputLimitError(ValueError):
     """Provider responded, but exhausted its output budget before final text."""
 
 
+class TransportStatusError(ValueError):
+    """上游返回 HTTP 错误状态：带状态码与响应体（截断），供 Agent 循环按型分策。
+
+    全部为 ValueError 子类——现有 `except ValueError` 调用方（分析管线、旧问答等）
+    行为完全不变；只有显式 import 这些子类的调用方（general_agent 错误恢复）会分流。
+    """
+
+    def __init__(self, message, *, status=None, body='', retry_after=None):
+        super().__init__(message)
+        self.status = status
+        self.body = body
+        # Retry-After 响应头（秒）；上游给出时 429/529 退避取它与指数退避的较大值。
+        self.retry_after = retry_after
+
+
+class RateLimitError(TransportStatusError):
+    """429 限流：指数退避后有界重试通常可恢复。"""
+
+
+class OverloadedError(TransportStatusError):
+    """529/overloaded 过载：退避重试，连续失败切备用渠道（对话 Agent 的 fallback 语义）。"""
+
+
+class ContextOverflowError(TransportStatusError):
+    """400 且响应体命中上下文超长词表：本地字符估算漏了真实 token 占用，先压缩再重试。"""
+
+
+# 上下文超长的 body 词表：OpenAI「context length」、Anthropic「prompt is too long /
+# too many tokens」、国内网关的中文措辞都收进来；匹配在 lower() 之后做，中文原样命中。
+_CONTEXT_OVERFLOW_PATTERNS = (
+    'context length', 'context_length_exceeded', 'prompt is too long', 'too many tokens',
+    'maximum context', '上下文长度', '上下文过长', '超出上下文', '超过上下文',
+)
+
+
+def classify_transport_error(exc, message):
+    """把 httpx.HTTPStatusError 归类为带元数据的 TransportStatusError 子类。
+
+    状态码优先、body 词表兜底；识别不出返回 None（调用方维持通用 ValueError 文案）。
+    message 沿用调用点现有文案，保证日志与最终失败提示不变。
+    """
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+    status = exc.response.status_code
+    body = _status_detail(exc)
+    lower = body.lower()
+    retry_after = None
+    try:
+        raw = exc.response.headers.get('retry-after')
+        retry_after = float(raw) if raw and float(raw) > 0 else None
+    except (TypeError, ValueError):
+        retry_after = None
+    if status == 429:
+        return RateLimitError(message, status=status, body=body, retry_after=retry_after)
+    if status == 529 or 'overloaded' in lower:
+        return OverloadedError(message, status=status, body=body, retry_after=retry_after)
+    if status == 400 and any(pattern in lower for pattern in _CONTEXT_OVERFLOW_PATTERNS):
+        return ContextOverflowError(message, status=status, body=body)
+    return TransportStatusError(message, status=status, body=body, retry_after=retry_after)
+
+
 def endpoint(url, protocol='openai', purpose='llm'):
     from .chat import validate_model_url
     parsed = urlsplit(validate_model_url(url.strip()))
@@ -138,7 +199,17 @@ def stream_complete(config, system, user, *, max_tokens=1800, temperature=None, 
     try:
         with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
             with client.stream('POST', validate_model_url(endpoint(config['url'], protocol)), headers=headers(config), json=body) as response:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    # 与 agent_stream 同理：先 read() 再取 body，日志才能带出 4xx 响应体。
+                    try:
+                        exc.response.read()
+                    except Exception:
+                        pass
+                    logger.error('模型调用失败[stream_complete] model=%s status=%s 响应体=%s',
+                                 config.get('model'), exc.response.status_code, _status_detail(exc))
+                    raise ValueError('模型请求失败，请检查服务配置后重试') from None
                 for payload in _sse_payloads(response):
                     data = json.loads(payload)
                     if protocol == 'anthropic':
@@ -251,34 +322,17 @@ def complete(config, system, user, *, max_tokens=1800, temperature=None, timeout
     return content, data.get('usage', {})
 
 
-def tool_turn(config, messages, tools, *, timeout=60):
-    """Canonical OpenAI messages in/out; convert native Anthropic tool blocks."""
+def tool_turn(config, messages, tools, *, timeout=60, max_tokens=None):
+    """Canonical OpenAI messages in/out; convert native Anthropic tool blocks.
+
+    max_tokens=None 用渠道预算默认（output_budget(config, 8000)）；Agent 循环在
+    OutputLimitError 后传升级值重试（输出截断升级）。
+    """
     from .chat import validate_model_url
     _log_call(config, 'agent_turn', 4096)
     import json
     protocol = config.get('protocol', 'openai')
-    body = dict(model=config['model'], max_tokens=output_budget(config, 8000))
-    if protocol == 'anthropic':
-        body['system'] = '\n'.join(m['content'] for m in messages if m['role'] == 'system')
-        converted = []
-        for message in messages:
-            role = message['role']
-            if role == 'system':
-                continue
-            if role == 'tool':
-                role, blocks = 'user', [dict(type='tool_result', tool_use_id=message['tool_call_id'], content=message['content'])]
-            elif role == 'assistant':
-                blocks = [dict(type='text', text=message['content'])] if message.get('content') else []
-                blocks += [dict(type='tool_use', id=call['id'], name=call['function']['name'], input=json.loads(call['function']['arguments'])) for call in message.get('tool_calls', [])]
-            else:
-                blocks = [dict(type='text', text=message['content'])]
-            if converted and converted[-1]['role'] == role:
-                converted[-1]['content'].extend(blocks)
-            else:
-                converted.append(dict(role=role, content=blocks))
-        body.update(messages=converted, tools=[dict(name=t['name'], description=t['description'], input_schema=t['parameters']) for t in tools])
-    else:
-        body.update(messages=messages, tools=[dict(type='function', function=t) for t in tools])
+    body = _turn_body(config, messages, tools, stream=False, max_tokens=max_tokens)
     try:
         with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
             response = client.post(validate_model_url(endpoint(config['url'], protocol)), headers=headers(config), json=body)
@@ -297,13 +351,16 @@ def tool_turn(config, messages, tools, *, timeout=60):
             message = data['choices'][0]['message']
             text = message.get('content') or ''
             calls = message.get('tool_calls') or []
-        assistant, usage = _validate_turn(calls, text, data.get('usage', {}))
+        truncated = ((data.get('stop_reason') == 'max_tokens') if protocol == 'anthropic'
+                     else (data.get('choices') or [{}])[0].get('finish_reason') in ('length', 'max_tokens'))
+        assistant, usage = _validate_turn(calls, text, data.get('usage', {}), truncated=truncated)
         _log_usage('agent_turn', usage)
         return assistant, usage
     except httpx.HTTPStatusError as exc:
         logger.error('模型调用失败[agent_turn] model=%s status=%s 响应体=%s',
                      config.get('model'), exc.response.status_code, _status_detail(exc))
-        raise ValueError('Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。') from None
+        message = 'Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。'
+        raise (classify_transport_error(exc, message) or ValueError(message)) from None
     except (httpx.HTTPError, ValueError, KeyError, TypeError, IndexError):
         logger.exception('模型调用失败[agent_turn] model=%s', config.get('model'))
         raise ValueError('Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。') from None
@@ -339,12 +396,18 @@ def _turn_body(config, messages, tools, *, stream, max_tokens=None):
     return body
 
 
-def _validate_turn(calls, text, usage):
+def _validate_turn(calls, text, usage, truncated=False):
     """解析层只做格式与 schema 校验（ZCode 对齐）：数量不在这里截断——合法 fan-out 无上限，
-    失控检测由 Agent 循环的签名熔断（同名同参连续重复）负责，硬停止只留给资源与安全边界。"""
+    失控检测由 Agent 循环的签名熔断（同名同参连续重复）负责，硬停止只留给资源与安全边界。
+    truncated=True 且没有工具调用（正文可能半截或全空）：预算被思考/长输出耗尽的实锤，
+    抛 OutputLimitError 让 Agent 循环升级预算重试——与 complete() 的截断语义对齐；
+    Agent 侧已流出半截时由 on_restart 重置实时气泡再重打，不会拼接两段。
+    正文非空但带工具调用的截断走参数校验的自然失败路径，不在这里掺和。"""
     import json
     if not isinstance(text, str) or not isinstance(calls, list):
         raise ValueError('响应格式无效')
+    if truncated and not calls:
+        raise OutputLimitError('模型输出触达单次上限（max_tokens），未生成完整回答；与账户余额无关，可重试一次。')
     for call in calls:
         if not isinstance(call['id'], str) or len(call['id']) > 200 or not isinstance(call['function']['name'], str):
             raise ValueError('工具调用结构无效')
@@ -388,12 +451,25 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, sh
     body = _turn_body(config, messages, tools, stream=True, max_tokens=max_tokens)
     _log_call(config, 'agent_stream', 4096)
     text, reasoning, usage = '', '', {}
+    finish_reason = ''
     calls, openai_calls = [], {}
     anthropic_tools = {}
     try:
         with httpx.Client(timeout=timeout, follow_redirects=False, trust_env=False) as client:
             with client.stream('POST', validate_model_url(endpoint(config['url'], protocol)), headers=headers(config), json=body) as response:
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    # 流式响应的 body 出了 with 就读不到，且 .text 在未 read() 时抛 ResponseNotRead
+                    # （_status_detail 吞成空串，分类词表与排障日志双双失明）——先显式读进来。
+                    try:
+                        exc.response.read()
+                    except Exception:
+                        pass
+                    logger.error('模型调用失败[agent_stream] model=%s status=%s 响应体=%s',
+                                 config.get('model'), exc.response.status_code, _status_detail(exc))
+                    message = 'Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。'
+                    raise (classify_transport_error(exc, message) or ValueError(message)) from None
                 unregister = register_abort(response.close) if register_abort else None
                 try:
                     for payload in _sse_payloads(response):
@@ -422,6 +498,7 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, sh
                                     if pending:
                                         pending['arguments'] += delta['partial_json']
                             elif kind == 'message_delta':
+                                finish_reason = data.get('delta', {}).get('stop_reason') or finish_reason
                                 usage.update(data.get('usage') or {})
                         else:
                             choices = data.get('choices') or []
@@ -429,6 +506,7 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, sh
                                 usage = data['usage']
                             if not choices:
                                 continue
+                            finish_reason = choices[0].get('finish_reason') or finish_reason
                             delta = choices[0].get('delta') or {}
                             if isinstance(delta.get('content'), str):
                                 text += delta['content']
@@ -452,11 +530,9 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, sh
                 finally:
                     if unregister:
                         unregister()
-    except httpx.HTTPStatusError as exc:
-        logger.error('模型调用失败[agent_stream] model=%s status=%s 响应体=%s',
-                     config.get('model'), exc.response.status_code, _status_detail(exc))
-        raise ValueError('Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。') from None
-    except (httpx.HTTPError, json.JSONDecodeError, ValueError, KeyError, TypeError, IndexError):
+    except (httpx.HTTPError, json.JSONDecodeError, KeyError, TypeError, IndexError):
+        # 不含裸 ValueError：with 内已把 HTTP 状态错误分类成 TransportStatusError 子类再抛出，
+        # 这里再包一层会把类型信息抹掉（429/529/超长的分策就失效了）。分类异常按原样穿透。
         logger.exception('模型调用失败[agent_stream] model=%s', config.get('model'))
         raise ValueError('Agent 模型调用失败或返回格式无效；请确认所选模型支持工具调用及当前协议。') from None
     if protocol == 'anthropic':
@@ -464,6 +540,6 @@ def stream_turn(config, messages, tools, *, on_delta=None, on_reasoning=None, sh
             calls.append(dict(id=slot['id'], type='function', function=dict(name=slot['name'], arguments=slot['arguments'])))
     else:
         calls = [openai_calls[index] for index in sorted(openai_calls)]
-    assistant, usage = _validate_turn(calls, text, usage)
+    assistant, usage = _validate_turn(calls, text, usage, truncated=finish_reason in ('length', 'max_tokens'))
     _log_usage('agent_stream', usage)
     return assistant, usage, reasoning

@@ -19,7 +19,7 @@ from .chat import answer_question
 from .extensions import ExtensionStore
 from .general_agent import GeneralAgent, RunHooks
 from .research.agent import RunCancelled
-from .settings import LlmChannelStore, ModelSettings, use_config
+from .settings import LlmChannelStore, ModelSettings, SystemSettingsStore, use_config
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +190,19 @@ class RunManager:
             mode = 'general' if configured else 'research'
             effective_channel = (llm_channel if llm_channel is not None else (conversation or {}).get('llm_channel', '')) or ''
             effective_model = (model if model is not None else (conversation or {}).get('model', '')) or ''
+            # 备用渠道（529 连续过载时切换，2026-11-25）：默认空=不降级；解析失败/渠道缺失静默跳过——
+            # 备用渠道是韧性增强，它的坏配置不能把正常发起的对话一起拦下来。
+            fallback_llm = None
+            if mode == 'general':
+                try:
+                    fallback_channel = SystemSettingsStore(self.repo).effective().get('agent_fallback_channel') or ''
+                    if fallback_channel and fallback_channel != effective_channel:
+                        fallback_llm = self.resolve_llm_config(None, '', fallback_channel)['llm']
+                        if fallback_llm.get('mode') != 'remote' or not fallback_llm.get('model'):
+                            fallback_llm = None
+                except Exception:
+                    # 备用渠道是韧性增强：它的坏配置不能把正常发起的对话一起拦下来，降级为本轮不启用。
+                    logger.info('对话备用渠道解析失败，本轮不启用降级 conv=%s', conversation_id)
             # 权限档位同模型语义：None=沿用会话已存值；显式值随本轮写回会话。
             effective_permission = permission_mode if permission_mode is not None else (conversation or {}).get('permission_mode', 'autonomous')
             if conversation is None:
@@ -207,6 +220,8 @@ class RunManager:
             history = list(history)
             handle = RunHandle('R-' + uuid.uuid4().hex, conversation_id, config, scope)
             handle.streaming = background
+            # 备用渠道 config 挂 handle：worker 线程启动后经 start(fallback_config=…) 传给 Agent。
+            handle.fallback_llm = fallback_llm
             user_message = self.repo.append_messages(conversation_id, [dict(role='user', content=message)])[0]
             if title:
                 self.repo.ensure_title(conversation_id, scope, title)
@@ -312,13 +327,15 @@ class RunManager:
             on_reasoning=lambda piece: handle.push('reasoning_delta', dict(text=piece)),
             should_stop=handle.cancel.is_set,
             register_abort=handle.add_abort,
+            # 输出截断升级重试前作废已流出的半截：SSE 重发 start（带同一 run_id），前端实时气泡整体重置。
+            on_restart=lambda: handle.push('start', dict(run_id=handle.id, restart=True)),
         )
 
     def _execute(self, handle, message, history, mode, permission_mode='autonomous'):
         try:
             with use_config(handle.config):
                 if mode == 'general':
-                    result = GeneralAgent(self.repo).start(message, history, handle.conversation_id, self._hooks(handle), run_id=handle.id, scope=handle.scope, permission_mode=permission_mode)
+                    result = GeneralAgent(self.repo).start(message, history, handle.conversation_id, self._hooks(handle), run_id=handle.id, scope=handle.scope, permission_mode=permission_mode, fallback_config=getattr(handle, 'fallback_llm', None))
                 else:
                     from .research.agent import ResearchAgent
                     saved = self.repo.resume()
