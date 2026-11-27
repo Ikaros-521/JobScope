@@ -194,7 +194,15 @@ export default function InterviewView({ deepLink, modelConfigured, onConfigureMo
         if (selectedRef.current) void loadSession(selectedRef.current)
       }
     })
-    source.onerror = () => { /* 短暂网络故障由 EventSource 自动重连续播事件日志 */ }
+    source.onerror = () => {
+      // 短暂网络故障由 EventSource 自动重连续播事件日志；致命断流（后端重启，流 404）进入
+      // CLOSED 后不会再有任何帧——error/end 都没有——必须就地解锁并以服务端状态为准。
+      if (source.readyState !== EventSource.CLOSED) return
+      closeStream()
+      setError('生成连接已中断，请重试')
+      if (selectedRef.current) void loadSession(selectedRef.current)
+      void refreshSessions()
+    }
     streamRef.current = source
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [closeStream, refreshSessions])
@@ -1080,7 +1088,13 @@ function RealWorkspace({ transcriptId, modelConfigured, onConfigureModel, onCrea
         if (idRef.current) void loadTranscript(idRef.current)
       }
     })
-    source.onerror = () => { /* 短暂网络故障由 EventSource 自动重连续播事件日志 */ }
+    source.onerror = () => {
+      // 同对话流：致命断流（CLOSED）不会再有 end 帧，就地关流并按服务端状态解锁。
+      if (source.readyState !== EventSource.CLOSED) return
+      closeStream()
+      if (idRef.current) void loadTranscript(idRef.current)
+      onChanged()
+    }
     streamRef.current = source
   }, [closeStream, onChanged, loadTranscript])
 

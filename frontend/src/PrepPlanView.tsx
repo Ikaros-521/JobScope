@@ -94,6 +94,14 @@ export function PrepPlanView({ onOpenInterview }: {
   const [adjustInput, setAdjustInput] = useState('')
   const [rebuildAsk, setRebuildAsk] = useState('')
   const pendingTurn = useRef<PrepAdjustTurn | null>(null) // 发出但还没落库的用户消息，done 时并入轮次
+  // 失败/断流路径的收尾：这条消息服务端没有落库（成功才 append），就地显回轮次，
+  // 既不丢失上下文，也不会串进下一轮成功 done 的气泡里。
+  function flushPendingTurn() {
+    const sent = pendingTurn.current
+    if (!sent) return
+    pendingTurn.current = null
+    setTurns(prev => [...prev, sent])
+  }
 
   const load = useCallback(async () => {
     try {
@@ -133,8 +141,23 @@ export function PrepPlanView({ onOpenInterview }: {
           : '模型分析没有成功，已按本机材料生成规则版计划。')
         return
       }
+      if (event === 'error') {
+        // 失败即刻解锁（2026-11-27 审计 P0）：runId 只在 done 清空曾让页面永久「生成中」，
+        // 所有按钮禁用且 startGeneration 的 if (runId) return 挡住重试。gen.error 已由
+        // reduceGen 写入、进度面板自带「重试」；这里清 runId 即可（cleanup 顺带关流，
+        // 服务端随后补发的 end 帧不再需要）。
+        setRunId('')
+        return
+      }
       if (event !== 'end') setGen(prev => reduceGen(prev, event, frame))
     })
+    // 致命断流（后端重启，流 404）：EventSource 进入 CLOSED 后不会再收到任何帧——连 error
+    // 事件和 end 都没有——必须就地按失败收尾；短暂网络抖动（CONNECTING）交给自动重连续播事件日志。
+    source.onerror = () => {
+      if (source.readyState !== EventSource.CLOSED) return
+      setRunId('')
+      setGen(prev => prev ? { ...prev, error: prev.error || '生成连接中断了，可重试' } : prev)
+    }
     return () => source.close()
   }, [runId])
 
@@ -170,9 +193,21 @@ export function PrepPlanView({ onOpenInterview }: {
         return
       }
       if (event === 'error') {
+        // 失败即刻解锁（2026-11-27 审计 P0）：adjustRunId 只在 done 清空曾让输入框永久禁用。
+        // 这条用户消息服务端没落库（成功才 append），就地显回轮次里；错误挂在教练气泡上。
+        flushPendingTurn()
         setDraft(prev => ({ ...(prev ?? BLANK_DRAFT), error: String((frame as { message?: string }).message || '调整对话失败') }))
+        setAdjustRunId('')
+        return
       }
     })
+    // 同生成流：致命断流（CLOSED）不会再有任何帧，就地解锁；抖动交给自动重连。
+    source.onerror = () => {
+      if (source.readyState !== EventSource.CLOSED) return
+      flushPendingTurn()
+      setDraft(prev => prev ? { ...prev, error: prev.error || '调整连接中断了，请重试' } : prev)
+      setAdjustRunId('')
+    }
     return () => source.close()
   }, [adjustRunId])
 
