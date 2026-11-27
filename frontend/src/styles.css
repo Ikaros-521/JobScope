@@ -2822,3 +2822,8 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 
 /* 晨间简报（2026-11-23）：近 24 小时增量单行条——中性信息级（区别于备份横幅的提示级暖色）。 */
 .today-briefing { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 14px; margin-bottom: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--selected); color: var(--muted); font-size: 12.5px; }
+
+
+/* 根级错误边界（2026-11-27）：视图渲染崩溃时的兜底页——居中一张纸面板，不再白屏。 */
+.error-boundary { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
+.error-boundary-panel { width: min(560px, 100%); }
