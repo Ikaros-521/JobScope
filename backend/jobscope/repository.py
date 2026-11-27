@@ -943,6 +943,16 @@ class Repository:
                 f'EXCEPT SELECT evidence_id FROM job_evidence WHERE job_id NOT IN ({marks})', existing + existing).fetchall()]
             conn.execute(f'DELETE FROM job_evidence WHERE job_id IN ({marks})', existing)
             conn.execute(f'DELETE FROM reports WHERE job_id IN ({marks})', existing)
+            # 外键子表手工级联（2026-11-27）：行级改判、管线事件流、触达话术版本都 REFERENCES
+            # jobs(id)，而连接开着 foreign_keys=ON——漏删任何一张，删过管线状态的岗位就整笔
+            # 回滚报 FOREIGN KEY constraint failed。
+            for table in ('requirement_overrides', 'job_pipeline_events', 'outreach_versions'):
+                conn.execute(f'DELETE FROM {table} WHERE job_id IN ({marks})', existing)
+            # 研究索引是可重建读模型：岗位删了就摘掉索引行，避免语义检索返回幽灵岗位。
+            # 表由研究模块惰性创建（从未同步过的库不存在），先判存在再删。
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='research_jobs'").fetchone():
+                conn.execute(f'DELETE FROM research_job_documents WHERE job_id IN ({marks})', existing)
+                conn.execute(f'DELETE FROM research_jobs WHERE job_id IN ({marks})', existing)
             if exclusive:
                 marks_e = ','.join('?' for _ in exclusive)
                 conn.execute(f'DELETE FROM evidence WHERE id IN ({marks_e})', exclusive)

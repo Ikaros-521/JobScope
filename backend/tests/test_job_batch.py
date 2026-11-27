@@ -145,6 +145,34 @@ def test_batch_delete_cascades_but_keeps_shared_evidence(client):
     assert client.get('/api/jobs').json()['total'] == 0
 
 
+def test_batch_delete_clears_foreign_key_children_and_research_index(client):
+    """REFERENCES jobs(id) 的子表必须随岗位一起删（2026-11-27 审计 P0）。
+
+    修前：推进过管线状态（落了 job_pipeline_events）、有行级改判或触达话术版本的岗位，
+    一删就 FOREIGN KEY constraint failed，batch-delete 直接 500。"""
+    repo = client.app.state.repo
+    job = repo.save_job(make_job(title='管线岗位'), 'boss')
+    assert client.patch('/api/jobs', json={'ids': [job['id']], 'pipeline_status': 'applied'}).json() == {'updated': 1}
+    repo.save_override(job['id'], 'digest-1', 'ok', '面试验证过这条要求')
+    repo.save_outreach_version(job['id'], 'greeting', '您好，看到岗位很匹配…', 'model')
+    with sqlite3.connect(repo.path) as conn:
+        # research_* 表由研究索引模块惰性建，这里手动建出来模拟已同步过的库。
+        conn.execute('CREATE TABLE IF NOT EXISTS research_jobs (job_id TEXT PRIMARY KEY, company TEXT NOT NULL, '
+                     'location TEXT NOT NULL, title TEXT NOT NULL, salary TEXT NOT NULL, monthly_min REAL, '
+                     'monthly_max REAL, payload TEXT NOT NULL, updated_at TEXT NOT NULL)')
+        conn.execute('CREATE TABLE IF NOT EXISTS research_job_documents (job_id TEXT PRIMARY KEY, evidence_id TEXT NOT NULL)')
+        conn.execute('INSERT OR REPLACE INTO research_jobs VALUES (?,?,?,?,?,?,?,?,?)',
+                     (job['id'], '甲公司', '北京', '管线岗位', '', None, None, '{}', '2026-01-01T00:00:00+00:00'))
+        conn.execute('INSERT INTO research_job_documents VALUES (?,?)', (job['id'], 'E-x'))
+
+    assert client.post('/api/jobs/batch-delete', json={'ids': [job['id']]}).json() == {'deleted': 1}
+    with sqlite3.connect(repo.path) as conn:
+        for table in ('job_pipeline_events', 'requirement_overrides', 'outreach_versions',
+                      'research_jobs', 'research_job_documents'):
+            # requirement_overrides 等子表没有单列主键 id，用计数断言而不是 _rows。
+            assert conn.execute(f'SELECT COUNT(*) FROM {table}').fetchone()[0] == 0, table
+
+
 def test_batch_delete_empty_and_unknown_ids(client):
     assert client.post('/api/jobs/batch-delete', json={'ids': []}).status_code == 422
     assert client.post('/api/jobs/batch-delete', json={'ids': ['J-none']}).json() == {'deleted': 0}
