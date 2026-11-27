@@ -66,6 +66,23 @@ class InterviewManager:
         self.repo = repo
         self._runs = {}
         self._lock = threading.RLock()
+        self._sweep_stale()
+
+    def _sweep_stale(self):
+        """启动清扫（2026-11-27）：上一进程遗留的 planning/reporting 场次没有活 run 兜着
+        （run 只在进程内，服务重启即消失），不回滚就永久 409——出题中不能对话，复盘中不能
+        出复盘。口径同复盘 worker 的失败回滚：出题中断回 failed（场次可见可删，UI 已有
+        「删除本场后重新开一场」的文案）；复盘中断有旧报告回 done（面试已结束不重开），
+        否则回 live 可再次发起复盘。"""
+        for summary in self.repo.interview_sessions(limit=200):
+            if summary['status'] not in ('planning', 'reporting'):
+                continue
+            session = self.repo.get_interview_session(summary['id'])
+            if session is None:
+                continue
+            session['status'] = 'failed' if summary['status'] == 'planning' else \
+                ('done' if session.get('report') else 'live')
+            self.repo.save_interview_session(session)
 
     def get(self, run_id):
         return self._runs.get(run_id)

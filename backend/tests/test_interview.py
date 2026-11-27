@@ -238,6 +238,34 @@ def test_delete_session_removes_conversation(client, monkeypatch):
     assert conversations == []
 
 
+def test_startup_sweep_rolls_back_stale_runs(tmp_path):
+    """服务重启杀死了进程内 run：遗留 planning/reporting 场次在启动清扫里回滚（2026-11-27）。
+
+    修前：planning/reporting 场次对应的 run 随进程消失，/runs 与 /finish 永久 409——
+    出题中的场次不能对话、复盘中的场次不能出复盘，也无法把状态推进回去，只能删。"""
+    from jobscope.interview_runs import InterviewManager
+    from jobscope.repository import Repository
+
+    repo = Repository(tmp_path)
+    base = dict(title='场次', job_id='', persona=dict(name='面试官'), material={}, config={},
+                question_plan=None, progress=dict(phase='opening', current_index=0, segments=[], rounds=0),
+                report=None, conversation_id='', created_at='2026-11-27T00:00:00+00:00')
+    repo.save_interview_session({**base, 'id': 'I-plan-stale', 'company': '甲公司', 'status': 'planning'})
+    repo.save_interview_session({**base, 'id': 'I-report-first', 'company': '乙公司', 'status': 'reporting'})
+    repo.save_interview_session({**base, 'id': 'I-report-redo', 'company': '丙公司', 'status': 'reporting',
+                                 'report': dict(score=3), 'conversation_id': 'C-2'})
+    repo.save_interview_session({**base, 'id': 'I-ready', 'company': '丁公司', 'status': 'ready'})
+
+    InterviewManager(repo)  # 构造即清扫
+
+    # 出题中断：没有题单的场次救不回来，标 failed（列表可见、可删，UI 已有对应文案）。
+    assert repo.get_interview_session('I-plan-stale')['status'] == 'failed'
+    # 复盘中断：有旧报告回 done（面试已结束不重开），首生成分回 live 可再次发起复盘。
+    assert repo.get_interview_session('I-report-first')['status'] == 'live'
+    assert repo.get_interview_session('I-report-redo')['status'] == 'done'
+    assert repo.get_interview_session('I-ready')['status'] == 'ready'
+
+
 def test_unknown_persona_rejected(client, monkeypatch):
     patch_plan(monkeypatch)
     assert client.post('/api/interview/sessions', json=dict(persona_id='nope')).status_code == 400
