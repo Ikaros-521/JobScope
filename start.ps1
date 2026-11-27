@@ -44,5 +44,5 @@ if ($LocalEmbeddingModel) {
 }
 Push-Location (Join-Path $projectDir 'backend')
 try {
-    & $pythonPath -m uvicorn jobscope.main:app --host 127.0.0.1 --port $Port
+    & $pythonPath -m uvicorn jobscope.asgi:app --host 127.0.0.1 --port $Port
 } finally { Pop-Location }

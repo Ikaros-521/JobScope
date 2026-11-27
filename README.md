@@ -28,7 +28,7 @@ cd frontend
 npm ci
 npm run build
 cd ../backend
-python -m uvicorn jobscope.main:app --host 127.0.0.1 --port 8765
+python -m uvicorn jobscope.asgi:app --host 127.0.0.1 --port 8765
 ```
 
 前端开发使用 `npm run dev`，后端仍运行在 8765，Vite 将 `/api` 转发至后端。

@@ -2373,4 +2373,6 @@ def create_app(data_dir=None):
     return app
 
 
-app = create_app()
+# 模块级 app 已挪到 jobscope/asgi.py（2026-11-27）：在这里建默认实例会让任何
+# `import jobscope.main` 都先打开项目根 .data（生产库）——临时脚本与审计工具踩过。
+# 启动入口改为 `uvicorn jobscope.asgi:app`。

@@ -1,7 +1,8 @@
-"""Isolate main.py's module-level app before pytest imports any test modules.
+"""Isolate any module-level side effects before pytest imports test modules.
 
-Individual tests still use tmp_path for their apps/repositories. This directory only
-contains initialization from `jobscope.main.app = create_app()` during import.
+Individual tests still use tmp_path for their apps/repositories. The module-level app lives in
+`jobscope.asgi` since 2026-11-27 (importing `jobscope.main` no longer opens the default data
+dir); this env guard stays as defense in depth against future import-time side effects.
 Also keeps the Boss applied-sync scheduler thread off for the whole session: no test may
 end up launching a real browser from a timer, even one that flips the setting on.
 """
