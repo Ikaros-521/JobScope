@@ -4,7 +4,7 @@
 .prep-view { display: flex; flex-direction: column; gap: 14px; max-width: 1040px; }
 .prep-view .paper-panel h1 { font-size: 18px; margin: 0 0 6px; }
 .prep-view .paper-panel h2 { font-size: 14px; margin: 0 0 6px; }
-.pp-intro-note { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 0; font-size: 12.5px; color: var(--muted); line-height: 1.65; }
+.pp-intro-note { display: flex; align-items: flex-start; gap: 8px; margin: 12px 0 0; font-size: 13px; color: var(--muted); line-height: 1.65; }
 .pp-intro-note svg { flex: none; margin-top: 2px; }
 
 .pp-onboard { text-align: center; }
@@ -18,7 +18,7 @@
 .pp-progress-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin: 14px 0 12px; }
 .pp-stat { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); }
 .pp-stat b { font-size: 17px; color: var(--green); font-variant-numeric: tabular-nums; }
-.pp-stat span { font-size: 11.5px; color: var(--muted); }
+.pp-stat span { font-size: 12px; color: var(--muted); }
 .pp-progress-bar { height: 7px; border-radius: 999px; background: var(--line); overflow: hidden; }
 .pp-progress-bar span { display: block; height: 100%; background: var(--green); transition: width 240ms ease; }
 .pp-progress-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
@@ -33,10 +33,10 @@
 .pp-task.done, .pp-task.skipped { opacity: .68; }
 .pp-task-main { min-width: 0; flex: 1; }
 .pp-task-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 5px; }
-.ppm-tag { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px; background: var(--selected); color: var(--green); font-size: 11px; font-weight: 600; }
-.pp-required { padding: 2px 8px; border-radius: 5px; background: var(--green); color: #fff; font-size: 11px; }
-.pp-overdue-label { font-size: 11px; color: #a8641a; }
-.pp-task-title { display: block; font-size: 13.5px; line-height: 1.5; margin-bottom: 4px; overflow-wrap: anywhere; }
+.ppm-tag { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 999px; background: var(--selected); color: var(--green); font-size: 12px; font-weight: 600; }
+.pp-required { padding: 2px 8px; border-radius: 5px; background: var(--green); color: #fff; font-size: 12px; }
+.pp-overdue-label { font-size: 12px; color: #a8641a; }
+.pp-task-title { display: block; font-size: 13px; line-height: 1.5; margin-bottom: 4px; overflow-wrap: anywhere; }
 .pp-task-main p { margin: 0 0 5px; line-height: 1.65; }
 .pp-task-note { color: var(--green); }
 .pp-task-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: none; }
@@ -47,7 +47,7 @@
 .pp-week > summary svg { transform: rotate(90deg); }
 .pp-week[open] > summary svg { transform: rotate(-90deg); }
 .pp-week-list { margin: 0; padding: 0 24px 16px; list-style: none; display: flex; flex-direction: column; }
-.pp-week-list li { display: grid; grid-template-columns: 130px 88px minmax(0, 1fr); gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 12.5px; }
+.pp-week-list li { display: grid; grid-template-columns: 130px 88px minmax(0, 1fr); gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); font-size: 13px; }
 .pp-week-list li.current { background: var(--selected); }
 .pp-week-date { color: var(--green); font-weight: 600; }
 .pp-week-count { color: var(--muted); }
@@ -62,12 +62,12 @@
 .pp-history-status { font-weight: 600; }
 .pp-history-status.active { color: var(--green); }
 
-.today-prep .pp-today-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 10px 0 4px; font-size: 12.5px; color: var(--muted); }
+.today-prep .pp-today-line { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 10px 0 4px; font-size: 13px; color: var(--muted); }
 .today-prep .pp-today-line > span:first-child { color: var(--green); font-weight: 700; }
 .today-prep .pp-today-line > span:first-child.done { color: #1f7a53; }
 .pp-next { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 
-.iv-focus-banner { display: flex; align-items: center; gap: 10px; padding: 9px 14px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--selected); color: var(--muted); font-size: 12.5px; }
+.iv-focus-banner { display: flex; align-items: center; gap: 10px; padding: 9px 14px; margin-bottom: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--selected); color: var(--muted); font-size: 13px; }
 .iv-focus-banner b { color: var(--green); }
 .iv-focus-banner .text-button { margin-left: auto; flex: none; }
 
@@ -78,7 +78,7 @@
 .pp-config-row { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: end; }
 .pp-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
 .pp-field > span { font-size: 12px; font-weight: 600; color: var(--muted); }
-.pp-field textarea, .pp-field select { width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--green); font: inherit; font-size: 12.5px; resize: vertical; }
+.pp-field textarea, .pp-field select { width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: var(--green); font: inherit; font-size: 13px; resize: vertical; }
 .pp-field textarea:focus-visible, .pp-field select:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
 .pp-check { display: flex; align-items: center; gap: 7px; padding-bottom: 9px; font-size: 12px; color: var(--muted); }
 .pp-check input { accent-color: var(--green); }
@@ -97,7 +97,7 @@
 .pp-gen-steps li.done .pp-gen-dot { border-color: var(--green); background: var(--green); }
 @keyframes pp-gen-pulse { 50% { opacity: .35; } }
 .pp-gen-note { font-size: 12px; color: var(--muted); }
-.pp-gen-diagnosis { margin: 10px 0 0; padding: 10px 12px; border-left: 2px solid var(--green); border-radius: 0 6px 6px 0; background: var(--surface); font-size: 12.5px; line-height: 1.7; color: var(--green); overflow-wrap: anywhere; }
+.pp-gen-diagnosis { margin: 10px 0 0; padding: 10px 12px; border-left: 2px solid var(--green); border-radius: 0 6px 6px 0; background: var(--surface); font-size: 13px; line-height: 1.7; color: var(--green); overflow-wrap: anywhere; }
 .pp-gen-caret { display: inline-block; width: 2px; height: 1em; margin-left: 2px; vertical-align: -0.15em; background: var(--green); animation: pp-gen-pulse .8s steps(1) infinite; }
 .pp-gen-focus { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .pp-gen-chip { padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); font-size: 12px; color: var(--green); }
@@ -107,7 +107,7 @@
 /* 对话式调整（2026-11-24 第四轮）：教练回复逐字流 + 修改逐条亮出 */
 .pp-adjust-turns { display: flex; flex-direction: column; gap: 12px; margin: 14px 0 0; padding: 0; list-style: none; }
 .pp-adjust-turn { display: flex; gap: 10px; align-items: flex-start; }
-.pp-adjust-role { flex: none; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--selected); color: var(--muted); }
+.pp-adjust-role { flex: none; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--selected); color: var(--muted); }
 .pp-adjust-turn.user .pp-adjust-role { color: var(--green); }
 .pp-adjust-body { min-width: 0; flex: 1; }
 .pp-adjust-body p { margin: 0; font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
@@ -116,7 +116,7 @@
 .pp-adjust-skipped { margin-top: 6px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .pp-adjust-error { margin-top: 6px; padding: 6px 10px; border-radius: 6px; background: var(--surface); font-size: 12px; color: #a8641a; overflow-wrap: anywhere; }
 .pp-adjust-input { display: flex; align-items: flex-end; gap: 10px; margin-top: 14px; }
-.pp-adjust-input textarea { flex: 1; min-height: 38px; max-height: 120px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--green); font: inherit; font-size: 12.5px; resize: none; }
+.pp-adjust-input textarea { flex: 1; min-height: 38px; max-height: 120px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--green); font: inherit; font-size: 13px; resize: none; }
 .pp-adjust-input textarea:focus-visible { outline: 2px solid var(--green); outline-offset: 1px; }
 .pp-adjust-input textarea:disabled { opacity: .6; }
 .pp-adjust-input .button { flex: none; }

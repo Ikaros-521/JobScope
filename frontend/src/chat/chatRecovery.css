@@ -1,4 +1,4 @@
-.composer-configure, .chat-conditions button { border: 0; background: transparent; color: var(--accent, #296b59); cursor: pointer; font-size: 12px; text-decoration: underline; }
+.composer-configure, .chat-conditions button { border: 0; background: transparent; color: #296b59; cursor: pointer; font-size: 12px; text-decoration: underline; }
 .chat-conditions { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 7px 16px; background: #f2f6f3; font-size: 12px; max-height: 100px; overflow: auto; }
 .chat-conditions span { display: inline-flex; align-items: center; gap: 4px; }
 .chat-conditions small { color: #617169; }
