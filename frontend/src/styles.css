@@ -422,9 +422,10 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .reliability-grid details.reliability-dimension { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); padding: 10px 12px; min-width: 0; }
 .reliability-dimension summary { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); cursor: pointer; list-style: none; }
 .reliability-dimension summary::-webkit-details-marker { display: none; }
-.reliability-dimension summary::after { content: '展开'; font-size: 11px; color: var(--muted); }
+.reliability-dimension summary::after { content: '展开'; font-size: 11px; color: var(--muted); flex: 0 0 auto; white-space: nowrap; }
 .reliability-dimension[open] summary::after { content: '收起'; }
-.reliability-dimension summary b { font-size: 15px; line-height: 1.4; }
+/* b/::after 不收缩：左侧长提示把空间吃光时，「暂不出分」「展开」会被挤成一字一行（2026-11-27）。 */
+.reliability-dimension summary b { font-size: 15px; line-height: 1.4; flex: 0 0 auto; white-space: nowrap; }
 /* 暂不出分时的补法提示：收起状态也要可见，别让「暂不出分」变成哑谜（2026-11-15 用户反馈）。 */
 .reliability-dimension summary span { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .reliability-gap-hint { font-size: 12px; color: var(--muted); line-height: 1.5; }
@@ -471,7 +472,7 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 /* ── 漏斗转化与归因（2026-11-22）：收藏篮回顾里的转化率行与归因切片表。 ── */
 .pipeline-funnel { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px 18px; align-items: baseline; border-top: 1px dashed var(--line); margin-top: 2px; padding-top: 6px; }
 .funnel-step { font-size: 12px; color: var(--muted); white-space: nowrap; }
-.funnel-step b { color: var(--text); font-variant-numeric: tabular-nums; }
+.funnel-step b { color: #1e302b; font-variant-numeric: tabular-nums; } /* --text 是从未定义的幽灵令牌，声明曾被静默丢弃（2026-11-27 改回正文墨色） */
 .pipeline-attribution { flex-basis: 100%; display: flex; flex-wrap: nowrap; overflow-x: auto; gap: 10px 64px; border-top: 1px dashed var(--line); padding-top: 6px; }
 .pipeline-offers { flex-basis: 100%; border-top: 1px dashed var(--line); padding-top: 6px; }
 .pipeline-offers h4 { margin: 0 0 2px; font-size: 12px; font-weight: 500; color: var(--muted); cursor: help; }
@@ -480,7 +481,7 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .pipeline-attribution table, .pipeline-offers table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
 .pipeline-attribution th, .pipeline-offers th { font-weight: normal; color: var(--muted); padding: 0 10px 0 0; text-align: left; }
 .pipeline-attribution td, .pipeline-offers td { padding: 1px 10px 1px 0; text-align: left; color: var(--muted); }
-.pipeline-attribution td b, .pipeline-offers td b { color: var(--text); }
+.pipeline-attribution td b, .pipeline-offers td b { color: #1e302b; } /* 同上：幽灵令牌 --text 改回正文墨色 */
 /* 归因表排版（2026-11-22 用户定版）：表内列距收紧、组间距拉开——边界清晰优先，表格保持内容宽不摊开。 */
 .attribution-group { flex: 0 0 auto; }
 .pipeline-attribution th, .pipeline-attribution td { white-space: nowrap; padding-right: 8px; }
@@ -514,15 +515,15 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 /* ── 本周节奏（2026-11-22 P1）：周聚合统计一行流，delta 只标方向不评判。 ── */
 .today-weekly { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: baseline; }
 .today-weekly-stat { display: inline-flex; gap: 6px; align-items: baseline; font-size: 12px; color: var(--muted); }
-.today-weekly-stat b { font-size: 15px; color: var(--text); font-variant-numeric: tabular-nums; }
+.today-weekly-stat b { font-size: 15px; color: #1e302b; font-variant-numeric: tabular-nums; } /* 幽灵令牌 --text 改回正文墨色 */
 .today-weekly-stat em { font-style: normal; font-size: 11px; font-variant-numeric: tabular-nums; }
 .today-weekly-stat em.up { color: var(--green); }
 .today-weekly-stat em.down { color: #a2541a; }
 .today-weekly > .text-button { font-size: 12px; min-height: 22px; padding: 0; display: inline-flex; gap: 4px; align-items: center; }
-.today-due-title { font-weight: 600; text-align: left; }
+.today-due-title { font-weight: 600; text-align: left; justify-content: flex-start; } /* 全局 button 居中规则泄漏进列向按钮：text-align 管不住 flex（2026-11-27） */
 .today-backup-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 20px; border: 1px solid #e8c9a8; border-radius: 10px; background: #fdf6ec; color: #a2541a; font-size: 13px; }
-.today-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(88px, 1fr)); gap: 8px; }
-.today-stat { display: flex; flex-direction: column; gap: 2px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); font-size: 12px; }
+.today-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(68px, 1fr)); gap: 8px; } /* 68px 起五格单行放得下（1366 宽面板 390px 实测），不再 4+1 孤行 */
+.today-stat { display: flex; flex-direction: column; gap: 2px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--muted); font-size: 12px; align-items: flex-start; } /* 列向按钮从全局居中规则回收交叉轴对齐 */
 .today-stat b { font-size: 18px; color: var(--green); font-variant-numeric: tabular-nums; }
 button.today-stat { cursor: pointer; text-align: left; }
 .today-second-heading { margin-top: 16px; }
@@ -1950,7 +1951,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .system-settings { display: flex; flex-direction: column; gap: 12px; max-width: 860px; }
 .system-panel { padding: 16px 18px; }
 .display-mode-picks { grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
-.display-mode-picks button { display: flex; flex-direction: column; gap: 4px; min-height: 0; padding: 12px 14px; }
+.display-mode-picks button { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-height: 0; padding: 12px 14px; } /* 列向按钮回收全局居中（同 today-due-title） */
 .display-mode-picks button strong { font-size: 13px; }
 .display-mode-picks button span { font-size: 12px; font-weight: 400; line-height: 1.6; color: var(--muted); }
 .display-mode-picks button[aria-pressed="true"] span { color: var(--green); }
@@ -2036,8 +2037,8 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .workshop-job-results { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 30; margin: 0; padding: 4px;
   list-style: none; max-height: 240px; overflow-y: auto; background: var(--paper); border: 1px solid var(--line); border-radius: 8px;
   box-shadow: 0 8px 24px rgba(23, 62, 53, 0.12); }
-.workshop-job-results button { display: flex; flex-direction: column; gap: 1px; width: 100%; padding: 7px 10px; border: 0;
-  border-radius: 6px; background: none; cursor: pointer; text-align: left; }
+.workshop-job-results button { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; width: 100%; padding: 7px 10px; border: 0;
+  border-radius: 6px; background: none; cursor: pointer; text-align: left; } /* 列向按钮回收全局居中 */
 .workshop-job-results button:hover { background: #eef4f0; }
 .workshop-job-results strong { font-size: 12.5px; }
 .workshop-job-results span { font-size: 11.5px; color: var(--muted); }
@@ -2359,7 +2360,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .interview-create { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding: 12px 2px; min-height: 0; }
 .iv-model-hint { padding: 8px 12px; border: 1px solid #d9a441; background: #fdf6e7; border-radius: 8px; font-size: 13px; }
 .iv-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
-.iv-card { display: flex; flex-direction: column; gap: 6px; text-align: left; padding: 14px; border: 1px solid var(--line, #e3e0d8); border-radius: 12px; background: var(--panel, #fff); cursor: pointer; }
+.iv-card { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; text-align: left; padding: 14px; border: 1px solid var(--line, #e3e0d8); border-radius: 12px; background: var(--panel, #fff); cursor: pointer; } /* 列向卡片按钮回收全局居中：标题/正文/标签保持左对齐 */
 .iv-card:hover { border-color: var(--accent, #8a6d3b); }
 .iv-card.active { border-color: var(--accent, #8a6d3b); box-shadow: inset 0 0 0 1px var(--accent, #8a6d3b); }
 .iv-card strong { font-size: 14px; }
@@ -2821,8 +2822,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .today-record-notes { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
 
 /* 晨间简报（2026-11-23）：近 24 小时增量单行条——中性信息级（区别于备份横幅的提示级暖色）。 */
-.today-briefing { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 14px; margin-bottom: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--selected); color: var(--muted); font-size: 12.5px; }
-
+.today-briefing { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 14px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--selected); color: var(--muted); font-size: 12.5px; } /* --border 是幽灵令牌，边框曾被静默丢掉（2026-11-27） */
 
 /* 根级错误边界（2026-11-27）：视图渲染崩溃时的兜底页——居中一张纸面板，不再白屏。 */
 .error-boundary { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
