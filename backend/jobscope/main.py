@@ -22,6 +22,7 @@ from starlette.middleware.gzip import GZipMiddleware
 from .analysis import analyze, parse_resume
 from .analyze_runs import AnalyzeManager
 from .outreach_runs import OutreachManager
+from .gap_narrative_runs import GapNarrativeManager
 from .run_registry import event_stream
 from .backup import BackupError, BackupStore
 from .chat import answer_question, model_configured
@@ -128,6 +129,7 @@ def create_app(data_dir=None):
     prep_plan_runs = PrepPlanManager(repo)
     prep_adjust_runs = PrepAdjustManager(repo)
     outreach_runs = OutreachManager(repo)
+    gap_runs = GapNarrativeManager(repo)
     scope_expansions = ScopeExpansionStore(repo)
     knowledge = KnowledgeStore(repo)
     knowledge_imports = KnowledgeImportManager(knowledge, repo)
@@ -139,6 +141,7 @@ def create_app(data_dir=None):
     app.state.prep_plan_runs = prep_plan_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     app.state.prep_adjust_runs = prep_adjust_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     app.state.outreach_runs = outreach_runs  # exposed for tests: join worker threads to avoid cross-test leaks
+    app.state.gap_runs = gap_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
     # 数据备份（2026-11-18）：`.data/` 是生产数据，备份/恢复能力是一等公民而非运维纪律。
@@ -1915,13 +1918,27 @@ def create_app(data_dir=None):
 
     # ── 空窗期叙事（2026-11-22）：gap 条目 → 简历段落/面试应答/电梯陈述。模型不可用退规则骨架。 ──
 
-    @app.post('/api/profile/gap-narrative')
-    def generate_gap_narrative(data: GapNarrativeInput):
-        from .gap_narrative import generate
-        try:
-            return generate(repo, job_id=data.job_id, jd_text=data.jd_text, job_title=data.job_title)
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from None
+    @app.post('/api/profile/gap-narrative/runs')
+    def gap_narrative_run_start(data: GapNarrativeInput):
+        # 后台 run + SSE（2026-11-28 审计 P1-4）；规则骨架兜底让 run 秒级完成，
+        # 素材校验（未启用 gap 条目）在 worker 内判（generate 的入口语义不复制）。
+        handle, reused = gap_runs.start(data.model_dump())
+        return dict(run_id=handle.id, reused=reused)
+
+    @app.get('/api/profile/gap-narrative/runs/{run_id}')
+    def gap_narrative_run_status(run_id: str = PathParam(max_length=100)):
+        handle = gap_runs.get(run_id)
+        if handle is None:
+            raise HTTPException(404, '运行不存在或已结束')
+        return handle.snapshot()
+
+    @app.get('/api/profile/gap-narrative/runs/{run_id}/stream')
+    def gap_narrative_run_stream(run_id: str = PathParam(max_length=100)):
+        handle = gap_runs.get(run_id)
+        if handle is None:
+            raise HTTPException(404, '运行不存在或已结束')
+        return StreamingResponse(event_stream(handle)(), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
     @app.get('/api/profile/gap-narratives')
     def list_gap_narratives():

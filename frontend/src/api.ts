@@ -67,8 +67,12 @@ export type GapNarrative = {
   id: string; origin: string; job_id: string; job_title: string; created_at: string
   payload: { pitch: string; resume_block: string; interview_block: string; entry_ids: string[]; entry_titles: string[] }
 }
-export function generateGapNarrative(payload: { job_id?: string; jd_text?: string; job_title?: string }) {
-  return post<GapNarrative>('/profile/gap-narrative', payload)
+export function startGapNarrativeRun(payload: { job_id?: string; jd_text?: string; job_title?: string }) {
+  return post<{ run_id: string; reused: boolean }>('/profile/gap-narrative/runs', payload)
+}
+const GAP_STREAM_EVENTS = ['start', 'done', 'error', 'end'] as const
+export function openGapNarrativeStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
+  return openStream(`/api/profile/gap-narrative/runs/${encodeURIComponent(runId)}/stream`, GAP_STREAM_EVENTS, onEvent)
 }
 export function listGapNarratives() { return api<{ narratives: GapNarrative[] }>('/profile/gap-narratives') }
 // 生存跑道（2026-11-22 P2）：月支出/存款/社保/失业金，只存本机、绝不进模型素材池。

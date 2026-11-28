@@ -78,15 +78,32 @@ def test_gap_category_roundtrip(client):
     assert patched.status_code == 200
 
 
+def _start_gap(client, payload=None):
+    """起生成 run 并等 worker 收尾；返回 done 帧的叙事行。"""
+    start = client.post('/api/profile/gap-narrative/runs', json=payload or {})
+    handle = client.app.state.gap_runs.get(start.json()['run_id'])
+    handle.thread.join(timeout=5)
+    assert handle.done
+    for kind, frame in handle.events:
+        if kind == 'done':
+            return frame['narrative']
+    raise AssertionError('run 未推 done 帧')
+
+
 def test_generate_requires_enabled_gap_entries(client):
-    assert client.post('/api/profile/gap-narrative', json={}).status_code == 400
+    # 未启用 gap 条目：worker 内推 error（generate 的入口校验语义不复制）
+    start = client.post('/api/profile/gap-narrative/runs', json={})
+    handle = client.app.state.gap_runs.get(start.json()['run_id'])
+    handle.thread.join(timeout=5)
+    assert any(kind == 'error' for kind, _frame in handle.events)
     entry = create_gap(client)
     client.patch(f"/api/profile-entries/{entry['id']}", json=dict(enabled=False))
-    assert client.post('/api/profile/gap-narrative', json={}).status_code == 400
+    start = client.post('/api/profile/gap-narrative/runs', json={})
+    handle = client.app.state.gap_runs.get(start.json()['run_id'])
+    handle.thread.join(timeout=5)
+    assert any(kind == 'error' for kind, _frame in handle.events)
     client.patch(f"/api/profile-entries/{entry['id']}", json=dict(enabled=True))
-    result = client.post('/api/profile/gap-narrative', json={})
-    assert result.status_code == 200
-    narrative = result.json()
+    narrative = _start_gap(client)
     # 无模型环境走规则骨架：三段产物齐全、事实只来自条目、来源如实标注。
     assert narrative['origin'] == 'rules'
     payload = narrative['payload']
@@ -101,7 +118,7 @@ def test_model_path_parses_protocol_and_bad_output_falls_back(client, monkeypatc
     create_gap(client)
     configure_model(monkeypatch)
     captured = mock_model(monkeypatch, MODEL_REPLY)
-    narrative = client.post('/api/profile/gap-narrative', json=dict(job_title='产品经理')).json()
+    narrative = _start_gap(client, dict(job_title='产品经理'))
     assert narrative['origin'] == 'model'
     assert '电梯陈述' not in narrative['payload']['pitch']
     assert 'PMP 认证' in narrative['payload']['interview_block']
@@ -109,7 +126,7 @@ def test_model_path_parses_protocol_and_bad_output_falls_back(client, monkeypatc
     assert 'PMP' in user_payload['gap_entries'] and user_payload['job_title'] == '产品经理'
     # 坏输出（协议缺失）→ 整体回退规则骨架，不 500 不给空产物。
     mock_model(monkeypatch, '对不起，我无法完成这个任务。')
-    fallback = client.post('/api/profile/gap-narrative', json={}).json()
+    fallback = _start_gap(client)
     assert fallback['origin'] == 'rules'
     assert fallback['payload']['resume_block'] and fallback['payload']['interview_block']
 

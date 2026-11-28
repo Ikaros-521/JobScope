@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { date, generateGapNarrative, listGapNarratives } from './api'
+import { date, listGapNarratives, openGapNarrativeStream, startGapNarrativeRun } from './api'
 import type { GapNarrative } from './api'
 import { toast } from './toast'
 import { Button } from './ui'
@@ -35,21 +35,44 @@ export function GapNarrativeEditor({ onClose }: { onClose: () => void }) {
   const [narratives, setNarratives] = useState<GapNarrative[] | null>(null)
   const [busy, setBusy] = useState('')
   const [target, setTarget] = useState('')
+  const [runId, setRunId] = useState('')
 
   useEffect(() => {
     void listGapNarratives().then(data => setNarratives(data.narratives)).catch(() => setNarratives([]))
   }, [])
 
-  function run(key: string, action: () => Promise<void>) {
-    setBusy(key)
-    void action().catch((err: Error) => toast(err.message, 'error')).finally(() => setBusy(''))
+  // 生成走后台 run + SSE（2026-11-28 审计 P1-4）：done 帧带回已落库的叙事行，
+  // error/断流一律解锁（同 OutreachEditor 收尾纪律）。
+  const generate = () => {
+    if (runId) return // 生成已在进行中
+    setBusy('generate')
+    void startGapNarrativeRun(target.trim() ? { job_title: target.trim() } : {})
+      .then(start => setRunId(start.run_id))
+      .catch((err: Error) => { toast(err.message, 'error'); setBusy('') })
   }
 
-  const generate = () => run('generate', async () => {
-    const narrative = await generateGapNarrative(target.trim() ? { job_title: target.trim() } : {})
-    toast('已生成空窗期叙事，三段产物可直接取用', 'notice')
-    setNarratives(previous => [narrative, ...(previous || [])])
-  })
+  useEffect(() => {
+    if (!runId) return
+    const source = openGapNarrativeStream(runId, (event, data) => {
+      if (event === 'done') {
+        const narrative = data.narrative as GapNarrative
+        toast('已生成空窗期叙事，三段产物可直接取用', 'notice')
+        setNarratives(previous => [narrative, ...(previous || [])])
+        setRunId(''); setBusy('')
+        source.close()
+      } else if (event === 'error') {
+        toast(String((data as { message?: string }).message ?? '生成失败'), 'error')
+        setRunId(''); setBusy('')
+        source.close()
+      }
+    })
+    source.onerror = () => {
+      if (source.readyState !== EventSource.CLOSED) return
+      setRunId(''); setBusy('')
+      toast('生成连接中断，请重试', 'error')
+    }
+    return () => source.close()
+  }, [runId])
 
   const latest = narratives?.[0] || null
   const older = (narratives || []).slice(1)
