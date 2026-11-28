@@ -62,15 +62,28 @@ def build_history(client, rounds=3):
     return conversation_id
 
 
+def _compress(client, conversation_id):
+    """起压缩 run 并等 worker 收尾；返回 (result, error_message, start_status)。"""
+    start = client.post(f'/api/conversations/{conversation_id}/compress/runs')
+    if start.status_code != 200:
+        return None, start.json().get('detail'), start.status_code
+    handle = client.app.state.compress_runs.get(start.json()['run_id'])
+    handle.thread.join(timeout=15)
+    assert handle.done
+    for kind, frame in handle.events:
+        if kind == 'done':
+            return frame['result'], None, 200
+    return None, handle.error, 200
+
+
 def test_compress_folds_old_messages_and_inserts_checkpoint(client, monkeypatch):
     conversation_id = build_history(client, rounds=3)
     assert len(client.get(f'/api/conversations/{conversation_id}').json()['messages']) == 6
 
     configure(client)
     captured = fake_summary_post(monkeypatch)
-    response = client.post(f'/api/conversations/{conversation_id}/compress')
-    assert response.status_code == 200
-    result = response.json()
+    result, err, _status = _compress(client, conversation_id)
+    assert err is None
     assert result['compacted_count'] == 2  # 保留最近 4 条，前面的 2 条被折叠
 
     stored = client.get(f'/api/conversations/{conversation_id}').json()['messages']
@@ -85,21 +98,24 @@ def test_compress_folds_old_messages_and_inserts_checkpoint(client, monkeypatch)
     assert '历史问题1' in transcript and '历史问题3' not in transcript
 
     # 重复压缩：只剩检查点可折叠，数量不足直接拒绝
-    again = client.post(f'/api/conversations/{conversation_id}/compress')
-    assert again.status_code == 422
+    result, err, _status = _compress(client, conversation_id)
+    assert result is None and '暂无需压缩' in err
 
 
 def test_compress_guards_unconfigured_and_short_history(client, tmp_path):
     conversation_id = build_history(client, rounds=1)
     configure(client)
-    # 只有 2 条消息：无可折叠内容
-    assert client.post(f'/api/conversations/{conversation_id}/compress').status_code == 422
-    assert client.post('/api/conversations/missing/compress').status_code == 404
+    # 只有 2 条消息：无可折叠内容；会话不存在 → worker 内 error 帧
+    result, err, _status = _compress(client, conversation_id)
+    assert result is None and '暂无需压缩' in err
+    result, err, _status = _compress(client, 'missing')
+    assert result is None and '不存在' in err
 
-    # 未配置模型：独立数据目录的新实例验证 400
+    # 未配置模型：独立数据目录的新实例验证 error 帧
     with TestClient(create_app(tmp_path / 'guard-db')) as bare:
         conversation2 = build_history(bare, rounds=3)
-        assert bare.post(f'/api/conversations/{conversation2}/compress').status_code == 400
+        result, err, _status = _compress(bare, conversation2)
+        assert result is None and '压缩上下文需要先配置对话模型' in err
 
 
 def test_active_run_blocks_compress_then_unblocks(client, monkeypatch):
@@ -107,18 +123,20 @@ def test_active_run_blocks_compress_then_unblocks(client, monkeypatch):
     configure(client)
     stream_scripted(monkeypatch, [ [sse_chunk({'delta': {'reasoning_content': '推理中'}}), 'data: [DONE]'] ], delay=0.5)
     run = client.post('/api/chat/runs', json={'message': '正在生成', 'conversation_id': conversation_id, 'agent_mode': 'general'}).json()
-    assert client.post(f'/api/conversations/{conversation_id}/compress').status_code == 409
+    assert client.post(f'/api/conversations/{conversation_id}/compress/runs').status_code == 409
     client.post(f"/api/chat/runs/{run['run_id']}/cancel")
     join_worker(client, run['run_id'])
     fake_summary_post(monkeypatch)
-    assert client.post(f'/api/conversations/{conversation_id}/compress').status_code == 200
+    result, err, _status = _compress(client, conversation_id)
+    assert err is None
 
 
 def test_compacted_history_excluded_from_model_context(client, monkeypatch):
     conversation_id = build_history(client, rounds=3)
     configure(client)
     fake_summary_post(monkeypatch)
-    assert client.post(f'/api/conversations/{conversation_id}/compress').status_code == 200
+    result, err, _status = _compress(client, conversation_id)
+    assert err is None
 
     captured = stream_scripted(monkeypatch, [[sse_chunk({'delta': {'content': '完成'}}), 'data: [DONE]']])
     run = client.post('/api/chat/runs', json={'message': '压缩后再问', 'conversation_id': conversation_id, 'agent_mode': 'general'}).json()
@@ -138,7 +156,8 @@ def test_compress_uses_conversation_channel_and_model(client, monkeypatch):
         name='压缩渠道', channel='custom', url='https://compress.example/v1', model='chan-model', key='sk-chan')).json()['channel']
     assert client.patch(f'/api/conversations/{conversation_id}', json={'llm_channel': saved['id']}).status_code == 200
     captured = fake_summary_post(monkeypatch)
-    assert client.post(f'/api/conversations/{conversation_id}/compress').status_code == 200
+    result, err, _status = _compress(client, conversation_id)
+    assert err is None
     request = captured[0]
     assert request['url'] == 'https://compress.example/v1/chat/completions'
     assert request['json']['model'] == 'chan-model'
@@ -154,8 +173,8 @@ def test_compress_discards_summary_when_history_changes_midway(client, monkeypat
         repo.append_messages(conversation_id, [dict(role='user', content='压缩期间的新消息')])
 
     fake_summary_post(monkeypatch, before_reply=mutate)
-    response = client.post(f'/api/conversations/{conversation_id}/compress')
-    assert response.status_code == 409
+    result, err, _status = _compress(client, conversation_id)
+    assert result is None and err  # 历史漂移被 repo 闸挡下，error 帧说明历史未被修改
     stored = client.get(f'/api/conversations/{conversation_id}').json()['messages']
     # 摘要没有落库：没有检查点，也没有任何折叠标记。
     assert not any(item.get('kind') == 'compaction' for item in stored)
@@ -167,7 +186,8 @@ def test_recompression_uses_previous_summary_and_new_messages(client, monkeypatc
     conversation_id = build_history(client, rounds=3)
     configure(client)
     fake_summary_post(monkeypatch, summary='### 📋 上下文压缩摘要\n\n第一轮摘要：用户在比较岗位薪资。')
-    assert client.post(f'/api/conversations/{conversation_id}/compress').status_code == 200
+    result, err, _status = _compress(client, conversation_id)
+    assert err is None
     # 继续对话，产生摘要之后的新消息；统一 Agent 使用流式模型调用。
     stream_scripted(monkeypatch, [[sse_chunk({'delta': {'content': '继续回答'}}), 'data: [DONE]'] for _ in range(3)])
     for index in range(3):
@@ -175,7 +195,8 @@ def test_recompression_uses_previous_summary_and_new_messages(client, monkeypatc
         await_run(client, run['run_id'])
 
     captured = fake_summary_post(monkeypatch, summary='### 📋 上下文压缩摘要\n\n第二轮摘要。')
-    assert client.post(f'/api/conversations/{conversation_id}/compress').status_code == 200
+    result, err, _status = _compress(client, conversation_id)
+    assert err is None
     transcript = captured[0]['json']['messages'][-1]['content']
     assert '第一轮摘要' in transcript  # 上一份摘要参与下一轮压缩，信息不丢
     assert '压缩后问题1' in transcript

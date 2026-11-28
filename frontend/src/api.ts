@@ -500,7 +500,11 @@ export function testModelPurpose(purpose: ModelPurpose) {
   return post<{ ok: boolean; dimensions: number | null; duration_ms: number; message: string; adjusted_max_output?: number | null }>(`/settings/models/test-purpose/${purpose}`)
 }
 export type CompressResult = { compacted_count: number; summary_message_id: string; message_count: number }
-export function compressConversation(id: string) { return post<CompressResult>(`/conversations/${encodeURIComponent(id)}/compress`) }
+export function startCompressRun(id: string) { return post<{ run_id: string; reused: boolean }>(`/conversations/${encodeURIComponent(id)}/compress/runs`) }
+const COMPRESS_STREAM_EVENTS = ['start', 'done', 'error', 'end'] as const
+export function openCompressStream(id: string, runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
+  return openStream(`/api/conversations/${encodeURIComponent(id)}/compress/runs/${encodeURIComponent(runId)}/stream`, COMPRESS_STREAM_EVENTS, onEvent)
+}
 // 功能级模型绑定：渠道是唯一事实源，绑定是指向渠道+模型的指针。
 export type ModelPurpose = 'agent' | 'embedding' | 'extraction' | 'analysis'
 export type ModelBinding = { kind: 'channel' | 'local' | 'disabled' | 'inherit'; channel_id?: string; model?: string; local_model?: string }

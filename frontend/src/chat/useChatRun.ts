@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  approveChatRun, cancelChatRun, compressConversation, deleteConversation, deleteConversationMessage, getConversation,
+  approveChatRun, cancelChatRun, openCompressStream, startCompressRun, deleteConversation, deleteConversationMessage, getConversation,
   listConversations, openRunStream, patchConversation, startChatRun,
 } from '../api'
 import type { ApprovalRequest, ChatMode, ChatScope, ChatSegment, ConversationDetail, ConversationNavigation, ConversationSummary, CompressResult, PermissionMode, ScopeExpansion, StoredMessage, ToolStep } from '../api'
@@ -442,11 +442,29 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversation.id])
 
+  // 压缩走后台 run + SSE（2026-11-28 审计 P1-4）：分段摘要可能跑一两分钟，不再挂在
+  // 请求线程上；Promise 包装保持既有调用方的返回契约（done→结果 / error·断流→message）。
   const compress = useCallback(async (): Promise<CompressResult & { ok: boolean; message?: string }> => {
     const id = conversation.id
     if (!id) return { ok: false, compacted_count: 0, summary_message_id: '', message_count: 0, message: '新对话还没有可压缩的历史' }
     try {
-      const result = await compressConversation(id)
+      const start = await startCompressRun(id)
+      const result = await new Promise<CompressResult>((resolve, reject) => {
+        const source = openCompressStream(id, start.run_id, (event, data) => {
+          if (event === 'done') {
+            source.close()
+            resolve(data.result as CompressResult)
+          } else if (event === 'error') {
+            source.close()
+            reject(new Error(String((data as { message?: string }).message ?? '压缩失败')))
+          }
+        })
+        source.onerror = () => {
+          if (source.readyState !== EventSource.CLOSED) return
+          source.close()
+          reject(new Error('压缩连接中断，请重试'))
+        }
+      })
       await reloadRef.current(id)
       return { ...result, ok: true }
     } catch (err) {
