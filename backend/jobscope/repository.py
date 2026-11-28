@@ -15,6 +15,17 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+# 业务时区（东八区）：落库时刻一律 UTC（now()），「今天是哪天」用这里换算。
+BUSINESS_TZ = timezone(timedelta(hours=8))
+
+
+def business_today():
+    """业务日期（YYYY-MM-DD，东八区）：与前端本地日期同口径。此前 5 处用 now()[:10]
+    （UTC 日历日），北京时间 0-8 点会比前端晚一天——今日任务/逾期判定/当日计数错位
+    （2026-11-28 审计 P2-10）。与 UTC 戳比较时逐条 astimezone 换算，不要 substr 截前 10 位。"""
+    return datetime.now(BUSINESS_TZ).strftime('%Y-%m-%d')
+
+
 def digest(value):
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -71,7 +82,7 @@ class Repository:
                 CREATE TABLE IF NOT EXISTS runway_profile (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS jd_assessments (id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS interview_attributions (id TEXT PRIMARY KEY, session_id TEXT UNIQUE NOT NULL, source TEXT NOT NULL, job_id TEXT NOT NULL DEFAULT '', company TEXT NOT NULL DEFAULT '', job_title TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT '', tags TEXT NOT NULL DEFAULT '[]', note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-                -- 面试备战计划（2026-11-24）：计划头 + 每日任务，规则生成、本地打卡。日期口径 now()[:10]（UTC 日历日）。
+                -- 面试备战计划（2026-11-24）：计划头 + 每日任务，规则生成、本地打卡。日期口径 business_today()（东八区业务日）。
                 CREATE TABLE IF NOT EXISTS prep_plans (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'active', days INTEGER NOT NULL DEFAULT 14, start_date TEXT NOT NULL, end_date TEXT NOT NULL, created_from TEXT NOT NULL DEFAULT 'generic', focus TEXT NOT NULL DEFAULT '[]', source_sessions TEXT NOT NULL DEFAULT '[]', origin TEXT NOT NULL DEFAULT 'rules', diagnosis TEXT NOT NULL DEFAULT '', prefs TEXT NOT NULL DEFAULT '{}', conversation_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS prep_tasks (id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, day_index INTEGER NOT NULL, date TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '', topic TEXT NOT NULL DEFAULT '', minutes INTEGER NOT NULL DEFAULT 15, required INTEGER NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT '', session_id TEXT NOT NULL DEFAULT '', job_id TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'pending', note TEXT NOT NULL DEFAULT '', completed_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
                 -- Agent 工具结果存档（2026-11-25）：响应式压缩把长工具结果正文落档，短桩带 tool_call_id 指回，
@@ -1488,12 +1499,21 @@ class Repository:
             return conn.execute('DELETE FROM interview_attributions WHERE session_id=?', (session_id,)).rowcount > 0
 
     def pipeline_today_counts(self):
-        """当日管线事件计数（按 to_status）：今日行动清单的「已投」进度。"""
-        today = now()[:10]
+        """当日管线事件计数（按 to_status）：今日行动清单的「已投」进度。
+
+        「当日」是东八区业务日（business_today），事件落库是 UTC 时刻——取近两天逐条
+        astimezone 换算再计数，北京 0-8 点的投递不会算进昨天（2026-11-28 审计 P2-10）。"""
+        floor = (datetime.now(timezone.utc) - timedelta(days=2)).strftime('%Y-%m-%d')
+        today = business_today()
         with self.connection() as conn:
-            rows = conn.execute('SELECT to_status, COUNT(*) AS n FROM job_pipeline_events '
-                                'WHERE substr(created_at,1,10)=? GROUP BY to_status', (today,)).fetchall()
-        return {row['to_status']: row['n'] for row in rows}
+            rows = conn.execute('SELECT to_status, created_at FROM job_pipeline_events '
+                                'WHERE substr(created_at,1,10)>=?', (floor,)).fetchall()
+        counts: dict = {}
+        for row in rows:
+            day = datetime.fromisoformat(row['created_at']).astimezone(BUSINESS_TZ).strftime('%Y-%m-%d')
+            if day == today:
+                counts[row['to_status']] = counts.get(row['to_status'], 0) + 1
+        return counts
 
     def daily_briefing(self):
         """近 24 小时增量（晨间简报，2026-11-23）：新入库/新收藏/管线推进/采集通道异常的全量计数。

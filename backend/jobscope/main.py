@@ -36,7 +36,7 @@ from .transcript_runs import TranscriptManager, new_transcript
 from .knowledge import KnowledgeImportManager, KnowledgeStore
 from .logs import setup as setup_logs
 from .models import AnalysisStatusInput, AnalyzeInput, AttributionInput, BossOpenInput, BossTabPageInput, BrowserCollectInput, ChatInput, ChatMemoryPatch, ChatRunInput, CollectInput, CompanyLookupInput, ConversationPatch, DetailBatchInput, EvidenceInput, GapNarrativeInput, ImportConfirmInput, ImportLinksInput, IndexInput, InterviewCreateInput, InterviewTurnInput, JdAssessmentInput, JobBatchDelete, JobBatchUpdate, JobDedupMark, JobDedupRelease, JobInput, KnowledgeImportInput, KnowledgeInput, KnowledgePatch, KnowledgeSettingsInput, ManualDescriptionInput, MergeAcceptInput, MergeInput, ModelBindingInput, OptimizeResumeInput, OutreachInput, PrepAdjustInput, PrepPlanGenerateInput, PrepTaskNoteInput, ProfileEntryInput, ProfileEntryPatch, RemoteBasketInput, ResumeInput, ResumePreviewInput, ResumeVersionInput, ResumeVersionPatch, ResumeVersionPinInput, RunwayInput, ScopeExpansionInput, SignalSourceInput, SplitInput, StyleAssessmentInput, TranscriptImportInput, TranscriptSegmentsInput
-from .repository import Repository, now
+from .repository import Repository, business_today, now
 from .scope_expansion import ScopeExpansionStore
 from .semantic import aggregate_requirements, apply_overrides, quote_digest
 from .settings import LlmChannelInput, LlmChannelStore, ModelSettings, ModelSettingsInput, SystemSettingsInput, SystemSettingsStore, ConnectionInput, _active, get_model_config, purpose_configured, use_config
@@ -869,7 +869,7 @@ def create_app(data_dir=None):
         from .prep_plan import snapshot as prep_snapshot
         prep = prep_snapshot(repo)
         return {
-            'date': now()[:10],
+            'date': business_today(),
             'counts': repo.overview_counts(),
             'pipeline': _pipeline_review_payload(),
             'due': repo.pipeline_due_items(),

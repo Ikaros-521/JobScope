@@ -9,7 +9,7 @@
 """
 from datetime import datetime, timezone
 
-from .repository import now
+from .repository import business_today, now
 
 TRACKED_ACTIVE = ('interested', 'applied', 'interviewing')
 # 与收藏页「超 N 天未跟进」同一口径，改这里两处一起生效。
@@ -127,7 +127,7 @@ def build(repo):
         apply_target = max(3, apply_target)
         basis = f'按近一周日均 {daily_avg} 条' + ('（封顶 8）' if round(last_week_applied / 7) > 8 else '')
     today_plan = dict(
-        date=now()[:10], targets=dict(apply=apply_target, apply_basis=basis),
+        date=business_today(), targets=dict(apply=apply_target, apply_basis=basis),
         done=dict(apply=today_counts.get('applied', 0)),
         follow_ups=len(overdue_due))
     return dict(prescriptions=prescriptions, today_plan=today_plan, generated_at=now())

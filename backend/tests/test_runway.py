@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from jobscope.main import create_app
-from jobscope.repository import Repository
+from jobscope.repository import Repository, business_today
 
 import pytest
 
@@ -44,7 +44,7 @@ def test_roundtrip_and_derived(client):
     assert payload['profile']['savings'] == 100000 and payload['profile']['updated_at']
     derived = payload['derived']
     assert derived['runway_months'] == 12.5          # 100000 / 8000
-    today = date.today()
+    today = date.fromisoformat(business_today())  # 与 runway 推导同口径（东八区业务日）
     assert derived['paused_months'] == (today.year - 2026) * 12 + (today.month - 8)  # 整月数
     assert '尚未申领' in derived['claim_hint'] and '以当地人社部门口径为准' in derived['claim_hint']
     assert '医保' in derived['medical_hint']
@@ -56,7 +56,7 @@ def test_roundtrip_and_derived(client):
 def test_derived_edge_cases(client):
     # 只填存款不填支出 → 跑道算不出（None），断缴同月算 0，claim 无提示
     payload = client.put('/api/runway', json=dict(
-        savings=50000, social_security_last_month=f'{date.today().year}-{date.today().month:02d}',
+        savings=50000, social_security_last_month=f'{business_today()[:4]}-{business_today()[5:7]}',
         unemployment_claim='claimed')).json()
     assert payload['derived']['runway_months'] is None
     assert payload['derived']['paused_months'] == 0

@@ -12,7 +12,7 @@ import uuid
 from datetime import date, timedelta
 
 from . import failure_museum
-from .repository import now
+from .repository import business_today, now
 
 DAYS_CHOICES = (7, 14, 28)
 DEFAULT_DAYS = 14
@@ -39,8 +39,8 @@ _PUNCT = re.compile(r'[\s，。、；：,.!！?？（）()「」【】\[\]{}<>�
 
 
 def _date():
-    """与 pipeline_today_counts 同口径：UTC 日历日。"""
-    return now()[:10]
+    """业务日（东八区 business_today）：与前端本地日期同口径，pipeline_today_counts 同此。"""
+    return business_today()
 
 
 def _key(text):

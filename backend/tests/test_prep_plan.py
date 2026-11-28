@@ -19,7 +19,7 @@ from jobscope import prep_plan_llm
 from jobscope.prep_plan import apply_adjustments, auto_complete_mock, collect_focus, generate, idempotent_plan, snapshot
 from jobscope.prep_plan_adjust import MARKER, parse_changes
 from jobscope.prep_plan_llm import DiagnosisProbe
-from jobscope.repository import Repository, now
+from jobscope.repository import Repository, business_today, now
 
 
 @pytest.fixture
@@ -155,7 +155,7 @@ def test_auto_complete_mock_only_today_once(repo):
     plan = generate(repo)
     assert auto_complete_mock(repo, 'I-9') is True
     assert auto_complete_mock(repo, 'I-9') is False
-    today = now()[:10]
+    today = business_today()
     mock = [task for task in repo.prep_tasks(plan['id'])
             if task['kind'] == 'mock' and task['date'] == today][0]
     assert mock['status'] == 'done'
@@ -182,7 +182,7 @@ def test_archive_endpoint_and_dashboard_field(client, repo):
     fresh = generate(repo)
     dashboard = client.get('/api/dashboard').json()
     assert dashboard['prep_plan']['plan']['id'] == fresh['id']
-    assert dashboard['prep_plan']['today']['date'] == now()[:10]
+    assert dashboard['prep_plan']['today']['date'] == business_today()
 
 
 def test_generate_days_validation_and_note_guard(client, repo):

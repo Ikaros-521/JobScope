@@ -40,7 +40,7 @@ _SYSTEM = '''你是求职备战计划教练。用户已有一份每日备战计�
 
 def material(repo, plan, message, history=None):
     """给模型的紧凑上下文：计划头 + 全部任务清单（含 id/status）+ 最近对话轮。"""
-    from .repository import now
+    from .repository import business_today, now
     prefs = plan.get('prefs') or {}
     lines = []
     for task in repo.prep_tasks(plan['id']):
@@ -52,7 +52,7 @@ def material(repo, plan, message, history=None):
         role = '用户' if item.get('role') == 'user' else '教练'
         turns.append(f"{role}: {str(item.get('content') or '')[:400]}")
     return dict(
-        today=now()[:10],
+        today=business_today(),
         plan=f"{plan['days']} 天（{plan['start_date']} 至 {plan['end_date']}），每日预算 "
              f"{prefs.get('minutes_per_day', 20)} 分钟，备战重点：{prefs.get('goal') or '未填'}",
         tasks='\n'.join(lines)[:TASK_LIST_MAX],

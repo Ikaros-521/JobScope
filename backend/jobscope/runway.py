@@ -13,7 +13,7 @@
 """
 import re
 
-from .repository import now
+from .repository import business_today, now
 
 _MONTH_RE = re.compile(r'^(\d{4})-(\d{2})$')
 
@@ -34,7 +34,7 @@ def _paused_months(last_month):
     if not 1 <= month <= 12:
         return None
     from datetime import date
-    today = date.today()
+    today = date.fromisoformat(business_today())  # 东八区业务日，与全站「今天」同口径
     months = (today.year - year) * 12 + (today.month - month)
     return max(0, months)
 
