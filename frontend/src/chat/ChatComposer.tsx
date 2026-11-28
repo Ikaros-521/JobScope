@@ -1,167 +1,417 @@
-import { useEffect, useRef } from 'react'
-import type { PermissionMode } from '../api'
+import { useEffect, useRef } from "react";
+import type { PermissionMode } from "../api";
 
-export type EditingTarget = { id: string; original: string } | null
-export type ComposerChannel = { id: string; name: string; model: string; models: string[]; context_tokens?: number | null }
+export type EditingTarget = { id: string; original: string } | null;
+export type ComposerChannel = {
+  id: string;
+  name: string;
+  model: string;
+  models: string[];
+  context_tokens?: number | null;
+};
 
 // 三档工具权限：切换到完全访问由工作区弹确认框，这里只负责展示与回调。
-const PERMISSION_MODES: { value: PermissionMode; label: string; title: string }[] = [
-  { value: 'confirm', label: '确认', title: '变更前确认：所有外部工具（MCP）调用都先展示参数，确认后才执行；在确认卡上选「本会话始终允许」可给单个工具放行' },
-  { value: 'autonomous', label: '自主', title: '自主模式：只读、已勾选「自动执行」或本会话已授权的工具直接执行，其余逐次确认（确认时可选「本会话始终允许」）' },
-  { value: 'full', label: '完全访问', title: '完全访问：外部工具全部自动执行，不再逐次确认（读取简历后的外发调用仍会确认）' },
-]
+const PERMISSION_MODES: {
+  value: PermissionMode;
+  label: string;
+  title: string;
+}[] = [
+  {
+    value: "confirm",
+    label: "确认",
+    title:
+      "变更前确认：所有外部工具（MCP）调用都先展示参数，确认后才执行；在确认卡上选「本会话始终允许」可给单个工具放行",
+  },
+  {
+    value: "autonomous",
+    label: "自主",
+    title:
+      "自主模式：只读、已勾选「自动执行」或本会话已授权的工具直接执行，其余逐次确认（确认时可选「本会话始终允许」）",
+  },
+  {
+    value: "full",
+    label: "完全访问",
+    title:
+      "完全访问：外部工具全部自动执行，不再逐次确认（读取简历后的外发调用仍会确认）",
+  },
+];
 
 const MODE_HINTS: Record<PermissionMode, string> = {
-  confirm: '外部工具逐次确认',
-  autonomous: '只读/自动执行/已授权工具免确认',
-  full: '外部工具自动执行',
+  confirm: "外部工具逐次确认",
+  autonomous: "只读/自动执行/已授权工具免确认",
+  full: "外部工具自动执行",
+};
+
+function tokensLabel(value: number) {
+  return value >= 10000
+    ? `${Math.round(value / 1000)}k`
+    : value >= 1000
+      ? `${(value / 1000).toFixed(1)}k`
+      : String(value);
 }
 
-function tokensLabel(value: number) { return value >= 10000 ? `${Math.round(value / 1000)}k` : value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value) }
-
 // 下拉选项值编码：''=跟随全局；'|model'=覆盖全局配置上的模型；'channelId|model'=指定渠道的模型；'channelId|'=渠道默认模型
-function selectValue(model: string, channelId: string) { return channelId ? `${channelId}|${model}` : model ? `|${model}` : '' }
+function selectValue(model: string, channelId: string) {
+  return channelId ? `${channelId}|${model}` : model ? `|${model}` : "";
+}
 
-export function ChatComposer({ input, onInputChange, model, llmChannel = '', modelChannels = [], globalModels = [], onModelChange, permissionMode = 'autonomous', onPermissionModeChange, running, awaiting, onStop, onSend, onQueue, queueCount = 0, modelConfigured, showReasoning, onToggleReasoning, editing, onCancelEdit, onManageExtensions, onConfigureModel, onOpenKnowledge, scopeLabel = '全项目', onExpandScope, locked = '', scopeName = '全项目资料', contextTokens = 0, contextWindow = 128000, compressing = false, hasConversation = false, canCompress = true, onCompress }: {
-  input: string
-  onInputChange: (value: string) => void
-  model: string
-  llmChannel?: string
-  modelChannels?: ComposerChannel[]
-  globalModels?: string[]
-  onModelChange: (model: string, channelId: string) => void
-  permissionMode?: PermissionMode
-  onPermissionModeChange: (mode: PermissionMode) => void
-  running: boolean
-  awaiting: boolean
-  onStop: () => void
-  onSend: () => void
+export function ChatComposer({
+  input,
+  onInputChange,
+  model,
+  llmChannel = "",
+  modelChannels = [],
+  globalModels = [],
+  onModelChange,
+  permissionMode = "autonomous",
+  onPermissionModeChange,
+  running,
+  awaiting,
+  onStop,
+  onSend,
+  onQueue,
+  queueCount = 0,
+  modelConfigured,
+  showReasoning,
+  onToggleReasoning,
+  editing,
+  onCancelEdit,
+  onManageExtensions,
+  onConfigureModel,
+  onOpenKnowledge,
+  scopeLabel = "全项目",
+  onExpandScope,
+  locked = "",
+  scopeName = "全项目资料",
+  contextTokens = 0,
+  contextWindow = 128000,
+  compressing = false,
+  hasConversation = false,
+  canCompress = true,
+  onCompress,
+}: {
+  input: string;
+  onInputChange: (value: string) => void;
+  model: string;
+  llmChannel?: string;
+  modelChannels?: ComposerChannel[];
+  globalModels?: string[];
+  onModelChange: (model: string, channelId: string) => void;
+  permissionMode?: PermissionMode;
+  onPermissionModeChange: (mode: PermissionMode) => void;
+  running: boolean;
+  awaiting: boolean;
+  onStop: () => void;
+  onSend: () => void;
   // 生成中发送：不直发而是进队列（工作区 submit 决定入队），完成后自动发送。
-  onQueue?: () => void
-  queueCount?: number
-  modelConfigured: boolean
-  showReasoning: boolean
-  onToggleReasoning: (value: boolean) => void
-  editing: EditingTarget
-  onCancelEdit: () => void
-  onManageExtensions?: () => void
-  onConfigureModel?: () => void
+  onQueue?: () => void;
+  queueCount?: number;
+  modelConfigured: boolean;
+  showReasoning: boolean;
+  onToggleReasoning: (value: boolean) => void;
+  editing: EditingTarget;
+  onCancelEdit: () => void;
+  onManageExtensions?: () => void;
+  onConfigureModel?: () => void;
   // 跳转知识库页面：录入/维护 Agent 可检索引用的用户知识。
-  onOpenKnowledge?: () => void
-  scopeLabel?: string
-  onExpandScope?: () => void
-  locked?: string
-  scopeName?: string
-  contextTokens?: number
-  contextWindow?: number
-  compressing?: boolean
-  hasConversation?: boolean
-  canCompress?: boolean
-  onCompress?: () => void
+  onOpenKnowledge?: () => void;
+  scopeLabel?: string;
+  onExpandScope?: () => void;
+  locked?: string;
+  scopeName?: string;
+  contextTokens?: number;
+  contextWindow?: number;
+  compressing?: boolean;
+  hasConversation?: boolean;
+  canCompress?: boolean;
+  onCompress?: () => void;
 }) {
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    const node = textareaRef.current
-    if (!node) return
-    node.style.height = 'auto'
-    node.style.height = `${Math.min(200, Math.max(48, node.scrollHeight))}px`
-  }, [input])
+    const node = textareaRef.current;
+    if (!node) return;
+    node.style.height = "auto";
+    node.style.height = `${Math.min(200, Math.max(48, node.scrollHeight))}px`;
+  }, [input]);
 
-  const blocked = Boolean(locked) || awaiting || compressing
-  const placeholder = locked || (compressing ? '正在压缩上下文…' : awaiting ? '等待工具确认后再继续对话…'
-    : running && onQueue ? '生成中…输入下一条，Enter 加入队列，完成后自动发送'
-    : !modelConfigured ? '可以先写下问题，配置模型后再发送…' : `围绕${scopeName}提问，Agent 会按需调用工具…`)
+  const blocked = Boolean(locked) || awaiting || compressing;
+  const placeholder =
+    locked ||
+    (compressing
+      ? "正在压缩上下文…"
+      : awaiting
+        ? "等待工具确认后再继续对话…"
+        : running && onQueue
+          ? "生成中…输入下一条，Enter 加入队列，完成后自动发送"
+          : !modelConfigured
+            ? "可以先写下问题，配置模型后再发送…"
+            : `围绕${scopeName}提问，Agent 会按需调用工具…`);
 
   function trySend() {
-    if (!input.trim()) return
+    if (!input.trim()) return;
     // 生成中 Enter 不再无效：有内容且支持排队就走队列（IDE 队列行为），否则维持禁用。
-    if (running) { if (onQueue) onQueue(); return }
-    if (blocked || !modelConfigured) return
-    onSend()
+    if (running) {
+      if (onQueue) onQueue();
+      return;
+    }
+    if (blocked || !modelConfigured) return;
+    onSend();
   }
 
   function pickModel(value: string) {
-    const sep = value.indexOf('|')
-    if (sep < 0) { onModelChange(value, ''); return }
-    onModelChange(value.slice(sep + 1), value.slice(0, sep))
+    const sep = value.indexOf("|");
+    if (sep < 0) {
+      onModelChange(value, "");
+      return;
+    }
+    onModelChange(value.slice(sep + 1), value.slice(0, sep));
   }
 
-  const percent = contextWindow > 0 ? Math.min(100, Math.round((contextTokens / contextWindow) * 100)) : 0
-  const level = percent >= 85 ? 'danger' : percent >= 60 ? 'warning' : ''
+  const percent =
+    contextWindow > 0
+      ? Math.min(100, Math.round((contextTokens / contextWindow) * 100))
+      : 0;
+  const level = percent >= 85 ? "danger" : percent >= 60 ? "warning" : "";
 
-  return <div className="chat-composer">
-    {editing && <div className="composer-editing-note">
-      <span>正在编辑历史消息；发送后打开新版本，原对话保留</span>
-      <button type="button" onClick={onCancelEdit}>取消编辑</button>
-    </div>}
-    <div className={`composer-box ${blocked ? 'disabled' : ''}`}>
-      <textarea
-        ref={textareaRef}
-        value={input}
-        rows={1}
-        disabled={blocked}
-        maxLength={8000}
-        placeholder={placeholder}
-        aria-label={`围绕${scopeName}的对话输入框`}
-        onChange={event => onInputChange(event.target.value)}
-        onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); trySend() } }}
-      />
-      {running
-        ? <button type="button" className="composer-stop" onClick={onStop} aria-label="停止生成"><span aria-hidden="true">■</span>停止</button>
-        : <button type="button" className="composer-send" onClick={trySend} disabled={blocked || !modelConfigured || !input.trim()} aria-label="发送消息">发送</button>}
-    </div>
-    <div className="composer-toolbar">
-      <div className="composer-scope" aria-label="资料检索范围">
-        <span className="composer-scope-tag" title={scopeLabel}>{scopeLabel}</span>
-        {onExpandScope && <button type="button" className="composer-expand" disabled={running || awaiting || compressing || !hasConversation || Boolean(locked)} onClick={onExpandScope}>扩大范围 ↗</button>}
+  return (
+    <div className="chat-composer">
+      {editing && (
+        <div className="composer-editing-note">
+          <span>正在编辑历史消息；发送后打开新版本，原对话保留</span>
+          <button type="button" onClick={onCancelEdit}>
+            取消编辑
+          </button>
+        </div>
+      )}
+      <div className={`composer-box ${blocked ? "disabled" : ""}`}>
+        <textarea
+          ref={textareaRef}
+          value={input}
+          rows={1}
+          disabled={blocked}
+          maxLength={8000}
+          placeholder={placeholder}
+          aria-label={`围绕${scopeName}的对话输入框`}
+          onChange={(event) => onInputChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (
+              event.key === "Enter" &&
+              !event.shiftKey &&
+              !event.nativeEvent.isComposing
+            ) {
+              event.preventDefault();
+              trySend();
+            }
+          }}
+        />
+        {running ? (
+          <button
+            type="button"
+            className="composer-stop"
+            onClick={onStop}
+            aria-label="停止生成"
+          >
+            <span aria-hidden="true">■</span>停止
+          </button>
+        ) : (
+          <button
+            type="button"
+            className="composer-send"
+            onClick={trySend}
+            disabled={blocked || !modelConfigured || !input.trim()}
+            aria-label="发送消息"
+          >
+            发送
+          </button>
+        )}
       </div>
-      {onOpenKnowledge && <button type="button" className="composer-knowledge" title="录入或维护你的知识条目，Agent 对话可检索引用" onClick={onOpenKnowledge}>知识库</button>}
-      {onConfigureModel && <button type="button" className="composer-configure" onClick={onConfigureModel}>{modelConfigured ? '模型设置' : '配置模型后发送（草稿已保存）'}</button>}
-      <label className="composer-model" title="本次对话使用的模型（默认跟随全局设置）">
-        <select aria-label="模型" value={selectValue(model, llmChannel)} onChange={event => pickModel(event.target.value)} disabled={running || awaiting}>
-          <option value="">跟随全局设置</option>
-          <optgroup label="全局默认渠道">
-            {globalModels.map(item => <option key={`global-${item}`} value={`|${item}`}>{item}</option>)}
-            {model && !llmChannel && !globalModels.includes(model) && <option value={`|${model}`}>{model}</option>}
-          </optgroup>
-          {modelChannels.map(channel => <optgroup key={channel.id} label={channel.name}>
-            <option value={`${channel.id}|`}>{channel.model ? `默认 · ${channel.model}` : '渠道默认模型（未设置）'}</option>
-            {channel.models.map(item => <option key={`${channel.id}-${item}`} value={`${channel.id}|${item}`}>{item}</option>)}
-            {llmChannel === channel.id && model && !channel.models.includes(model) && model !== channel.model && <option value={`${channel.id}|${model}`}>{model}</option>}
-          </optgroup>)}
-          {llmChannel && !modelChannels.some(channel => channel.id === llmChannel) && <option value={selectValue(model, llmChannel)}>{`渠道已删除 · ${model || '默认模型'}`}</option>}
-        </select>
-      </label>
-      <div className="composer-mode" role="group" aria-label="外部工具权限模式" title="外部工具权限模式（悬停各档看说明）">
-        <div className="composer-mode-seg">
-          {PERMISSION_MODES.map(item => (
-            <button key={item.value} type="button" className={permissionMode === item.value ? 'active' : ''}
-              title={item.title} disabled={running || awaiting}
-              aria-pressed={permissionMode === item.value}
-              onClick={() => { if (permissionMode !== item.value) onPermissionModeChange(item.value) }}>
-              {item.label}
+      <div className="composer-toolbar">
+        <div className="composer-scope" aria-label="资料检索范围">
+          <span className="composer-scope-tag" title={scopeLabel}>
+            {scopeLabel}
+          </span>
+          {onExpandScope && (
+            <button
+              type="button"
+              className="composer-expand"
+              disabled={
+                running ||
+                awaiting ||
+                compressing ||
+                !hasConversation ||
+                Boolean(locked)
+              }
+              onClick={onExpandScope}
+            >
+              扩大范围 ↗
             </button>
-          ))}
+          )}
         </div>
+        {onOpenKnowledge && (
+          <button
+            type="button"
+            className="composer-knowledge"
+            title="录入或维护你的知识条目，Agent 对话可检索引用"
+            onClick={onOpenKnowledge}
+          >
+            知识库
+          </button>
+        )}
+        {onConfigureModel && (
+          <button
+            type="button"
+            className="composer-configure"
+            onClick={onConfigureModel}
+          >
+            {modelConfigured ? "模型设置" : "配置模型后发送（草稿已保存）"}
+          </button>
+        )}
+        <label
+          className="composer-model"
+          title="本次对话使用的模型（默认跟随全局设置）"
+        >
+          <select
+            aria-label="模型"
+            value={selectValue(model, llmChannel)}
+            onChange={(event) => pickModel(event.target.value)}
+            disabled={running || awaiting}
+          >
+            <option value="">跟随全局设置</option>
+            <optgroup label="全局默认渠道">
+              {globalModels.map((item) => (
+                <option key={`global-${item}`} value={`|${item}`}>
+                  {item}
+                </option>
+              ))}
+              {model && !llmChannel && !globalModels.includes(model) && (
+                <option value={`|${model}`}>{model}</option>
+              )}
+            </optgroup>
+            {modelChannels.map((channel) => (
+              <optgroup key={channel.id} label={channel.name}>
+                <option value={`${channel.id}|`}>
+                  {channel.model
+                    ? `默认 · ${channel.model}`
+                    : "渠道默认模型（未设置）"}
+                </option>
+                {channel.models.map((item) => (
+                  <option
+                    key={`${channel.id}-${item}`}
+                    value={`${channel.id}|${item}`}
+                  >
+                    {item}
+                  </option>
+                ))}
+                {llmChannel === channel.id &&
+                  model &&
+                  !channel.models.includes(model) &&
+                  model !== channel.model && (
+                    <option value={`${channel.id}|${model}`}>{model}</option>
+                  )}
+              </optgroup>
+            ))}
+            {llmChannel &&
+              !modelChannels.some((channel) => channel.id === llmChannel) && (
+                <option
+                  value={selectValue(model, llmChannel)}
+                >{`渠道已删除 · ${model || "默认模型"}`}</option>
+              )}
+          </select>
+        </label>
+        <div
+          className="composer-mode"
+          role="group"
+          aria-label="外部工具权限模式"
+          title="外部工具权限模式（悬停各档看说明）"
+        >
+          <div className="composer-mode-seg">
+            {PERMISSION_MODES.map((item) => (
+              <button
+                key={item.value}
+                type="button"
+                className={permissionMode === item.value ? "active" : ""}
+                title={item.title}
+                disabled={running || awaiting}
+                aria-pressed={permissionMode === item.value}
+                onClick={() => {
+                  if (permissionMode !== item.value)
+                    onPermissionModeChange(item.value);
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <label className="composer-switch">
+          <input
+            type="checkbox"
+            checked={showReasoning}
+            onChange={(event) => onToggleReasoning(event.target.checked)}
+          />
+          <span>思维链</span>
+        </label>
+        {onManageExtensions && (
+          <button
+            type="button"
+            className="composer-extensions"
+            onClick={onManageExtensions}
+          >
+            MCP 与 Skills
+          </button>
+        )}
+        {onCompress && (
+          <div className="context-meter-group">
+            <div
+              className={`context-meter ${level}`}
+              role="progressbar"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={percent}
+              aria-label="当前会话上下文估算用量"
+              title={`初始输入窗口估算（最新摘要＋最近6条＋当前问题及明确条件） ${tokensLabel(contextTokens)} / ${tokensLabel(contextWindow)} tokens（${percent}%，按字符数估算；系统提示为固定估值，不含动态工具结果，实际用量以模型返回为准）`}
+            >
+              <span className="context-meter-bar" aria-hidden="true">
+                <span
+                  className="context-meter-fill"
+                  style={{ width: `${percent}%` }}
+                />
+              </span>
+              <span className="context-meter-text">
+                估算 {tokensLabel(contextTokens)} / {tokensLabel(contextWindow)}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="composer-compress"
+              onClick={onCompress}
+              disabled={
+                running ||
+                awaiting ||
+                compressing ||
+                !hasConversation ||
+                !canCompress
+              }
+              title={
+                canCompress
+                  ? "把较早的历史折叠成一条摘要检查点，模型上下文随之精简；原文仍保留可查看"
+                  : "历史消息较少，暂无需压缩"
+              }
+            >
+              {compressing ? "压缩中…" : "压缩上下文"}
+            </button>
+          </div>
+        )}
+        {queueCount > 0 && (
+          <span
+            className="composer-queue-count"
+            title="生成完成后按顺序自动发送"
+          >
+            已排队 {queueCount} 条
+          </span>
+        )}
+        <span className="composer-hint">{MODE_HINTS[permissionMode]}</span>
       </div>
-      <label className="composer-switch">
-        <input type="checkbox" checked={showReasoning} onChange={event => onToggleReasoning(event.target.checked)} />
-        <span>思维链</span>
-      </label>
-      {onManageExtensions && <button type="button" className="composer-extensions" onClick={onManageExtensions}>MCP 与 Skills</button>}
-      {onCompress && <div className="context-meter-group">
-        <div className={`context-meter ${level}`} role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}
-          aria-label="当前会话上下文估算用量" title={`初始输入窗口估算（最新摘要＋最近6条＋当前问题及明确条件） ${tokensLabel(contextTokens)} / ${tokensLabel(contextWindow)} tokens（${percent}%，按字符数估算；系统提示为固定估值，不含动态工具结果，实际用量以模型返回为准）`}>
-          <span className="context-meter-bar" aria-hidden="true"><span className="context-meter-fill" style={{ width: `${percent}%` }} /></span>
-          <span className="context-meter-text">估算 {tokensLabel(contextTokens)} / {tokensLabel(contextWindow)}</span>
-        </div>
-        <button type="button" className="composer-compress" onClick={onCompress} disabled={running || awaiting || compressing || !hasConversation || !canCompress}
-          title={canCompress ? '把较早的历史折叠成一条摘要检查点，模型上下文随之精简；原文仍保留可查看' : '历史消息较少，暂无需压缩'}>
-          {compressing ? '压缩中…' : '压缩上下文'}
-        </button>
-      </div>}
-      {queueCount > 0 && <span className="composer-queue-count" title="生成完成后按顺序自动发送">已排队 {queueCount} 条</span>}
-      <span className="composer-hint">{MODE_HINTS[permissionMode]}</span>
     </div>
-  </div>
+  );
 }

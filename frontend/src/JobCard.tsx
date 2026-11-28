@@ -1,53 +1,151 @@
-import { date, isStale, relativeDays } from './api'
-import type { Job } from './api'
-import { Icon } from './Icon'
+import { date, isStale, relativeDays } from "./api";
+import type { Job } from "./api";
+import { Icon } from "./Icon";
 
 // 来源中文名：档案页用动态注册表，卡片这里用静态子集即可（新来源进来先显示原名，不出错）。
 export const sourceNames: Record<string, string> = {
-  boss: 'BOSS直聘', zhaopin: '智联招聘', '51job': '前程无忧', liepin: '猎聘',
-  remotive: 'Remotive', user_import: '用户导入', cninfo: '巨潮资讯',
-}
+  boss: "BOSS直聘",
+  zhaopin: "智联招聘",
+  "51job": "前程无忧",
+  liepin: "猎聘",
+  remotive: "Remotive",
+  user_import: "用户导入",
+  cninfo: "巨潮资讯",
+};
 
 // 岗位卡：岗位档案与收藏夹两个列表共用同一份卡片。
 // 卡片本体（勾选框 + 摘要 + 星标）在这里；两个视图各自附加的操作行经 actions/footer 插槽传入。
 // compact（2026-11-22 收藏夹启用）：正文压成两行——标题+薪资一行，公司/地点/标签/来源/时间一行；档案列表保持纵排。
-export function JobCard({ item, selected, checked, busy, compact, onToggleSelection, onOpen, onToggleStar, actions, footer }: {
-  item: Job
-  selected: boolean
-  checked: boolean
-  busy?: boolean
-  compact?: boolean
-  onToggleSelection: (id: string) => void
-  onOpen: (id: string) => void
-  onToggleStar: (item: Job) => void
-  actions?: React.ReactNode
-  footer?: React.ReactNode
+export function JobCard({
+  item,
+  selected,
+  checked,
+  busy,
+  compact,
+  onToggleSelection,
+  onOpen,
+  onToggleStar,
+  actions,
+  footer,
+}: {
+  item: Job;
+  selected: boolean;
+  checked: boolean;
+  busy?: boolean;
+  compact?: boolean;
+  onToggleSelection: (id: string) => void;
+  onOpen: (id: string) => void;
+  onToggleStar: (item: Job) => void;
+  actions?: React.ReactNode;
+  footer?: React.ReactNode;
 }) {
-  return <div className={`job-card ${selected ? 'selected' : ''}${checked ? ' checked' : ''}`}>
-    <label className="job-card-check"><input type="checkbox" checked={checked} onChange={() => onToggleSelection(item.id)} /><span className="sr-only">选择岗位：{item.title} · {item.company}</span></label>
-    <button className={`job-card-body${compact ? ' compact' : ''}`} aria-pressed={selected} onClick={() => onOpen(item.id)} title={`${item.title} · ${item.company}`}>
-      {compact ? <>
-        <div className="job-card-title-row"><h3>{item.title}</h3><span className="job-salary">{item.salary || '薪资未披露'}</span></div>
-        <div className="job-card-sub-row">
-          <span className="job-company">{item.company}</span>
-          <span className="job-location"><Icon name="pin" size={12} />{item.location || '地点待确认'}</span>
-          {(item.tags || []).slice(0, 1).map(tag => <span className="job-tags" key={tag}><span>{tag}</span></span>)}
-          {isStale(item.updated_at, 30) && <span className="stale-hint" title="这份档案已超过 30 天未更新，薪资与职责可能已变化；可在收藏夹「反查」重读源站，或按原条件重新采集。">数据较旧</span>}
-          <span className="job-source">{sourceNames[item.source] || item.source}</span>
-          <time title={date(item.updated_at)}>{relativeDays(item.updated_at, date(item.updated_at))}</time>
+  return (
+    <div
+      className={`job-card ${selected ? "selected" : ""}${checked ? " checked" : ""}`}
+    >
+      <label className="job-card-check">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={() => onToggleSelection(item.id)}
+        />
+        <span className="sr-only">
+          选择岗位：{item.title} · {item.company}
+        </span>
+      </label>
+      <button
+        className={`job-card-body${compact ? " compact" : ""}`}
+        aria-pressed={selected}
+        onClick={() => onOpen(item.id)}
+        title={`${item.title} · ${item.company}`}
+      >
+        {compact ? (
+          <>
+            <div className="job-card-title-row">
+              <h3>{item.title}</h3>
+              <span className="job-salary">{item.salary || "薪资未披露"}</span>
+            </div>
+            <div className="job-card-sub-row">
+              <span className="job-company">{item.company}</span>
+              <span className="job-location">
+                <Icon name="pin" size={12} />
+                {item.location || "地点待确认"}
+              </span>
+              {(item.tags || []).slice(0, 1).map((tag) => (
+                <span className="job-tags" key={tag}>
+                  <span>{tag}</span>
+                </span>
+              ))}
+              {isStale(item.updated_at, 30) && (
+                <span
+                  className="stale-hint"
+                  title="这份档案已超过 30 天未更新，薪资与职责可能已变化；可在收藏夹「反查」重读源站，或按原条件重新采集。"
+                >
+                  数据较旧
+                </span>
+              )}
+              <span className="job-source">
+                {sourceNames[item.source] || item.source}
+              </span>
+              <time title={date(item.updated_at)}>
+                {relativeDays(item.updated_at, date(item.updated_at))}
+              </time>
+            </div>
+          </>
+        ) : (
+          <>
+            <h3>{item.title}</h3>
+            <span className="job-company">{item.company}</span>
+            <div className="job-card-meta">
+              <span className="job-salary">{item.salary || "薪资未披露"}</span>
+              <span className="job-location">
+                <Icon name="pin" size={12} />
+                {item.location || "地点待确认"}
+              </span>
+              {(item.tags || []).slice(0, 1).map((tag) => (
+                <span className="job-tags" key={tag}>
+                  <span>{tag}</span>
+                </span>
+              ))}
+            </div>
+            <div className="job-card-bottom">
+              <span className="job-source">
+                {sourceNames[item.source] || item.source}
+              </span>
+              {isStale(item.updated_at, 30) && (
+                <span
+                  className="stale-hint"
+                  title="这份档案已超过 30 天未更新，薪资与职责可能已变化；可在收藏夹「反查」重读源站，或按原条件重新采集。"
+                >
+                  数据较旧
+                </span>
+              )}
+              <time title={date(item.updated_at)}>
+                {relativeDays(item.updated_at, date(item.updated_at))}
+              </time>
+            </div>
+          </>
+        )}
+      </button>
+      <button
+        type="button"
+        className={`job-card-star${item.starred ? " starred" : ""}`}
+        aria-pressed={Boolean(item.starred)}
+        disabled={Boolean(busy)}
+        title={item.starred ? "取消收藏" : "收藏岗位，可稍后在收藏夹反查与横评"}
+        onClick={(event) => {
+          event.stopPropagation();
+          onToggleStar(item);
+        }}
+      >
+        <Icon name="star" size={15} />
+      </button>
+      {(actions || footer) && (
+        <div className="job-card-extra">
+          {actions}
+          {footer}
         </div>
-      </> : <>
-        <h3>{item.title}</h3>
-        <span className="job-company">{item.company}</span>
-        <div className="job-card-meta"><span className="job-salary">{item.salary || '薪资未披露'}</span><span className="job-location"><Icon name="pin" size={12} />{item.location || '地点待确认'}</span>{(item.tags || []).slice(0, 1).map(tag => <span className="job-tags" key={tag}><span>{tag}</span></span>)}</div>
-        <div className="job-card-bottom"><span className="job-source">{sourceNames[item.source] || item.source}</span>{isStale(item.updated_at, 30) && <span className="stale-hint" title="这份档案已超过 30 天未更新，薪资与职责可能已变化；可在收藏夹「反查」重读源站，或按原条件重新采集。">数据较旧</span>}<time title={date(item.updated_at)}>{relativeDays(item.updated_at, date(item.updated_at))}</time></div>
-      </>}
-    </button>
-    <button type="button" className={`job-card-star${item.starred ? ' starred' : ''}`} aria-pressed={Boolean(item.starred)} disabled={Boolean(busy)}
-      title={item.starred ? '取消收藏' : '收藏岗位，可稍后在收藏夹反查与横评'}
-      onClick={event => { event.stopPropagation(); onToggleStar(item) }}>
-      <Icon name="star" size={15} />
-    </button>
-    {(actions || footer) && <div className="job-card-extra">{actions}{footer}</div>}
-  </div>
+      )}
+    </div>
+  );
 }

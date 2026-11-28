@@ -1,157 +1,597 @@
-import { useEffect, useMemo, useState } from 'react'
-import { api, date, post, type MarketMcp, type MarketPayload, type MarketSkill, type SystemSettings } from './api'
-import { updateSystemSettings, useSystemSettings } from './systemSettingsStore'
-import { toast } from './toast'
+import { useEffect, useMemo, useState } from "react";
+import {
+  api,
+  date,
+  post,
+  type MarketMcp,
+  type MarketPayload,
+  type MarketSkill,
+  type SystemSettings,
+} from "./api";
+import { updateSystemSettings, useSystemSettings } from "./systemSettingsStore";
+import { toast } from "./toast";
 
 // 旧后端进程没有市场路由：未知路径 GET 404 / POST 405，此时提示重启而不是抛状态码。
 function friendly(err: unknown) {
-  const message = (err as Error).message || ''
-  return /40[45]|Method Not Allowed/.test(message) ? '本地服务版本落后于当前页面：请关闭旧的 JobScope 服务窗口，重新运行 .\\start.ps1，再刷新页面。' : message
+  const message = (err as Error).message || "";
+  return /40[45]|Method Not Allowed/.test(message)
+    ? "本地服务版本落后于当前页面：请关闭旧的 JobScope 服务窗口，重新运行 .\\start.ps1，再刷新页面。"
+    : message;
 }
 
-type Kind = 'mcp' | 'skill'
-type LiveResult = { term: string; mcp: MarketMcp[]; skills: MarketSkill[]; skills_error: string | null }
+type Kind = "mcp" | "skill";
+type LiveResult = {
+  term: string;
+  mcp: MarketMcp[];
+  skills: MarketSkill[];
+  skills_error: string | null;
+};
 
-function McpCard({ item, badge, busy, onInstall }: { item: MarketMcp; badge: string; busy: string; onInstall: (entry: MarketMcp) => void }) {
-  return <article className="market-card">
-    <div className="market-card-head"><svg className="market-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M9 3v5m6-5v5M7 8h10v3a5 5 0 0 1-10 0V8Zm5 8v5" /></svg><strong>{item.name}</strong><span className={`market-badge ${item.official ? 'official' : ''}`}>{badge}</span>{item.needs_key && <span className="market-badge warn">需 {item.needs_key}</span>}{item.needs_config && <span className="market-badge warn">需改配置</span>}{item.installed && <span className="market-badge ok">已添加</span>}</div>
-    <p className="market-card-meta">{item.transport === 'stdio' ? '本地命令' : item.transport === 'sse' ? 'SSE' : 'HTTP'}{item.category ? ` · ${item.category}` : ''}</p>
-    <p className="market-desc">{item.desc}</p>
-    <code className="market-endpoint">{item.transport === 'stdio' ? [item.command, ...(item.args || [])].join(' ') : item.url}</code>
-    <div className="market-card-actions">{item.repo && <a className="text-button" href={item.repo} target="_blank" rel="noreferrer">来源 ↗</a>}{item.transport === 'stdio' && <span className="muted">测试时会启动本地命令</span>}<button type="button" className="button secondary small" disabled={Boolean(busy)} onClick={() => onInstall(item)}>{item.installed ? '再次添加' : '添加'}</button></div>
-  </article>
+function McpCard({
+  item,
+  badge,
+  busy,
+  onInstall,
+}: {
+  item: MarketMcp;
+  badge: string;
+  busy: string;
+  onInstall: (entry: MarketMcp) => void;
+}) {
+  return (
+    <article className="market-card">
+      <div className="market-card-head">
+        <svg
+          className="market-icon"
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="M9 3v5m6-5v5M7 8h10v3a5 5 0 0 1-10 0V8Zm5 8v5" />
+        </svg>
+        <strong>{item.name}</strong>
+        <span className={`market-badge ${item.official ? "official" : ""}`}>
+          {badge}
+        </span>
+        {item.needs_key && (
+          <span className="market-badge warn">需 {item.needs_key}</span>
+        )}
+        {item.needs_config && (
+          <span className="market-badge warn">需改配置</span>
+        )}
+        {item.installed && <span className="market-badge ok">已添加</span>}
+      </div>
+      <p className="market-card-meta">
+        {item.transport === "stdio"
+          ? "本地命令"
+          : item.transport === "sse"
+            ? "SSE"
+            : "HTTP"}
+        {item.category ? ` · ${item.category}` : ""}
+      </p>
+      <p className="market-desc">{item.desc}</p>
+      <code className="market-endpoint">
+        {item.transport === "stdio"
+          ? [item.command, ...(item.args || [])].join(" ")
+          : item.url}
+      </code>
+      <div className="market-card-actions">
+        {item.repo && (
+          <a
+            className="text-button"
+            href={item.repo}
+            target="_blank"
+            rel="noreferrer"
+          >
+            来源 ↗
+          </a>
+        )}
+        {item.transport === "stdio" && (
+          <span className="muted">测试时会启动本地命令</span>
+        )}
+        <button
+          type="button"
+          className="button secondary small"
+          disabled={Boolean(busy)}
+          onClick={() => onInstall(item)}
+        >
+          {item.installed ? "再次添加" : "添加"}
+        </button>
+      </div>
+    </article>
+  );
 }
 
-function SkillCard({ item, badge, busy, onInstall, onTemplate }: { item: MarketSkill; badge: string; busy: string; onInstall: (entry: MarketSkill) => void; onTemplate?: (content: string) => void }) {
-  return <article className="market-card">
-    <div className="market-card-head"><svg className="market-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6M8 13h8m-8 4h6" /></svg><strong>{item.title || item.name}</strong><span className={`market-badge ${item.official ? 'official' : ''}`}>{badge}</span>{typeof item.stars === 'number' && <span className="market-badge">★ {item.stars}</span>}{item.installed && <span className="market-badge ok">已安装</span>}</div>
-    {item.category && <p className="market-card-meta">{item.category}</p>}
-    <p className="market-desc">{item.desc}</p>
-    <code className="market-endpoint">{item.name}</code>
-    <div className="market-card-actions">{item.repo && <a className="text-button" href={item.repo.startsWith('http') ? item.repo : `https://github.com/${item.repo}`} target="_blank" rel="noreferrer">来源 ↗</a>}<button type="button" className="button secondary small" disabled={Boolean(busy)} onClick={() => onInstall(item)}>{item.installed ? '重新导入' : '安装'}</button>{item.content && onTemplate && <button type="button" className="button secondary small" disabled={Boolean(busy)} onClick={() => onTemplate(item.content || '')}>基于此创建</button>}</div>
-  </article>
+function SkillCard({
+  item,
+  badge,
+  busy,
+  onInstall,
+  onTemplate,
+}: {
+  item: MarketSkill;
+  badge: string;
+  busy: string;
+  onInstall: (entry: MarketSkill) => void;
+  onTemplate?: (content: string) => void;
+}) {
+  return (
+    <article className="market-card">
+      <div className="market-card-head">
+        <svg
+          className="market-icon"
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+          focusable="false"
+        >
+          <path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9l-6-6Zm0 0v6h6M8 13h8m-8 4h6" />
+        </svg>
+        <strong>{item.title || item.name}</strong>
+        <span className={`market-badge ${item.official ? "official" : ""}`}>
+          {badge}
+        </span>
+        {typeof item.stars === "number" && (
+          <span className="market-badge">★ {item.stars}</span>
+        )}
+        {item.installed && <span className="market-badge ok">已安装</span>}
+      </div>
+      {item.category && <p className="market-card-meta">{item.category}</p>}
+      <p className="market-desc">{item.desc}</p>
+      <code className="market-endpoint">{item.name}</code>
+      <div className="market-card-actions">
+        {item.repo && (
+          <a
+            className="text-button"
+            href={
+              item.repo.startsWith("http")
+                ? item.repo
+                : `https://github.com/${item.repo}`
+            }
+            target="_blank"
+            rel="noreferrer"
+          >
+            来源 ↗
+          </a>
+        )}
+        <button
+          type="button"
+          className="button secondary small"
+          disabled={Boolean(busy)}
+          onClick={() => onInstall(item)}
+        >
+          {item.installed ? "重新导入" : "安装"}
+        </button>
+        {item.content && onTemplate && (
+          <button
+            type="button"
+            className="button secondary small"
+            disabled={Boolean(busy)}
+            onClick={() => onTemplate(item.content || "")}
+          >
+            基于此创建
+          </button>
+        )}
+      </div>
+    </article>
+  );
 }
 
-const KIND_TEXT: Record<Kind, { catalogHeading: string; emptyCatalog: string; sourceKey: 'npm' | 'github'; searchLabel: string; searchPlaceholder: string; searchHint: string; help: string }> = {
+const KIND_TEXT: Record<
+  Kind,
+  {
+    catalogHeading: string;
+    emptyCatalog: string;
+    sourceKey: "npm" | "github";
+    searchLabel: string;
+    searchPlaceholder: string;
+    searchHint: string;
+    help: string;
+  }
+> = {
   mcp: {
-    catalogHeading: '目录 · MCP 服务',
-    emptyCatalog: '当前目录无匹配的 MCP 服务，可调整分类或搜索词。',
-    sourceKey: 'npm',
-    searchLabel: '搜索 MCP',
-    searchPlaceholder: '搜索工具或服务',
-    searchHint: '输入至少 2 个字符在线检索 npm；短词仅筛选本地目录。',
-    help: '精选目录离线可用。在线搜索使用 npm 注册表（自动附加 mcp），结果在本机缓存 5 分钟。「刷新在线目录」拉取最新推荐目录，缓存 15 分钟；失败时保留当前目录并提示。「在线检索源」选国内镜像后 npm 目录与技能文件下载走加速通道，切换即时生效、按源缓存。',
+    catalogHeading: "目录 · MCP 服务",
+    emptyCatalog: "当前目录无匹配的 MCP 服务，可调整分类或搜索词。",
+    sourceKey: "npm",
+    searchLabel: "搜索 MCP",
+    searchPlaceholder: "搜索工具或服务",
+    searchHint: "输入至少 2 个字符在线检索 npm；短词仅筛选本地目录。",
+    help: "精选目录离线可用。在线搜索使用 npm 注册表（自动附加 mcp），结果在本机缓存 5 分钟。「刷新在线目录」拉取最新推荐目录，缓存 15 分钟；失败时保留当前目录并提示。「在线检索源」选国内镜像后 npm 目录与技能文件下载走加速通道，切换即时生效、按源缓存。",
   },
   skill: {
-    catalogHeading: '目录 · Skills',
-    emptyCatalog: '当前目录无匹配的 Skills，可调整分类或搜索词。',
-    sourceKey: 'github',
-    searchLabel: '搜索 Skill',
-    searchPlaceholder: '搜索工作方法',
-    searchHint: '输入至少 2 个字符在线检索 GitHub；短词仅筛选本地目录。',
-    help: '精选目录与推荐仓库离线可用。在线搜索使用 GitHub 仓库搜索（自动附加 skill），免凭证但受公开 API 限额约束，结果在本机缓存 5 分钟。「刷新在线目录」拉取推荐技能仓库的最新 Skills，缓存 15 分钟；精选 Skills 可「基于此创建」修改。「在线检索源」选国内镜像后技能文件下载走加速通道，仓库检索仍走 GitHub 官方接口。',
+    catalogHeading: "目录 · Skills",
+    emptyCatalog: "当前目录无匹配的 Skills，可调整分类或搜索词。",
+    sourceKey: "github",
+    searchLabel: "搜索 Skill",
+    searchPlaceholder: "搜索工作方法",
+    searchHint: "输入至少 2 个字符在线检索 GitHub；短词仅筛选本地目录。",
+    help: "精选目录与推荐仓库离线可用。在线搜索使用 GitHub 仓库搜索（自动附加 skill），免凭证但受公开 API 限额约束，结果在本机缓存 5 分钟。「刷新在线目录」拉取推荐技能仓库的最新 Skills，缓存 15 分钟；精选 Skills 可「基于此创建」修改。「在线检索源」选国内镜像后技能文件下载走加速通道，仓库检索仍走 GitHub 官方接口。",
   },
-}
+};
 
 // 在线检索源：official 全部走官方接口；china 是国内镜像（npm 检索换 npmmirror，GitHub 文件下载走代理，仓库检索仍官方）。
-const SOURCE_TEXT: Record<SystemSettings['market_source'], { label: string; desc: string; npm: string; github: string }> = {
-  official: { label: '官方源', desc: 'npm 与 GitHub 均直连官方接口', npm: 'npm', github: 'GitHub' },
-  china: { label: '国内镜像', desc: 'npm 走 npmmirror 镜像，GitHub 文件下载走加速代理', npm: 'npm 镜像', github: 'GitHub 镜像' },
-}
+const SOURCE_TEXT: Record<
+  SystemSettings["market_source"],
+  { label: string; desc: string; npm: string; github: string }
+> = {
+  official: {
+    label: "官方源",
+    desc: "npm 与 GitHub 均直连官方接口",
+    npm: "npm",
+    github: "GitHub",
+  },
+  china: {
+    label: "国内镜像",
+    desc: "npm 走 npmmirror 镜像，GitHub 文件下载走加速代理",
+    npm: "npm 镜像",
+    github: "GitHub 镜像",
+  },
+};
 
-export function MarketView({ kind, busy, onInstallMcp, onInstallSkill, onTemplate }: { kind: Kind; busy: string; onInstallMcp: (entry: MarketMcp) => void; onInstallSkill: (entry: MarketSkill) => void; onTemplate: (content: string) => void }) {
-  const text = KIND_TEXT[kind]
-  const settings = useSystemSettings()
-  const source = settings.market_source
-  const [market, setMarket] = useState<MarketPayload | null>(null)
-  const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
-  const [category, setCategory] = useState('全部')
-  const [search, setSearch] = useState('')
-  const [refreshing, setRefreshing] = useState(false)
-  const [live, setLive] = useState<LiveResult | null>(null)
-  const [liveLoading, setLiveLoading] = useState(false)
-  const [liveError, setLiveError] = useState('')
-  const term = search.trim()
+export function MarketView({
+  kind,
+  busy,
+  onInstallMcp,
+  onInstallSkill,
+  onTemplate,
+}: {
+  kind: Kind;
+  busy: string;
+  onInstallMcp: (entry: MarketMcp) => void;
+  onInstallSkill: (entry: MarketSkill) => void;
+  onTemplate: (content: string) => void;
+}) {
+  const text = KIND_TEXT[kind];
+  const settings = useSystemSettings();
+  const source = settings.market_source;
+  const [market, setMarket] = useState<MarketPayload | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [category, setCategory] = useState("全部");
+  const [search, setSearch] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
+  const [live, setLive] = useState<LiveResult | null>(null);
+  const [liveLoading, setLiveLoading] = useState(false);
+  const [liveError, setLiveError] = useState("");
+  const term = search.trim();
   async function load() {
-    setLoading(true); setError('')
-    try { setMarket(await api<MarketPayload>('/agent/market')) }
-    catch (err) { setError(friendly(err)) }
-    finally { setLoading(false) }
+    setLoading(true);
+    setError("");
+    try {
+      setMarket(await api<MarketPayload>("/agent/market"));
+    } catch (err) {
+      setError(friendly(err));
+    } finally {
+      setLoading(false);
+    }
   }
-  useEffect(() => { void load() }, [])
+  useEffect(() => {
+    void load();
+  }, []);
   useEffect(() => {
     // 输入 ≥2 字符时防抖 400ms；换词、切源或卸载后忽略旧请求的结果与状态。
-    let active = true
-    setLive(null); setLiveError(''); setLiveLoading(term.length >= 2)
-    if (term.length < 2) return
+    let active = true;
+    setLive(null);
+    setLiveError("");
+    setLiveLoading(term.length >= 2);
+    if (term.length < 2) return;
     const timer = setTimeout(() => {
       api<LiveResult>(`/agent/market/search?q=${encodeURIComponent(term)}`)
-        .then(result => { if (active) setLive({ ...result, term }) })
-        .catch((err: unknown) => { if (active) { setLive(null); setLiveError(friendly(err)) } })
-        .finally(() => { if (active) setLiveLoading(false) })
-    }, 400)
-    return () => { active = false; clearTimeout(timer) }
-  }, [term, source])
+        .then((result) => {
+          if (active) setLive({ ...result, term });
+        })
+        .catch((err: unknown) => {
+          if (active) {
+            setLive(null);
+            setLiveError(friendly(err));
+          }
+        })
+        .finally(() => {
+          if (active) setLiveLoading(false);
+        });
+    }, 400);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
+  }, [term, source]);
   async function refresh() {
-    if (refreshing || busy) return
-    setRefreshing(true); setError('')
-    try { setMarket(await post<MarketPayload>('/agent/market/refresh')) } catch (err) { setError(friendly(err)) } finally { setRefreshing(false) }
+    if (refreshing || busy) return;
+    setRefreshing(true);
+    setError("");
+    try {
+      setMarket(await post<MarketPayload>("/agent/market/refresh"));
+    } catch (err) {
+      setError(friendly(err));
+    } finally {
+      setRefreshing(false);
+    }
   }
   const entries = useMemo(() => {
-    const allSkills = [...(market?.curated_skills || []).map(item => ({ ...item, layer: '内置' as const })), ...(market?.online?.skills || []).map(item => ({ ...item, layer: '在线' as const }))]
-    const allMcps = [...(market?.curated_mcp || []).map(item => ({ ...item, layer: '内置' as const })), ...(market?.online?.mcp || []).map(item => ({ ...item, layer: '在线' as const }))]
-    const match = (text: string) => text.toLowerCase().includes(term.toLowerCase())
-    const mcps = allMcps.filter(item => (category === '全部' || item.category === category) && match(`${item.name} ${item.desc || ''} ${item.command || ''} ${item.url || ''}`))
-    const skills = allSkills.filter(item => (category === '全部' || item.category === category) && match(`${item.name} ${item.title || ''} ${item.desc || ''}`))
+    const allSkills = [
+      ...(market?.curated_skills || []).map((item) => ({
+        ...item,
+        layer: "内置" as const,
+      })),
+      ...(market?.online?.skills || []).map((item) => ({
+        ...item,
+        layer: "在线" as const,
+      })),
+    ];
+    const allMcps = [
+      ...(market?.curated_mcp || []).map((item) => ({
+        ...item,
+        layer: "内置" as const,
+      })),
+      ...(market?.online?.mcp || []).map((item) => ({
+        ...item,
+        layer: "在线" as const,
+      })),
+    ];
+    const match = (text: string) =>
+      text.toLowerCase().includes(term.toLowerCase());
+    const mcps = allMcps.filter(
+      (item) =>
+        (category === "全部" || item.category === category) &&
+        match(
+          `${item.name} ${item.desc || ""} ${item.command || ""} ${item.url || ""}`,
+        ),
+    );
+    const skills = allSkills.filter(
+      (item) =>
+        (category === "全部" || item.category === category) &&
+        match(`${item.name} ${item.title || ""} ${item.desc || ""}`),
+    );
     // 市场已按 MCP / Skills 拆页：分类筛选只取本页类型，不掺入对方条目。
-    const pool = kind === 'mcp' ? allMcps : allSkills
-    return { mcps, skills, categories: ['全部', ...Array.from(new Set(pool.map(item => item.category)))] }
-  }, [market, category, term, kind])
-  const items = kind === 'mcp' ? entries.mcps : entries.skills
-  const currentLive = live?.term === term ? live : null
-  const fetchedAt = market?.online?.fetched_at || market?.fetched_at
-  return <div className="market-view">
-    <div className="market-toolbar">
-      <div className="market-tools">
-        <div className="market-search-field">
-          <label htmlFor={`market-search-${kind}`}>{text.searchLabel}</label>
-          <input id={`market-search-${kind}`} type="search" aria-describedby={`market-search-hint-${kind}`} placeholder={text.searchPlaceholder} value={search} onChange={event => setSearch(event.target.value)} />
-          <p id={`market-search-hint-${kind}`} className="field-help">{text.searchHint}</p>
+    const pool = kind === "mcp" ? allMcps : allSkills;
+    return {
+      mcps,
+      skills,
+      categories: [
+        "全部",
+        ...Array.from(new Set(pool.map((item) => item.category))),
+      ],
+    };
+  }, [market, category, term, kind]);
+  const items = kind === "mcp" ? entries.mcps : entries.skills;
+  const currentLive = live?.term === term ? live : null;
+  const fetchedAt = market?.online?.fetched_at || market?.fetched_at;
+  return (
+    <div className="market-view">
+      <div className="market-toolbar">
+        <div className="market-tools">
+          <div className="market-search-field">
+            <label htmlFor={`market-search-${kind}`}>{text.searchLabel}</label>
+            <input
+              id={`market-search-${kind}`}
+              type="search"
+              aria-describedby={`market-search-hint-${kind}`}
+              placeholder={text.searchPlaceholder}
+              value={search}
+              onChange={(event) => setSearch(event.target.value)}
+            />
+            <p id={`market-search-hint-${kind}`} className="field-help">
+              {text.searchHint}
+            </p>
+          </div>
+          <div className="market-chips" role="group" aria-label="在线检索源">
+            {(
+              Object.keys(SOURCE_TEXT) as Array<SystemSettings["market_source"]>
+            ).map((key) => (
+              <button
+                key={key}
+                type="button"
+                className={`market-chip ${source === key ? "active" : ""}`}
+                aria-pressed={source === key}
+                title={SOURCE_TEXT[key].desc}
+                onClick={() => {
+                  if (source === key) return;
+                  void updateSystemSettings({ market_source: key })
+                    .then(() =>
+                      toast(`在线检索源已切换为「${SOURCE_TEXT[key].label}」`),
+                    )
+                    .catch((err) =>
+                      toast(
+                        (err as Error).message || "设置保存失败，请稍后重试",
+                        "error",
+                      ),
+                    );
+                }}
+              >
+                {SOURCE_TEXT[key].label}
+              </button>
+            ))}
+          </div>
+          <button
+            type="button"
+            className="button secondary small"
+            disabled={loading || refreshing || Boolean(busy)}
+            onClick={() => void refresh()}
+          >
+            {refreshing ? "刷新中…" : "刷新在线目录"}
+          </button>
         </div>
-        <div className="market-chips" role="group" aria-label="在线检索源">
-          {(Object.keys(SOURCE_TEXT) as Array<SystemSettings['market_source']>).map(key => (
-            <button key={key} type="button" className={`market-chip ${source === key ? 'active' : ''}`} aria-pressed={source === key} title={SOURCE_TEXT[key].desc}
-              onClick={() => { if (source === key) return; void updateSystemSettings({ market_source: key }).then(() => toast(`在线检索源已切换为「${SOURCE_TEXT[key].label}」`)).catch(err => toast((err as Error).message || '设置保存失败，请稍后重试', 'error')) }}>
-              {SOURCE_TEXT[key].label}
-            </button>))}
+        <div
+          className="market-chips"
+          role="group"
+          aria-label="本地目录分类筛选"
+        >
+          {entries.categories.map((item) => (
+            <button
+              key={item}
+              type="button"
+              className={`market-chip ${category === item ? "active" : ""}`}
+              aria-pressed={category === item}
+              onClick={() => setCategory(item)}
+            >
+              {item}
+            </button>
+          ))}
         </div>
-        <button type="button" className="button secondary small" disabled={loading || refreshing || Boolean(busy)} onClick={() => void refresh()}>{refreshing ? '刷新中…' : '刷新在线目录'}</button>
       </div>
-      <div className="market-chips" role="group" aria-label="本地目录分类筛选">{entries.categories.map(item => <button key={item} type="button" className={`market-chip ${category === item ? 'active' : ''}`} aria-pressed={category === item} onClick={() => setCategory(item)}>{item}</button>)}</div>
+      <p className="field-help market-trust-note">
+        远程服务保存后仍需测试与授权；本地命令测试时会启动进程。请只添加你信任的服务。
+      </p>
+      <details className="market-help">
+        <summary>
+          目录来源与缓存说明
+          {market?.online && fetchedAt
+            ? ` · ${date(new Date(fetchedAt * 1000).toISOString())} 更新`
+            : ""}
+        </summary>
+        <p className="field-help">{text.help}</p>
+      </details>
+      {loading && (
+        <p role="status" className="muted">
+          正在读取市场目录…
+        </p>
+      )}
+      {refreshing && (
+        <p role="status" className="muted">
+          正在刷新在线目录，当前目录仍可浏览…
+        </p>
+      )}
+      {error && (
+        <div role="alert" className="market-error">
+          <p>
+            {market ? "在线目录刷新失败，保留当前目录：" : "市场目录读取失败："}
+            {error}
+          </p>
+          {!market && (
+            <button
+              type="button"
+              className="button secondary small"
+              disabled={loading || refreshing || Boolean(busy)}
+              onClick={() => void load()}
+            >
+              重试读取目录
+            </button>
+          )}
+        </div>
+      )}
+      {market && (
+        <>
+          <h2 className="market-heading">
+            {text.catalogHeading} <span>{items.length}</span>
+          </h2>
+          <div className="market-grid">
+            {kind === "mcp"
+              ? entries.mcps.map((item) => (
+                  <McpCard
+                    key={item.id}
+                    item={item}
+                    badge={
+                      item.layer === "在线"
+                        ? "在线"
+                        : item.official
+                          ? "官方"
+                          : "社区"
+                    }
+                    busy={busy}
+                    onInstall={onInstallMcp}
+                  />
+                ))
+              : entries.skills.map((item) => (
+                  <SkillCard
+                    key={item.id}
+                    item={item}
+                    badge={item.layer === "在线" ? "在线" : "内置"}
+                    busy={busy}
+                    onInstall={onInstallSkill}
+                    onTemplate={item.content ? onTemplate : undefined}
+                  />
+                ))}
+            {!items.length && <p className="muted">{text.emptyCatalog}</p>}
+          </div>
+        </>
+      )}
+      {term.length >= 2 && (
+        <>
+          <h2 className="market-heading">
+            在线搜索 · 「{term}」{" "}
+            <span role="status">
+              {liveLoading
+                ? `${SOURCE_TEXT[source][text.sourceKey]} 检索中…`
+                : currentLive
+                  ? `${kind === "mcp" ? currentLive.mcp.length : currentLive.skills.length} 个结果`
+                  : ""}
+            </span>
+          </h2>
+          {liveError && (
+            <p role="alert" className="market-error">
+              {liveError}
+            </p>
+          )}
+          {kind === "mcp" && (
+            <>
+              <div className="market-grid">
+                {(currentLive?.mcp || []).map((item) => (
+                  <McpCard
+                    key={item.id}
+                    item={item}
+                    badge="npm 在线"
+                    busy={busy}
+                    onInstall={onInstallMcp}
+                  />
+                ))}
+              </div>
+              {!liveLoading &&
+                !liveError &&
+                currentLive &&
+                !currentLive.mcp.length && (
+                  <p className="muted">
+                    npm 上没有匹配「{term}」的 MCP 服务；也可在「MCP
+                    工具」页手动配置地址
+                  </p>
+                )}
+            </>
+          )}
+          {kind === "skill" && (
+            <>
+              {currentLive?.skills_error && (
+                <p role="status" className="muted">
+                  {currentLive.skills_error}
+                </p>
+              )}
+              {Boolean(currentLive?.skills.length) && (
+                <div className="market-grid">
+                  {currentLive!.skills.map((item) => (
+                    <SkillCard
+                      key={item.id}
+                      item={item}
+                      badge="GitHub 在线"
+                      busy={busy}
+                      onInstall={onInstallSkill}
+                    />
+                  ))}
+                </div>
+              )}
+              {!liveLoading &&
+                !liveError &&
+                !currentLive?.skills_error &&
+                currentLive &&
+                !currentLive.skills.length && (
+                  <p className="muted">
+                    GitHub 上没有匹配「{term}」且带 SKILL.md 的仓库
+                  </p>
+                )}
+            </>
+          )}
+        </>
+      )}
     </div>
-    <p className="field-help market-trust-note">远程服务保存后仍需测试与授权；本地命令测试时会启动进程。请只添加你信任的服务。</p>
-    <details className="market-help"><summary>目录来源与缓存说明{market?.online && fetchedAt ? ` · ${date(new Date(fetchedAt * 1000).toISOString())} 更新` : ''}</summary><p className="field-help">{text.help}</p></details>
-    {loading && <p role="status" className="muted">正在读取市场目录…</p>}
-    {refreshing && <p role="status" className="muted">正在刷新在线目录，当前目录仍可浏览…</p>}
-    {error && <div role="alert" className="market-error"><p>{market ? '在线目录刷新失败，保留当前目录：' : '市场目录读取失败：'}{error}</p>{!market && <button type="button" className="button secondary small" disabled={loading || refreshing || Boolean(busy)} onClick={() => void load()}>重试读取目录</button>}</div>}
-    {market && <>
-      <h2 className="market-heading">{text.catalogHeading} <span>{items.length}</span></h2>
-      <div className="market-grid">{kind === 'mcp'
-        ? entries.mcps.map(item => <McpCard key={item.id} item={item} badge={item.layer === '在线' ? '在线' : item.official ? '官方' : '社区'} busy={busy} onInstall={onInstallMcp} />)
-        : entries.skills.map(item => <SkillCard key={item.id} item={item} badge={item.layer === '在线' ? '在线' : '内置'} busy={busy} onInstall={onInstallSkill} onTemplate={item.content ? onTemplate : undefined} />)}{!items.length && <p className="muted">{text.emptyCatalog}</p>}</div>
-    </>}
-    {term.length >= 2 && <><h2 className="market-heading">在线搜索 · 「{term}」 <span role="status">{liveLoading ? `${SOURCE_TEXT[source][text.sourceKey]} 检索中…` : currentLive ? `${kind === 'mcp' ? currentLive.mcp.length : currentLive.skills.length} 个结果` : ''}</span></h2>
-      {liveError && <p role="alert" className="market-error">{liveError}</p>}
-      {kind === 'mcp' && <>
-        <div className="market-grid">{(currentLive?.mcp || []).map(item => <McpCard key={item.id} item={item} badge="npm 在线" busy={busy} onInstall={onInstallMcp} />)}</div>
-        {!liveLoading && !liveError && currentLive && !currentLive.mcp.length && <p className="muted">npm 上没有匹配「{term}」的 MCP 服务；也可在「MCP 工具」页手动配置地址</p>}
-      </>}
-      {kind === 'skill' && <>
-        {currentLive?.skills_error && <p role="status" className="muted">{currentLive.skills_error}</p>}
-        {Boolean(currentLive?.skills.length) && <div className="market-grid">{currentLive!.skills.map(item => <SkillCard key={item.id} item={item} badge="GitHub 在线" busy={busy} onInstall={onInstallSkill} />)}</div>}
-        {!liveLoading && !liveError && !currentLive?.skills_error && currentLive && !currentLive.skills.length && <p className="muted">GitHub 上没有匹配「{term}」且带 SKILL.md 的仓库</p>}
-      </>}
-    </>}
-  </div>
+  );
 }

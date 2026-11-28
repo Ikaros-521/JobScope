@@ -1,6 +1,6 @@
-import { useEffect } from 'react'
+import { useEffect } from "react";
 
-type RunStreamEvent = (event: string, data: Record<string, unknown>) => void
+type RunStreamEvent = (event: string, data: Record<string, unknown>) => void;
 
 /**
  * 后台 run 的 SSE 订阅收尾纪律，单一来源（2026-11-28 自五处手写收敛；审计 P1-3 前端侧）：
@@ -15,19 +15,19 @@ type RunStreamEvent = (event: string, data: Record<string, unknown>) => void
  * 评估适配（代次守卫 + onerror 探状态）、对话主流（审批/取消协议）。
  */
 export function useRunStream(
-  runId: string | '',
+  runId: string | "",
   open: (runId: string, onEvent: RunStreamEvent) => EventSource,
   onEvent: RunStreamEvent,
   onFatal: () => void,
 ) {
   useEffect(() => {
-    if (!runId) return
-    const source = open(runId, onEvent)
+    if (!runId) return;
+    const source = open(runId, onEvent);
     source.onerror = () => {
-      if (source.readyState !== EventSource.CLOSED) return
-      onFatal()
-    }
-    return () => source.close()
+      if (source.readyState !== EventSource.CLOSED) return;
+      onFatal();
+    };
+    return () => source.close();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runId])
+  }, [runId]);
 }
