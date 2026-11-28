@@ -50,13 +50,13 @@ def main():
 
         page.route('**/api/**', intercept)
         page.goto(args.url)
-        # 新档案会自动弹教程遮罩（拦截点击）：等它出现按 Esc 跳过；再展开「岗位研究」组。
+        # 新档案会自动弹教程遮罩（拦截点击）：等它出现按 Esc 跳过；再展开「求职工作台」组。
         try:
             page.get_by_role('dialog', name='使用教程').wait_for(state='attached', timeout=15000)
             page.keyboard.press('Escape')
         except Exception:
             pass
-        nav_toggle = page.get_by_role('button', name='岗位研究', exact=True).first
+        nav_toggle = page.get_by_role('button', name='求职工作台', exact=True).first
         if nav_toggle.get_attribute('aria-expanded') == 'false':
             nav_toggle.click()
         page.locator('.sidebar').get_by_role('button', name=re.compile(r'^收藏')).click()
