@@ -140,14 +140,26 @@ def test_pipeline_review_api_includes_funnel(client):
 
 # ── 触达话术（规则兜底口径，测试环境未配模型） ──
 
+def _start_outreach(client, job_id, kind):
+    """起生成 run 并等 worker 收尾（规则兜底秒级完成）；返回 done 帧的版本行。"""
+    start = client.post(f'/api/jobs/{job_id}/outreach/runs', json={'kind': kind}).json()
+    handle = client.app.state.outreach_runs.get(start['run_id'])
+    handle.thread.join(timeout=5)
+    assert handle.done
+    for kind_name, payload in handle.events:
+        if kind_name == 'done':
+            return payload['version']
+    raise AssertionError('run 未推 done 帧')
+
+
 def test_outreach_fallback_and_versions(client):
     repo = client.app.state.repo
     job = repo.save_job(make_job(tags=['Python', 'SQL']), 'boss')
 
-    version = client.post(f'/api/jobs/{job["id"]}/outreach', json={'kind': 'greeting'}).json()
+    version = _start_outreach(client, job['id'], 'greeting')
     assert version['origin'] == 'rules' and job['title'] in version['text']
 
-    followup = client.post(f'/api/jobs/{job["id"]}/outreach', json={'kind': 'followup'}).json()
+    followup = _start_outreach(client, job['id'], 'followup')
     assert '投递' in followup['text']
 
     listed = client.get(f'/api/jobs/{job["id"]}/outreach').json()['versions']
@@ -160,9 +172,13 @@ def test_outreach_fallback_and_versions(client):
 
 
 def test_outreach_unknown_job_and_kind(client):
-    assert client.post('/api/jobs/J-none/outreach', json={'kind': 'greeting'}).status_code == 422
+    start = client.post('/api/jobs/J-none/outreach/runs', json={'kind': 'greeting'})
+    assert start.status_code == 200  # 未知岗位在 worker 内判错（generate 的入口语义不复制）
+    handle = client.app.state.outreach_runs.get(start.json()['run_id'])
+    handle.thread.join(timeout=5)
+    assert client.get(f"/api/jobs/J-none/outreach/runs/{start.json()['run_id']}").json()['done'] is True
     job = client.app.state.repo.save_job(make_job(), 'boss')
-    assert client.post(f'/api/jobs/{job["id"]}/outreach', json={'kind': 'other'}).status_code == 422
+    assert client.post(f'/api/jobs/{job["id"]}/outreach/runs', json={'kind': 'other'}).status_code == 422
 
 
 def test_agent_pipeline_funnel_tool_reads_real_data(tmp_path):

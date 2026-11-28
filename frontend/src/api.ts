@@ -167,7 +167,11 @@ export function getJdAssessmentCross() { return api<JdAssessmentCrossState>('/jd
 // 触达话术（2026-11-22）：生成即落版本，A/B 靠 used_at 使用标记；平台发送由用户在招聘站手动完成。
 export type OutreachVersion = { id: string; job_id: string; kind: 'greeting' | 'followup'; text: string; origin: string; created_at: string; used_at: string }
 export function getOutreachVersions(jobId: string) { return api<{ versions: OutreachVersion[] }>(`/jobs/${encodeURIComponent(jobId)}/outreach`) }
-export function generateOutreach(jobId: string, kind: 'greeting' | 'followup') { return post<OutreachVersion>(`/jobs/${encodeURIComponent(jobId)}/outreach`, { kind }) }
+export function startOutreachRun(jobId: string, kind: 'greeting' | 'followup') { return post<{ run_id: string; reused: boolean }>(`/jobs/${encodeURIComponent(jobId)}/outreach/runs`, { kind }) }
+const OUTREACH_STREAM_EVENTS = ['start', 'done', 'error', 'end'] as const
+export function openOutreachStream(jobId: string, runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
+  return openStream(`/api/jobs/${encodeURIComponent(jobId)}/outreach/runs/${encodeURIComponent(runId)}/stream`, OUTREACH_STREAM_EVENTS, onEvent)
+}
 export function markOutreachUsed(jobId: string, versionId: string) { return post<{ marked: boolean }>(`/jobs/${encodeURIComponent(jobId)}/outreach/${encodeURIComponent(versionId)}/used`) }
 // 列表端点的 text 可能被裁剪（text_truncated），text_hit 是搜索命中处的全文摘要窗口。
 export type Evidence = { id: string; title: string; url: string; source: string; kind: string; company: string; text: string; collected_at: string; published_at: string | null; content_hash: string; text_truncated?: boolean; text_hit?: string }

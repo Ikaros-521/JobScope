@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { date, generateOutreach, getOutreachVersions, markOutreachUsed } from './api'
+import { date, getOutreachVersions, markOutreachUsed, openOutreachStream, startOutreachRun } from './api'
 import type { Job, OutreachVersion } from './api'
 import { toast } from './toast'
 import { Button } from './ui'
@@ -8,6 +8,8 @@ import { Icon } from './Icon'
 // 触达话术面板（2026-11-22）：打招呼/跟进消息生成与版本 A/B。
 // 平台发送仍由用户在招聘站窗口手动完成（人工把关），这里负责生成、复制与「已使用」标记——
 // 用了哪条标记哪条，漏斗侧的回复数据对比才有归因依据。模型不可用时后端自动退规则模板。
+// 生成走后台 run + SSE（2026-11-28 审计 P1-4）：不再在请求线程里等模型，done 帧带回
+// 已落库的版本行；断流/失败一律解锁（同 PrepPlanView 的收尾纪律）。
 const KINDS = [
   { id: 'greeting' as const, label: '打招呼', hint: 'BOSS 首条消息' },
   { id: 'followup' as const, label: '跟进', hint: '投后催进展' },
@@ -19,6 +21,7 @@ export function OutreachEditor({ job, onClose }: { job: Job; onClose: () => void
   const [kind, setKind] = useState<'greeting' | 'followup'>(
     job.pipeline_status === 'applied' || job.pipeline_status === 'interviewing' ? 'followup' : 'greeting')
   const [busy, setBusy] = useState('')
+  const [runId, setRunId] = useState('')
 
   useEffect(() => {
     void getOutreachVersions(job.id).then(data => setVersions(data.versions)).catch(() => setVersions([]))
@@ -29,11 +32,37 @@ export function OutreachEditor({ job, onClose }: { job: Job; onClose: () => void
     void action().catch((err: Error) => toast(err.message, 'error')).finally(() => setBusy(''))
   }
 
-  const generate = () => run('generate', async () => {
-    const version = await generateOutreach(job.id, kind)
-    toast('已生成新话术，复制后到招聘站发送', 'notice')
-    setVersions(previous => [version, ...previous])
-  })
+  const generate = () => {
+    if (runId) return // 生成已在进行中
+    setBusy('generate')
+    void startOutreachRun(job.id, kind)
+      .then(start => setRunId(start.run_id))
+      .catch((err: Error) => { toast(err.message, 'error'); setBusy('') })
+  }
+
+  useEffect(() => {
+    if (!runId) return
+    const source = openOutreachStream(job.id, runId, (event, data) => {
+      if (event === 'done') {
+        const version = data.version as OutreachVersion
+        toast('已生成新话术，复制后到招聘站发送', 'notice')
+        setVersions(previous => [version, ...previous])
+        setRunId(''); setBusy('')
+        source.close()
+      } else if (event === 'error') {
+        toast(String((data as { message?: string }).message ?? '生成失败'), 'error')
+        setRunId(''); setBusy('')
+        source.close()
+      }
+    })
+    source.onerror = () => {
+      // 致命断流（CLOSED）不会再有任何帧，就地解锁；短暂抖动交给自动重连。
+      if (source.readyState !== EventSource.CLOSED) return
+      setRunId(''); setBusy('')
+      toast('生成连接中断，请重试', 'error')
+    }
+    return () => source.close()
+  }, [runId, job.id])
   const copy = (item: OutreachVersion) => run(`copy-${item.id}`, async () => {
     await navigator.clipboard.writeText(item.text)
     toast('话术已复制')

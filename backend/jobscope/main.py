@@ -21,6 +21,8 @@ from starlette.middleware.gzip import GZipMiddleware
 
 from .analysis import analyze, parse_resume
 from .analyze_runs import AnalyzeManager
+from .outreach_runs import OutreachManager
+from .run_registry import event_stream
 from .backup import BackupError, BackupStore
 from .chat import answer_question, model_configured
 from .chat_runs import GLOBAL_SCOPE, RunManager
@@ -125,6 +127,7 @@ def create_app(data_dir=None):
     transcript_runs = TranscriptManager(repo)
     prep_plan_runs = PrepPlanManager(repo)
     prep_adjust_runs = PrepAdjustManager(repo)
+    outreach_runs = OutreachManager(repo)
     scope_expansions = ScopeExpansionStore(repo)
     knowledge = KnowledgeStore(repo)
     knowledge_imports = KnowledgeImportManager(knowledge, repo)
@@ -135,6 +138,7 @@ def create_app(data_dir=None):
     app.state.transcript_runs = transcript_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     app.state.prep_plan_runs = prep_plan_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     app.state.prep_adjust_runs = prep_adjust_runs  # exposed for tests: join worker threads to avoid cross-test leaks
+    app.state.outreach_runs = outreach_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
     # 数据备份（2026-11-18）：`.data/` 是生产数据，备份/恢复能力是一等公民而非运维纪律。
@@ -837,13 +841,27 @@ def create_app(data_dir=None):
 
     # ── 触达生成器（2026-11-22）：打招呼/跟进话术。模型不可用走规则兜底，生成即落版本。 ──
 
-    @app.post('/api/jobs/{job_id}/outreach')
-    def generate_outreach(job_id: str, data: OutreachInput):
-        from .outreach import generate
-        try:
-            return generate(repo, job_id, data.kind)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from None
+    @app.post('/api/jobs/{job_id}/outreach/runs')
+    def outreach_run_start(job_id: str, data: OutreachInput):
+        # 生成走后台 run + SSE（2026-11-28 审计 P1-4）；规则兜底让 run 秒级完成，
+        # 是否有模型在 worker 内判（generate 的兜底语义不在入口复制）。
+        handle, reused = outreach_runs.start(job_id, data.kind)
+        return dict(run_id=handle.id, reused=reused)
+
+    @app.get('/api/jobs/{job_id}/outreach/runs/{run_id}')
+    def outreach_run_status(job_id: str, run_id: str = PathParam(max_length=100)):
+        handle = outreach_runs.get(run_id)
+        if handle is None or getattr(handle, 'job_id', '') != job_id:
+            raise HTTPException(404, '运行不存在或已结束')
+        return handle.snapshot()
+
+    @app.get('/api/jobs/{job_id}/outreach/runs/{run_id}/stream')
+    def outreach_run_stream(job_id: str, run_id: str = PathParam(max_length=100)):
+        handle = outreach_runs.get(run_id)
+        if handle is None or getattr(handle, 'job_id', '') != job_id:
+            raise HTTPException(404, '运行不存在或已结束')
+        return StreamingResponse(event_stream(handle)(), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
     @app.get('/api/jobs/{job_id}/outreach')
     def outreach_versions(job_id: str):
