@@ -2376,3 +2376,12 @@ def create_app(data_dir=None):
 # 模块级 app 已挪到 jobscope/asgi.py（2026-11-27）：在这里建默认实例会让任何
 # `import jobscope.main` 都先打开项目根 .data（生产库）——临时脚本与审计工具踩过。
 # 启动入口改为 `uvicorn jobscope.asgi:app`。
+def __getattr__(name):
+    # 老命令 `uvicorn jobscope.main:app` 已失效；给一句能照着做的报错，而不是
+    # 干巴巴的 no attribute（2026-11-28 疑似有人用老命令重启失败导致 8765 停服）。
+    if name == 'app':
+        raise AttributeError(
+            "jobscope.main.app 已移除：启动请用 `python -m uvicorn jobscope.asgi:app`"
+            "（或仓库根 .\\start.ps1）；import jobscope.main 不再建应用、不再碰默认数据目录")
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
