@@ -1,42 +1,52 @@
-import { useCallback, useEffect, useState } from 'react'
-import type { FormEvent } from 'react'
+import { Suspense, lazy, useCallback, useEffect, useState } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import { api, getSourceHealth } from './api'
 import type { BrowserStatus, ConversationNavigation, PageInfo, PipelinePrescription, Source, SourceHealth, Task } from './api'
 import { signalTaskNames } from './SignalSources'
 import { toast } from './toast'
 import { emptyPage } from './Pagination'
 import { EvidenceWorkspace } from './EvidenceWorkspace'
-import { CompanyCompare } from './CompanyCompare'
-import { SourcesView } from './SourcesView'
-import type { SourcesTab } from './SourcesView'
 import { Button } from './ui'
-import { AgentExtensions } from './AgentExtensions'
-import { ModelSettings } from './ModelSettings'
-import { SystemSettings } from './SystemSettings'
 import { ResumeImport } from './ResumeImport'
-import { ResumeWorkshop } from './ResumeWorkshop'
-import type { WorkshopPrefill } from './ResumeWorkshop'
-import { ProfileView } from './ProfileView'
-import { RunwayView } from './RunwayView'
-import { JdAssessmentView } from './JdAssessmentView'
-import { FailureMuseumView } from './FailureMuseumView'
-import { KnowledgeView } from './KnowledgeView'
-import { LogView } from './LogView'
 import { TodayView } from './TodayView'
 import { JobResearch } from './JobResearch'
 import type { JobOpenRequest } from './JobResearch'
-import { FavoritesView } from './FavoritesView'
 import { navigateTabs } from './tabNavigation'
 import Tutorial, { tutorialSeenVersion, TUTORIAL_VERSION } from './Tutorial'
 import { useCompareSelection } from './compareSelectionStore'
 import { ChatWorkspace } from './chat/ChatWorkspace'
 import { Icon } from './Icon'
-import InterviewView from './InterviewView'
 import type { InterviewDeepLink } from './InterviewView'
 import type { InterviewDrillRef } from './api'
-import { PrepPlanView } from './PrepPlanView'
 import { NAV_GROUPS, NAV_STORAGE_KEY, hashQuery, viewFromHash } from './navigation'
 import type { SettingsTab, ViewId } from './navigation'
+import type { SourcesTab } from './SourcesView'
+import type { WorkshopPrefill } from './ResumeWorkshop'
+
+// 按视图代码分割（2026-11-28 审计 P1-7）：单包 1.69MB（gzip 534KB）里 echarts 与
+// 面试/横评/工坊等大视图占大头。常驻视图（岗位研究/公司资料库）与首屏（今日）保持
+// eager，其余视图懒加载——首次切到该视图时才拉对应 chunk（浏览器缓存后秒开）。
+// 命名导出经 .then(m => ({ default: m.X })) 归一成 lazy 需要的形态。
+const CompanyCompare = lazy(() => import('./CompanyCompare').then(m => ({ default: m.CompanyCompare })))
+const SourcesView = lazy(() => import('./SourcesView').then(m => ({ default: m.SourcesView })))
+const AgentExtensions = lazy(() => import('./AgentExtensions').then(m => ({ default: m.AgentExtensions })))
+const ModelSettings = lazy(() => import('./ModelSettings').then(m => ({ default: m.ModelSettings })))
+const SystemSettings = lazy(() => import('./SystemSettings').then(m => ({ default: m.SystemSettings })))
+const ResumeWorkshop = lazy(() => import('./ResumeWorkshop').then(m => ({ default: m.ResumeWorkshop })))
+const ProfileView = lazy(() => import('./ProfileView').then(m => ({ default: m.ProfileView })))
+const RunwayView = lazy(() => import('./RunwayView').then(m => ({ default: m.RunwayView })))
+const JdAssessmentView = lazy(() => import('./JdAssessmentView').then(m => ({ default: m.JdAssessmentView })))
+const FailureMuseumView = lazy(() => import('./FailureMuseumView').then(m => ({ default: m.FailureMuseumView })))
+const KnowledgeView = lazy(() => import('./KnowledgeView').then(m => ({ default: m.KnowledgeView })))
+const LogView = lazy(() => import('./LogView').then(m => ({ default: m.LogView })))
+const FavoritesView = lazy(() => import('./FavoritesView').then(m => ({ default: m.FavoritesView })))
+const InterviewView = lazy(() => import('./InterviewView'))
+const PrepPlanView = lazy(() => import('./PrepPlanView').then(m => ({ default: m.PrepPlanView })))
+
+// 懒视图的加载占位：本地 chunk 秒级到位，占位只是防瞬间白屏。
+function LazyPane({ children }: { children: ReactNode }) {
+  return <Suspense fallback={<div className="loading-state"><span className="spinner" />正在加载工作区…</div>}>{children}</Suspense>
+}
 
 // App 壳（2026-11-19 拆分）：导航、视图路由（#/ 深链）、跨视图信号与各工作区装配。
 // 岗位研究的全部状态与交互在 JobResearch.tsx；适配报告组件簇在 AnalysisView.tsx；
@@ -329,52 +339,52 @@ export default function App() {
         onPrescriptionNavigate={openPrescriptionTarget}
         onOpenPrepPlan={() => setView('prep-plan')} />}
 
-      {view === 'knowledge' && <KnowledgeView onCountChange={setKnowledgeTotal} />}
+      {view === 'knowledge' && <LazyPane><KnowledgeView onCountChange={setKnowledgeTotal} /></LazyPane>}
 
       {view === 'global' && <><h1 className="sr-only">全局对话</h1><ChatWorkspace scope={{ kind: 'global' }} modelConfigured={modelConfigured} onConfigureModel={configureModel} onManageExtensions={() => openSettings('extensions')} onOpenKnowledge={() => setView('knowledge')} navigation={chatNavigation?.scope.kind === 'global' ? chatNavigation : null} onNavigateConversation={navigateConversation} onOpened={chatOpened} prefill={chatPrompt} onPrefillConsumed={() => setChatPrompt(null)} onOpenJob={openJobFrom} onWorkshop={openWorkshop} /></>}
 
-      {view === 'compare' && <CompanyCompare />}
+      {view === 'compare' && <LazyPane><CompanyCompare /></LazyPane>}
 
-      {view === 'interview' && <InterviewView deepLink={interviewRequest} modelConfigured={modelConfigured} onConfigureModel={configureModel} />}
+      {view === 'interview' && <LazyPane><InterviewView deepLink={interviewRequest} modelConfigured={modelConfigured} onConfigureModel={configureModel} /></LazyPane>}
 
-      {view === 'prep-plan' && <PrepPlanView onOpenInterview={openInterview} />}
+      {view === 'prep-plan' && <LazyPane><PrepPlanView onOpenInterview={openInterview} /></LazyPane>}
 
-      {view === 'favorites' && <FavoritesView onOpenJob={openJobFrom} onOpenCompare={() => setView('compare')} onPrescriptionNavigate={openPrescriptionTarget} onOpenRunway={() => setView('runway')} onChange={() => {
+      {view === 'favorites' && <LazyPane><FavoritesView onOpenJob={openJobFrom} onOpenCompare={() => setView('compare')} onPrescriptionNavigate={openPrescriptionTarget} onOpenRunway={() => setView('runway')} onChange={() => {
         // 收藏变动：刷新角标并通知岗位研究（后者仅在「只看收藏」过滤时重刷列表）。
         void refreshFavCount()
         setFavoritesTick(tick => tick + 1)
-      }} />}
+      }} /></LazyPane>}
 
       {view === 'resume' && <><section className="page-intro compact"><h1 className="sr-only">我的简历</h1>{resumeRevision != null && <span className="revision-label">版本 {resumeRevision}</span>}</section><div className="resume-layout"><form className="paper-panel resume-editor" onSubmit={saveResume}><div className="section-heading"><h2>简历与事实档案</h2><label className="format-select"><span className="sr-only">简历格式</span><select value={resumeFormat} onChange={event => { setResumeFormat(event.target.value); setResumeSaved(false) }}><option value="text">简历纯文本 / Markdown</option><option value="facts_yaml">ResumeLoom facts.yaml</option></select></label></div><ResumeImport disabled={Boolean(shellBusy) || loading} hasText={Boolean(resumeText.trim())} onApply={(text, format) => { setResumeText(text); setResumeFormat(format); setResumeSaved(false); toast('已提取并填入编辑区，请核对内容后保存。') }} /><label htmlFor="resume-text" className="field-label">简历正文</label><textarea className="resume-textarea" id="resume-text" value={resumeText} onChange={event => { setResumeText(event.target.value); setResumeSaved(false) }} required maxLength={100000} spellCheck={false} placeholder={resumeFormat === 'facts_yaml' ? 'schema_version: 1\nfacts:\n  ...' : '填写技能、工作经历、项目经验，以及地点和薪资等求职偏好。\n\n建议保留具体职责、项目背景和经过确认的成果。'} /><div className="editor-footer"><span className={resumeSaved ? '' : 'editor-unsaved'}>{resumeText.length.toLocaleString()} 字符 · {resumeSaved ? '已保存' : '未保存的修改'}</span><Button className="button primary" busy={shellBusy === 'resume'} disabled={Boolean(shellBusy)} type="submit">保存到本地<Icon name="check" size={17} /></Button></div><div className="privacy-note"><Icon name="book" size={18} /><p>文件在本机提取文字，确认保存后仅保留文本。启用外部模型分析时，相关资料可能发送至你配置的模型服务。</p></div></form></div></>}
 
-      {view === 'profile' && <ProfileView onImportViaChat={openGlobalAgent} />}
+      {view === 'profile' && <LazyPane><ProfileView onImportViaChat={openGlobalAgent} /></LazyPane>}
 
-      {view === 'workshop' && <ResumeWorkshop prefill={workshopPrefill} onPrefillConsumed={() => setWorkshopPrefill(null)} onOpenResume={() => setView('resume')} />}
+      {view === 'workshop' && <LazyPane><ResumeWorkshop prefill={workshopPrefill} onPrefillConsumed={() => setWorkshopPrefill(null)} onOpenResume={() => setView('resume')} /></LazyPane>}
 
-      {view === 'runway' && <RunwayView />}
+      {view === 'runway' && <LazyPane><RunwayView /></LazyPane>}
 
-      {view === 'jd-assessment' && <JdAssessmentView />}
+      {view === 'jd-assessment' && <LazyPane><JdAssessmentView /></LazyPane>}
 
-      {view === 'failure-museum' && <FailureMuseumView onOpenInterview={openInterview} />}
+      {view === 'failure-museum' && <LazyPane><FailureMuseumView onOpenInterview={openInterview} /></LazyPane>}
 
-      {view === 'sources' && <SourcesView active={view === 'sources'} tab={sourcesTab} onTabChange={setSourcesTab}
+      {view === 'sources' && <LazyPane><SourcesView active={view === 'sources'} tab={sourcesTab} onTabChange={setSourcesTab}
         sources={sources} loading={loading} jobsTotal={jobsTotal} browser={browser} onBrowserStatus={setBrowser}
         tasks={tasks} tasksInfo={tasksInfo} loadTasks={loadTasks} busy={shellBusy} perform={perform}
         refreshMetadata={refreshMetadata} onJobsChanged={() => { setRefreshTick(tick => tick + 1); void refreshFavCount(); return Promise.resolve() }} onOpenJobs={() => { setJobOpenRequest({ kind: 'list', token: Date.now() }); setView('jobs') }}
         query={query} onQueryChange={setQuery} location={location} onLocationChange={setLocation}
         browserSource={browserSource} onBrowserSourceChange={setBrowserSource}
         browserLimit={browserLimit} onBrowserLimitChange={setBrowserLimit}
-        cityPinyin={cityPinyin} locations={locations} sourceNames={sourceNames} />}
+        cityPinyin={cityPinyin} locations={locations} sourceNames={sourceNames} /></LazyPane>}
 
-      {view === 'logs' && <LogView />}
+      {view === 'logs' && <LazyPane><LogView /></LazyPane>}
 
       {view === 'settings' && <>
         <button className="button secondary settings-return" onClick={() => setView(settingsReturn)}>返回原工作区</button>
         {/* 设置中心：模型 / 系统 / Agent 扩展三页合一。标签沿用 management-tabs 的键盘导航。 */}
         <div className="management-tabs" role="tablist" aria-label="设置分区" onKeyDown={navigateTabs}>{([['model', '模型设置'], ['system', '系统设置'], ['extensions', 'Agent 扩展']] as const).map(([id, label]) => <button key={id} id={`settings-${id}-tab`} role="tab" aria-controls={`settings-${id}-panel`} aria-selected={settingsTab === id} tabIndex={settingsTab === id ? 0 : -1} onClick={() => setSettingsTab(id)}>{label}</button>)}</div>
-        <div id="settings-model-panel" role="tabpanel" aria-labelledby="settings-model-tab" hidden={settingsTab !== 'model'}><ModelSettings onSaved={refreshMetadata} /></div>
-        <div id="settings-system-panel" role="tabpanel" aria-labelledby="settings-system-tab" hidden={settingsTab !== 'system'}><SystemSettings /></div>
-        <div id="settings-extensions-panel" role="tabpanel" aria-labelledby="settings-extensions-tab" hidden={settingsTab !== 'extensions'} className="extensions-view"><AgentExtensions /></div>
+        <div id="settings-model-panel" role="tabpanel" aria-labelledby="settings-model-tab" hidden={settingsTab !== 'model'}><LazyPane><ModelSettings onSaved={refreshMetadata} /></LazyPane></div>
+        <div id="settings-system-panel" role="tabpanel" aria-labelledby="settings-system-tab" hidden={settingsTab !== 'system'}><LazyPane><SystemSettings /></LazyPane></div>
+        <div id="settings-extensions-panel" role="tabpanel" aria-labelledby="settings-extensions-tab" hidden={settingsTab !== 'extensions'} className="extensions-view"><LazyPane><AgentExtensions /></LazyPane></div>
       </>}
     </main>
     <Tutorial open={tutorialOpen} onClose={() => setTutorialOpen(false)} />
