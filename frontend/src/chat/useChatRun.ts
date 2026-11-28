@@ -98,7 +98,7 @@ export function useChatRun(scope: ChatScope = { kind: 'global' }, navigation?: C
 
   function syncQueueToConversation(id: string | null) {
     let parsed: { conversation: string | null; items?: QueuedMessage[] } | null = null
-    try { parsed = JSON.parse(sessionStorage.getItem(queueKeyRef.current) || 'null') } catch { parsed = null }
+    try { parsed = JSON.parse(sessionStorage.getItem(queueKeyRef.current) || 'null') } catch { /* 坏档按空队列处理 */ }
     const items = parsed && parsed.conversation === id && Array.isArray(parsed.items)
       ? parsed.items.filter(item => typeof item?.content === 'string' && item.content.trim())
       : []
