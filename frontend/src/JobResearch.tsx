@@ -45,11 +45,13 @@ import { EvidenceCard } from "./EvidenceCard";
 import { CityInput } from "./CityInput";
 import type { SavedLocation } from "./CityInput";
 import { Button, Empty, External } from "./ui";
-import { BossImport } from "./BossImport";
 import { CompanyReference } from "./CompanyReference";
 import { ManualJobDescription } from "./ManualJobDescription";
 import { JobCard } from "./JobCard";
 import { ChatWorkspace } from "./chat/ChatWorkspace";
+import { JobResearchDialogs } from "./jobs/JobResearchDialogs";
+import { JobEvidence } from "./jobs/JobEvidence";
+import { jobQuery, needsFullJd, transportNames } from "./jobs/shared";
 import { PipelineFollowEditor } from "./PipelineFollowEditor";
 import { PIPELINE_NAMES, PIPELINE_ORDER, isDueOverdue } from "./FavoritesView";
 import { AnalysisView, AnalyzeProgress } from "./AnalysisView";
@@ -66,47 +68,6 @@ import type { SourcesTab } from "./SourcesView";
 // favoritesTick（收藏变动后按需重刷）、refreshTick（顶栏刷新）。
 export type JobOpenRequest =
   { kind: "job"; id: string; token: number } | { kind: "list"; token: number };
-
-function jobQuery(filters: {
-  q: string;
-  location: string;
-  source: string;
-  salaryMin: string;
-  salaryMax: string;
-  starred?: boolean;
-}) {
-  const params = new URLSearchParams({
-    q: filters.q,
-    location: filters.location,
-    source: filters.source,
-  });
-  if (filters.salaryMin)
-    params.set(
-      "salary_min",
-      String(Math.round(Number(filters.salaryMin) * 1000)),
-    );
-  if (filters.salaryMax)
-    params.set(
-      "salary_max",
-      String(Math.round(Number(filters.salaryMax) * 1000)),
-    );
-  if (filters.starred) params.set("starred", "true");
-  return params;
-}
-const transportNames: Record<string, string> = {
-  http_api: "接口",
-  browser_page: "需浏览器",
-  company_web: "网页快查",
-  manual: "手动",
-};
-function needsFullJd(job: Job) {
-  return (
-    job.description_status === "listing" ||
-    (["boss", "zhaopin"].includes(job.source) &&
-      job.description_status !== "complete")
-  );
-}
-
 export function JobResearch({
   active,
   loading,
@@ -2245,284 +2206,27 @@ export function JobResearch({
             )}
           </div>
         )}
-      </div>
-      {modal && (
-        <div
-          className="modal-backdrop"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !busy) setModal(null);
-          }}
-        >
-          <section
-            className="modal paper-panel"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="modal-title"
-            onKeyDown={(event) => {
-              if (event.key === "Escape" && !busy) {
-                event.stopPropagation();
-                setModal(null);
-              }
-              if (event.key === "Tab") {
-                const focusable = Array.from(
-                  event.currentTarget.querySelectorAll<HTMLElement>(
-                    "button:not(:disabled), input:not(:disabled), textarea:not(:disabled), select:not(:disabled), a[href]",
-                  ),
-                );
-                const first = focusable[0],
-                  last = focusable[focusable.length - 1];
-                if (event.shiftKey && document.activeElement === first) {
-                  event.preventDefault();
-                  last?.focus();
-                } else if (!event.shiftKey && document.activeElement === last) {
-                  event.preventDefault();
-                  first?.focus();
-                }
-              }
-            }}
-          >
-            <div className="section-heading">
-              <div>
-                <h2 id="modal-title">
-                  {modal === "job"
-                    ? "导入岗位"
-                    : modal === "evidence"
-                      ? "补充公司资料"
-                      : modal === "boss-import"
-                        ? "从 Boss 导入"
-                        : modal === "batch-edit"
-                          ? "批量编辑档案"
-                          : "确认删除岗位"}
-                </h2>
-              </div>
-              <button
-                className="icon-button"
-                aria-label="关闭弹窗"
-                onClick={() => setModal(null)}
-                disabled={Boolean(busy)}
-              >
-                <Icon name="close" />
-              </button>
-            </div>
-            <p className="muted body-small">
-              {modal === "job"
-                ? "粘贴原始岗位信息，来源将标记为“用户导入”。"
-                : modal === "evidence"
-                  ? "保留原文和来源，帮助后续核实。请勿填写 Cookie 或访问令牌。"
-                  : modal === "boss-import"
-                    ? "你在项目浏览器里看到的 Boss 页面就是导入源：捕获当前页、粘贴分享链接，重复岗位自动归并。"
-                    : modal === "batch-edit"
-                      ? `将应用到已选的 ${batchEdit?.ids.length ?? 0} 份档案；留空的字段保持不变，薪资按原文覆盖（如 15–25K·13薪）。`
-                      : `将删除${confirmDelete?.label || "所选岗位"}，连同其岗位证据、适配报告与岗位对话，此操作不可恢复。`}
-            </p>
-            {(modal === "job" || modal === "evidence") && (
-              <>
-                <form onSubmit={importRecord}>
-                  <label className="field-label" htmlFor="import-title">
-                    {modal === "job" ? "岗位名称" : "资料标题"} <span>*</span>
-                  </label>
-                  <input
-                    id="import-title"
-                    name="title"
-                    required
-                    maxLength={300}
-                    autoFocus
-                  />
-                  <label className="field-label" htmlFor="import-company">
-                    公司名称 <span>*</span>
-                  </label>
-                  <input
-                    id="import-company"
-                    name="company"
-                    required
-                    maxLength={300}
-                    defaultValue={modal === "evidence" ? job?.company : ""}
-                  />
-                  {modal === "job" ? (
-                    <div className="form-two">
-                      <div>
-                        <label
-                          className="field-label"
-                          htmlFor="import-location"
-                        >
-                          工作地点
-                        </label>
-                        <input
-                          id="import-location"
-                          name="location"
-                          maxLength={200}
-                        />
-                      </div>
-                      <div>
-                        <label className="field-label" htmlFor="import-salary">
-                          原始薪资描述
-                        </label>
-                        <input
-                          id="import-salary"
-                          name="salary"
-                          maxLength={300}
-                          placeholder="保留原文，如 20–25K·13薪"
-                        />
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <label className="field-label" htmlFor="import-kind">
-                        资料类型
-                      </label>
-                      <select
-                        id="import-kind"
-                        name="kind"
-                        defaultValue="user_material"
-                      >
-                        <option value="user_material">用户提供材料</option>
-                        <option value="employee_statement">员工自述</option>
-                        <option value="company_statement">企业自述</option>
-                        <option value="disclosure">正式披露</option>
-                        <option value="media_report">媒体报道</option>
-                      </select>
-                    </>
-                  )}
-                  <label className="field-label" htmlFor="import-url">
-                    原始链接（可选）
-                  </label>
-                  <input
-                    id="import-url"
-                    name="url"
-                    type="url"
-                    maxLength={2000}
-                    placeholder="https://"
-                  />
-                  <label className="field-label" htmlFor="import-body">
-                    {modal === "job" ? "岗位描述" : "资料原文"} <span>*</span>
-                  </label>
-                  <textarea
-                    id="import-body"
-                    name={modal === "job" ? "description" : "text"}
-                    required
-                    rows={7}
-                    maxLength={100000}
-                  />
-                  <div className="modal-actions">
-                    <button
-                      type="button"
-                      className="button secondary"
-                      onClick={() => setModal(null)}
-                      disabled={Boolean(busy)}
-                    >
-                      取消
-                    </button>
-                    <Button
-                      className="button primary"
-                      type="submit"
-                      busy={busy === "import"}
-                      disabled={Boolean(busy)}
-                    >
-                      保存资料
-                      <Icon name="check" size={16} />
-                    </Button>
-                  </div>
-                </form>
-              </>
-            )}
-            {modal === "boss-import" && (
-              <BossImport
-                onClose={() => setModal(null)}
-                onImported={() => {
-                  void loadJobs();
-                  void refreshFavorites();
-                  void refreshMetadata();
-                }}
-              />
-            )}
-            {modal === "batch-edit" && batchEdit && (
-              <form onSubmit={submitBatchEdit}>
-                <label className="field-label" htmlFor="batch-location">
-                  工作地点
-                </label>
-                <input
-                  id="batch-location"
-                  value={batchDraft.location}
-                  onChange={(event) =>
-                    setBatchDraft({
-                      ...batchDraft,
-                      location: event.target.value,
-                    })
-                  }
-                  maxLength={300}
-                  autoFocus
-                />
-                <label className="field-label" htmlFor="batch-salary">
-                  薪资描述
-                </label>
-                <input
-                  id="batch-salary"
-                  value={batchDraft.salary}
-                  onChange={(event) =>
-                    setBatchDraft({ ...batchDraft, salary: event.target.value })
-                  }
-                  maxLength={300}
-                  placeholder="15–25K·13薪"
-                />
-                <label className="field-label" htmlFor="batch-tags">
-                  个人标签（逗号分隔，可清空；平台标签保留）
-                </label>
-                <input
-                  id="batch-tags"
-                  value={batchDraft.tags}
-                  onChange={(event) => {
-                    setTagsChanged(true);
-                    setBatchDraft({ ...batchDraft, tags: event.target.value });
-                  }}
-                  maxLength={500}
-                  placeholder="已核实, 优先投递"
-                />
-                <div className="modal-actions">
-                  <button
-                    type="button"
-                    className="button secondary"
-                    onClick={() => setModal(null)}
-                    disabled={Boolean(busy)}
-                  >
-                    取消
-                  </button>
-                  <Button
-                    className="button primary"
-                    type="submit"
-                    busy={busy === "batch-edit"}
-                    disabled={Boolean(busy)}
-                  >
-                    保存修改
-                    <Icon name="check" size={16} />
-                  </Button>
-                </div>
-              </form>
-            )}
-            {modal === "confirm-delete" && confirmDelete && (
-              <div className="modal-actions">
-                <button
-                  type="button"
-                  className="button secondary"
-                  onClick={() => setModal(null)}
-                  disabled={Boolean(busy)}
-                >
-                  取消
-                </button>
-                <Button
-                  className="button danger"
-                  busy={busy === "batch-delete"}
-                  disabled={Boolean(busy)}
-                  onClick={() =>
-                    void perform("batch-delete", submitBatchDelete)
-                  }
-                >
-                  确认删除
-                </Button>
-              </div>
-            )}
-          </section>
-        </div>
-      )}
+      </div>{" "}
+      <JobResearchDialogs
+        modal={modal}
+        setModal={setModal}
+        busy={busy}
+        batchEdit={batchEdit}
+        batchDraft={batchDraft}
+        setBatchDraft={setBatchDraft}
+        setTagsChanged={setTagsChanged}
+        confirmDelete={confirmDelete}
+        importRecord={importRecord}
+        submitBatchEdit={submitBatchEdit}
+        submitBatchDelete={submitBatchDelete}
+        perform={perform}
+        job={job}
+        onBossImported={() => {
+          void loadJobs();
+          void refreshFavorites();
+          void refreshMetadata();
+        }}
+      />
       {followJob && (
         <PipelineFollowEditor
           job={followJob}
@@ -2530,63 +2234,6 @@ export function JobResearch({
           onSaved={(patch) => applyFollowPatch(followJob, patch)}
         />
       )}
-    </>
-  );
-}
-
-function JobEvidence({ jobId, focus = "" }: { jobId: string; focus?: string }) {
-  const [items, setItems] = useState<Evidence[]>([]);
-  const [info, setInfo] = useState<PageInfo>(emptyPage);
-  const [busy, setBusy] = useState(false);
-  const request = useRef(0);
-  async function load(page = 1) {
-    const token = ++request.current;
-    setBusy(true);
-    try {
-      const data = await api<PageInfo & { evidence: Evidence[] }>(
-        `/jobs/${encodeURIComponent(jobId)}/evidence?page=${page}&page_size=10`,
-      );
-      if (token === request.current) {
-        setItems(data.evidence);
-        setInfo(data);
-      }
-    } catch (err) {
-      if (token === request.current) toast((err as Error).message, "error");
-    } finally {
-      if (token === request.current) setBusy(false);
-    }
-  }
-  useEffect(() => {
-    void load();
-    return () => {
-      request.current++;
-    };
-  }, [jobId]);
-  // 求职参考里的「出处」跳到这里：命中那条证据时展开并滚过去，让它自己开口说来源。
-  useEffect(() => {
-    if (!focus) return;
-    const target = document.getElementById(`evidence-entry-${focus}`);
-    if (!target) return;
-    target.querySelector("details")?.setAttribute("open", "");
-    target.scrollIntoView({ block: "center" });
-  }, [focus, items]);
-  return (
-    <>
-      {items.map((item) => (
-        <div
-          key={item.id}
-          id={`evidence-entry-${item.id}`}
-          className={item.id === focus ? "evidence-focus" : undefined}
-        >
-          <EvidenceCard evidence={item} />
-        </div>
-      ))}
-      <Pagination
-        info={info}
-        label="岗位证据"
-        busy={busy}
-        onPage={(page) => void load(page)}
-      />
     </>
   );
 }
