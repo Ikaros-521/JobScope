@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import {
   api,
@@ -7,40 +7,19 @@ import {
   date,
   isStale,
   relativeDays,
-  computeReliability,
-  collectCompanySignals,
-  extractCompanySignals,
-  getReliability,
-  getReliabilityHistory,
   patchJobs,
   startCompanyResearch,
-  startAnalyzeRun,
-  cancelAnalyzeRun,
-  openAnalyzeStream,
-  listJobReports,
-  getJobReport,
-  updateAnalysisStatus,
-  listResumeVersions,
-  pinResumeVersion,
-  getAnalyzeRun,
 } from "./api";
 import type {
   Analysis,
-  AnalyzeRunStart,
-  Evidence,
   Job,
-  PageInfo,
-  ReliabilityHistory,
-  ReliabilityReport,
-  ReportSummary,
-  ResumeVersionSummary,
   Source,
   SourceHealth,
   Task,
   ConversationNavigation,
 } from "./api";
 import { toast, dismissToast, failedTaskToast, taskSucceeded } from "./toast";
-import { Pagination, emptyPage } from "./Pagination";
+import { Pagination } from "./Pagination";
 import { EvidenceCard } from "./EvidenceCard";
 import { CityInput } from "./CityInput";
 import type { SavedLocation } from "./CityInput";
@@ -51,11 +30,13 @@ import { JobCard } from "./JobCard";
 import { ChatWorkspace } from "./chat/ChatWorkspace";
 import { JobResearchDialogs } from "./jobs/JobResearchDialogs";
 import { JobEvidence } from "./jobs/JobEvidence";
+import { useJobList } from "./jobs/useJobList";
+import { useAnalyzeRun } from "./jobs/useAnalyzeRun";
+import { useJobDetail } from "./jobs/useJobDetail";
 import { jobQuery, needsFullJd, transportNames } from "./jobs/shared";
 import { PipelineFollowEditor } from "./PipelineFollowEditor";
 import { PIPELINE_NAMES, PIPELINE_ORDER, isDueOverdue } from "./FavoritesView";
 import { AnalysisView, AnalyzeProgress } from "./AnalysisView";
-import type { AnalyzeRunState } from "./AnalysisView";
 import { navigateTabs } from "./tabNavigation";
 import { Icon } from "./Icon";
 import type { WorkshopPrefill } from "./ResumeWorkshop";
@@ -141,24 +122,18 @@ export function JobResearch({
   favoritesTick: number;
   refreshTick: number;
 }) {
-  const [jobs, setJobs] = useState<Job[]>([]);
-  const [jobsInfo, setJobsInfo] = useState<PageInfo>(emptyPage);
-  const [jobsTotal, setJobsTotal] = useState(0);
-  // 首次岗位列表未回前保持骨架屏：App 的全局 loading 只覆盖元数据，列表另有自己的就绪位。
-  const [jobsLoading, setJobsLoading] = useState(true);
+  const {
+    jobs,
+    jobsInfo,
+    jobsTotal,
+    jobsLoading,
+    jobFilters,
+    loadJobs,
+    patchLocalJob,
+  } = useJobList({ onTotalChange });
   const booting = loading || jobsLoading;
-  const jobFilters = useRef({
-    q: "",
-    location: "",
-    source: "",
-    salaryMin: "",
-    salaryMax: "",
-    starred: false,
-  });
-  const jobsRequest = useRef(0);
   const [collectLimit, setCollectLimit] = useState(20);
   const [busy, setBusy] = useState("");
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [archiveDraft, setArchiveDraft] = useState({
     q: "",
@@ -181,41 +156,64 @@ export function JobResearch({
   } | null>(null);
   // 跟进编辑弹窗目标（2026-11-18）：岗位详情的「跟进」按钮打开。
   const [followJob, setFollowJob] = useState<Job | null>(null);
-  const [detail, setDetail] = useState<{
-    job: Job;
-    evidence: Evidence[];
-    company_evidence: Evidence[];
-    evidence_total: number;
-  } | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const scrollToSelectedDetail = useRef(false);
   const [tab, setTab] = useState<"overview" | "analysis" | "evidence">(
     "overview",
   );
-  const [analysis, setAnalysis] = useState<Analysis | null>(null);
-  const [analyzeRun, setAnalyzeRun] = useState<AnalyzeRunState | null>(null);
-  const analyzeSourceRef = useRef<EventSource | null>(null);
-  const analyzeActiveRef = useRef(false); // 流式 run 是否在途：后台细节刷新不能盖掉进行中的进度面板
-  const [analysisHistory, setAnalysisHistory] = useState<
-    ReportSummary[] | null
-  >(null);
-  const [activeReportId, setActiveReportId] = useState<string | null>(null);
-  // 岗位绑定的存档版本：评估简历选择条的数据源（pin 的那份即「评估用」）。
-  const [jobVersions, setJobVersions] = useState<ResumeVersionSummary[] | null>(
-    null,
-  );
-  const [reliability, setReliability] = useState<ReliabilityReport | null>(
-    null,
-  );
-  const [reliabilityHistory, setReliabilityHistory] =
-    useState<ReliabilityHistory | null>(null);
-  // 求职参考是详情页里的慢请求：读取中与「还没生成过」必须可区分
-  const [reliabilityLoading, setReliabilityLoading] = useState(false);
-  const [reliabilityAction, setReliabilityAction] = useState<{
-    label: string;
-    status: string;
-    message: string;
-  } | null>(null);
+  const detailRequest = useRef(0);
+  const activeJobId = useRef<string | null>(null);
+  const jobGeneration = useRef(0);
+  const {
+    analysis,
+    setAnalysis,
+    analyzeRun,
+    analysisHistory,
+    activeReportId,
+    jobVersions,
+    pinnedVersion,
+    refreshReports,
+    loadJobVersions,
+    loadHistoryReport,
+    changeRequirementStatus,
+    switchEvalResume,
+    analyze: startAnalyze,
+    cancelAnalyze,
+    resetForJobSwitch: resetAnalysisForSwitch,
+  } = useAnalyzeRun({
+    jobGeneration,
+    activeJobId,
+    detailRequest,
+    setTab,
+    getJob: () => detail?.job ?? null,
+  });
+  const {
+    selectedId,
+    setSelectedId,
+    detail,
+    setDetail,
+    reliability,
+    setReliability,
+    reliabilityHistory,
+    setReliabilityHistory,
+    reliabilityLoading,
+    reliabilityAction,
+    setReliabilityAction,
+    detailLoading,
+    loadDetail,
+    beginSelect,
+    restoreLastJob,
+    recomputeReference,
+    runReferenceAction,
+  } = useJobDetail({
+    jobGeneration,
+    activeJobId,
+    detailRequest,
+    refreshReports,
+    loadJobVersions,
+    perform,
+  });
+  // 本地派生（不经 hook 返回值）：保持 `job` 与 `detail` 的别名关系，JSX 的
+  // `job &&` 守卫才能把 detail 收窄成非空（解构返回值会丢掉这条类型链）。
+  const job = detail?.job;
   const [evidenceFocus, setEvidenceFocus] = useState("");
   const [descExpanded, setDescExpanded] = useState(false);
   const [companyPage, setCompanyPage] = useState(0);
@@ -227,10 +225,6 @@ export function JobResearch({
   const [modal, setModal] = useState<
     "job" | "evidence" | "boss-import" | "batch-edit" | "confirm-delete" | null
   >(null);
-  const detailRequest = useRef(0);
-  const activeJobId = useRef<string | null>(null);
-  const jobGeneration = useRef(0);
-  const job = detail?.job;
   const modalOpener = useRef<HTMLElement | null>(null);
   function openModal(
     value: "job" | "evidence" | "boss-import" | "batch-edit" | "confirm-delete",
@@ -248,39 +242,6 @@ export function JobResearch({
       opener?.focus();
     };
   }, [modal]);
-
-  const loadJobs = useCallback(
-    async (filters = jobFilters.current, page = 1) => {
-      jobFilters.current = filters;
-      const params = jobQuery(filters);
-      params.set("page", String(page));
-      const token = ++jobsRequest.current;
-      const data = await api<PageInfo & { jobs: Job[] }>(
-        `/jobs?${params.toString()}`,
-      );
-      if (token === jobsRequest.current) {
-        setJobs(data.jobs);
-        setJobsInfo(data);
-        const active = filters;
-        if (
-          !active.q &&
-          !active.location &&
-          !active.source &&
-          !active.salaryMin &&
-          !active.salaryMax &&
-          !active.starred
-        ) {
-          setJobsTotal(data.total);
-          onTotalChange(data.total);
-        }
-      }
-      return data.jobs;
-    },
-    [onTotalChange],
-  );
-  useEffect(() => {
-    void loadJobs().finally(() => setJobsLoading(false));
-  }, [loadJobs]);
 
   // ── 跨视图信号 ──
   const firstFavoritesTick = useRef(true);
@@ -325,302 +286,25 @@ export function JobResearch({
       /* 存储不可用忽略 */
     }
     if (!last) return;
-    void api<Job>(`/jobs/${encodeURIComponent(last)}`)
-      .then(() => selectJob(last as string))
-      .catch(() => {
-        try {
-          sessionStorage.removeItem("jobscope-last-job");
-        } catch {
-          /* 同上 */
-        }
-      });
+    restoreLastJob(last);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 评估报告回读：打开岗位即拉历史摘要与最近一份完整报告（历史数据不丢，刷新/切回都能看到）。
-  // 流式 run 在途时只更新历史列表，不用旧报告盖掉进度面板；done 帧会带新报告并刷新此列表。
-  function refreshReports(jobId: string) {
-    const token = detailRequest.current;
-    void listJobReports(jobId)
-      .then((result) => {
-        if (token !== detailRequest.current || jobId !== activeJobId.current)
-          return;
-        setAnalysisHistory(result.reports);
-        setActiveReportId(result.reports[0]?.id ?? null);
-        if (result.latest && !analyzeActiveRef.current)
-          setAnalysis(result.latest);
-      })
-      .catch(() => {
-        /* 回读失败不影响详情展示 */
-      });
-  }
-  async function loadHistoryReport(reportId: string) {
-    const id = activeJobId.current;
-    if (!id) return;
-    try {
-      setAnalysis(await getJobReport(id, reportId));
-      setActiveReportId(reportId);
-    } catch (err) {
-      toast((err as Error).message, "error");
-    }
-  }
-  // 需求行手动改判：后端按岗位记忆并重算所有已存报告；这里把返回的最新报告换上。
-  async function changeRequirementStatus(jdQuote: string, status: string) {
-    const id = activeJobId.current;
-    if (!id) return;
-    try {
-      const result = await updateAnalysisStatus(id, jdQuote, status);
-      if (result.report) setAnalysis(result.report);
-      toast(result.message || "已按你的确认重算，重新评估时自动沿用。");
-    } catch (err) {
-      toast((err as Error).message, "error");
-    }
-  }
-  // 评估简历切换：选存档即 pin 到当前岗位（互斥），选「我的简历」解 pin 回退全局。
-  const pinnedVersion =
-    (jobVersions ?? []).find((version) => version.pinned) ?? null;
-  async function switchEvalResume(value: string) {
-    const id = activeJobId.current;
-    if (!id) return;
-    try {
-      if (value) {
-        await pinResumeVersion(Number(value), true);
-        toast("已切换，该岗位评估适配将使用所选存档。");
-      } else if (pinnedVersion) {
-        await pinResumeVersion(pinnedVersion.id, false);
-        toast("已解绑，该岗位评估适配将回退「我的简历」。");
-      }
-      const versions = await listResumeVersions(id);
-      if (id === activeJobId.current) setJobVersions(versions.versions);
-    } catch (err) {
-      toast((err as Error).message, "error");
-    }
-  }
-  const loadDetail = useCallback(async (id: string) => {
-    const token = ++detailRequest.current;
-    setDetailLoading(true);
-    try {
-      const data = await api<{
-        job: Job;
-        evidence: Evidence[];
-        company_evidence: Evidence[];
-        evidence_total: number;
-      }>(`/jobs/${encodeURIComponent(id)}`);
-      if (token === detailRequest.current) {
-        setDetail(data);
-        refreshReports(data.job.id);
-        // 岗位绑定的存档版本（评估简历选择条数据源）；失败静默——选择条消失即可，不挡详情。
-        void listResumeVersions(data.job.id)
-          .then((versions) => {
-            if (
-              token === detailRequest.current &&
-              data.job.id === activeJobId.current
-            )
-              setJobVersions(versions.versions);
-          })
-          .catch(() => {
-            if (token === detailRequest.current) setJobVersions([]);
-          });
-        // 先清空上一家的报告，再读这一家的：GET 走后端的 peek，查不到也只是不显示，不会写出 companies 行。
-        setReliability(null);
-        setReliabilityHistory(null);
-        setReliabilityAction(null);
-        const company = data.job.company;
-        setReliabilityLoading(true);
-        void Promise.allSettled([
-          getReliability(company).then((result) => {
-            if (
-              token === detailRequest.current &&
-              data.job.id === activeJobId.current
-            )
-              setReliability(result.report);
-            return result.report; // 带出去给自动重算做「输入有没有变」的对照；条件不满足时 undefined 同样按「没有已存报告」处理
-          }), // 没有生成过参考时这里什么都不显示；失败同样只结束 loading，不算「已生成」
-          getReliabilityHistory(company).then((result) => {
-            if (
-              token === detailRequest.current &&
-              data.job.id === activeJobId.current
-            )
-              setReliabilityHistory(result.history);
-          }), // 没有历史快照时趋势区不显示
-        ]).then(async (settled) => {
-          // 打开详情即自动重算：打分全程是本地代码（本地统计 → 规则打分 → 措辞模板），不联网、
-          // 不用模型；输入没变时信号与报告落库都是幂等写入，不产生重复历史快照。采集完「还得
-          // 手动点一下生成」的点击就省在这里；「生成参考」按钮保留给手动刷新与失败重试。
-          if (
-            token !== detailRequest.current ||
-            data.job.id !== activeJobId.current
-          )
-            return;
-          const stored =
-            settled[0].status === "fulfilled" ? settled[0].value : null;
-          try {
-            const report = await computeReliability(company);
-            if (
-              token !== detailRequest.current ||
-              data.job.id !== activeJobId.current
-            )
-              return;
-            setReliability(report);
-            // 输入没变就收掉状态行，别在每次打开岗位时留常驻提示；变了才说明本地统计刷新了什么。
-            const changed =
-              !stored ||
-              stored.input_hash !== report.input_hash ||
-              stored.rubric_version !== report.rubric_version ||
-              stored.wording_version !== report.wording_version;
-            setReliabilityAction(
-              changed && report.collection
-                ? {
-                    label: "已按已存数据自动重算",
-                    status: report.collection.status,
-                    message: report.collection.message,
-                  }
-                : null,
-            );
-            const history = await getReliabilityHistory(company);
-            if (
-              token === detailRequest.current &&
-              data.job.id === activeJobId.current
-            )
-              setReliabilityHistory(history.history);
-          } catch (err) {
-            if (
-              token !== detailRequest.current ||
-              data.job.id !== activeJobId.current
-            )
-              return;
-            // 自动路径失败不弹 toast：已有报告就照常显示上次结果，只留一行可行动的失败说明。
-            setReliabilityAction({
-              label: "自动重算未完成",
-              status: "failed",
-              message: `${(err as Error).message}；${stored ? "仍显示上次报告，可点「重新计算」重试。" : "可点「生成参考」重试。"}`,
-            });
-          } finally {
-            // 首次生成期间保持「正在读取」占位；结束后才让「暂不出分 / 还没生成过」的兜底文案露面。
-            if (
-              token === detailRequest.current &&
-              data.job.id === activeJobId.current
-            )
-              setReliabilityLoading(false);
-          }
-        });
-      }
-    } catch (err) {
-      if (token === detailRequest.current)
-        toast((err as Error).message, "error");
-    } finally {
-      if (token === detailRequest.current) setDetailLoading(false);
-    }
-  }, []);
+  // 选岗 = 评估线程复位 + 详情线程复位 + UI 状态复位（原 selectJob 的编排拆三处执行）。
   function selectJob(id: string) {
-    closeAnalyzeStream();
-    setAnalyzeRun(null);
-    analyzeActiveRef.current = false;
-    setAnalysisHistory(null);
-    setActiveReportId(null);
-    setJobVersions(null); // 切走岗位停止消费；后台 run 继续跑完并落库
+    resetAnalysisForSwitch();
     setPaneFocus("info");
     setDiscoveryOpen(false);
-    jobGeneration.current++;
-    activeJobId.current = id;
-    setSelectedId(id);
-    setDetail(null);
-    setAnalysis(null);
-    setReliability(null);
-    setReliabilityHistory(null);
-    setReliabilityLoading(false);
-    setReliabilityAction(null);
     setEvidenceFocus("");
     setDescExpanded(false);
     setCompanyPage(0);
     setTab("overview");
-    try {
-      sessionStorage.setItem("jobscope-last-job", id);
-    } catch {
-      /* 存储不可用时仅本次会话生效 */
-    }
-    const panel = document.querySelector<HTMLElement>(".detail-panel");
-    panel?.scrollTo({ top: 0 });
-    scrollToSelectedDetail.current = window.matchMedia(
-      "(max-width: 1040px)",
-    ).matches;
-    void loadDetail(id);
+    beginSelect(id);
   }
-  useEffect(() => {
-    if (!scrollToSelectedDetail.current) return;
-    const panel = document.querySelector<HTMLElement>(".detail-panel");
-    panel?.scrollIntoView({ block: "start" });
-    panel?.focus({ preventScroll: true });
-    if (!detailLoading) scrollToSelectedDetail.current = false;
-  }, [selectedId, detailLoading]);
+
   function openReferenceEvidence(evidenceId: string) {
     setEvidenceFocus(evidenceId);
     setTab("evidence");
-  }
-  async function recomputeReference() {
-    if (!job) return;
-    const company = job.company,
-      id = job.id,
-      generation = jobGeneration.current;
-    await perform("reliability", async () => {
-      const result = await computeReliability(company);
-      if (generation === jobGeneration.current && id === activeJobId.current) {
-        setReliability(result);
-        // 重算会自动刷新本地统计；把这段反馈亮出来，用户才知道分数用上了哪些已存数据。
-        setReliabilityAction(
-          result.collection
-            ? {
-                label: "已自动刷新本地统计",
-                status: result.collection.status,
-                message: result.collection.message,
-              }
-            : null,
-        );
-        try {
-          const history = await getReliabilityHistory(company);
-          if (
-            generation === jobGeneration.current &&
-            id === activeJobId.current
-          )
-            setReliabilityHistory(history.history);
-        } catch {
-          toast("求职参考已重算，历史记录暂时读取失败。", "error");
-        }
-      }
-    });
-  }
-  async function runReferenceAction(kind: "coverage" | "extract") {
-    if (!job) return;
-    const company = job.company,
-      id = job.id,
-      generation = jobGeneration.current;
-    const label = kind === "coverage" ? "盘点已有资料" : "提取资料数字";
-    await perform("reliability", async () => {
-      // 采集与抽取的 status、message 一律照后端原文显示，不改写、不美化。
-      const result =
-        kind === "coverage"
-          ? await collectCompanySignals(company, "jobscope_jobs")
-          : await extractCompanySignals(company);
-      if (generation !== jobGeneration.current || id !== activeJobId.current)
-        return;
-      setReliabilityAction({
-        label,
-        status: result.status,
-        message: result.message,
-      });
-      if (kind === "extract" && result.status === "skipped") return;
-      const report = await computeReliability(company);
-      if (generation !== jobGeneration.current || id !== activeJobId.current)
-        return;
-      setReliability(report);
-      try {
-        const history = await getReliabilityHistory(company);
-        if (generation === jobGeneration.current && id === activeJobId.current)
-          setReliabilityHistory(history.history);
-      } catch {
-        toast("求职参考已重算，历史记录暂时读取失败。", "error");
-      }
-    });
   }
   async function perform(key: string, action: () => Promise<void>) {
     setBusy(key);
@@ -672,144 +356,6 @@ export function JobResearch({
     if (busy) return "有其他任务进行中，结束后可评估";
     return "按完整JD逐项对照简历，模型辅助、代码计分";
   }
-  // 评估适配走流式运行：拆解/分组匹配/计分进度实时展示，完成时整体替换为正式报告。
-  // 重复点击同一岗位时后端返回既有 run（reused），前端从头重放事件即可续接进度。
-  async function analyze() {
-    if (!job || analyzeRun) return;
-    const id = job.id;
-    const generation = jobGeneration.current;
-    setTab("analysis");
-    let started: AnalyzeRunStart;
-    try {
-      started = await startAnalyzeRun(id);
-    } catch (err) {
-      toast((err as Error).message, "error");
-      return;
-    }
-    if (generation !== jobGeneration.current) return;
-    if (started.report) {
-      setAnalysis(started.report);
-      refreshReports(id);
-      toast("适配分析完成。");
-      return;
-    } // 未绑定分析模型：规则分析即时返回
-    setAnalyzeRun({
-      id: started.run_id,
-      startedAt: Date.now(),
-      extract: { status: "pending", total: null },
-      match: { status: "pending", done: 0, total: null },
-      score: { status: "pending" },
-      items: [],
-    });
-    analyzeActiveRef.current = true;
-    attachAnalyzeStream(started.run_id);
-  }
-  function attachAnalyzeStream(runId: string) {
-    closeAnalyzeStream();
-    const generation = jobGeneration.current;
-    const source = openAnalyzeStream(runId, (event, data) => {
-      // 仅当前代次消费事件；切走岗位后后台 run 照常执行，事件缓冲在服务端。
-      if (generation !== jobGeneration.current) return;
-      if (event === "stage") {
-        const stage = String(data.stage);
-        const status: "pending" | "running" | "done" =
-          data.status === "done" ? "done" : "running";
-        const total = typeof data.total === "number" ? data.total : null;
-        setAnalyzeRun((cur) =>
-          !cur
-            ? cur
-            : stage === "extract"
-              ? { ...cur, extract: { status, total } }
-              : stage === "match"
-                ? {
-                    ...cur,
-                    match: {
-                      ...cur.match,
-                      status,
-                      total: total ?? cur.match.total,
-                    },
-                  }
-                : { ...cur, score: { status } },
-        );
-      } else if (event === "group") {
-        const items = Array.isArray(data.items)
-          ? (data.items as Analysis["requirements"])
-          : [];
-        setAnalyzeRun((cur) =>
-          !cur
-            ? cur
-            : {
-                ...cur,
-                match: {
-                  ...cur.match,
-                  status: "running",
-                  done: cur.match.done + 1,
-                  total:
-                    typeof data.total === "number"
-                      ? data.total
-                      : cur.match.total,
-                },
-                items: [...cur.items, ...items],
-              },
-        );
-      } else if (event === "done") {
-        closeAnalyzeStream();
-        setAnalyzeRun(null);
-        analyzeActiveRef.current = false;
-        const report = data as unknown as Analysis;
-        setAnalysis(report);
-        refreshReports(report.job_id); // 历史列表刷新，新报告成为最新一份
-        toast("适配分析完成。");
-      } else if (event === "error") {
-        closeAnalyzeStream();
-        setAnalyzeRun(null);
-        analyzeActiveRef.current = false;
-        toast(String(data.message || "评估适配失败"), "error");
-      } else if (event === "cancelled" || event === "end") {
-        closeAnalyzeStream();
-        setAnalyzeRun(null);
-        analyzeActiveRef.current = false;
-      }
-    });
-    source.onerror = () => {
-      // 断连由 EventSource 自动重连；但后端重启会孤儿化 run（流 404、永不再来事件），
-      // 探一次状态：run 已不存在就解灰评估按钮，避免卡死。
-      getAnalyzeRun(runId)
-        .then((status) => {
-          if (status.done) {
-            closeAnalyzeStream();
-            setAnalyzeRun(null);
-            analyzeActiveRef.current = false;
-            refreshReports(activeJobId.current || "");
-          }
-        })
-        .catch(() => {
-          if (generation !== jobGeneration.current) return;
-          closeAnalyzeStream();
-          setAnalyzeRun(null);
-          analyzeActiveRef.current = false;
-          toast(
-            "后台评估运行已不存在（服务可能重启过），可重新评估。",
-            "error",
-          );
-        });
-    };
-    analyzeSourceRef.current = source;
-  }
-  function closeAnalyzeStream() {
-    analyzeSourceRef.current?.close();
-    analyzeSourceRef.current = null;
-  }
-  async function cancelAnalyze() {
-    if (!analyzeRun) return;
-    try {
-      await cancelAnalyzeRun(analyzeRun.id);
-    } catch {
-      /* 已结束的 run 返回 404，等 done/error 帧收尾即可 */
-    }
-    // 取消是合作式：保留进度面板直到 cancelled 帧到达（当前小组完成后停止）。
-  }
-  useEffect(() => closeAnalyzeStream, []);
   async function collectCompany() {
     if (!job) return;
     const company = job.company;
@@ -1021,17 +567,10 @@ export function JobResearch({
       const result = await patchJobs([item.id], { starred: !item.starred });
       if (!result.updated) return;
       const starred = !item.starred;
-      setJobs((list) =>
-        list.map((entry) =>
-          entry.id === item.id
-            ? {
-                ...entry,
-                starred,
-                starred_at: starred ? new Date().toISOString() : undefined,
-              }
-            : entry,
-        ),
-      );
+      patchLocalJob(item.id, {
+        starred,
+        starred_at: starred ? new Date().toISOString() : undefined,
+      });
       setDetail((current) =>
         current?.job.id === item.id
           ? {
@@ -1069,11 +608,7 @@ export function JobResearch({
             pipeline_note: undefined,
             pipeline_due: undefined,
           };
-      setJobs((list) =>
-        list.map((entry) =>
-          entry.id === item.id ? { ...entry, ...local } : entry,
-        ),
-      );
+      patchLocalJob(item.id, local);
       setDetail((current) =>
         current?.job.id === item.id
           ? { ...current, job: { ...current.job, ...local } }
@@ -1088,11 +623,7 @@ export function JobResearch({
     item: Job,
     patch: { pipeline_note?: string; pipeline_due?: string },
   ) {
-    setJobs((list) =>
-      list.map((entry) =>
-        entry.id === item.id ? { ...entry, ...patch } : entry,
-      ),
-    );
+    patchLocalJob(item.id, patch);
     setDetail((current) =>
       current?.job.id === item.id
         ? { ...current, job: { ...current.job, ...patch } }
@@ -1779,7 +1310,7 @@ export function JobResearch({
                           needsFullJd(job) ||
                           Boolean(analyzeRun)
                         }
-                        onClick={() => void analyze()}
+                        onClick={() => void startAnalyze()}
                       >
                         <Icon name="check" size={16} />
                         评估适配
