@@ -32,6 +32,7 @@ import {
   hashQuery,
   viewFromHash,
 } from "./navigation";
+import { GlobalSearch } from "./GlobalSearch";
 import type { SettingsTab, ViewId } from "./navigation";
 import type { SourcesTab } from "./SourcesView";
 import type { WorkshopPrefill } from "./ResumeWorkshop";
@@ -611,6 +612,22 @@ export default function App() {
           <div className="topbar-right">
             <button
               className="icon-button"
+              aria-label="全局搜索"
+              title="全局搜索（Ctrl/⌘+K）"
+              onClick={() =>
+                document.dispatchEvent(
+                  new KeyboardEvent("keydown", {
+                    key: "k",
+                    metaKey: true,
+                    bubbles: true,
+                  }),
+                )
+              }
+            >
+              <Icon name="search" size={17} />
+            </button>
+            <button
+              className="icon-button"
               aria-label="刷新工作区"
               title="刷新档案、元数据与收藏角标"
               onClick={() => setRefreshTick((tick) => tick + 1)}
@@ -995,6 +1012,11 @@ export default function App() {
         )}
       </main>
       <Tutorial open={tutorialOpen} onClose={() => setTutorialOpen(false)} />
+    <GlobalSearch
+      onOpenJob={openJobFrom}
+      onOpenCompany={openCompanyChat}
+      onNavigateView={(view: "knowledge") => setView(view)}
+    />
     </div>
   );
 }
