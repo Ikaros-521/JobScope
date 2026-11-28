@@ -17,6 +17,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
+from starlette.middleware.gzip import GZipMiddleware
 
 from .analysis import analyze, parse_resume
 from .analyze_runs import AnalyzeManager
@@ -91,6 +92,19 @@ def summarise_messages(config, messages):
                          '以下是同一段历史对话的分段摘要，请合并为一份不重复、不丢失关键事实的总摘要：\n\n' + '\n\n'.join(partials),
                          temperature=0.3, max_tokens=2048, timeout=120)
     return merged.strip()
+
+
+class StaticGZipMiddleware(GZipMiddleware):
+    """只对 /assets/ 静态产物 gzip（2026-11-28 审计 P1-7：1.69MB JS + 220KB CSS 是首包大头）。
+
+    不全局开 GZip：全局会把 text/event-stream 一起压，zlib 缓冲吞掉 SSE 逐帧实时性——
+    ping 帧太小长时间凑不出一个压缩块，流看起来像挂了。/assets/ 下只有带哈希的静态
+    文件，在 scope 层判定安全；/api JSON 不压（体积小，不值得为它碰流式边界）。"""
+
+    async def __call__(self, scope, receive, send):
+        if scope['type'] == 'http' and scope.get('path', '').startswith('/assets/'):
+            return await super().__call__(scope, receive, send)
+        return await self.app(scope, receive, send)
 
 
 def create_app(data_dir=None):
@@ -2354,6 +2368,7 @@ def create_app(data_dir=None):
 
     dist = root / "frontend" / "dist"
     if dist.is_dir():
+        app.add_middleware(StaticGZipMiddleware)
         app.mount("/", StaticFiles(directory=dist, html=True), name="frontend")
 
     @app.middleware('http')

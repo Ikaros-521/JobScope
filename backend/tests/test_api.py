@@ -21,6 +21,22 @@ def test_end_to_end_import_resume_analyze_chat_and_scope(client):
     assert client.get("/api/health").json()["model_configured"] is False
 
 
+def test_static_assets_served_gzipped(client):
+    """审计 P1-7：/assets 静态产物 gzip 直出（首包 1.9MB→约 0.5MB）。
+    只压 /assets——全局 gzip 会把 SSE 一起压，zlib 缓冲吞掉逐帧实时性。"""
+    import sys as _sys
+    assets = Path(__file__).resolve().parents[2] / 'frontend' / 'dist' / 'assets'
+    files = sorted(assets.glob('*.js')) or sorted(assets.glob('*.css'))
+    if not files:
+        pytest.skip('frontend dist 未构建：先 npm run build 再跑测试')
+    name = files[0].name
+    response = client.get(f'/assets/{name}', headers={'accept-encoding': 'gzip'})
+    assert response.status_code == 200
+    assert response.headers.get('content-encoding') == 'gzip'
+    # 其余路径不压：/api 响应保持无 content-encoding（SSE 实时性优先）
+    assert client.get('/api/health', headers={'accept-encoding': 'gzip'}).headers.get('content-encoding') is None
+
+
 def test_index_shell_is_served_with_no_cache(client):
     shell = client.get('/')
     assert shell.status_code == 200
