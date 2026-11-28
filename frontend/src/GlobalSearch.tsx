@@ -68,7 +68,7 @@ export function GlobalSearch({
         api<{ companies: { company: string; evidence_count: number }[] }>(
           `/companies?q=${encodeURIComponent(q)}&page_size=6`,
         ),
-        api<{ items: { id: string; title: string }[] }>(
+        api<{ entries: { id: string; title: string }[] }>(
           `/knowledge?q=${encodeURIComponent(q)}&page_size=6`,
         ),
       ]).then(([jobs, companies, knowledge]) => {
@@ -79,7 +79,7 @@ export function GlobalSearch({
             companies.status === "fulfilled" ? companies.value.companies : [],
           knowledge:
             knowledge.status === "fulfilled"
-              ? knowledge.value.items
+              ? knowledge.value.entries
               : [],
         });
         setSearching(false);

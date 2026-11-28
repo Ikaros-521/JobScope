@@ -14147,3 +14147,80 @@ mark.search-hit {
 .skeleton-row .skeleton-line:nth-child(3) {
   width: 72%;
 }
+
+/* ⌘K 全局搜索（2026-11-28 补齐 c7dac5d 漏发的样式）：命令面板式浮层，
+   顶部居中、覆于常规弹窗（z-index 100）之上；令牌全部取自 :root 已定义值。 */
+.global-search-backdrop {
+  position: fixed;
+  inset: 0;
+  background: #17171766;
+  z-index: 120;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 12vh 24px 24px;
+}
+
+.global-search {
+  width: 560px;
+  max-width: 100%;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px #1717173d;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.global-search input {
+  font-size: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--ink);
+  min-width: 0;
+}
+
+.global-search-group ul {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* 列向 flex 覆盖全局 button 的 align-items:center 泄漏，防内容两侧溢出。 */
+.global-search-group button {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--ink);
+}
+
+.global-search-group button.active,
+.global-search-group button:hover {
+  background: var(--accent-soft);
+}
+
+.global-search-group button b {
+  font-size: 13px;
+}
+
+.global-search-hint {
+  text-align: center;
+}
