@@ -8,7 +8,6 @@ keeps running until its next should_stop checkpoint; blocking calls it cannot in
 timeout-bounded. Once cancelled the handle is closed: late pushes are dropped and _settle never
 persists, so no answer can appear after a stop.
 """
-import json
 import logging
 import threading
 import time
@@ -19,15 +18,12 @@ from .chat import answer_question
 from .extensions import ExtensionStore
 from .general_agent import GeneralAgent, RunHooks
 from .research.agent import RunCancelled
+from .run_registry import event_stream, sse_frame  # noqa: F401  (sse_frame 再导出：analyze/interview/transcript/prep_plan 由此取)
 from .settings import LlmChannelStore, ModelSettings, SystemSettingsStore, use_config
 
 logger = logging.getLogger(__name__)
 
 GLOBAL_SCOPE = dict(kind='global')
-
-
-def sse_frame(event, data):
-    return f'event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n'
 
 
 class RunHandle:
@@ -248,25 +244,8 @@ class RunManager:
         handle = self._runs.get(run_id)
         if handle is None:
             raise ValueError('运行不存在或已结束')
-
-        def generator():
-            index = 0
-            while True:
-                with handle.condition:
-                    if index >= len(handle.events) and not handle.done:
-                        handle.condition.wait(timeout=15)
-                    frames = handle.events[index:]
-                    index = len(handle.events)
-                    done = handle.done
-                if not frames and not done:
-                    yield ': ping\n\n'
-                    continue
-                for kind, payload in frames:
-                    yield sse_frame(kind, payload)
-                if done:
-                    yield sse_frame('end', dict(ok=True))
-                    return
-        return generator
+        # 重放生成器与 analyze/interview/prep/transcript 同款，单一来源在 run_registry。
+        return event_stream(handle)
 
     def cancel(self, run_id):
         handle = self._runs.get(run_id)

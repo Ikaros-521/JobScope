@@ -11,11 +11,12 @@ import threading
 import time
 import uuid
 
-from .chat_runs import RunHandle, sse_frame
+from .chat_runs import RunHandle
 from . import drill
 from .interview import ADVANCE_TOOL, build_interviewer_system, build_persona, build_question_plan, generate_report
 from .model_transport import output_budget
 from .repository import now
+from .run_registry import RunRegistry
 from .semantic import RunCancelled
 from .model_transport import stream_turn
 from .settings import ModelSettings, use_config
@@ -64,8 +65,7 @@ class InterviewManager:
 
     def __init__(self, repo):
         self.repo = repo
-        self._runs = {}
-        self._lock = threading.RLock()
+        self._registry = RunRegistry()
         self._sweep_stale()
 
     def _sweep_stale(self):
@@ -85,31 +85,26 @@ class InterviewManager:
             self.repo.save_interview_session(session)
 
     def get(self, run_id):
-        return self._runs.get(run_id)
+        return self._registry.get(run_id)
 
     def active_for_session(self, session_id):
-        with self._lock:
-            handles = list(self._runs.values())
-        for handle in handles:
-            if getattr(handle, 'session_id', '') == session_id and not handle.done:
-                return handle
-        return None
-
-    def _register(self, handle):
-        with self._lock:
-            if len(self._runs) > 100:
-                for run_id, stale in list(self._runs.items()):
-                    if stale.done and time.time() - stale.created > 3600:
-                        self._runs.pop(run_id, None)
-            self._runs[handle.id] = handle
+        return self._registry.find(lambda handle: getattr(handle, 'session_id', '') == session_id and not handle.done)
 
     # ---- 三类入口：出题（建场后自动）/ 对话轮 / 复盘 ----
 
+    def _start(self, session, *, kind, target, args=(), after_register=None):
+        """查重+登记走 run_registry 基座（同一把锁，并发双击不再起两份）；同场次已有活动
+        run 时返回 reused=True，由调用方按各自语义抛忙碌错。"""
+        return self._registry.start(
+            build=lambda: self._new_handle(session),
+            conflict=lambda handle: getattr(handle, 'session_id', '') == session['id'] and not handle.done,
+            start_payload=lambda handle: dict(run_id=handle.id, session_id=session['id'], kind=kind),
+            after_register=after_register, target=target, args=args)
+
     def start_plan(self, session):
-        handle = self._new_handle(session)
-        handle.push('start', dict(run_id=handle.id, session_id=session['id'], kind='plan'))
-        handle.thread = threading.Thread(target=self._plan_execute, args=(handle, session), daemon=True)
-        handle.thread.start()
+        handle, reused = self._start(session, kind='plan', target=self._plan_execute, args=(session,))
+        if reused:
+            raise ValueError('当前场次正在生成，请等待完成或先停止')
         return handle
 
     def start_turn(self, session, answer=''):
@@ -118,29 +113,28 @@ class InterviewManager:
         if answer.strip():
             self.repo.append_messages(conversation_id, [dict(role='user', content=answer.strip())])
             self._record_answer(session, answer.strip())
-        handle = self._new_handle(session)
-        handle.push('start', dict(run_id=handle.id, session_id=session['id'], kind='turn'))
-        handle.thread = threading.Thread(target=self._turn_execute, args=(handle, session), daemon=True)
-        handle.thread.start()
+        handle, reused = self._start(session, kind='turn', target=self._turn_execute, args=(session,))
+        if reused:
+            raise ValueError('当前场次正在生成，请等待完成或先停止')
         return handle
 
     def start_report(self, session):
-        session['status'] = 'reporting'
-        session = self.repo.save_interview_session(session)
-        handle = self._new_handle(session)
-        handle.push('start', dict(run_id=handle.id, session_id=session['id'], kind='report'))
-        handle.thread = threading.Thread(target=self._report_execute, args=(handle, session), daemon=True)
-        handle.thread.start()
+        # 翻状态落库放在查重之后（after_register 在锁内、worker 起来前执行）：
+        # 并发双击复盘曾被先落 'reporting' 再抛忙碌，把状态毒留在场子上。
+        def persist_reporting(handle):
+            session['status'] = 'reporting'
+            self.repo.save_interview_session(session)
+
+        handle, reused = self._start(session, kind='report', target=self._report_execute,
+                                     args=(session,), after_register=persist_reporting)
+        if reused:
+            raise ValueError('当前场次正在生成，请等待完成或先停止')
         return handle
 
     def _new_handle(self, session):
-        existing = self.active_for_session(session['id'])
-        if existing:
-            raise ValueError('当前场次正在生成，请等待完成或先停止')
         handle = RunHandle(uuid.uuid4().hex, '', None)
         handle.session_id = session['id']
         handle.error = None
-        self._register(handle)
         return handle
 
     # ---- worker：出题 ----
@@ -348,34 +342,13 @@ class InterviewManager:
         finally:
             handle.finish()
 
-    # ---- SSE / 取消：与 analyze_runs 同款 ----
+    # ---- SSE / 取消：重放生成器单一来源在 run_registry ----
 
     def stream(self, run_id):
-        handle = self._runs.get(run_id)
-        if handle is None:
-            raise ValueError('运行不存在或已结束')
-
-        def generator():
-            index = 0
-            while True:
-                with handle.condition:
-                    if index >= len(handle.events) and not handle.done:
-                        handle.condition.wait(timeout=15)
-                    frames = handle.events[index:]
-                    index = len(handle.events)
-                    done = handle.done
-                if not frames and not done:
-                    yield ': ping\n\n'
-                    continue
-                for kind, payload in frames:
-                    yield sse_frame(kind, payload)
-                if done:
-                    yield sse_frame('end', dict(ok=True))
-                    return
-        return generator
+        return self._registry.stream(run_id)
 
     def cancel(self, run_id):
-        handle = self._runs.get(run_id)
+        handle = self._registry.get(run_id)
         if handle is None:
             raise ValueError('运行不存在或已结束')
         handle.cancel.set()

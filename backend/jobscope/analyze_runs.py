@@ -7,11 +7,11 @@
 阶段/组边界退出，进行中的单次模型调用不可打断（UI 有说明）。
 """
 import logging
-import threading
 import time
 import uuid
 
-from .chat_runs import RunHandle, sse_frame
+from .chat_runs import RunHandle
+from .run_registry import RunRegistry
 from .semantic import RunCancelled, analyze_pipeline
 from .settings import ModelSettings, use_config
 
@@ -19,46 +19,36 @@ logger = logging.getLogger(__name__)
 
 
 class AnalyzeManager:
-    """In-process registry of analyze runs; one active run per job."""
+    """In-process registry of analyze runs; one active run per job.
+
+    注册表与查重走 run_registry 基座（2026-11-28）：按 job 键查重与登记在同一把锁内，
+    并发双击不再起两份。"""
 
     def __init__(self, repo):
         self.repo = repo
-        self._runs = {}
-        self._lock = threading.RLock()
+        self._registry = RunRegistry()
 
     def get(self, run_id):
-        return self._runs.get(run_id)
+        return self._registry.get(run_id)
 
     def active_for_job(self, job_id):
-        with self._lock:
-            handles = list(self._runs.values())
-        for handle in handles:
-            if handle.job_id == job_id and not handle.done:
-                return handle
-        return None
-
-    def _register(self, handle):
-        with self._lock:
-            if len(self._runs) > 100:
-                for run_id, stale in list(self._runs.items()):
-                    if stale.done and time.time() - stale.created > 3600:
-                        self._runs.pop(run_id, None)
-            self._runs[handle.id] = handle
+        return self._registry.find(lambda handle: getattr(handle, 'job_id', '') == job_id and not handle.done)
 
     def start(self, job, resume, company_evidence):
         """已有活动 run 时原样返回（reused=True），不并发起第二份。"""
-        existing = self.active_for_job(job['id'])
-        if existing:
-            return existing, True
+        job_id = job['id']
+        handle, reused = self._registry.start(
+            build=lambda: self._new_handle(job),
+            conflict=lambda handle: getattr(handle, 'job_id', '') == job_id and not handle.done,
+            start_payload=lambda handle: dict(run_id=handle.id, job_id=job_id),
+            target=self._execute, args=(job, resume, company_evidence))
+        return handle, reused
+
+    def _new_handle(self, job):
         handle = RunHandle(uuid.uuid4().hex, '', None)
         handle.job_id = job['id']
         handle.error = None
-        self._register(handle)
-        handle.push('start', dict(run_id=handle.id, job_id=job['id']))
-        thread = threading.Thread(target=self._execute, args=(handle, job, resume, company_evidence), daemon=True)
-        handle.thread = thread
-        thread.start()
-        return handle, False
+        return handle
 
     def _execute(self, handle, job, resume, company_evidence):
         started = time.time()
@@ -89,31 +79,10 @@ class AnalyzeManager:
             handle.finish()
 
     def stream(self, run_id):
-        handle = self._runs.get(run_id)
-        if handle is None:
-            raise ValueError('运行不存在或已结束')
-
-        def generator():
-            index = 0
-            while True:
-                with handle.condition:
-                    if index >= len(handle.events) and not handle.done:
-                        handle.condition.wait(timeout=15)
-                    frames = handle.events[index:]
-                    index = len(handle.events)
-                    done = handle.done
-                if not frames and not done:
-                    yield ': ping\n\n'
-                    continue
-                for kind, payload in frames:
-                    yield sse_frame(kind, payload)
-                if done:
-                    yield sse_frame('end', dict(ok=True))
-                    return
-        return generator
+        return self._registry.stream(run_id)
 
     def cancel(self, run_id):
-        handle = self._runs.get(run_id)
+        handle = self._registry.get(run_id)
         if handle is None:
             raise ValueError('运行不存在或已结束')
         handle.cancel.set()

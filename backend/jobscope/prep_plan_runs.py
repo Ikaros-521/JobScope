@@ -8,54 +8,36 @@
 超时上限，渐进事件本身已给足反馈，中途放弃反而留不下任何计划。
 """
 import logging
-import threading
 import time
 import uuid
 
-from .chat_runs import RunHandle, sse_frame
+from .chat_runs import RunHandle
+from .run_registry import RunRegistry
 from .settings import ModelSettings, purpose_configured, use_config
 
 logger = logging.getLogger(__name__)
 
 
 class PrepPlanManager:
-    """In-process registry of prep-plan runs; one active run at a time."""
+    """In-process registry of prep-plan runs; one active run at a time.（注册表走 run_registry 基座）"""
 
     def __init__(self, repo):
         self.repo = repo
-        self._runs = {}
-        self._lock = threading.RLock()
+        self._registry = RunRegistry(capacity=20)
 
     def get(self, run_id):
-        return self._runs.get(run_id)
+        return self._registry.get(run_id)
 
     def active(self):
-        with self._lock:
-            for handle in self._runs.values():
-                if not handle.done:
-                    return handle
-        return None
-
-    def _register(self, handle):
-        with self._lock:
-            if len(self._runs) > 20:
-                for run_id, stale in list(self._runs.items()):
-                    if stale.done and time.time() - stale.created > 3600:
-                        self._runs.pop(run_id, None)
-            self._runs[handle.id] = handle
+        return self._registry.active()
 
     def start(self, days, prefs, force=False):
         """已有活动 run 时原样返回（reused=True），不并发起第二份。"""
-        existing = self.active()
-        if existing:
-            return existing, True
-        handle = RunHandle(uuid.uuid4().hex, '', None)
-        self._register(handle)
-        handle.push('start', dict(run_id=handle.id, days=days))
-        thread = threading.Thread(target=self._execute, args=(handle, days, prefs, force), daemon=True)
-        handle.thread = thread
-        thread.start()
-        return handle, False
+        handle, reused = self._registry.start(
+            build=lambda: RunHandle(uuid.uuid4().hex, '', None),
+            start_payload=lambda handle: dict(run_id=handle.id, days=days),
+            target=self._execute, args=(days, prefs, force))
+        return handle, reused
 
     def _execute(self, handle, days, prefs, force=False):
         from .prep_plan import generate, snapshot
@@ -76,31 +58,10 @@ class PrepPlanManager:
         finally:
             handle.finish()
 
-    # ---- SSE：与 analyze_runs 同款 ----
+    # ---- SSE：重放生成器单一来源在 run_registry ----
 
     def stream(self, run_id):
-        handle = self._runs.get(run_id)
-        if handle is None:
-            raise ValueError('运行不存在或已结束')
-
-        def generator():
-            index = 0
-            while True:
-                with handle.condition:
-                    if index >= len(handle.events) and not handle.done:
-                        handle.condition.wait(timeout=15)
-                    frames = handle.events[index:]
-                    index = len(handle.events)
-                    done = handle.done
-                if not frames and not done:
-                    yield ': ping\n\n'
-                    continue
-                for kind, payload in frames:
-                    yield sse_frame(kind, payload)
-                if done:
-                    yield sse_frame('end', dict(ok=True))
-                    return
-        return generator
+        return self._registry.stream(run_id)
 
 
 class PrepAdjustManager:
@@ -109,42 +70,25 @@ class PrepAdjustManager:
     事件序列：start → delta（教练回复逐字流）→ applied/skipped… → [confirm_required]
     → done(reply/applied/skipped/confirm_required/snapshot) → end；异常推 error。
     rebuild 不直接执行：只落它同批的 set_prefs，其余等用户在确认框点头后走强制重新生成。
+    （注册表走 run_registry 基座；与生成互斥的路由级检查见 /api/prep-plan/adjust 入口。）
     """
 
     def __init__(self, repo):
         self.repo = repo
-        self._runs = {}
-        self._lock = threading.RLock()
+        self._registry = RunRegistry(capacity=20)
 
     def get(self, run_id):
-        return self._runs.get(run_id)
+        return self._registry.get(run_id)
 
     def active(self):
-        with self._lock:
-            for handle in self._runs.values():
-                if not handle.done:
-                    return handle
-        return None
-
-    def _register(self, handle):
-        with self._lock:
-            if len(self._runs) > 20:
-                for run_id, stale in list(self._runs.items()):
-                    if stale.done and time.time() - stale.created > 3600:
-                        self._runs.pop(run_id, None)
-            self._runs[handle.id] = handle
+        return self._registry.active()
 
     def start(self, message):
-        existing = self.active()
-        if existing:
-            return existing, True
-        handle = RunHandle(uuid.uuid4().hex, '', None)
-        self._register(handle)
-        handle.push('start', dict(run_id=handle.id))
-        thread = threading.Thread(target=self._execute, args=(handle, message), daemon=True)
-        handle.thread = thread
-        thread.start()
-        return handle, False
+        handle, reused = self._registry.start(
+            build=lambda: RunHandle(uuid.uuid4().hex, '', None),
+            start_payload=lambda handle: dict(run_id=handle.id),
+            target=self._execute, args=(message,))
+        return handle, reused
 
     def _execute(self, handle, message):
         from .prep_plan import apply_adjustments, snapshot
@@ -213,28 +157,7 @@ class PrepAdjustManager:
         finally:
             handle.finish()
 
-    # ---- SSE：与 PrepPlanManager 同款 ----
+    # ---- SSE：重放生成器单一来源在 run_registry ----
 
     def stream(self, run_id):
-        handle = self._runs.get(run_id)
-        if handle is None:
-            raise ValueError('运行不存在或已结束')
-
-        def generator():
-            index = 0
-            while True:
-                with handle.condition:
-                    if index >= len(handle.events) and not handle.done:
-                        handle.condition.wait(timeout=15)
-                    frames = handle.events[index:]
-                    index = len(handle.events)
-                    done = handle.done
-                if not frames and not done:
-                    yield ': ping\n\n'
-                    continue
-                for kind, payload in frames:
-                    yield sse_frame(kind, payload)
-                if done:
-                    yield sse_frame('end', dict(ok=True))
-                    return
-        return generator
+        return self._registry.stream(run_id)
