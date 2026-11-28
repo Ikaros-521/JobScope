@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   api, date, listResumeTemplates, previewResumeDocument, listResumeVersions, getResumeVersion,
-  createResumeVersion, updateResumeVersion, deleteResumeVersion, optimizeResume, exportResumeVersion,
+  createResumeVersion, updateResumeVersion, deleteResumeVersion, exportResumeVersion,
+  openResumeOptimizeStream, startResumeOptimizeRun,
   pinResumeVersion, listProfileEntries, PROFILE_CATEGORY_NAMES, DEFAULT_TYPOGRAPHY,
 } from './api'
 import type { Job, PageInfo, ProfileEntry, ResumeTemplate, ResumeTypography, ResumeVersion, ResumeVersionSummary } from './api'
@@ -223,8 +224,12 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
     } catch (err) { toast((err as Error).message) } finally { setBusy(null) }
   }
 
+  // 优化走后台 run + SSE（2026-11-28 审计 P1-4）：180s 级模型调用不再挂在请求线程上；
+  // done 帧带回已落库版本（含「评估用」接管），error/断流一律解锁回表单提示。
+  const [optimizeRunId, setOptimizeRunId] = useState('')
+
   async function startOptimize() {
-    if (busy) return
+    if (busy || optimizeRunId) return
     setFormError('')
     if (baseMode === 'saved' && !resumeCharacters) { setFormError('「我的简历」还没有内容，请先保存，或改用粘贴简历文本。'); return }
     if (baseMode === 'paste' && !pasteResume.trim()) { setFormError('请粘贴基础简历文本。'); return }
@@ -232,7 +237,7 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
     if (targetMode === 'paste' && !jdText.trim()) { setFormError('请粘贴目标岗位的职责与要求（JD）。'); return }
     setBusy('optimize')
     try {
-      const version = await optimizeResume({
+      const start = await startResumeOptimizeRun({
         resume_text: baseMode === 'paste' ? pasteResume : '',
         job_id: targetMode === 'job' && selectedJob ? selectedJob.id : '',
         jd_text: targetMode === 'paste' ? jdText : '',
@@ -241,11 +246,33 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
         instructions,
         profile_entry_ids: [...profileSelected],
       })
-      loadVersion(version, 'diff')
-      await refreshVersions()
-      toast('优化完成，已生成新版本；先在「改动对比」核对改动，可直接二次编辑或导出。')
-    } catch (err) { setFormError((err as Error).message) } finally { setBusy(null) }
+      setOptimizeRunId(start.run_id)
+    } catch (err) { setFormError((err as Error).message); setBusy(null) }
   }
+
+  useEffect(() => {
+    if (!optimizeRunId) return
+    const source = openResumeOptimizeStream(optimizeRunId, (event, data) => {
+      if (event === 'done') {
+        loadVersion(data.version as ResumeVersion, 'diff')
+        void refreshVersions()
+        toast('优化完成，已生成新版本；先在「改动对比」核对改动，可直接二次编辑或导出。')
+        setOptimizeRunId(''); setBusy(null)
+        source.close()
+      } else if (event === 'error') {
+        setFormError(String((data as { message?: string }).message ?? '优化失败'))
+        setOptimizeRunId(''); setBusy(null)
+        source.close()
+      }
+    })
+    source.onerror = () => {
+      if (source.readyState !== EventSource.CLOSED) return
+      setOptimizeRunId(''); setBusy(null)
+      setFormError('优化连接中断，请重试')
+    }
+    return () => source.close()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [optimizeRunId])
 
   async function saveVersion() {
     if (!current || busy || !markdown.trim()) return

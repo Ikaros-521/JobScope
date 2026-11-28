@@ -304,9 +304,11 @@ def test_optimize_output_auto_pins_to_job(client, monkeypatch):
                         ('# 优化后的简历，包含足够长度的事实重组内容。', ['要点']))
     old = repo.save_resume_version(dict(title='旧版', markdown='# 旧版内容', job_id=job['id'], company='甲公司'))
     repo.set_pinned_resume_version(old['id'], True)
-    response = client.post('/api/resume-versions/optimize', json=dict(job_id=job['id'], company='甲公司', job_title='后端'))
-    assert response.status_code == 200
-    assert repo.resume_version(response.json()['id'])['pinned'] is True
+    start = client.post('/api/resume-versions/optimize/runs', json=dict(job_id=job['id'], company='甲公司', job_title='后端'))
+    handle = client.app.state.resume_optimize_runs.get(start.json()['run_id'])
+    handle.thread.join(timeout=10)
+    version_id = next(frame['version']['id'] for kind, frame in handle.events if kind == 'done')
+    assert repo.resume_version(version_id)['pinned'] is True
     assert not repo.resume_version(old['id'])['pinned']  # 同岗位旧 pin 被新产出接管
 
 

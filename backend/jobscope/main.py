@@ -23,6 +23,7 @@ from .analysis import analyze, parse_resume
 from .analyze_runs import AnalyzeManager
 from .outreach_runs import OutreachManager
 from .gap_narrative_runs import GapNarrativeManager
+from .resume_optimize_runs import ResumeOptimizeManager
 from .run_registry import event_stream
 from .backup import BackupError, BackupStore
 from .chat import answer_question, model_configured
@@ -130,6 +131,7 @@ def create_app(data_dir=None):
     prep_adjust_runs = PrepAdjustManager(repo)
     outreach_runs = OutreachManager(repo)
     gap_runs = GapNarrativeManager(repo)
+    optimize_runs = ResumeOptimizeManager(repo)
     scope_expansions = ScopeExpansionStore(repo)
     knowledge = KnowledgeStore(repo)
     knowledge_imports = KnowledgeImportManager(knowledge, repo)
@@ -142,6 +144,7 @@ def create_app(data_dir=None):
     app.state.prep_adjust_runs = prep_adjust_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     app.state.outreach_runs = outreach_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     app.state.gap_runs = gap_runs  # exposed for tests: join worker threads to avoid cross-test leaks
+    app.state.resume_optimize_runs = optimize_runs  # exposed for tests: join worker threads to avoid cross-test leaks
     from .extensions import ExtensionStore, MCPInput, MCPPatch, SkillInput, SkillFilesInput, SkillResourceInput, OnlineSkillInput, ToggleInput, ApprovalInput
     extensions = ExtensionStore(repo)
     # 数据备份（2026-11-18）：`.data/` 是生产数据，备份/恢复能力是一等公民而非运维纪律。
@@ -1835,22 +1838,6 @@ def create_app(data_dir=None):
     # 不作工坊扩写素材。
 
     PROFILE_CATEGORIES = ('project', 'work', 'gap', 'education', 'skill', 'cert', 'award', 'preference', 'other')
-    PROFILE_CATEGORIES_HEADER = {'project': '项目经历', 'work': '工作经历', 'gap': '空窗经历', 'education': '教育背景',
-                                 'skill': '专业技能', 'cert': '证书', 'award': '奖项荣誉',
-                                 'preference': '求职偏好', 'other': '其他材料'}
-
-    def profile_block(entry_ids):
-        """按选中条目拼「个人资料库摘录」文本块；未选中/已停用/不存在/偏好类条目静默跳过。"""
-        wanted = list(dict.fromkeys(entry_ids or []))
-        entries = {item['id']: item for item in repo.profile_entries()}
-        blocks = []
-        for entry_id in wanted:
-            item = entries.get(entry_id)
-            if item is None or not item['enabled'] or item['category'] == 'preference':
-                continue
-            header = '｜'.join(filter(None, (item['title'], item['org'], item['period'])))
-            blocks.append(f"【{PROFILE_CATEGORIES_HEADER.get(item['category'], '其他')}】{header}\n{item['content']}")
-        return '\n\n'.join(blocks)
 
     @app.get('/api/profile-entries')
     def list_profile_entries(enabled_only: bool = Query(default=False)):
@@ -2059,37 +2046,27 @@ def create_app(data_dir=None):
         return {'records': records, 'report': failure_museum.build_pattern_report(records),
                 'controlled': failure_museum.CONTROLLED_TAGS, 'uncontrolled': failure_museum.UNCONTROLLED_TAGS}
 
-    @app.post("/api/resume-versions/optimize")
-    def optimize_resume_version(data: OptimizeResumeInput):
-        base_text = data.resume_text.strip() or repo.resume()["text"]
-        if not base_text.strip():
-            raise HTTPException(400, "请先在「我的简历」保存基础简历，或在优化表单粘贴简历文本")
-        jd_text = data.jd_text.strip()
-        company, job_title = data.company.strip(), data.job_title.strip()
-        if data.job_id:
-            job = get_job(data.job_id)
-            jd_text = jd_text or job["description"]
-            company = company or job["company"]
-            job_title = job_title or job["title"]
-        if not jd_text:
-            raise HTTPException(400, "请选择目标岗位或粘贴岗位要求（JD）后再优化")
-        if not purpose_configured('analysis'):
-            raise HTTPException(400, "尚未配置分析模型，请先在「模型设置 → 功能绑定」为「分析」用途绑定模型渠道，再进行简历优化")
-        # 个人资料库摘录：完整版材料（项目经历等），供模型把基础简历里的阉割版内容扩写充实。
-        profile_materials = profile_block(data.profile_entry_ids or [])
-        try:
-            markdown_text, notes = workshop.optimize_resume(base_text, jd_text, company=company, job_title=job_title,
-                                                            instructions=data.instructions, profile_materials=profile_materials)
-        except ValueError as exc:
-            raise HTTPException(502, str(exc)) from None
-        version = repo.save_resume_version(dict(
-            title=workshop.compose_title(job_title, company), markdown=markdown_text, template_id="classic",
-            job_id=data.job_id, company=company, job_title=job_title,
-            jd_digest=jd_text[:2000], base_text=base_text, notes=notes))
-        if data.job_id:
-            # 优化产出即该岗位的最新投递简历：自动接管「评估用」标记，同岗位旧 pin 被替代。
-            repo.set_pinned_resume_version(version['id'], True)
-        return version
+    @app.post("/api/resume-versions/optimize/runs")
+    def optimize_resume_run_start(data: OptimizeResumeInput):
+        # 后台 run + SSE（2026-11-28 审计 P1-4）；编排整体在 resume_workshop.optimize_and_save，
+        # 输入校验（无简历/无 JD/未配模型）在 worker 内判，文案原样转 error 帧。
+        handle, reused = optimize_runs.start(data.model_dump())
+        return dict(run_id=handle.id, reused=reused)
+
+    @app.get("/api/resume-versions/optimize/runs/{run_id}")
+    def optimize_resume_run_status(run_id: str = PathParam(max_length=100)):
+        handle = optimize_runs.get(run_id)
+        if handle is None:
+            raise HTTPException(404, '运行不存在或已结束')
+        return handle.snapshot()
+
+    @app.get("/api/resume-versions/optimize/runs/{run_id}/stream")
+    def optimize_resume_run_stream(run_id: str = PathParam(max_length=100)):
+        handle = optimize_runs.get(run_id)
+        if handle is None:
+            raise HTTPException(404, '运行不存在或已结束')
+        return StreamingResponse(event_stream(handle)(), media_type='text/event-stream',
+                                 headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
     @app.get("/api/resume-versions/{version_id}/export")
     def export_resume_version(version_id: int, format: str = Query("pdf", pattern="^(pdf|docx|html|md)$")):

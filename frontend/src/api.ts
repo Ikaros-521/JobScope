@@ -620,8 +620,12 @@ export function updateResumeVersion(id: number, patch: Partial<Pick<ResumeVersio
 export function deleteResumeVersion(id: number) { return api<{ ok: boolean }>(`/resume-versions/${id}`, { method: 'DELETE' }) }
 // 岗位绑定「评估用」存档：pin 互斥同岗位旧标记，评估适配自动取用；解 pin 回退全局我的简历。
 export function pinResumeVersion(id: number, pinned: boolean) { return post<ResumeVersion>(`/resume-versions/${id}/pin`, { pinned }) }
-export function optimizeResume(payload: { resume_text?: string; job_id?: string; jd_text?: string; company?: string; job_title?: string; instructions?: string; profile_entry_ids?: string[] }) {
-  return post<ResumeVersion>('/resume-versions/optimize', payload)
+export function startResumeOptimizeRun(payload: { resume_text?: string; job_id?: string; jd_text?: string; company?: string; job_title?: string; instructions?: string; profile_entry_ids?: string[] }) {
+  return post<{ run_id: string; reused: boolean }>('/resume-versions/optimize/runs', payload)
+}
+const RESUME_OPTIMIZE_STREAM_EVENTS = ['start', 'done', 'error', 'end'] as const
+export function openResumeOptimizeStream(runId: string, onEvent: (event: string, data: Record<string, unknown>) => void): EventSource {
+  return openStream(`/api/resume-versions/optimize/runs/${encodeURIComponent(runId)}/stream`, RESUME_OPTIMIZE_STREAM_EVENTS, onEvent)
 }
 // 个人资料库（2026-11-17）：完整版个人材料，与「我的简历」（可为篇幅而删减）分离；
 // 简历工坊优化时勾选条目取材，扩写充实阉割版内容。

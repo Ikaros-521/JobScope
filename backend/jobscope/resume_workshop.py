@@ -485,3 +485,60 @@ def optimize_resume(base_text, jd_text, company='', job_title='', instructions='
 def compose_title(job_title='', company=''):
     parts = [part.strip() for part in (job_title, company) if part and part.strip()]
     return (' · '.join(parts) or '定制简历')[:60]
+
+
+# 资料库类别 → 摘录块标题（2026-11-28 自 main 路由闭包迁入，随编排整体下沉）。
+PROFILE_CATEGORIES_HEADER = {'project': '项目经历', 'work': '工作经历', 'gap': '空窗经历', 'education': '教育背景',
+                             'skill': '专业技能', 'cert': '证书', 'award': '奖项荣誉',
+                             'preference': '求职偏好', 'other': '其他材料'}
+
+
+def profile_materials_block(repo, entry_ids):
+    """按选中条目拼「个人资料库摘录」文本块；未选中/已停用/不存在/偏好类条目静默跳过。"""
+    wanted = list(dict.fromkeys(entry_ids or []))
+    entries = {item['id']: item for item in repo.profile_entries()}
+    blocks = []
+    for entry_id in wanted:
+        item = entries.get(entry_id)
+        if item is None or not item['enabled'] or item['category'] == 'preference':
+            continue
+        header = '｜'.join(filter(None, (item['title'], item['org'], item['period'])))
+        blocks.append(f"【{PROFILE_CATEGORIES_HEADER.get(item['category'], '其他')}】{header}\n{item['content']}")
+    return '\n\n'.join(blocks)
+
+
+def optimize_and_save(repo, payload):
+    """JD 定向优化的完整编排（2026-11-28 审计 P1-4 自 main 路由迁入）：解析基础简历与
+    JD → 模型优化 → 落版本 → 自动接管「评估用」。optimize_resume 本身不变（单一编排
+    路径：这是它唯一的端点级调用方）；输入校验失败抛 ValueError（worker 转 error 帧）。"""
+    from .settings import purpose_configured
+    base_text = str(payload.get('resume_text') or '').strip() or repo.resume()["text"]
+    if not base_text.strip():
+        raise ValueError("请先在「我的简历」保存基础简历，或在优化表单粘贴简历文本")
+    jd_text = str(payload.get('jd_text') or '').strip()
+    company, job_title = str(payload.get('company') or '').strip(), str(payload.get('job_title') or '').strip()
+    job_id = str(payload.get('job_id') or '')
+    if job_id:
+        job = repo.job(job_id)
+        if job is None:
+            raise ValueError('岗位不存在')
+        jd_text = jd_text or job["description"]
+        company = company or job["company"]
+        job_title = job_title or job["title"]
+    if not jd_text:
+        raise ValueError("请选择目标岗位或粘贴岗位要求（JD）后再优化")
+    if not purpose_configured('analysis'):
+        raise ValueError("尚未配置分析模型，请先在「模型设置 → 功能绑定」为「分析」用途绑定模型渠道，再进行简历优化")
+    # 个人资料库摘录：完整版材料（项目经历等），供模型把基础简历里的阉割版内容扩写充实。
+    profile_materials = profile_materials_block(repo, payload.get('profile_entry_ids') or [])
+    markdown_text, notes = optimize_resume(base_text, jd_text, company=company, job_title=job_title,
+                                           instructions=str(payload.get('instructions') or ''),
+                                           profile_materials=profile_materials)
+    version = repo.save_resume_version(dict(
+        title=compose_title(job_title, company), markdown=markdown_text, template_id="classic",
+        job_id=job_id, company=company, job_title=job_title,
+        jd_digest=jd_text[:2000], base_text=base_text, notes=notes))
+    if job_id:
+        # 优化产出即该岗位的最新投递简历：自动接管「评估用」标记，同岗位旧 pin 被替代。
+        repo.set_pinned_resume_version(version['id'], True)
+    return version

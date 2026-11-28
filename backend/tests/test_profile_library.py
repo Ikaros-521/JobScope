@@ -96,10 +96,10 @@ def test_optimize_pulls_profile_library_materials(client, monkeypatch):
     project = create_entry(client).json()
     create_entry(client, title='不相关的爱好', category='other', content='业余摄影', enabled=False)
 
-    result = client.post('/api/resume-versions/optimize', json=dict(
+    version, err = _optimize(client, dict(
         jd_text='负责高并发网关服务', company='字节跳动', job_title='后端开发工程师',
         profile_entry_ids=[project['id'], 'P-gone']))
-    assert result.status_code == 200
+    assert err is None
     payload = json.loads(captured['user'])
     # 完整版材料进 payload：标题/组织/时间与全文都在；停用与不存在的条目静默跳过。
     assert '【项目经历】电商大促网关｜甲科技｜2023-2024' in payload['profile_materials']
@@ -109,14 +109,26 @@ def test_optimize_pulls_profile_library_materials(client, monkeypatch):
     assert '个人资料库' in captured['system'] and '未提供个人资料库时' in captured['system']
 
 
+def _optimize(client, payload):
+    """起优化 run 并等 worker 收尾；返回 (version, error_message)。"""
+    start = client.post('/api/resume-versions/optimize/runs', json=payload)
+    handle = client.app.state.resume_optimize_runs.get(start.json()['run_id'])
+    handle.thread.join(timeout=10)
+    assert handle.done
+    for kind, frame in handle.events:
+        if kind == 'done':
+            return frame['version'], None
+    return None, handle.error
+
+
 def test_optimize_without_profile_ids_keeps_single_source_payload(client, monkeypatch):
     monkeypatch.setenv('JOBSCOPE_LLM_URL', 'https://example.com/v1/chat/completions')
     monkeypatch.setenv('JOBSCOPE_LLM_MODEL', 'test')
     captured = mock_optimize_model(monkeypatch, MODEL_REPLY)
     client.put('/api/resume', json=dict(text='# 张三', format='text'))
     create_entry(client)
-    result = client.post('/api/resume-versions/optimize', json=dict(jd_text='后端开发'))
-    assert result.status_code == 200
+    version, err = _optimize(client, dict(jd_text='后端开发'))
+    assert err is None
     payload = json.loads(captured['user'])
     assert payload['profile_materials'] == ''
 
@@ -142,9 +154,9 @@ def test_preference_entries_feed_pipeline_not_workshop_material(client, monkeypa
     assert repo.preference_statements() == [{'id': pref['id'], 'statement': PREFERENCE_CONTENT}]
 
     # 工坊取材：偏好条目即使被误传 id 也不进摘录块（双保险，前端勾选列表已排除）。
-    result = client.post('/api/resume-versions/optimize', json=dict(
+    version, err = _optimize(client, dict(
         jd_text='后端开发', profile_entry_ids=[pref['id']]))
-    assert result.status_code == 200
+    assert err is None
     assert '做六休一' not in json.loads(captured['user'])['profile_materials']
     # 原 /api/job-preferences 端点随旧表退役。
     assert client.get('/api/job-preferences').status_code == 404

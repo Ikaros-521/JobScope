@@ -115,14 +115,25 @@ def test_version_crud_roundtrip(client):
     assert client.get(f"/api/resume-versions/{version['id']}").status_code == 404
 
 
+def _optimize(client, payload):
+    """起优化 run 并等 worker 收尾；返回 (version, error_message)。"""
+    start = client.post('/api/resume-versions/optimize/runs', json=payload)
+    handle = client.app.state.resume_optimize_runs.get(start.json()['run_id'])
+    handle.thread.join(timeout=10)
+    assert handle.done
+    for kind, frame in handle.events:
+        if kind == 'done':
+            return frame['version'], None
+    return None, handle.error
+
+
 def test_optimize_creates_version_with_notes_and_redline_prompt(client, monkeypatch):
     configure_model(monkeypatch)
     captured = mock_optimize_model(monkeypatch)
     client.put("/api/resume", json=dict(text=BASE_RESUME, format="text"))
-    result = client.post("/api/resume-versions/optimize", json=dict(
+    version, err = _optimize(client, dict(
         job_id="", jd_text="负责高并发后端服务，熟悉 Python 与缓存优化", company="字节跳动", job_title="后端开发工程师", instructions="突出高并发"))
-    assert result.status_code == 200
-    version = result.json()
+    assert err is None
     assert version["title"] == "后端开发工程师 · 字节跳动"
     assert version["markdown"].startswith("# 张三")
     assert version["notes"] == ["前置了与岗位对齐的技能表述", "删减了与该岗位无关的次要经历"]
@@ -135,37 +146,37 @@ def test_optimize_creates_version_with_notes_and_redline_prompt(client, monkeypa
     stored = client.get(f"/api/resume-versions/{version['id']}").json()
     assert stored["notes"] == version["notes"] and stored["jd_digest"]
 
-
 def test_optimize_from_saved_job_and_input_guards(client, monkeypatch):
     configure_model(monkeypatch)
     mock_optimize_model(monkeypatch)
     job = client.post("/api/import/job", json=dict(title="后端开发", company="乙公司", description="负责分布式服务，熟悉 SQL 优化")).json()["job"]
-    # 未保存简历且未粘贴 → 400 引导；无 JD → 400。
-    assert client.post("/api/resume-versions/optimize", json=dict(job_id=job["id"])).status_code == 400
+    # 未保存简历且未粘贴 → error 帧引导；无 JD → error 帧。
+    version, err = _optimize(client, dict(job_id=job["id"]))
+    assert version is None and "简历" in err
     client.put("/api/resume", json=dict(text=BASE_RESUME, format="text"))
-    assert client.post("/api/resume-versions/optimize", json=dict()).status_code == 400
+    version, err = _optimize(client, dict())
+    assert version is None and "JD" in err
     # 选岗位后自动取 JD 与公司岗位名。
-    result = client.post("/api/resume-versions/optimize", json=dict(job_id=job["id"]))
-    assert result.status_code == 200
-    assert result.json()["company"] == "乙公司" and result.json()["title"] == "后端开发 · 乙公司"
-
+    version, err = _optimize(client, dict(job_id=job["id"]))
+    assert err is None
+    assert version["company"] == "乙公司" and version["title"] == "后端开发 · 乙公司"
 
 def test_optimize_without_model_or_malformed_reply(client, monkeypatch):
-    # 未配置分析模型 → 明确引导，而非 5xx 崩溃（先备好简历，避免先撞简历守卫）。
+    # 未配置分析模型 → error 帧明确引导，而非 5xx 崩溃（先备好简历，避免先撞简历守卫）。
     client.put("/api/resume", json=dict(text=BASE_RESUME, format="text"))
-    guard = client.post("/api/resume-versions/optimize", json=dict(jd_text="熟悉 Python"))
-    assert guard.status_code == 400 and "模型设置" in guard.json()["detail"]
+    version, err = _optimize(client, dict(jd_text="熟悉 Python"))
+    assert version is None and "模型设置" in err
     # 模型返回缺分隔符：全文当简历、说明为空，不失败。
     configure_model(monkeypatch)
     mock_optimize_model(monkeypatch, "# 王五\n\n没有分隔符的裸简历内容，但长度足够视为有效。")
     client.put("/api/resume", json=dict(text=BASE_RESUME, format="text"))
-    result = client.post("/api/resume-versions/optimize", json=dict(jd_text="熟悉 Python"))
-    assert result.status_code == 200
-    assert result.json()["markdown"].startswith("# 王五") and result.json()["notes"] == []
-    # 模型返回过短内容 → 502 可读错误。
+    version, err = _optimize(client, dict(jd_text="熟悉 Python"))
+    assert err is None
+    assert version["markdown"].startswith("# 王五") and version["notes"] == []
+    # 模型返回过短内容 → 可读错误帧。
     mock_optimize_model(monkeypatch, "<<<RESUME>>>\n太短\n<<<NOTES>>>")
-    assert client.post("/api/resume-versions/optimize", json=dict(jd_text="熟悉 Python")).status_code == 502
-
+    version, err = _optimize(client, dict(jd_text="熟悉 Python"))
+    assert version is None and err
 
 def test_export_all_formats(client):
     version = client.post("/api/resume-versions", json=dict(title="张三 · 甲公司", markdown=BASE_RESUME, template_id="modern", company="甲公司")).json()
