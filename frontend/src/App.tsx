@@ -597,7 +597,7 @@ export default function App() {
                                   : view === "evidence"
                                     ? "公司资料库"
                                     : view === "compare"
-                                      ? "数据分析"
+                                      ? "公司对比"
                                       : view === "global"
                                         ? "全局对话"
                                         : view === "knowledge"

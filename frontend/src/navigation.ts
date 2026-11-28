@@ -29,7 +29,7 @@ export const NAV_GROUPS: {
 }[] = [
   {
     id: "research",
-    label: "岗位研究",
+    label: "求职工作台",
     items: [
       { id: "today", icon: "sun", label: "今日概览" },
       { id: "jobs", icon: "jobs", label: "岗位研究" },
@@ -39,7 +39,7 @@ export const NAV_GROUPS: {
       { id: "jd-assessment", icon: "filter", label: "反向JD测评" },
       { id: "failure-museum", icon: "museum", label: "失败博物馆" },
       { id: "evidence", icon: "book", label: "公司资料库" },
-      { id: "compare", icon: "chart", label: "数据分析" },
+      { id: "compare", icon: "chart", label: "公司对比" },
     ],
   },
   {

@@ -66,7 +66,7 @@ def main():
         page.locator('.favorites-view').get_by_label('选择岗位：受控岗位1 · 受控乙公司', exact=True).check()
         expect(page.get_by_text('跨页已选 3 项（本页 1 项）', exact=True)).to_be_visible()
         page.get_by_role('button', name='横评选中公司', exact=True).click()
-        page.get_by_role('button', name=re.compile(r'^数据分析')).click()
+        page.get_by_role('button', name=re.compile(r'^公司对比')).click()
         expect(page.locator('.compare-chip')).to_have_count(2)
         expect(page.locator('.compare-chip').filter(has_text='受控甲公司')).to_have_count(1)
         expect(page.locator('.compare-chip').filter(has_text='受控乙公司')).to_have_count(1)

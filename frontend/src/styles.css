@@ -2582,12 +2582,11 @@ b {
 .pipeline-attribution {
   flex-basis: 100%;
   display: flex;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  gap: 10px 64px;
+  flex-wrap: wrap;
+  gap: 10px 48px;
   border-top: 1px dashed var(--line);
   padding-top: 6px;
-}
+} /* 2026-11-28 拍板改版：组内表格保持内容宽，组间换行排列，不再横向滚动藏「批次/周几」两组 */
 .pipeline-offers {
   flex-basis: 100%;
   border-top: 1px dashed var(--line);
@@ -2854,6 +2853,18 @@ button.today-stat {
 }
 .today-second-heading {
   margin-top: 16px;
+}
+
+/* 备战+行动并排（2026-11-28 重排）：宽屏两列，窄屏纵向堆叠；子卡等高、内容不溢出。 */
+.today-duo {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 14px;
+  align-items: stretch;
+}
+.today-duo > * {
+  min-width: 0;
+  margin: 0;
 }
 .today-new-list {
   list-style: none;

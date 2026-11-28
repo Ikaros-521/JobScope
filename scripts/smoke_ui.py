@@ -28,7 +28,7 @@ def main():
         except Exception:
             pass
         # 教程关闭后导航组恢复折叠：先展开「岗位研究」组再点条目（条目带角标时名字含数字，不能用 exact）。
-        toggle = page.get_by_role('button', name='岗位研究', exact=True).first
+        toggle = page.get_by_role('button', name='求职工作台', exact=True).first
         if toggle.get_attribute('aria-expanded') == 'false':
             toggle.click()
         page.locator('#nav-group-research').get_by_role('button', name='岗位研究').first.click()

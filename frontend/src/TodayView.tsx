@@ -176,25 +176,6 @@ export function TodayView({
             <BriefingStrip briefing={briefing} onOpenSources={onOpenSources} />
           )}
 
-          {/* 面试备战（2026-11-24）：今日页只展示今天的必做进度与连续天数，完整计划在工作区。 */}
-          <PrepCard brief={data.prep_plan} onOpen={onOpenPrepPlan} />
-
-          {/* 最低功耗模式（2026-11-23）：静默 ≥4 天后的温和重入——替下目标行与处方卡，不弹欠账。 */}
-          {lowPower ? (
-            <ReentryCard days={quietDays} onOpenFavorites={onOpenFavorites} />
-          ) : (
-            prescriptions &&
-            (prescriptions.prescriptions.length > 0 ||
-              prescriptions.today_plan) && (
-              <ActionBoard
-                plan={prescriptions.today_plan}
-                items={prescriptions.prescriptions.slice(0, 3)}
-                total={prescriptions.prescriptions.length}
-                onNavigate={onPrescriptionNavigate}
-              />
-            )
-          )}
-
           <div className="today-grid">
             <section
               className="paper-panel today-panel today-todo"
@@ -344,6 +325,28 @@ export function TodayView({
                 </ul>
               )}
             </section>
+          </div>
+
+          {/* 备战与行动（2026-11-28 重排）：并排收窄放次屏，待跟进/数据一览前置。 */}
+          <div className="today-duo">
+            {/* 面试备战（2026-11-24）：今日页只展示今天的必做进度与连续天数，完整计划在工作区。 */}
+            <PrepCard brief={data.prep_plan} onOpen={onOpenPrepPlan} />
+
+            {/* 最低功耗模式（2026-11-23）：静默 ≥4 天后的温和重入——替下目标行与处方卡，不弹欠账。 */}
+            {lowPower ? (
+              <ReentryCard days={quietDays} onOpenFavorites={onOpenFavorites} />
+            ) : (
+              prescriptions &&
+              (prescriptions.prescriptions.length > 0 ||
+                prescriptions.today_plan) && (
+                <ActionBoard
+                  plan={prescriptions.today_plan}
+                  items={prescriptions.prescriptions.slice(0, 3)}
+                  total={prescriptions.prescriptions.length}
+                  onNavigate={onPrescriptionNavigate}
+                />
+              )
+            )}
           </div>
 
           <section className="paper-panel today-panel" aria-label="最近采集">
