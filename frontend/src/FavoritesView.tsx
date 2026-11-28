@@ -388,7 +388,7 @@ export function FavoritesView({ onOpenJob, onOpenCompare, onChange, onPrescripti
       </div>
       {selectionNotice && <p role="status" className="tiny-label">{selectionNotice}</p>}
       {rechecking && <p className="batch-message" role="status"><span className="spinner" /> {recheckTask?.message}{recheckTask?.total ? ` · 已处理 ${recheckTask.processed || 0}/${recheckTask.total}` : ''}</p>}
-      {loading ? <div className="loading-state"><span className="spinner" />正在读取收藏…</div>
+      {loading ? <div className="skeleton-list" aria-hidden="true">{Array.from({ length: 5 }, (_, index) => <div key={index} className="skeleton-row"><span className="skeleton skeleton-line" /><span className="skeleton skeleton-line" /><span className="skeleton skeleton-line" /></div>)}</div>
         : jobs.length === 0 ? <div className="empty"><div className="empty-icon"><Icon name="star" /></div><h3>{draft.q || filters.current.q ? '收藏中没有符合条件的岗位' : '还没有收藏的岗位'}</h3><p>在岗位档案列表点卡片右侧的星标，或岗位详情页点「收藏」。收藏不会因为重新采集而丢失。</p></div>
         : <div className={`job-list${busy === 'filter' ? ' refreshing' : ''}`}>{jobs.map(item => <JobCard key={item.id} item={item} compact selected={false} checked={selectedIds.has(item.id)}
           busy={busy.startsWith(`star-${item.id}`) || busy.startsWith(`recheck-${item.id}`)}

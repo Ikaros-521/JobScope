@@ -21,4 +21,4 @@
 /* ── 采集前健康预检（2026-11-19）：岗位研究检索区里所选来源的上次采集结果。 ── */
 .source-health-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin: 10px 16px 0; }
 .source-health-line.warn { color: #a2541a; }
-.source-health-line .text-button { font-size: 12px; min-height: 22px; padding: 0; }
+.source-health-line .text-button { font-size: 12px; min-height: 24px; padding: 0; }

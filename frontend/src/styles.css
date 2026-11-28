@@ -298,7 +298,7 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .collect-limit input { width: 88px; border: 0; background: transparent; padding: 9px 2px; }
 .search-footnote { display: flex; justify-content: space-between; gap: 16px; border-top: 1px solid var(--line); margin-top: 8px; padding: 7px 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 /* 检索表单的登录前置说明：所选平台需要登录时在提交前就亮出来，放独立元素避免被矮屏 footnote 折叠规则藏掉。 */
-.collect-login-note { margin: 12px 0 0; padding: 8px 12px; border: 1px solid #eab4a6; border-left: 4px solid #b3492f; background: #fdece8; color: #7f2d1d; border-radius: 8px; font-size: 13px; line-height: 1.8; }
+.collect-login-note { margin: 12px 0 0; padding: 8px 12px; border: 1px solid #ecd8d0; border-left: 4px solid #b3492f; background: #fbf4f1; color: #8c3a2a; border-radius: 8px; font-size: 13px; line-height: 1.8; } /* 错误色板并轨 .alert.error（2026-11-28 五套横幅色板收敛） */
 .search-footnote > span { display: flex; align-items: baseline; gap: 8px; }
 .search-footnote button { font-size: 12px; white-space: nowrap; color: #525252; padding: 0; align-self: start; min-height: 24px; }
 .research-layout { display: grid; grid-template-columns: minmax(340px, .48fr) minmax(0, 1fr); gap: 20px; align-items: start; }
@@ -482,7 +482,7 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .pipeline-followups strong { color: var(--green); }
 .pipeline-followups ul { display: flex; flex-wrap: wrap; gap: 2px 16px; margin: 0; padding: 0; list-style: none; }
 .pipeline-followups li { display: inline-flex; gap: 8px; align-items: baseline; }
-.pipeline-followups .text-button { font-size: 12px; min-height: 22px; padding: 0; }
+.pipeline-followups .text-button { font-size: 12px; min-height: 24px; padding: 0; }
 .pipeline-select { font-size: 12px; min-height: 26px; padding: 0 4px; border: 1px solid var(--line); border-radius: 6px; background: var(--paper); color: var(--muted); max-width: 88px; }
 .pipeline-select:focus { outline: 2px solid var(--green); outline-offset: 1px; }
 /* ── 漏斗转化与归因（2026-11-22）：收藏篮回顾里的转化率行与归因切片表。 ── */
@@ -535,7 +535,7 @@ h1, h2, h3, h4, strong, b { font-weight: 600; }
 .today-weekly-stat em { font-style: normal; font-size: 12px; font-variant-numeric: tabular-nums; }
 .today-weekly-stat em.up { color: var(--green); }
 .today-weekly-stat em.down { color: #a2541a; }
-.today-weekly > .text-button { font-size: 12px; min-height: 22px; padding: 0; display: inline-flex; gap: 4px; align-items: center; }
+.today-weekly > .text-button { font-size: 12px; min-height: 24px; padding: 0; display: inline-flex; gap: 4px; align-items: center; }
 .today-due-title { font-weight: 600; text-align: left; justify-content: flex-start; } /* 全局 button 居中规则泄漏进列向按钮：text-align 管不住 flex（2026-11-27） */
 .today-backup-banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 10px 14px; margin-bottom: 20px; border: 1px solid #e8c9a8; border-radius: 10px; background: #fdf6ec; color: #a2541a; font-size: 13px; }
 .today-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(68px, 1fr)); gap: 8px; } /* 68px 起五格单行放得下（1366 宽面板 390px 实测），不再 4+1 孤行 */
@@ -545,7 +545,7 @@ button.today-stat { cursor: pointer; text-align: left; }
 .today-second-heading { margin-top: 16px; }
 .today-new-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .today-new-list li { display: flex; align-items: baseline; gap: 10px; }
-.today-new-list .text-button { min-height: 22px; padding: 0; }
+.today-new-list .text-button { min-height: 24px; padding: 0; }
 .today-new-list .today-due-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .today-new-list .tiny-label { flex: none; margin-left: auto; white-space: nowrap; line-height: 1.6; }
 .today-task-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
@@ -1655,7 +1655,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .md-dead-link { color: #737373; text-decoration: underline dotted; }
 .md-code { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin: 12px 0; background: #fcfcfc; }
 .md-code-bar { display: flex; justify-content: flex-end; gap: 8px; padding: 4px 8px; border-bottom: 1px solid var(--line); background: #f5f5f5; }
-.md-code-bar button { font-size: 12px; padding: 2px 8px; min-height: 22px; color: #525252; background: none; border: 0; border-radius: 4px; }
+.md-code-bar button { font-size: 12px; padding: 2px 8px; min-height: 24px; color: #525252; background: none; border: 0; border-radius: 4px; }
 .md-code-bar button:hover { background: #ededed; color: #262626; }
 .md-code pre { margin: 0; padding: 12px 14px; overflow-x: auto; font-size: 13px; line-height: 1.7; background: #fcfcfc; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .md-code pre code { background: none; padding: 0; font-size: inherit; }
@@ -2277,7 +2277,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .log-row.level-error .log-level, .log-row.level-critical .log-level { color: #ef7b76; font-weight: 700; }
 .log-row.level-error .log-message, .log-row.level-critical .log-message { color: #f0b3b0; }
 .log-empty { padding: 48px 16px; text-align: center; color: #7fa39a; }
-.log-error-banner { background: #fbeeee; color: #8c2f2f; border: 1px solid #e5c4c4; border-radius: 8px; padding: 8px 12px; font-size: 13px; }
+.log-error-banner { background: #fbf4f1; color: #8c3a2a; border: 1px solid #ecd8d0; border-radius: 8px; padding: 8px 12px; font-size: 13px; } /* 错误色板并轨 */
 .log-follow-chip { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
   border: none; background: var(--green); color: #fff; border-radius: 999px; padding: 7px 16px;
   cursor: pointer; font-size: 13px; box-shadow: var(--shadow-panel); }
@@ -2458,7 +2458,7 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 .iv-model-answer { border-left: 3px solid #2e7d32; padding: 6px 10px; margin-top: 6px; font-size: 13px; line-height: 1.7; background: #f2f8f2; border-radius: 0 8px 8px 0; }
 .iv-model-answer strong { display: block; margin-bottom: 4px; }
 .iv-bad-answer { border-left: 3px solid var(--danger); padding: 6px 10px; margin-top: 6px; font-size: 13px; line-height: 1.7; background: #fbf3f2; border-radius: 0 8px 8px 0; }
-.iv-error { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border: 1px solid #d9a441; background: #fdf6e7; border-radius: 8px; font-size: 13px; margin-bottom: 8px; }
+.iv-error { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px; border: 1px solid #ecd8d0; background: #fbf4f1; color: #8c3a2a; border-radius: 8px; font-size: 13px; margin-bottom: 8px; } /* 名为 error 却画琥珀警告是语义 bug，正色（2026-11-28 审计 P1-6） */
 .iv-error-close { border: 0; background: none; cursor: pointer; color: inherit; }
 /* 目标岗位三模式（岗位库/粘贴JD/自由练）与自定义输入 */
 .iv-modes { display: flex; gap: 6px; }
@@ -2843,3 +2843,16 @@ mark.search-hit { background: #fdf1c4; color: inherit; border-radius: 2px; paddi
 /* 根级错误边界（2026-11-27）：视图渲染崩溃时的兜底页——居中一张纸面板，不再白屏。 */
 .error-boundary { min-height: 100vh; display: grid; place-items: center; padding: 24px; }
 .error-boundary-panel { width: min(560px, 100%); }
+
+/* 骨架原语（2026-11-28）：列表加载期先给占位再上真数据；reduced-motion 下 shimmer 停走仅剩底色。 */
+.skeleton { position: relative; overflow: hidden; background: var(--surface); border-radius: 4px; }
+.skeleton::after { content: ''; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, .7), transparent);
+  animation: skeleton-shimmer 1.4s ease infinite; }
+@keyframes skeleton-shimmer { to { transform: translateX(0); } }
+.skeleton-line { height: 11px; margin: 0; }
+.skeleton-list { display: flex; flex-direction: column; gap: 10px; padding: 4px 0; }
+.skeleton-row { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); }
+.skeleton-row .skeleton-line:nth-child(1) { width: 58%; }
+.skeleton-row .skeleton-line:nth-child(2) { width: 40%; }
+.skeleton-row .skeleton-line:nth-child(3) { width: 72%; }
