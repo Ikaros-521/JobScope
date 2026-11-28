@@ -8,6 +8,7 @@ import {
 import type { Job, PageInfo, ProfileEntry, ResumeTemplate, ResumeTypography, ResumeVersion, ResumeVersionSummary } from './api'
 import { ResumeDiff } from './ResumeDiff'
 import { toast } from './toast'
+import { useRunStream } from './useRunStream'
 
 // 岗位详情页「优化简历」跳转预填：带上岗位定位，进入后自动选中该岗位。
 // instructions（P1 闭环，2026-11-19）：评估报告「带着缺口优化」传入的重点说明。
@@ -250,29 +251,20 @@ export function ResumeWorkshop({ prefill, onPrefillConsumed, onOpenResume }: { p
     } catch (err) { setFormError((err as Error).message); setBusy(null) }
   }
 
-  useEffect(() => {
-    if (!optimizeRunId) return
-    const source = openResumeOptimizeStream(optimizeRunId, (event, data) => {
-      if (event === 'done') {
-        loadVersion(data.version as ResumeVersion, 'diff')
-        void refreshVersions()
-        toast('优化完成，已生成新版本；先在「改动对比」核对改动，可直接二次编辑或导出。')
-        setOptimizeRunId(''); setBusy(null)
-        source.close()
-      } else if (event === 'error') {
-        setFormError(String((data as { message?: string }).message ?? '优化失败'))
-        setOptimizeRunId(''); setBusy(null)
-        source.close()
-      }
-    })
-    source.onerror = () => {
-      if (source.readyState !== EventSource.CLOSED) return
+  useRunStream(optimizeRunId, (rid, onEvent) => openResumeOptimizeStream(rid, onEvent), (event, data) => {
+    if (event === 'done') {
+      loadVersion(data.version as ResumeVersion, 'diff')
+      void refreshVersions()
+      toast('优化完成，已生成新版本；先在「改动对比」核对改动，可直接二次编辑或导出。')
       setOptimizeRunId(''); setBusy(null)
-      setFormError('优化连接中断，请重试')
+    } else if (event === 'error') {
+      setFormError(String((data as { message?: string }).message ?? '优化失败'))
+      setOptimizeRunId(''); setBusy(null)
     }
-    return () => source.close()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [optimizeRunId])
+  }, () => {
+    setOptimizeRunId(''); setBusy(null)
+    setFormError('优化连接中断，请重试')
+  })
 
   async function saveVersion() {
     if (!current || busy || !markdown.trim()) return

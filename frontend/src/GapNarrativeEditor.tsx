@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { date, listGapNarratives, openGapNarrativeStream, startGapNarrativeRun } from './api'
 import type { GapNarrative } from './api'
 import { toast } from './toast'
+import { useRunStream } from './useRunStream'
 import { Button } from './ui'
 import { Icon } from './Icon'
 
@@ -51,28 +52,20 @@ export function GapNarrativeEditor({ onClose }: { onClose: () => void }) {
       .catch((err: Error) => { toast(err.message, 'error'); setBusy('') })
   }
 
-  useEffect(() => {
-    if (!runId) return
-    const source = openGapNarrativeStream(runId, (event, data) => {
-      if (event === 'done') {
-        const narrative = data.narrative as GapNarrative
-        toast('已生成空窗期叙事，三段产物可直接取用', 'notice')
-        setNarratives(previous => [narrative, ...(previous || [])])
-        setRunId(''); setBusy('')
-        source.close()
-      } else if (event === 'error') {
-        toast(String((data as { message?: string }).message ?? '生成失败'), 'error')
-        setRunId(''); setBusy('')
-        source.close()
-      }
-    })
-    source.onerror = () => {
-      if (source.readyState !== EventSource.CLOSED) return
+  useRunStream(runId, (rid, onEvent) => openGapNarrativeStream(rid, onEvent), (event, data) => {
+    if (event === 'done') {
+      const narrative = data.narrative as GapNarrative
+      toast('已生成空窗期叙事，三段产物可直接取用', 'notice')
+      setNarratives(previous => [narrative, ...(previous || [])])
       setRunId(''); setBusy('')
-      toast('生成连接中断，请重试', 'error')
+    } else if (event === 'error') {
+      toast(String((data as { message?: string }).message ?? '生成失败'), 'error')
+      setRunId(''); setBusy('')
     }
-    return () => source.close()
-  }, [runId])
+  }, () => {
+    setRunId(''); setBusy('')
+    toast('生成连接中断，请重试', 'error')
+  })
 
   const latest = narratives?.[0] || null
   const older = (narratives || []).slice(1)

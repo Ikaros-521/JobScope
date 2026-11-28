@@ -5,6 +5,7 @@ import {
 } from './api'
 import type { InterviewDrillRef, Job, PageInfo, PrepAdjustApplied, PrepAdjustTurn, PrepFocus, PrepSnapshot, PrepTask } from './api'
 import { ConfirmDialog } from './ConfirmDialog'
+import { useRunStream } from './useRunStream'
 import { Icon } from './Icon'
 import { toast } from './toast'
 
@@ -130,86 +131,73 @@ export function PrepPlanView({ onOpenInterview }: {
       minutes_per_day: prefs.minutes_per_day || 20, use_llm: prefs.use_llm !== false })
   }, [data?.plan?.id])
 
-  useEffect(() => {
-    if (!runId) return
-    const source = openPrepPlanStream(runId, (event, frame) => {
-      if (event === 'done') {
-        const snapshot = frame as unknown as PrepSnapshot
-        setData(snapshot); setGen(null); setRunId('')
-        toast(snapshot.plan?.origin === 'model'
-          ? 'AI 定制计划已生成。'
-          : '模型分析没有成功，已按本机材料生成规则版计划。')
-        return
-      }
-      if (event === 'error') {
-        // 失败即刻解锁（2026-11-27 审计 P0）：runId 只在 done 清空曾让页面永久「生成中」，
-        // 所有按钮禁用且 startGeneration 的 if (runId) return 挡住重试。gen.error 已由
-        // reduceGen 写入、进度面板自带「重试」；这里清 runId 即可（cleanup 顺带关流，
-        // 服务端随后补发的 end 帧不再需要）。
-        setRunId('')
-        return
-      }
-      if (event !== 'end') setGen(prev => reduceGen(prev, event, frame))
-    })
-    // 致命断流（后端重启，流 404）：EventSource 进入 CLOSED 后不会再收到任何帧——连 error
-    // 事件和 end 都没有——必须就地按失败收尾；短暂网络抖动（CONNECTING）交给自动重连续播事件日志。
-    source.onerror = () => {
-      if (source.readyState !== EventSource.CLOSED) return
+  useRunStream(runId, openPrepPlanStream, (event, frame) => {
+    if (event === 'done') {
+      const snapshot = frame as unknown as PrepSnapshot
+      setData(snapshot); setGen(null); setRunId('')
+      toast(snapshot.plan?.origin === 'model'
+        ? 'AI 定制计划已生成。'
+        : '模型分析没有成功，已按本机材料生成规则版计划。')
+      return
+    }
+    if (event === 'error') {
+      // 失败即刻解锁（2026-11-27 审计 P0）：runId 只在 done 清空曾让页面永久「生成中」，
+      // 所有按钮禁用且 startGeneration 的 if (runId) return 挡住重试。gen.error 已由
+      // reduceGen 写入、进度面板自带「重试」；这里清 runId 即可（cleanup 顺带关流，
+      // 服务端随后补发的 end 帧不再需要）。
       setRunId('')
-      setGen(prev => prev ? { ...prev, error: prev.error || '生成连接中断了，可重试' } : prev)
+      return
     }
-    return () => source.close()
-  }, [runId])
+    if (event !== 'end') setGen(prev => reduceGen(prev, event, frame))
+  }, () => {
+    // 致命断流（后端重启，流 404）：按失败收尾解锁（钩子负责 CLOSED 判定与关流）。
+    setRunId('')
+    setGen(prev => prev ? { ...prev, error: prev.error || '生成连接中断了，可重试' } : prev)
+  })
 
-  useEffect(() => {
-    if (!adjustRunId) return
-    const source = openPrepAdjustStream(adjustRunId, (event, frame) => {
-      if (event === 'done') {
-        const payload = frame as unknown as { reply: string; applied: PrepAdjustApplied[]; snapshot: PrepSnapshot; confirm_required: { reason: string } | null }
-        setData(payload.snapshot); setDraft(null); setAdjustRunId('')
-        setTurns(prev => [...prev,
-          ...(pendingTurn.current ? [pendingTurn.current] : []),
-          { role: 'assistant', content: payload.reply,
-            changes: payload.applied.map(item => item.summary || '').filter(Boolean).join('；') || undefined }])
-        pendingTurn.current = null
-        return
-      }
-      if (event === 'confirm_required') {
-        setRebuildAsk(String((frame as { reason?: string }).reason || '按最新资料重新生成整轮计划'))
-        return
-      }
-      if (event === 'delta') {
-        setDraft(prev => ({ ...(prev ?? BLANK_DRAFT), reply: (prev?.reply || '') + String((frame as { text?: string }).text || '') }))
-        return
-      }
-      if (event === 'applied' || event === 'skipped') {
-        setDraft(prev => {
-          const next = prev ?? BLANK_DRAFT
-          const item = frame as unknown as PrepAdjustApplied
-          return event === 'applied'
-            ? { ...next, applied: [...next.applied, item] }
-            : { ...next, skipped: [...next.skipped, item] }
-        })
-        return
-      }
-      if (event === 'error') {
-        // 失败即刻解锁（2026-11-27 审计 P0）：adjustRunId 只在 done 清空曾让输入框永久禁用。
-        // 这条用户消息服务端没落库（成功才 append），就地显回轮次里；错误挂在教练气泡上。
-        flushPendingTurn()
-        setDraft(prev => ({ ...(prev ?? BLANK_DRAFT), error: String((frame as { message?: string }).message || '调整对话失败') }))
-        setAdjustRunId('')
-        return
-      }
-    })
-    // 同生成流：致命断流（CLOSED）不会再有任何帧，就地解锁；抖动交给自动重连。
-    source.onerror = () => {
-      if (source.readyState !== EventSource.CLOSED) return
-      flushPendingTurn()
-      setDraft(prev => prev ? { ...prev, error: prev.error || '调整连接中断了，请重试' } : prev)
-      setAdjustRunId('')
+  useRunStream(adjustRunId, openPrepAdjustStream, (event, frame) => {
+    if (event === 'done') {
+      const payload = frame as unknown as { reply: string; applied: PrepAdjustApplied[]; snapshot: PrepSnapshot; confirm_required: { reason: string } | null }
+      setData(payload.snapshot); setDraft(null); setAdjustRunId('')
+      setTurns(prev => [...prev,
+        ...(pendingTurn.current ? [pendingTurn.current] : []),
+        { role: 'assistant', content: payload.reply,
+          changes: payload.applied.map(item => item.summary || '').filter(Boolean).join('；') || undefined }])
+      pendingTurn.current = null
+      return
     }
-    return () => source.close()
-  }, [adjustRunId])
+    if (event === 'confirm_required') {
+      setRebuildAsk(String((frame as { reason?: string }).reason || '按最新资料重新生成整轮计划'))
+      return
+    }
+    if (event === 'delta') {
+      setDraft(prev => ({ ...(prev ?? BLANK_DRAFT), reply: (prev?.reply || '') + String((frame as { text?: string }).text || '') }))
+      return
+    }
+    if (event === 'applied' || event === 'skipped') {
+      setDraft(prev => {
+        const next = prev ?? BLANK_DRAFT
+        const item = frame as unknown as PrepAdjustApplied
+        return event === 'applied'
+          ? { ...next, applied: [...next.applied, item] }
+          : { ...next, skipped: [...next.skipped, item] }
+      })
+      return
+    }
+    if (event === 'error') {
+      // 失败即刻解锁（2026-11-27 审计 P0）：adjustRunId 只在 done 清空曾让输入框永久禁用。
+      // 这条用户消息服务端没落库（成功才 append），就地显回轮次里；错误挂在教练气泡上。
+      flushPendingTurn()
+      setDraft(prev => ({ ...(prev ?? BLANK_DRAFT), error: String((frame as { message?: string }).message || '调整对话失败') }))
+      setAdjustRunId('')
+      return
+    }
+  }, () => {
+    // 致命断流（CLOSED）：同 done/error 收尾纪律，就地解锁。
+    flushPendingTurn()
+    setDraft(prev => prev ? { ...prev, error: prev.error || '调整连接中断了，请重试' } : prev)
+    setAdjustRunId('')
+  })
 
   async function act(key: string, action: () => Promise<PrepSnapshot>) {
     setBusy(key)
